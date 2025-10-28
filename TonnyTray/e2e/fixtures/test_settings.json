@@ -1,0 +1,34 @@
+{
+  "server": {
+    "host": "localhost",
+    "port": 8888,
+    "model": "base",
+    "language": "en",
+    "autoStart": true,
+    "autoRestart": true
+  },
+  "audio": {
+    "device": "Default Microphone",
+    "pushToTalk": false,
+    "voiceActivation": true,
+    "threshold": 0.02
+  },
+  "typing": {
+    "enabled": true,
+    "speed": 50
+  },
+  "integration": {
+    "n8nEnabled": true,
+    "n8nWebhookUrl": "https://test.n8n.io/webhook/test",
+    "elevenLabsEnabled": true,
+    "elevenLabsApiKey": "sk_test_key_12345",
+    "elevenLabsVoiceId": "voice_12345",
+    "responseMode": "both"
+  },
+  "advanced": {
+    "commandPrefix": "Computer,",
+    "confirmationMode": "visual",
+    "maxLogEntries": 1000,
+    "debugMode": false
+  }
+}

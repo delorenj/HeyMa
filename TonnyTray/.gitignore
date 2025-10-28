@@ -1,0 +1,90 @@
+# Dependencies
+node_modules/
+target/
+dist/
+dist-ssr/
+build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*.swo
+*.swn
+*.local
+
+# Test coverage
+coverage/
+*.lcov
+
+# Build artifacts
+*.deb
+*.rpm
+*.dmg
+*.pkg
+*.msi
+*.exe
+*.AppImage
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+db/*.db
+!db/migrations/
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# macOS specific
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Windows specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Rust
+**/*.rs.bk
+*.pdb
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Project specific
+*.pid
+whisper.pid

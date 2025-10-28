@@ -1,0 +1,82 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+ARCHITECTURE*.md
+BACKEND_SUMMARY.md
+FRONTEND_ARCHITECTURE.md
+IMPLEMENTATION_SUMMARY.md
+PRD.md
+DEPLOYMENT.md
+CONTRIBUTING.md
+CHANGELOG.md
+
+# IDE and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build artifacts
+dist/
+build/
+target/
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Tests
+coverage/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+**/__tests__/
+**/__mocks__/
+
+# CI/CD
+.github/
+
+# DevOps
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Scripts (not needed in container)
+scripts/
+systemd/
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log

@@ -1,0 +1,110 @@
+# Dependabot configuration for automated dependency updates
+
+version: 2
+updates:
+  # GitHub Actions dependencies
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "delorenj"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # npm dependencies
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "delorenj"
+    labels:
+      - "dependencies"
+      - "javascript"
+    versioning-strategy: increase
+    groups:
+      # Group React-related dependencies
+      react:
+        patterns:
+          - "react*"
+          - "@types/react*"
+      # Group MUI dependencies
+      mui:
+        patterns:
+          - "@mui/*"
+          - "@emotion/*"
+      # Group dev dependencies
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "patch"
+          - "minor"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    ignore:
+      # Ignore major version updates for stable dependencies
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # Cargo dependencies
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "delorenj"
+    labels:
+      - "dependencies"
+      - "rust"
+    groups:
+      # Group Tauri dependencies
+      tauri:
+        patterns:
+          - "tauri*"
+      # Group tokio ecosystem
+      tokio:
+        patterns:
+          - "tokio*"
+      # Group serde ecosystem
+      serde:
+        patterns:
+          - "serde*"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    ignore:
+      # Ignore major version updates for core dependencies
+      - dependency-name: "tauri"
+        update-types: ["version-update:semver-major"]
+
+  # Docker dependencies
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "delorenj"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore"
+      include: "scope"

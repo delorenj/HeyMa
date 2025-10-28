@@ -1,0 +1,43 @@
+# Rust formatting configuration for TonnyTray
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+
+# Imports
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+
+# Formatting
+fn_call_width = 80
+struct_lit_width = 80
+enum_variant_width = 80
+array_width = 80
+chain_width = 80
+
+# Style
+use_small_heuristics = "Default"
+binop_separator = "Front"
+remove_nested_parens = true
+reorder_impl_items = true
+match_block_trailing_comma = true
+trailing_comma = "Vertical"
+trailing_semicolon = true
+
+# Comments and strings
+wrap_comments = true
+format_strings = true
+format_code_in_doc_comments = true
+normalize_comments = true
+normalize_doc_attributes = true
+
+# Control flow
+control_brace_style = "AlwaysSameLine"
+brace_style = "SameLineWhere"
+indent_style = "Block"
+where_single_line = false
+
+# Miscellaneous
+edition = "2021"
+unstable_features = false

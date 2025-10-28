@@ -1,0 +1,67 @@
+{
+  "server": {
+    "url": "ws://localhost:8888/asr",
+    "model": "base",
+    "language": "en",
+    "auto_start": true,
+    "port": 8888,
+    "auto_restart": true
+  },
+  "n8n": {
+    "webhook_url": "https://n8n.delo.sh/webhook/ask-tonny",
+    "enabled": true
+  },
+  "elevenlabs": {
+    "api_key": "your_elevenlabs_api_key_here",
+    "voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "enabled": true,
+    "response_mode": "both"
+  },
+  "profiles": [
+    {
+      "name": "Dad",
+      "permissions": "admin",
+      "voice_id": null,
+      "allowed_commands": []
+    },
+    {
+      "name": "Mom",
+      "permissions": "admin",
+      "voice_id": null,
+      "allowed_commands": []
+    },
+    {
+      "name": "Kids",
+      "permissions": "user",
+      "voice_id": null,
+      "allowed_commands": [
+        "turn on lights",
+        "play music",
+        "what's the weather"
+      ]
+    },
+    {
+      "name": "Guest",
+      "permissions": "guest",
+      "voice_id": null,
+      "allowed_commands": [
+        "what time is it",
+        "what's the weather"
+      ]
+    }
+  ],
+  "audio": {
+    "microphone_device": null,
+    "push_to_talk": false,
+    "voice_activation": true,
+    "voice_activation_threshold": 0.02
+  },
+  "typing": {
+    "enabled": true,
+    "speed": 50
+  },
+  "advanced": {
+    "command_prefix": "Computer,",
+    "confirmation_mode": "visual"
+  }
+}

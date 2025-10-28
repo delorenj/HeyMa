@@ -1,0 +1,47 @@
+[
+  {
+    "id": "admin",
+    "name": "Admin User",
+    "permissions": "admin",
+    "voiceId": null,
+    "allowedCommands": ["*"]
+  },
+  {
+    "id": "dev1",
+    "name": "Developer 1",
+    "permissions": "user",
+    "voiceId": "voice_dev1",
+    "allowedCommands": [
+      "file.read",
+      "file.write",
+      "git.commit",
+      "git.push",
+      "terminal.execute",
+      "search.code"
+    ]
+  },
+  {
+    "id": "dev2",
+    "name": "Developer 2",
+    "permissions": "user",
+    "voiceId": "voice_dev2",
+    "allowedCommands": [
+      "file.read",
+      "file.write",
+      "git.commit",
+      "search.code"
+    ]
+  },
+  {
+    "id": "readonly",
+    "name": "Read Only User",
+    "permissions": "user",
+    "voiceId": null,
+    "allowedCommands": [
+      "file.read",
+      "search.code",
+      "git.status",
+      "git.log"
+    ]
+  }
+]

@@ -1,0 +1,32 @@
+# Core dependencies
+aiohttp>=3.8.0
+websockets>=11.0
+asyncio>=3.4.3
+click>=8.0.0
+numpy>=1.24.0
+
+# Audio processing
+sounddevice>=0.4.6
+pyaudio>=0.2.11  # Optional, fallback for sounddevice
+webrtcvad>=2.0.10  # Voice Activity Detection
+soundfile>=0.12.0
+
+# Integration clients
+aio-pika>=9.0.0  # RabbitMQ (optional)
+
+# Database
+# Using built-in sqlite3
+
+# Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.10.0
+
+# Logging and monitoring
+python-json-logger>=2.0.0
+
+# Development
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+pre-commit>=3.0.0

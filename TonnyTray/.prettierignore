@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+dist/
+build/
+target/
+
+# Generated files
+*.min.js
+*.min.css
+*.bundle.js
+
+# Build artifacts
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+
+# Package manager
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Environment
+.env
+.env.*
+!.env.example

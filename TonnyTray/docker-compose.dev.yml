@@ -1,0 +1,174 @@
+# Development Docker Compose Configuration for TonnyTray
+# This includes all backend services needed for development and testing
+
+services:
+  # PostgreSQL database for transcription storage
+  postgres:
+    image: postgres:16-alpine
+    container_name: tonnytray-postgres-dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tonnytray}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-tonnytray}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tonnytray}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    container_name: tonnytray-redis-dev
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-dev_redis_password}
+    volumes:
+      - redis_data_dev:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # RabbitMQ message broker (optional, for advanced queuing)
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: tonnytray-rabbitmq-dev
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-tonnytray}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-dev_rabbit_password}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-tonnytray}
+    volumes:
+      - rabbitmq_data_dev:/var/lib/rabbitmq
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # WhisperLiveKit server (from parent directory)
+  whisperlivekit:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: tonnytray-whisper-dev
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-en}
+      WHISPER_HOST: 0.0.0.0
+      WHISPER_PORT: 8888
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - whisper_models:/root/.cache/whisper
+      - ../whisperlivekit:/app/whisperlivekit
+    ports:
+      - "${WHISPER_PORT:-8888}:8888"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # TonnyTray development environment
+  tonnytray-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: tonnytray-app-dev
+    environment:
+      NODE_ENV: development
+      VITE_WS_URL: ${VITE_WS_URL:-ws://whisperlivekit:8888/asr}
+      VITE_N8N_WEBHOOK_URL: ${VITE_N8N_WEBHOOK_URL:-http://host.docker.internal:5678/webhook}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tonnytray}:${POSTGRES_PASSWORD:-dev_password_change_me}@postgres:5432/${POSTGRES_DB:-tonnytray}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-dev_redis_password}@redis:6379
+    volumes:
+      # Mount source code for hot reload
+      - ./src:/app/src
+      - ./src-tauri:/app/src-tauri
+      - ./public:/app/public
+      - ./index.html:/app/index.html
+      - ./vite.config.ts:/app/vite.config.ts
+      - ./tsconfig.json:/app/tsconfig.json
+      # Node modules and Cargo target as volumes for performance
+      - node_modules_dev:/app/node_modules
+      - cargo_target_dev:/app/src-tauri/target
+    ports:
+      - "${VITE_PORT:-1420}:1420"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      whisperlivekit:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+  # Database administration tool
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: tonnytray-pgadmin-dev
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@tonnytray.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data_dev:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Redis Commander for Redis GUI
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: tonnytray-redis-commander-dev
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD:-dev_redis_password}
+    ports:
+      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  postgres_data_dev:
+    driver: local
+  redis_data_dev:
+    driver: local
+  rabbitmq_data_dev:
+    driver: local
+  whisper_models:
+    driver: local
+  node_modules_dev:
+    driver: local
+  cargo_target_dev:
+    driver: local
+  pgadmin_data_dev:
+    driver: local
+
+networks:
+  default:
+    name: tonnytray-dev-network
+    driver: bridge

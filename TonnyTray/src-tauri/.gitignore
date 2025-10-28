@@ -1,0 +1,27 @@
+# Rust / Cargo
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Tauri
+/target
+WixTools
+
+# Build outputs
+/dist
+/bundle
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Config (contains secrets)
+config.json

@@ -1,0 +1,42 @@
+[
+  {
+    "id": "trans-1",
+    "timestamp": "2025-10-16T10:00:00Z",
+    "text": "Computer, open the documentation and find the API reference for user authentication",
+    "success": true,
+    "profileId": "admin",
+    "response": "Opening documentation and searching for authentication API..."
+  },
+  {
+    "id": "trans-2",
+    "timestamp": "2025-10-16T10:05:00Z",
+    "text": "Create a new file called test_config.json in the project root",
+    "success": true,
+    "profileId": "admin",
+    "response": "Created test_config.json successfully"
+  },
+  {
+    "id": "trans-3",
+    "timestamp": "2025-10-16T10:10:00Z",
+    "text": "Run the test suite and show me the results",
+    "success": true,
+    "profileId": "admin",
+    "response": "Running tests... All 45 tests passed"
+  },
+  {
+    "id": "trans-4",
+    "timestamp": "2025-10-16T10:15:00Z",
+    "text": "Computer, refactor the authentication module to use JWT tokens",
+    "success": false,
+    "profileId": "admin",
+    "response": "Error: Could not complete refactoring - syntax error detected"
+  },
+  {
+    "id": "trans-5",
+    "timestamp": "2025-10-16T10:20:00Z",
+    "text": "Show me the latest commits in the repository",
+    "success": true,
+    "profileId": "admin",
+    "response": "Latest commits:\n1. feat: Add user profiles\n2. fix: Resolve memory leak\n3. docs: Update README"
+  }
+]

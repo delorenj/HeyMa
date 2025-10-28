@@ -1,0 +1,4 @@
+#!/bin/bash
+# Wrapper script to run n8n_webhook_client.py with uv
+cd "$(dirname "$0")"
+exec uv run python n8n_webhook_client.py "$@"

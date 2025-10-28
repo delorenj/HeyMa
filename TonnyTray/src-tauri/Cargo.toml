@@ -1,0 +1,76 @@
+[package]
+name = "tonnytray"
+version = "0.1.0"
+edition = "2021"
+description = "WhisperLiveKit System Tray Application"
+authors = ["TonnyTray Team"]
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = ["tray-icon"] }
+tauri-plugin-shell = "2.0"
+tauri-plugin-notification = "2.0"
+tauri-plugin-http = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+rodio = "0.17"
+cpal = "0.15"
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+notify = "6.1"
+
+# Process management
+sysinfo = "0.30"
+nix = { version = "0.27", features = ["signal", "process"] }
+
+# Audio processing
+hound = "3.5"
+dasp = "0.11"
+
+# Config management
+config = "0.13"
+toml = "0.8"
+
+# Security - Keychain integration
+keyring = "2.3"
+
+# Database - SQLite
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+
+
+
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+uuid = { version = "1.6", features = ["v4"] }
+tempfile = "3.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+mockito = "1.2"
+
+[[bench]]
+name = "performance_benchmarks"
+harness = false
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
+
+[profile.bench]
+inherits = "release"

@@ -1,0 +1,39 @@
+[Unit]
+Description=TonnyTray - WhisperLiveKit System Tray Application
+Documentation=https://github.com/yourusername/tonnytray
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/tonnytray
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+
+# Environment
+Environment="RUST_LOG=info"
+Environment="RUST_BACKTRACE=1"
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tonnytray
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/tonnytray %h/.local/share/tonnytray
+
+# Allow access to audio devices
+SupplementaryGroups=audio
+
+[Install]
+WantedBy=default.target

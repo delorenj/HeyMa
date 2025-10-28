@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  whisperlivekit:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    container_name: whisperlivekit
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whisper.rule=Host(`whisper.delo.sh`)"
+      - "traefik.http.routers.whisper.entrypoints=websecure"
+      - "traefik.http.routers.whisper.tls.certresolver=myresolver"
+      - "traefik.http.services.whisper.loadbalancer.server.port=8000"
+    restart: unless-stopped
+    volumes:
+      - whisper_cache:/root/.cache/huggingface/hub
+
+volumes:
+  whisper_cache:

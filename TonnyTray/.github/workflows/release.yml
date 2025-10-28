@@ -1,0 +1,302 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.1.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-22.04
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract Changelog
+        id: changelog
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            # Extract the section for this version
+            sed -n "/## \[${{ steps.get_version.outputs.version }}\]/,/## \[/p" CHANGELOG.md | sed '$ d' > release_notes.md
+            echo "notes<<EOF" >> $GITHUB_OUTPUT
+            cat release_notes.md >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "notes=Release ${{ steps.get_version.outputs.version }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          release_name: TonnyTray ${{ steps.get_version.outputs.version }}
+          body: ${{ steps.changelog.outputs.notes }}
+          draft: false
+          prerelease: ${{ contains(steps.get_version.outputs.version, 'alpha') || contains(steps.get_version.outputs.version, 'beta') || contains(steps.get_version.outputs.version, 'rc') }}
+
+  build-linux:
+    name: Build Linux
+    needs: create-release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libpulse-dev
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build Application
+        run: npm run tauri:build
+
+      - name: Rename Artifacts
+        run: |
+          cd src-tauri/target/release/bundle
+          VERSION="${{ needs.create-release.outputs.version }}"
+
+          # DEB
+          if [ -d "deb" ]; then
+            for file in deb/*.deb; do
+              [ -e "$file" ] || continue
+              mv "$file" "deb/tonnytray_${VERSION}_amd64.deb"
+            done
+          fi
+
+          # AppImage
+          if [ -d "appimage" ]; then
+            for file in appimage/*.AppImage; do
+              [ -e "$file" ] || continue
+              mv "$file" "appimage/tonnytray_${VERSION}_amd64.AppImage"
+            done
+          fi
+
+      - name: Upload DEB Package
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./src-tauri/target/release/bundle/deb/tonnytray_${{ needs.create-release.outputs.version }}_amd64.deb
+          asset_name: tonnytray_${{ needs.create-release.outputs.version }}_amd64.deb
+          asset_content_type: application/vnd.debian.binary-package
+
+      - name: Upload AppImage
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./src-tauri/target/release/bundle/appimage/tonnytray_${{ needs.create-release.outputs.version }}_amd64.AppImage
+          asset_name: tonnytray_${{ needs.create-release.outputs.version }}_amd64.AppImage
+          asset_content_type: application/octet-stream
+
+  build-macos:
+    name: Build macOS
+    needs: create-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build Application
+        run: npm run tauri:build
+
+      - name: Create DMG Artifact
+        run: |
+          cd src-tauri/target/release/bundle/dmg
+          VERSION="${{ needs.create-release.outputs.version }}"
+          for file in *.dmg; do
+            [ -e "$file" ] || continue
+            mv "$file" "TonnyTray_${VERSION}_x64.dmg"
+          done
+
+      - name: Upload DMG
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./src-tauri/target/release/bundle/dmg/TonnyTray_${{ needs.create-release.outputs.version }}_x64.dmg
+          asset_name: TonnyTray_${{ needs.create-release.outputs.version }}_x64.dmg
+          asset_content_type: application/octet-stream
+
+  build-windows:
+    name: Build Windows
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Build Application
+        run: npm run tauri:build
+
+      - name: Rename MSI Installer
+        shell: bash
+        run: |
+          cd src-tauri/target/release/bundle/msi
+          VERSION="${{ needs.create-release.outputs.version }}"
+          for file in *.msi; do
+            [ -e "$file" ] || continue
+            mv "$file" "TonnyTray_${VERSION}_x64.msi"
+          done
+
+      - name: Rename NSIS Installer
+        shell: bash
+        run: |
+          cd src-tauri/target/release/bundle/nsis
+          VERSION="${{ needs.create-release.outputs.version }}"
+          for file in *.exe; do
+            [ -e "$file" ] || continue
+            mv "$file" "TonnyTray_${VERSION}_x64-setup.exe"
+          done
+
+      - name: Upload MSI Installer
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./src-tauri/target/release/bundle/msi/TonnyTray_${{ needs.create-release.outputs.version }}_x64.msi
+          asset_name: TonnyTray_${{ needs.create-release.outputs.version }}_x64.msi
+          asset_content_type: application/x-msi
+
+      - name: Upload NSIS Installer
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./src-tauri/target/release/bundle/nsis/TonnyTray_${{ needs.create-release.outputs.version }}_x64-setup.exe
+          asset_name: TonnyTray_${{ needs.create-release.outputs.version }}_x64-setup.exe
+          asset_content_type: application/octet-stream
+
+  publish-checksums:
+    name: Generate and Publish Checksums
+    needs: [create-release, build-linux, build-macos, build-windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Release Assets
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ needs.create-release.outputs.version }}
+          fileName: '*'
+          out-file-path: 'release-assets'
+
+      - name: Generate Checksums
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload Checksums
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./release-assets/SHA256SUMS
+          asset_name: SHA256SUMS
+          asset_content_type: text/plain
