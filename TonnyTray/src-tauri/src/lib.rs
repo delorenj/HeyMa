@@ -209,6 +209,7 @@ pub fn run() {
             get_statistics,
             clear_logs,
             export_logs,
+            tail_logs,
             // Testing
             test_server_connection,
             // System
@@ -235,6 +236,70 @@ pub struct AppContext {
     pub database: Arc<TokioMutex<Option<AppDatabase>>>,
     pub audio_level: Arc<TokioMutex<f32>>,
     pub paused: Arc<TokioMutex<bool>>,
+}
+
+#[tauri::command]
+async fn tail_logs(app: AppHandle) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+    use notify::{Watcher, RecursiveMode, RecommendedWatcher};
+    use tauri::Emitter;
+
+    let log_path = dirs::home_dir().unwrap().join(".config/tonnytray/logs/tonnytray.log");
+
+    let window = match app.get_webview_window("log-tailer") {
+        Some(win) => {
+            let _ = win.show();
+            let _ = win.set_focus();
+            win
+        },
+        None => {
+            tauri::WebviewWindowBuilder::new(&app, "log-tailer", tauri::WebviewUrl::App("log-tailer.html".into()))
+                .title("Log Tailer")
+                .inner_size(600.0, 800.0)
+                .decorations(true)
+                .build()
+                .map_err(|e| e.to_string())?
+        }
+    };
+
+    let window_clone = window.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Ok(mut file) = File::open(&log_path) {
+            let mut buffer = String::new();
+            file.read_to_string(&mut buffer).unwrap();
+
+            let lines: Vec<&str> = buffer.lines().collect();
+            let last_lines = lines.iter().rev().take(500).rev();
+
+            for line in last_lines {
+                window_clone.emit("log-entry", *line).unwrap();
+            }
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher: RecommendedWatcher = notify::recommended_watcher(tx).unwrap();
+        watcher.watch(&log_path, RecursiveMode::NonRecursive).unwrap();
+
+        let mut file = File::open(&log_path).unwrap();
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::End(0)).unwrap();
+
+        for res in rx {
+            match res {
+                Ok(_) => {
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).unwrap() > 0 {
+                        window_clone.emit("log-entry", line.clone()).unwrap();
+                        line.clear();
+                    }
+                }
+                Err(e) => error!("watch error: {:?}", e),
+            }
+        }
+    });
+
+    Ok(())
 }
 
 // ============================================================================

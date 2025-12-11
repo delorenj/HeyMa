@@ -24,6 +24,17 @@
         "decorations": true,
         "skipTaskbar": true,
         "alwaysOnTop": false
+      },
+      {
+        "label": "log-tailer",
+        "url": "log-tailer.html",
+        "title": "Log Tailer",
+        "width": 600,
+        "height": 800,
+        "visible": false,
+        "decorations": true,
+        "skipTaskbar": true,
+        "alwaysOnTop": false
       }
     ],
     "security": {

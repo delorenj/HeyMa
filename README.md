@@ -1,271 +1,437 @@
-<h1 align="center">WhisperLiveKit</h1>
+# 🎤 TalkyTonny: The Voice That Computers Can Hear Good 🎤
 
-<p align="center">
-<img src="https://raw.githubusercontent.com/QuentinFuxa/WhisperLiveKit/refs/heads/main/demo.png" alt="WhisperLiveKit Demo" width="730">
-</p>
+```
+█░█░█ █▀▀ █░░ █▀▀ █▀█ █▀▄▀█ █▀▀   ▀█▀ █▀█   ▀█▀ █▀█ █▄░█ █▄░█ █▄█
+█▄▀▄█ ██▄ █▄▄ █▄▄ █▄█ █░▀░█ ██▄   ░█░ █▄█   ░█░ █▄█ █░▀█ █░▀█ ░█░
 
-<p align="center"><b>Real-time, Fully Local Speech-to-Text with Speaker Identification</b></p>
+[̲̅$̲̅(̲̅ ͡° ͜ʖ ͡°̲̅)̲̅$̲̅] The Future of Talking at Your Computer [̲̅$̲̅(̲̅ ͡° ͜ʖ ͡°̲̅)̲̅$̲̅]
+```
 
-<p align="center">
-<a href="https://pypi.org/project/whisperlivekit/"><img alt="PyPI Version" src="https://img.shields.io/pypi/v/whisperlivekit?color=g"></a>
-<a href="https://pepy.tech/project/whisperlivekit"><img alt="PyPI Downloads" src="https://static.pepy.tech/personalized-badge/whisperlivekit?period=total&units=international_system&left_color=grey&right_color=brightgreen&left_text=installations"></a>
-<a href="https://pypi.org/project/whisperlivekit/"><img alt="Python Versions" src="https://img.shields.io/badge/python-3.9--3.15-dark_green"></a>
-<a href="https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT/Dual Licensed-dark_green"></a>
-</p>
+> *"For your health! Now you can talk at the computer and it writes down what you said it's pretty neat."*
+> — Dr. Steve Brule, PhD in Computer Talking Science
 
+---
 
-Real-time speech transcription directly to your browser, with a ready-to-use backend+server and a simple frontend. ✨
+## ⚠️ IMPORTANT LEGAL DISCLAIMER ⚠️
 
-#### Powered by Leading Research:
+*[Camera pans to man in ill-fitting lab coat, holding clipboard upside down]*
 
-- [SimulStreaming](https://github.com/ufal/SimulStreaming) (SOTA 2025) - Ultra-low latency transcription with AlignAtt policy
-- [WhisperStreaming](https://github.com/ufal/whisper_streaming) (SOTA 2023) - Low latency transcription with LocalAgreement policy
-- [Streaming Sortformer](https://arxiv.org/abs/2507.18446) (SOTA 2025) - Advanced real-time speaker diarization
-- [Diart](https://github.com/juanmc2005/diart) (SOTA 2021) - Real-time speaker diarization
-- [Silero VAD](https://github.com/snakers4/silero-vad) (2024) - Enterprise-grade Voice Activity Detection
+"Yes hello I am doctor and I have to tell you that this software is for **TALKING AT COMPUTERS**. Not for talking to doctors. I'm not that kind of doctor. Wait— *[looks directly at wrong camera]* —sorry, are we— *[looks at other camera]* —which one is the— okay. The software. Right."
 
+*[VHS tracking lines intensify]*
 
-> **Why not just run a simple Whisper model on every audio batch?** Whisper is designed for complete utterances, not real-time chunks. Processing small segments loses context, cuts off words mid-syllable, and produces poor transcription. WhisperLiveKit uses state-of-the-art simultaneous speech research for intelligent buffering and incremental processing.
+---
 
+## 🤔 What Even IS This Dingus?
 
-### Architecture
+**TalkyTonny** is a revolutionary voice-to-computer-words system that lets you:
 
-<img alt="Architecture" src="https://raw.githubusercontent.com/QuentinFuxa/WhisperLiveKit/refs/heads/main/architecture.png" />
+1. **Talk out loud** (like with your mouth)
+2. **Computer listens** (spooky!)
+3. **Words appear** (where they shouldn't!)
+4. **Robot talks back** (oh god why)
 
-*The backend supports multiple concurrent users. Voice Activity Detection reduces overhead when no voice is detected.*
+It's like if your computer had ears but it's not creepy because it's just **technology science**.
 
-### Installation & Quick Start
+### The Three Parts What Make It Work For Ya
+
+```
+┌─────────────────────────────────────┐
+│  Part 1: WhisperLiveKit            │  ← This one does the hearing
+│  (The Ear Dingus)                  │
+└─────────────────────────────────────┘
+            ↓ [sounds go here]
+┌─────────────────────────────────────┐
+│  Part 2: TonnyTray                 │  ← Lives in your computer tray
+│  (The Tray Dingus)                 │     (not the lunch tray)
+└─────────────────────────────────────┘
+            ↓ [words go here]
+┌─────────────────────────────────────┐
+│  Part 3: Chrome Extension          │  ← For your browsers and such
+│  (The Browser Dingus)              │
+└─────────────────────────────────────┘
+```
+
+*[Man appears in frame eating sandwich]*
+
+"Oh sorry I thought we were on break. What? We're still rolling? Ah jeez."
+
+*[Sandwich visible for next 3 sections]*
+
+---
+
+## 📦 Installation (The Hard Part Where You Make It Go)
+
+### Step One: Get The Computer Ready
+
+You're gonna need some stuff. Here's the stuff:
+
+- **A computer** (required)
+- **Python 3.10** (not the snake)
+- **Rust** (not the metal disease)
+- **Node.js** (not a medical node)
+- **A microphone** (for talking at)
+
+*[Camera shakes violently]*
+
+"Hold on my pages are stuck together— *[rustling sounds]* —okay here we go."
+
+### Step Two: The Python Part For Your Health
 
 ```bash
-pip install whisperlivekit
+# First ya gotta get this "uv" thing
+# It's like pip but somebody made it better I guess
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Now you tell it to sync
+# What's it syncing? Don't worry about it
+uv sync
+
+# Start the ear dingus
+./scripts/start_server.sh
 ```
-> You can also clone the repo and `pip install -e .` for the latest version.
 
+**IMPORTANT NOTE**: If you try to use `pip install` the computer will get confused and cry. Use `uv` ya dingus!
 
->  **FFmpeg is required** and must be installed before using WhisperLiveKit
-> 
-> | OS | How to install |
-> |-----------|-------------|
->  | Ubuntu/Debian | `sudo apt install ffmpeg` |
-> | MacOS | `brew install ffmpeg` |
-> | Windows | Download .exe from https://ffmpeg.org/download.html and add to PATH |
+*[Cut to man staring at camera for uncomfortable amount of time]*
 
-#### Quick Start
-1. **Start the transcription server:**
-   ```bash
-   whisperlivekit-server --model base --language en
-   ```
+"Did I— did I do that right? *[looks off camera]* Was that the right order?"
 
-2. **Open your browser** and navigate to `http://localhost:8000`. Start speaking and watch your words appear in real-time!
-
-
-> - See [tokenizer.py](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/whisperlivekit/simul_whisper/whisper/tokenizer.py) for the list of all available languages.
-> - For HTTPS requirements, see the **Parameters** section for SSL configuration options.
-
- 
-
-#### Optional Dependencies
-
-| Optional | `pip install` |
-|-----------|-------------|
-| **Speaker diarization with Sortformer** | `git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]` |
-| **Apple Silicon optimized backend** | `mlx-whisper` |
-| *[Not recommanded]*  Speaker diarization with Diart | `diart` |
-| *[Not recommanded]*  Original Whisper backend | `whisper` |
-| *[Not recommanded]*  Improved timestamps backend | `whisper-timestamped` |
-| OpenAI API backend | `openai` |
-
-See  **Parameters & Configuration** below on how to use them.
-
-
-
-### Usage Examples
-
-**Command-line Interface**: Start the transcription server with various options:
+### Step Three: The Tray Thing (Not Lunch Tray)
 
 ```bash
-# Use better model than default (small)
-whisperlivekit-server --model large-v3
+# Go to the TonnyTray folder
+cd TonnyTray
 
-# Advanced configuration with diarization and language
-whisperlivekit-server --host 0.0.0.0 --port 8000 --model medium --diarization --language fr
+# Install the node things
+npm install
+
+# Make it go in developer mode
+npm run tauri:dev
 ```
 
+*[Another VHS tracking glitch]*
 
-**Python API Integration**: Check [basic_server](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/whisperlivekit/basic_server.py) for a more complete example of how to use the functions and classes.
+**PRO TIP FROM DR. BRULE**: If it don't work, try turnin' it off and on again. That's real doctor science.
 
-```python
-from whisperlivekit import TranscriptionEngine, AudioProcessor, parse_args
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-from contextlib import asynccontextmanager
-import asyncio
+### Step Four: The Browser Extension Hunk
 
-transcription_engine = None
+1. Open up your Chrome browser (or Brave or whatever you got)
+2. Type in `chrome://extensions/` but not in a Google search you gotta type it in the top part
+3. Turn on "Developer mode" (makes you a developer!)
+4. Click "Load unpacked" (sounds illegal but it's not)
+5. Find the `chrome-extension` folder from this here repository
+6. Click it
+7. *[long pause]*
+8. That's it probably
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global transcription_engine
-    transcription_engine = TranscriptionEngine(model="medium", diarization=True, lan="en")
-    yield
+---
 
-app = FastAPI(lifespan=lifespan)
+## 🎯 How To Use It (The Fun Part)
 
-async def handle_websocket_results(websocket: WebSocket, results_generator):
-    async for response in results_generator:
-        await websocket.send_json(response)
-    await websocket.send_json({"type": "ready_to_stop"})
+### Method 1: The Auto-Type Dingus
 
-@app.websocket("/asr")
-async def websocket_endpoint(websocket: WebSocket):
-    global transcription_engine
+This one types what you say into whatever window you got open. Very dangerous if you're typing passwords!
 
-    # Create a new AudioProcessor for each connection, passing the shared engine
-    audio_processor = AudioProcessor(transcription_engine=transcription_engine)    
-    results_generator = await audio_processor.create_tasks()
-    results_task = asyncio.create_task(handle_websocket_results(websocket, results_generator))
-    await websocket.accept()
-    while True:
-        message = await websocket.receive_bytes()
-        await audio_processor.process_audio(message)        
-```
-
-**Frontend Implementation**: The package includes an HTML/JavaScript implementation [here](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/whisperlivekit/web/live_transcription.html). You can also import it using `from whisperlivekit import get_inline_ui_html` & `page = get_inline_ui_html()`
-
-
-## Parameters & Configuration
-
-An important list of parameters can be changed. But what *should* you change?
-- the `--model` size. List and recommandations [here](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/available_models.md)
-- the `--language`.  List [here](https://github.com/QuentinFuxa/WhisperLiveKit/blob/main/whisperlivekit/simul_whisper/whisper/tokenizer.py). If you use `auto`, the model attempts to detect the language automatically, but it tends to bias towards English.
-- the `--backend` ? you can switch to `--backend faster-whisper` if  `simulstreaming` does not work correctly or if you prefer to avoid the dual-license requirements.
-- `--warmup-file`, if you have one
-- `--task translate`, to translate in english
-- `--host`, `--port`, `--ssl-certfile`, `--ssl-keyfile`, if you set up a server
-- `--diarization`, if you want to use it.
-
-The rest I don't recommend. But below are your options.
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--model` | Whisper model size. | `small` |
-| `--language` | Source language code or `auto` | `auto` |
-| `--task` | Set to `translate` to translate to english | `transcribe` |
-| `--target-language` | [NOT FUNCTIONAL YET] | `None` |
-| `--backend` | Processing backend | `simulstreaming` |
-| `--min-chunk-size` | Minimum audio chunk size (seconds) | `1.0` |
-| `--no-vac` | Disable Voice Activity Controller | `False` |
-| `--no-vad` | Disable Voice Activity Detection | `False` |
-| `--warmup-file` | Audio file path for model warmup | `jfk.wav` |
-| `--host` | Server host address | `localhost` |
-| `--port` | Server port | `8000` |
-| `--ssl-certfile` | Path to the SSL certificate file (for HTTPS support) | `None` |
-| `--ssl-keyfile` | Path to the SSL private key file (for HTTPS support) | `None` |
-
-
-| SimulStreaming backend options | Description | Default |
-|-----------|-------------|---------|
-| `--disable-fast-encoder` | Disable Faster Whisper or MLX Whisper backends for the encoder (if installed). Inference can be slower but helpful when GPU memory is limited | `False` |
-| `--frame-threshold` | AlignAtt frame threshold (lower = faster, higher = more accurate) | `25` |
-| `--beams` | Number of beams for beam search (1 = greedy decoding) | `1` |
-| `--decoder` | Force decoder type (`beam` or `greedy`) | `auto` |
-| `--audio-max-len` | Maximum audio buffer length (seconds) | `30.0` |
-| `--audio-min-len` | Minimum audio length to process (seconds) | `0.0` |
-| `--cif-ckpt-path` | Path to CIF model for word boundary detection | `None` |
-| `--never-fire` | Never truncate incomplete words | `False` |
-| `--init-prompt` | Initial prompt for the model | `None` |
-| `--static-init-prompt` | Static prompt that doesn't scroll | `None` |
-| `--max-context-tokens` | Maximum context tokens | `None` |
-| `--model-path` | Direct path to .pt model file. Download it if not found | `./base.pt` |
-| `--preloaded-model-count` | Optional. Number of models to preload in memory to speed up loading (set up to the expected number of concurrent users) | `1` |
-
-
-| WhisperStreaming backend options | Description | Default |
-|-----------|-------------|---------|
-| `--confidence-validation` | Use confidence scores for faster validation | `False` |
-| `--buffer_trimming` | Buffer trimming strategy (`sentence` or `segment`) | `segment` |
-
-| Diarization options | Description | Default |
-|-----------|-------------|---------|
-| `--diarization` | Enable speaker identification | `False` |
-| `--diarization-backend` |  `diart` or `sortformer` | `sortformer` |
-| `--segmentation-model` | Hugging Face model ID for Diart segmentation model. [Available models](https://github.com/juanmc2005/diart/tree/main?tab=readme-ov-file#pre-trained-models) | `pyannote/segmentation-3.0` |
-| `--embedding-model` | Hugging Face model ID for Diart embedding model. [Available models](https://github.com/juanmc2005/diart/tree/main?tab=readme-ov-file#pre-trained-models) | `speechbrain/spkrec-ecapa-voxceleb` |
-
-
-> For diarization using Diart, you need access to pyannote.audio models:
-> 1. [Accept user conditions](https://huggingface.co/pyannote/segmentation) for the `pyannote/segmentation` model
-> 2. [Accept user conditions](https://huggingface.co/pyannote/segmentation-3.0) for the `pyannote/segmentation-3.0` model
-> 3. [Accept user conditions](https://huggingface.co/pyannote/embedding) for the `pyannote/embedding` model
->4. Login with HuggingFace: `huggingface-cli login`
-
-### 🚀 Deployment Guide
-
-To deploy WhisperLiveKit in production:
- 
-1. **Server Setup**: Install production ASGI server & launch with multiple workers
-   ```bash
-   pip install uvicorn gunicorn
-   gunicorn -k uvicorn.workers.UvicornWorker -w 4 your_app:app
-   ```
-
-2. **Frontend**: Host your customized version of the `html` example & ensure WebSocket connection points correctly
-
-3. **Nginx Configuration** (recommended for production):
-    ```nginx    
-   server {
-       listen 80;
-       server_name your-domain.com;
-        location / {
-            proxy_pass http://localhost:8000;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-    }}
-    ```
-
-4. **HTTPS Support**: For secure deployments, use "wss://" instead of "ws://" in WebSocket URL
-
-## 🐋 Docker
-
-Deploy the application easily using Docker with GPU or CPU support.
-
-### Prerequisites
-- Docker installed on your system
-- For GPU support: NVIDIA Docker runtime installed
-
-### Quick Start
-
-**With GPU acceleration (recommended):**
 ```bash
-docker build -t wlk .
-docker run --gpus all -p 8000:8000 --name wlk wlk
+# Just talk at your computer after running this
+./bin/auto-type
+
+# Or if you got the server on another computer somehow
+./bin/auto-type --remote whisper.delo.sh
 ```
 
-**CPU only:**
+*[Man walks into frame from wrong side]*
+
+"Oh! Is this where I come in? No? That's the next section? Ah shoot."
+
+*[Walks out, immediately walks back in]*
+
+"Was I supposed to bring the sandwich?"
+
+### Method 2: The N8N Webhook Talker
+
 ```bash
-docker build -f Dockerfile.cpu -t wlk .
-docker run -p 8000:8000 --name wlk wlk
+./bin/n8n-webhook --n8n-webhook https://your-n8n-server.com/webhook/whatever
+
+# The transcription goes to n8n and then it does stuff
+# What stuff? That's up to you buddy
 ```
 
-### Advanced Usage
+### Method 3: The Browser One
 
-**Custom configuration:**
+Just click the extension icon and start yappin'. The computer writes it down. Technology!
+
+---
+
+## 🏗️ Architecture (The Part Where We Pretend To Know How It Works)
+
+*[Cuts to extremely blurry diagram drawn in MS Paint]*
+
+```
+    YOU (talking)
+        |
+        v
+   [MICROPHONE] -------- "Please work"
+        |
+        v
+   WhisperLiveKit (Python dingus running on port 8888)
+        |                          |
+        v                          v
+   "I heard words"          WebSocket magic happens
+        |                          |
+        v                          v
+   JSON goes brrrr           More computers get involved
+        |                          |
+        |-----> TonnyTray (Rust + React + TypeScript + other acronyms)
+        |                          |
+        v                          v
+   n8n Webhook              "Should we respond?"
+        |                          |
+        v                          v
+   ElevenLabs API           Robot voice happens
+        |
+        v
+   [SPEAKERS] -------- "It's alive!"
+        |
+        v
+    YOU (scared now)
+```
+
+*[Camera slowly zooms in on confused face]*
+
+"I don't... I don't know if that's right but we've been filming for 3 hours and I'm tired."
+
+### The Technical Stack (For The Nerds)
+
+- **Backend**: FastAPI (it's fast, says so right in the name)
+- **Desktop**: Tauri (like Electron but somebody made it better)
+- **Frontend**: React (because of course it is)
+- **Transcription**: Whisper (it whispers the words to you)
+- **Database**: SQLite (a lite version of SQL)
+- **Audio**: cpal + rodio (these are words)
+- **State Management**: Zustand (German for "state" probably)
+
+*[Papers fall off desk]*
+
+"Don't worry about those."
+
+---
+
+## 🧪 Testing (Making Sure It Don't Break Too Bad)
+
 ```bash
-# Example with custom model and language
-docker run --gpus all -p 8000:8000 --name wlk wlk --model large-v3 --language fr
+# Test the frontend dingus
+cd TonnyTray
+npm run test
+
+# Test the Rust dingus
+cd TonnyTray/src-tauri
+cargo test
+
+# Test the end-to-end dingus
+npm run test:e2e
+
+# Test if the Python dingus is alive
+uv run python scripts/test_connection.py
 ```
 
-### Memory Requirements
-- **Large models**: Ensure your Docker runtime has sufficient memory allocated
+**DR. BRULE'S TESTING METHODOLOGY**:
 
+1. Run the thing
+2. If it crashes, that's bad
+3. If it don't crash, that's good
+4. Write that down
 
-#### Customization
+*[Cut to clipboard with "IT WORKED" written in crayon]*
 
-- `--build-arg` Options:
-  - `EXTRAS="whisper-timestamped"` - Add extras to the image's installation (no spaces). Remember to set necessary container options!
-  - `HF_PRECACHE_DIR="./.cache/"` - Pre-load a model cache for faster first-time start
-  - `HF_TKN_FILE="./token"` - Add your Hugging Face Hub access token to download gated models
+---
 
-## 🔮 Use Cases
-Capture discussions in real-time for meeting transcription, help hearing-impaired users follow conversations through accessibility tools, transcribe podcasts or videos automatically for content creation, transcribe support calls with speaker identification for customer service...
+## 🐛 Common Problems (When The Dingus Don't Dingus Right)
+
+### Problem: "Command not found: uv"
+
+**Solution**: You didn't install uv ya dingus! Scroll up to where I told ya to install it.
+
+### Problem: The server won't start
+
+**Solution**:
+```bash
+# Is it already running? Check like this:
+ps aux | grep whisper
+
+# If you see it running, kill it (the process not yourself):
+pkill -f whisperlivekit
+
+# Try again:
+./scripts/start_server.sh
+```
+
+*[Man leans too close to camera]*
+
+"Sometimes computers just don't wanna work and that's okay. They're tired too."
+
+### Problem: It types weird stuff
+
+**Solution**: Your microphone might be picking up the TV or your neighbor or ghosts. Try talking louder at the computer.
+
+### Problem: The robot voice sounds scary
+
+**Solution**: That's normal! ElevenLabs makes pretty good voices but they're still robot voices. You can change the voice in the settings.
+
+### Problem: Everything is broken
+
+**Solution**:
+```bash
+# The nuclear option (don't tell anyone I told you this)
+./scripts/stop_server.sh
+cd TonnyTray
+npm run tauri:dev
+./scripts/start_server.sh
+
+# Give the computer a little kiss for good luck
+# (Don't actually kiss your computer)
+```
+
+*[Long uncomfortable silence while man stares at hands]*
+
+---
+
+## 📚 Documentation (The Boring Books)
+
+For when you need to know **EVERYTHING**:
+
+- `CLAUDE.md` - For if you're using Claude Code (that's this thing you're probably using right now)
+- `QUICKSTART.md` - Quicker version of this but less funny
+- `TonnyTray/README.md` - All about the tray dingus
+- `TonnyTray/src-tauri/README.md` - The Rust parts explained by people smarter than me
+
+*[Camera pans to stack of papers]*
+
+"There's more documentation somewhere but I forget where I put it."
+
+---
+
+## 🤝 Contributing (If You Wanna Help Out)
+
+Think you can make TalkyTonny better? That's great! Here's how:
+
+1. Fork the repo (take a copy)
+2. Make your changes (make it better)
+3. Test it (make sure it works)
+4. Send a pull request (ask nice if we want it)
+
+**CONTRIBUTION RULES**:
+- Don't break stuff that already works
+- Write tests (or at least try)
+- Use `uv` not `pip` for Python stuff
+- If you use `pip` I will know and I will be sad
+
+*[Man appears eating different sandwich]*
+
+"This is a different sandwich by the way. The other one was turkey. This one's ham."
+
+*[Nobody asked]*
+
+---
+
+## 🔒 Security (Don't Let The Bad Guys In)
+
+- API keys go in the config file at `~/.config/tonnytray/config.json`
+- Don't commit your API keys to Git (duh)
+- The ElevenLabs key can go in the system keychain for extra safety
+- If someone gets your n8n webhook URL they can send you messages but that's probably fine
+
+*[Sudden concern crosses face]*
+
+"Wait should I be worried about that? *[looks off camera]* Should we be worried about that?"
+
+*[No response]*
+
+"Okay moving on."
+
+---
+
+## 🎬 Credits (The People What Made This)
+
+- **Original WhisperLiveKit**: Quentin Fuxa (thank you Quentin)
+- **TonnyTray Desktop App**: Some guy (you know who you are)
+- **This README**: Dr. Steve Brule (that's me!)
+- **Moral Support**: The sandwich
+- **Technical Advisor**: The other sandwich
+
+*[Camera slowly pans to empty chair]*
+
+"And to everyone who said this couldn't be done... you were probably right but we did it anyway."
+
+---
+
+## 📜 License
+
+MIT License (it means you can use it however you want pretty much)
+
+See the LICENSE file for all the boring legal words.
+
+*[VHS tracking lines completely destroy image]*
+
+*[Image returns]*
+
+"Oh good we're back. I thought we lost everything there."
+
+---
+
+## 🆘 Support (When You Need Help)
+
+Need help? Got questions? Found a bug?
+
+- **GitHub Issues**: Open an issue and describe what broke
+- **Logs**: Check `whisper.log` for the Python stuff
+- **More Logs**: Check your TonnyTray logs (wherever those are)
+
+*[Man flips through empty notebook]*
+
+"I had a support email written down here somewhere but I can't find it. Just use GitHub Issues."
+
+---
+
+## 🎉 Final Thoughts From Dr. Brule
+
+*[Camera shakily zooms in]*
+
+"So that's TalkyTonny. You talk at your computer, it writes down what you said, sends it to some other computers, they do some thinkin', and then a robot voice tells you stuff back. It's the future and it's here and it's pretty neat.
+
+Remember:
+- Use `uv` not `pip`
+- Don't eat sandwiches near the keyboard
+- Talk loud enough for the microphone to hear ya
+- If it breaks just restart it
+- For your health!
+
+*[Starts to walk away, turns back]*
+
+"Oh and one more thing— *[forgets what he was going to say]* —nevermind."
+
+*[Walks directly into camera]*
+
+*[Cut to color bars]*
+
+*[Static]*
+
+*[Someone in the background]: "Did we get it?"*
+
+*[Someone else]: "Yeah I think so."*
+
+*[More static]*
+
+---
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║  TalkyTonny © 2024 - Now you can talk at computers good!     ║
+║  Made with ❤️ and confusion                                   ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+---
+
+**P.S.** - If you made it this far, congratulations! You're either very dedicated or very confused. Possibly both. The actual technical documentation is in `CLAUDE.md` and that one is written by someone who knows what they're talking about. This README is just for fun. Or is it? *[vsauce music plays]* What even IS fun? *[music stops abruptly]* Anyway thanks for reading bye!

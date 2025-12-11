@@ -14,6 +14,7 @@ pub fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let start_server = MenuItem::with_id(app, "start_server", "Start Server", true, None::<&str>)?;
     let stop_server = MenuItem::with_id(app, "stop_server", "Stop Server", true, None::<&str>)?;
     let restart_server = MenuItem::with_id(app, "restart_server", "Restart Server", true, None::<&str>)?;
+    let tail_logs = MenuItem::with_id(app, "tail_logs", "Tail Logs", true, None::<&str>)?;
     
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
@@ -27,6 +28,8 @@ pub fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     menu.append(&start_server)?;
     menu.append(&stop_server)?;
     menu.append(&restart_server)?;
+    menu.append(&tauri::menu::PredefinedMenuItem::separator(app)?)?;
+    menu.append(&tail_logs)?;
     menu.append(&tauri::menu::PredefinedMenuItem::separator(app)?)?;
     menu.append(&quit)?;
     Ok(menu)
@@ -84,6 +87,12 @@ pub fn handle_tray_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 let context = app_clone.state::<crate::AppContext>();
                 let pm = context.process_manager.lock().await;
                 let _ = pm.restart_whisper_server(&context.state).await;
+            });
+        }
+        "tail_logs" => {
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = app_clone.get_webview_window("main").unwrap().eval("window.tauri.invoke('tail_logs')");
             });
         }
         "quit" => {

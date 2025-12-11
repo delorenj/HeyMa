@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Log Tailer</title>
+  <style>
+    body {
+      background-color: #1e1e1e;
+      color: #d4d4d4;
+      font-family: monospace;
+      padding: 10px;
+    }
+    #logs {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+  </style>
+</head>
+<body>
+  <div id="logs"></div>
+  <script>
+    const { listen } = window.__TAURI__.event;
+    const logsContainer = document.getElementById('logs');
+
+    listen('log-entry', (event) => {
+      const logEntry = document.createElement('div');
+      logEntry.textContent = event.payload;
+      logsContainer.appendChild(logEntry);
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+  </script>
+</body>
+</html>
