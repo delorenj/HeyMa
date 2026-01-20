@@ -25,7 +25,7 @@ from TonnyTray.backend.integrations.rabbitmq_consumer import RabbitMQConsumer, C
 from TonnyTray.backend.integrations.rabbitmq_client import RabbitMQClient, RabbitMQConfig
 
 try:
-    from letta import Letta, Agent
+    from letta_client import Letta
     LETTA_AVAILABLE = True
 except ImportError:
     LETTA_AVAILABLE = False
@@ -79,7 +79,7 @@ class LettaQueueBridge:
         self.letta_client = Letta(base_url=letta_base_url)
 
         # Get or create agent
-        self.agent: Optional[Agent] = None
+        self.agent = None
         self._initialize_agent()
 
         # Initialize RabbitMQ consumer
@@ -115,12 +115,12 @@ class LettaQueueBridge:
         """Initialize or get Letta agent"""
         try:
             if self.letta_agent_id:
-                # Get specific agent
-                self.agent = self.letta_client.get_agent(self.letta_agent_id)
+                # Get specific agent by ID
+                self.agent = self.letta_client.agents.get(agent_id=self.letta_agent_id)
                 logger.info(f"Using Letta agent: {self.agent.name} ({self.agent.id})")
             else:
-                # Get first available agent
-                agents = self.letta_client.list_agents()
+                # List agents and use first available
+                agents = list(self.letta_client.agents.list(limit=1))
                 if not agents:
                     raise RuntimeError("No Letta agents available. Create one first.")
                 self.agent = agents[0]
@@ -186,12 +186,11 @@ class LettaQueueBridge:
             Agent response text
         """
         try:
-            # Send message to agent
+            # Send message to agent using correct SDK API
             response = await asyncio.to_thread(
-                self.letta_client.send_message,
+                self.letta_client.agents.messages.create,
                 agent_id=self.agent.id,
-                message=text,
-                role="user"
+                messages=[{"role": "user", "content": text}]
             )
 
             # Extract response text from messages
@@ -199,10 +198,11 @@ class LettaQueueBridge:
                 # Get last assistant message
                 for msg in reversed(response.messages):
                     if hasattr(msg, 'role') and msg.role == "assistant":
-                        if hasattr(msg, 'text'):
-                            return msg.text
-                        elif hasattr(msg, 'content'):
+                        # Try different possible content attributes
+                        if hasattr(msg, 'content'):
                             return msg.content
+                        elif hasattr(msg, 'text'):
+                            return msg.text
 
             logger.warning("No assistant message found in Letta response")
             return None
