@@ -58,7 +58,7 @@ pytest tests/integration -m "not rabbitmq"
 ### 1. Install Dependencies
 
 ```bash
-cd ~/code/33GOD/TalkyTonny/trunk-main
+cd ~/code/33GOD/HeyMa/trunk-main
 
 # Install Python dependencies
 pip install -r requirements-test.txt

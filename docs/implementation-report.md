@@ -420,7 +420,7 @@ Implemented durability layer for zero data loss:
 
 3. **Deploy WhisperLiveKit**:
    ```bash
-   cd ~/code/33GOD/TalkyTonny/trunk-main
+   cd ~/code/33GOD/HeyMa/trunk-main
    git pull
    # Restart server
    ./scripts/stop_server.sh

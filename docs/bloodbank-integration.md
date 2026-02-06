@@ -142,7 +142,7 @@ async def replay_wal() -> int:
 
 ```bash
 # Start WhisperLiveKit with default settings
-cd ~/code/33GOD/TalkyTonny/trunk-main
+cd ~/code/33GOD/HeyMa/trunk-main
 ./scripts/start_server.sh
 
 # Server will log:

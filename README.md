@@ -1,4 +1,4 @@
-# 🎤 TalkyTonny: The Voice That Computers Can Hear Good 🎤
+# 🎤 HeyMa: The Voice That Computers Can Hear Good 🎤
 
 ```
 █░█░█ █▀▀ █░░ █▀▀ █▀█ █▀▄▀█ █▀▀   ▀█▀ █▀█   ▀█▀ █▀█ █▄░█ █▄░█ █▄█
@@ -24,7 +24,7 @@
 
 ## 🤔 What Even IS This Dingus?
 
-**TalkyTonny** is a revolutionary voice-to-computer-words system that lets you:
+**HeyMa** is a revolutionary voice-to-computer-words system that lets you:
 
 1. **Talk out loud** (like with your mouth)
 2. **Computer listens** (spooky!)
@@ -314,7 +314,7 @@ For when you need to know **EVERYTHING**:
 
 ## 🤝 Contributing (If You Wanna Help Out)
 
-Think you can make TalkyTonny better? That's great! Here's how:
+Think you can make HeyMa better? That's great! Here's how:
 
 1. Fork the repo (take a copy)
 2. Make your changes (make it better)
@@ -398,7 +398,7 @@ Need help? Got questions? Found a bug?
 
 *[Camera shakily zooms in]*
 
-"So that's TalkyTonny. You talk at your computer, it writes down what you said, sends it to some other computers, they do some thinkin', and then a robot voice tells you stuff back. It's the future and it's here and it's pretty neat.
+"So that's HeyMa. You talk at your computer, it writes down what you said, sends it to some other computers, they do some thinkin', and then a robot voice tells you stuff back. It's the future and it's here and it's pretty neat.
 
 Remember:
 - Use `uv` not `pip`
@@ -427,7 +427,7 @@ Remember:
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
-║  TalkyTonny © 2024 - Now you can talk at computers good!     ║
+║  HeyMa © 2024 - Now you can talk at computers good!     ║
 ║  Made with ❤️ and confusion                                   ║
 ╚═══════════════════════════════════════════════════════════════╝
 ```

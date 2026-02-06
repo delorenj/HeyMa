@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**TalkyTonny** is a voice-controlled AI assistant system with three main components:
+**HeyMa** is a voice-controlled AI assistant system with three main components:
 
 1. **WhisperLiveKit** - Real-time speech-to-text transcription server (Python/FastAPI/WebSocket)
 2. **TonnyTray** - System tray desktop application (Tauri/Rust + React/TypeScript)
@@ -20,7 +20,7 @@ The system allows users to speak commands that are transcribed via Whisper, proc
 ### Multi-Component Structure
 
 ```
-TalkyTonny/
+HeyMa/
 ├── whisperlivekit/        # Python transcription server
 ├── TonnyTray/             # Desktop app (Tauri + React)
 │   ├── src/               # React frontend (TypeScript)
