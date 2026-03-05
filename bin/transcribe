@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Batch transcribe an audio file to markdown
+# Usage: transcribe /path/to/file.mp3 [options]
+#
+# If run on a machine that isn't the transcription host, the file is pushed
+# to the host via scp, transcribed remotely, and the markdown is pulled back.
+# Progress is shown via tail -f on a remote log file.
+set -euo pipefail
+
+TRANSCRIBE_HOST="${TRANSCRIBE_HOST:-192.168.1.12}"
+TRANSCRIBE_USER="${TRANSCRIBE_USER:-delorenj}"
+TRANSCRIBE_DIR="/home/delorenj/code/33GOD/HeyMa"
+REMOTE="${TRANSCRIBE_USER}@${TRANSCRIBE_HOST}"
+MISE_INIT='source ~/.profile 2>/dev/null; eval "$(mise activate bash)" 2>/dev/null'
+
+AUDIO="${1:?Usage: transcribe <audio-file> [options]}"
+shift
+EXTRA_ARGS=("$@")
+
+AUDIO="$(realpath "$AUDIO")"
+
+TRANSCRIBE_HOSTNAME="${TRANSCRIBE_HOSTNAME:-big-chungus}"
+
+is_local() {
+    [[ "$(hostname)" == "${TRANSCRIBE_HOSTNAME}" ]]
+}
+
+if is_local; then
+    cd "$TRANSCRIBE_DIR"
+    exec uv run python scripts/transcribe.py "$AUDIO" "${EXTRA_ARGS[@]}"
+fi
+
+# --- Remote execution ---
+REMOTE_STAGING="/tmp/transcribe-staging"
+FILENAME="$(basename "$AUDIO")"
+REMOTE_FILE="${REMOTE_STAGING}/${FILENAME}"
+REMOTE_LOG="${REMOTE_STAGING}/${FILENAME}.log"
+TAIL_PID=""
+
+cleanup() {
+    # Kill the tail process if it's still running
+    [[ -n "$TAIL_PID" ]] && kill "$TAIL_PID" 2>/dev/null || true
+    wait "$TAIL_PID" 2>/dev/null || true
+    # Clean up remote staging
+    ssh -q "$REMOTE" "rm -f '${REMOTE_FILE}' '${REMOTE_LOG}'" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# 1. Push file
+echo "[remote] Pushing ${FILENAME} to ${TRANSCRIBE_HOST}..." >&2
+ssh -q "$REMOTE" "mkdir -p ${REMOTE_STAGING}"
+scp -q "$AUDIO" "${REMOTE}:${REMOTE_FILE}"
+echo "[remote] Upload complete. Starting transcription..." >&2
+
+# 2. Create empty log file, then start tailing it in the background
+ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
+ssh -q "$REMOTE" "tail -f '${REMOTE_LOG}'" &
+TAIL_PID=$!
+
+# 3. Run transcription (blocks until done)
+ssh -q "$REMOTE" "${MISE_INIT}; cd ${TRANSCRIBE_DIR} && PYTHONUNBUFFERED=1 uv run python scripts/transcribe.py '${REMOTE_FILE}' --progress-file '${REMOTE_LOG}' ${EXTRA_ARGS[*]:-}"
+TRANSCRIBE_EXIT=$?
+
+# 4. Give tail a moment to catch up, then kill it
+sleep 1
+kill "$TAIL_PID" 2>/dev/null || true
+wait "$TAIL_PID" 2>/dev/null || true
+TAIL_PID=""
+
+if [[ $TRANSCRIBE_EXIT -ne 0 ]]; then
+    echo "[error] Transcription failed (exit $TRANSCRIBE_EXIT)" >&2
+    exit 1
+fi
+
+# 5. Parse the "Written:" line from the remote log
+REMOTE_MD=$(ssh -q "$REMOTE" "grep '^Written:' '${REMOTE_LOG}'" | sed 's/Written: //')
+
+if [[ -n "$REMOTE_MD" ]]; then
+    LOCAL_DIR="${HOME}/d/Transcripts"
+    mkdir -p "$LOCAL_DIR"
+    LOCAL_MD="${LOCAL_DIR}/$(basename "$REMOTE_MD")"
+
+    scp -q "${REMOTE}:${REMOTE_MD}" "$LOCAL_MD"
+    echo "[local] Downloaded: ${LOCAL_MD}" >&2
+else
+    echo "[error] No output file produced" >&2
+    exit 1
+fi

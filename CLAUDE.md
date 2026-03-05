@@ -1,421 +1,210 @@
 # CLAUDE.md
 
-> IMPORTANT!: n8n has been deprecated and replaced by NODE-Red (https://nodered.delo.sh)
-> PLEASE make necessary updated to avoid confusion
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-**HeyMa** is a voice-controlled AI assistant system with three main components:
+**HeyMa** is a voice-controlled AI assistant in the 33GOD ecosystem (Domain: Dashboards & Voice). Users speak commands that are transcribed via Whisper, published to Bloodbank (RabbitMQ event bus), processed through NODE-Red workflows and the Tonny Agent (Letta), then responded to via ElevenLabs TTS.
 
-1. **WhisperLiveKit** - Real-time speech-to-text transcription server (Python/FastAPI/WebSocket)
-2. **TonnyTray** - System tray desktop application (Tauri/Rust + React/TypeScript)
-3. **Chrome Extension** - Browser-based transcription client
-
-The system allows users to speak commands that are transcribed via Whisper, processed through n8n workflows, and responded to via ElevenLabs TTS.
+> **n8n has been deprecated and replaced by NODE-Red** (https://nodered.delo.sh). All webhook references should use NODE-Red URLs.
 
 ## Architecture
 
-### Multi-Component Structure
-
 ```
-HeyMa/
-├── whisperlivekit/        # Python transcription server
-├── TonnyTray/             # Desktop app (Tauri + React)
-│   ├── src/               # React frontend (TypeScript)
-│   └── src-tauri/         # Rust backend
-├── chrome-extension/      # Browser extension
-├── scripts/               # Python client scripts
-└── bin/                   # Convenience wrappers
-```
-
-### Component Communication Flow
-
-```
-User Speech → WhisperLiveKit (WebSocket) → TonnyTray/Clients
-                                          ↓
-                                    n8n Webhook
-                                          ↓
-                                    ElevenLabs TTS → Audio Output
+User Speech --> Chrome Extension / TonnyTray / CLI
+                        |
+                   WebSocket (audio)
+                        |
+                WhisperLiveKit Server (Python/FastAPI, port 8888)
+                        |
+         +--------------+--------------+
+         |              |              |
+    Bloodbank      NODE-Red       SQLite WAL
+    (RabbitMQ)     Webhook      (raw_voice_ingest.jsonl)
+         |              |
+    Tonny Agent    Workflow
+    (Letta)        Processing
+         |              |
+         +--------------+
+                |
+          ElevenLabs TTS --> Audio Output
 ```
 
-## Common Development Commands
+### Components
+
+- **WhisperLiveKit** (`whisperlivekit/`) - Python transcription server. Entry point: `whisperlivekit/basic_server.py`. Publishes events to Bloodbank via `BloodbankPublisher` with WAL durability.
+- **TonnyTray** (`TonnyTray/`) - Tauri 2.x desktop app. React/TypeScript frontend + Rust backend. System tray with global hotkey.
+- **Chrome Extension** (`chrome-extension/`) - Manifest V3 browser extension for tab audio capture.
+- **Integration Backend** (`TonnyTray/backend/`) - Python orchestrator for ElevenLabs TTS, Letta agent, and RabbitMQ consumers.
+- **CLI Scripts** (`scripts/`, `bin/`) - Convenience wrappers for server management and client utilities.
+
+### Event Contracts (Bloodbank)
+
+Events follow the 33GOD pattern: `{domain}.{entity}.{action}`
+
+| Emitted Event | Trigger |
+|---|---|
+| `transcription.voice.completed` | Whisper produces final transcription |
+| `thread.tonny.prompt` | Transcription sent to Tonny Agent |
+| `thread.tonny.response` | Tonny Agent generates response |
+| `thread.tonny.speech_start` / `speech_end` | Voice activity detected/ended |
+
+| Consumed Event | Purpose |
+|---|---|
+| `tonny.response.generated` | Receive AI response for TTS |
+
+See `GOD.md` for full event payload schemas and the component's architectural position.
+
+## Development Commands
 
 ### WhisperLiveKit Server (Python)
 
 ```bash
-# Install dependencies (using uv package manager)
-uv sync
+uv sync                                    # Install dependencies
+./scripts/start_server.sh                  # Start server
+./scripts/stop_server.sh                   # Stop server
+uv run whisperlivekit-server --port 8888   # Manual start with options
 
-# Start server locally
-./scripts/start_server.sh
-# Or manually:
-uv run whisperlivekit-server --port 8888
+# Client utilities
+./bin/auto-type                            # Type transcriptions into active window
+./bin/auto-type --remote whisper.delo.sh   # Connect to remote server
+./bin/auto-type --list-devices             # List audio devices
+./bin/n8n-webhook --n8n-webhook https://nodered.delo.sh/webhook/transcription
 
-# Stop server
-./scripts/stop_server.sh
-
-# Run auto-type client (types transcriptions into active window)
-./bin/auto-type
-# Or: uv run python scripts/auto_type_client.py
-
-# Run n8n webhook client
-./bin/n8n-webhook --n8n-webhook https://n8n.delo.sh/webhook/transcription
-# Or: uv run python scripts/n8n_webhook_client.py
-
-# Test connection
+# Testing/debugging
 uv run python scripts/test_connection.py
-
-# Debug client (verbose logging)
 uv run python scripts/debug_client.py
-
-# Voice to n8n workflow
-uv run python scripts/voice_to_n8n.py
-
-# Check audio device sample rates
 uv run python scripts/check_device_rates.py
-
-# Complete setup script
-./scripts/whisperlivekit_complete_setup.sh
-
-# Add Python dependencies
-uv add package-name
 ```
-
-**Important**: This project uses `uv` as the Python package manager, not pip or poetry. Always use `uv run` or `uv add` for Python operations.
 
 ### TonnyTray Desktop App (Tauri)
 
 ```bash
 cd TonnyTray
+npm install                    # Install Node dependencies
 
-# Install Node dependencies
-npm install
+# Development
+npm run tauri:dev              # Full Tauri dev mode (hot reload for frontend)
+npm run dev                    # Frontend only
 
-# Development mode (hot reload)
-npm run tauri:dev
-# Or frontend only: npm run dev
+# Build
+npm run tauri:build            # Production build
 
-# Build production app
-npm run tauri:build
-
-# Frontend type checking
-npm run type-check
-
-# Linting
-npm run lint
+# Quality
+npm run lint                   # ESLint
+npm run type-check             # TypeScript type checking
 
 # Tests
-npm run test              # Vitest unit tests
-npm run test:ui          # Vitest UI
-npm run test:run         # Run tests once (CI mode)
-npm run test:coverage    # Coverage report
-npm run test:integration # Integration tests
-npm run test:e2e         # Playwright E2E tests
-npm run test:e2e:ui      # Playwright UI mode
-npm run test:e2e:headed  # Playwright with browser visible
-npm run test:rust        # Rust unit tests
-npm run test:rust:coverage # Rust coverage report
-npm run test:all         # All tests (Rust + TS + E2E)
+npm run test                   # Vitest watch mode
+npm run test:run               # Vitest single run (CI)
+npm run test:coverage          # Coverage report
+npm run test:integration       # Integration tests
+npm run test:e2e               # Playwright E2E
+npm run test:e2e:headed        # E2E with visible browser
+npm run test:all               # Rust + TypeScript + E2E
 
-# Benchmarks and Security
-npm run bench            # Rust benchmarks
-npm run security-audit   # npm + cargo security audit
+# Single test
+npm run test -- src/components/Common/ConfirmDialog.test.tsx
+npm run test:e2e -- e2e/workflows.spec.ts
 
-# Rust development
+# Rust backend
 cd src-tauri
-cargo build              # Debug build
-cargo build --release    # Release build
-cargo test               # Run tests
-cargo clippy             # Linting
-cargo fmt                # Format code
+cargo test                     # Run tests
+cargo test test_process_manager  # Single test by name
+cargo clippy                   # Lint
+cargo fmt                      # Format
+cargo bench                    # Benchmarks
 ```
 
-### Chrome Extension
+### Integration Backend
 
 ```bash
-cd chrome-extension
-
-# Load in Chrome:
-# 1. Navigate to chrome://extensions/
-# 2. Enable "Developer mode"
-# 3. Click "Load unpacked"
-# 4. Select the chrome-extension/ directory
+cd TonnyTray/backend
+python main.py start           # Start integration orchestrator
+python main.py test            # Test all integrations
+python main.py health          # Check service health
+python main.py tts "Hello" --voice "Antoni"  # Test TTS
+python main.py publish "thread.tonny.test" '{"message": "test"}'  # Publish test event
 ```
 
-### Docker Deployment
+### Docker
 
 ```bash
-# Build and run with Docker Compose
-docker-compose up -d
-
-# Server available at http://localhost:8000
-# Configured for Traefik reverse proxy at whisper.delo.sh
+docker-compose up -d           # WhisperLiveKit with GPU, exposed at whisper.delo.sh via Traefik
 ```
 
 ## Key Architecture Patterns
 
-### TonnyTray: Tauri IPC Communication
+### TonnyTray IPC (Frontend <-> Rust)
 
-The React frontend communicates with the Rust backend via Tauri's IPC system:
+React frontend communicates with Rust backend via Tauri IPC:
 
-**Service Layer** (`TonnyTray/src/services/tauri.ts`):
+1. **Service Layer** (`TonnyTray/src/services/tauri.ts`) - Type-safe `invoke` wrappers
+2. **State Management** (`TonnyTray/src/hooks/useTauriState.ts`) - Zustand store, subscribes to Tauri events
+3. **Rust Handlers** (`TonnyTray/src-tauri/src/lib.rs`) - Registers all IPC command handlers
 
-- Wraps all Tauri `invoke` commands
-- Type-safe wrappers for commands
-- Centralized error handling
-- Example: `startRecording()`, `stopRecording()`, `updateSettings()`
-
-**State Management** (`TonnyTray/src/hooks/useTauriState.ts`):
-
-- Uses Zustand for global state
-- Subscribes to Tauri events (`onTranscription`, `onStatusUpdate`)
-- Custom hooks for domain-specific operations
-
-**Rust Backend** (`TonnyTray/src-tauri/src/lib.rs`):
-
-- Main entry point registers all IPC command handlers
-- Modules: `state`, `process_manager`, `audio`, `websocket`, `elevenlabs`, `config`, `tray`, `database`, `keychain`, `events`
-- Thread-safe state via `Arc<Mutex<T>>`
-- Event system (`events.rs`) for frontend notifications
-
-### TonnyTray: Process Management
-
-The Rust backend (`process_manager.rs`) manages WhisperLiveKit server lifecycle:
-
-- Spawns Python subprocess for WhisperLiveKit
-- Monitors process health
-- Auto-restart on crash (configurable)
-- Graceful shutdown via SIGTERM
-
-### WhisperLiveKit: WebSocket Protocol
-
-Clients connect via WebSocket to receive real-time transcriptions:
-
-- Connect to `ws://localhost:8888/asr`
-- Send binary audio chunks (16kHz, 16-bit PCM)
-- Receive JSON transcription events
-- See `whisperlivekit/basic_server.py` for protocol details
-
-### State Synchronization
-
-TonnyTray maintains a SQLite database (`database.rs`) for:
-
-- Transcription history
-- User profiles with permissions
-- Settings persistence
-- Statistics tracking
-
-Configuration stored in `~/.config/tonnytray/config.json`
-
-### Security: Keychain Integration
-
-API keys (ElevenLabs, n8n) can be stored securely via system keychain (`keychain.rs`):
-
-- Linux: Secret Service API
-- macOS: Keychain Access (planned)
-- Windows: Windows Credential Manager (planned)
-
-### Log Tailer Utility
-
-TonnyTray includes a standalone log tailer (`TonnyTray/src/log-tailer.html`) for real-time log viewing:
-
-- Separate Vite build entry point
-- WebSocket-based real-time updates
-- Useful for debugging server issues
-
-## Testing Strategy
-
-### TonnyTray Frontend Tests
-
-- **Unit Tests**: Vitest with happy-dom environment
-- **Component Tests**: React Testing Library
-- **E2E Tests**: Playwright
-- Test files: `src/**/*.{test,spec}.{ts,tsx}`
-- E2E specs: `e2e/**/*.spec.ts`
-
-### TonnyTray Backend Tests
-
-- **Unit Tests**: Cargo test framework
-- **Integration Tests**: Tempfile for config/database
-- **Benchmarks**: Criterion (`cargo bench`)
-- Run with: `cargo test` in `src-tauri/`
-
-### Running Single Tests
-
-```bash
-# Frontend unit test
-npm run test -- src/components/Common/ConfirmDialog.test.tsx
-
-# Rust test by name
-cd TonnyTray/src-tauri
-cargo test test_process_manager
-
-# E2E test by file
-npm run test:e2e -- e2e/workflows.spec.ts
-```
-
-## Type Safety
-
-### TypeScript Configuration
-
-- Strict mode enabled (`TonnyTray/tsconfig.json`)
-- Path aliases configured via Vite:
-  - `@/` → `src/`
-  - `@components/` → `src/components/`
-  - `@hooks/` → `src/hooks/`
-  - `@services/` → `src/services/`
-  - `@types/` → `src/types/`
-  - `@utils/` → `src/utils/`
-  - `@theme/` → `src/theme/`
-  - `@contexts/` → `src/contexts/`
-
-### Rust Type Safety
-
-- All state shapes defined in `state.rs`
-- IPC payloads use serde serialization
-- No `unwrap()` in production code - use proper error handling
+Rust backend modules: `state`, `process_manager`, `audio`, `websocket`, `elevenlabs`, `config`, `tray`, `database`, `keychain`, `events`
 
 ### Shared Types
 
-Frontend types (`TonnyTray/src/types/index.ts`) must match Rust backend types (`src-tauri/src/state.rs`). When adding new fields:
-
+Frontend types (`TonnyTray/src/types/index.ts`) must match Rust types (`src-tauri/src/state.rs`). When adding fields:
 1. Update Rust struct with `#[derive(Serialize)]`
 2. Update TypeScript interface
-3. Ensure field names match exactly (snake_case → camelCase handled by serde)
+3. snake_case to camelCase handled by serde
 
-## Python Environment
+### TypeScript Path Aliases
 
-- Python version: 3.10 (managed by mise)
-- Package manager: `uv` (NOT pip)
-- Dependencies defined in `pyproject.toml`
-- Lock file: `uv.lock`
-- Virtual environment: `.venv/` (auto-created by uv)
+`@/` -> `src/`, `@components/` -> `src/components/`, `@hooks/`, `@services/`, `@types/`, `@utils/`, `@theme/`, `@contexts/`
 
-Key dependencies:
+### WhisperLiveKit WebSocket Protocol
 
-- fastapi, uvicorn - Web server
-- websockets - Real-time communication
-- faster-whisper - Speech recognition
-- pyaudio - Audio capture
-- scipy, numpy - Audio processing
+- Connect: `ws://localhost:8888/asr`
+- Send: binary audio chunks (WebM format)
+- Receive: JSON with `lines[]`, `buffer_transcription`, `status`
+- Session lifecycle: `session_info` -> transcription updates -> `ready_to_stop`
 
-## Important File Locations
+### Bloodbank Publisher (`whisperlivekit/bloodbank_publisher.py`)
 
-### Configuration
+Events are durably published:
+1. Write to WAL (`raw_voice_ingest.jsonl`) first
+2. Publish via `bb` CLI: `bb publish transcription.voice.completed --json -`
+3. Retry with exponential backoff (max 3 attempts)
+4. Failed events stay in WAL for later replay
+
+### System State Machine
+
+```
+Disabled -> Idle -> Listening -> Processing -> Idle
+Any state -> Error
+```
+
+## Environment
+
+- **Python**: 3.10 (managed by mise, see `.mise.toml`)
+- **Package manager**: `uv` (NOT pip). Always use `uv run` or `uv add`.
+- **Node**: npm for TonnyTray
+- **Rust**: Tauri 2.x backend
+- **Dependencies**: `pyproject.toml` (Python), `TonnyTray/package.json` (Node), `TonnyTray/src-tauri/Cargo.toml` (Rust)
+
+### Configuration Locations
 
 - TonnyTray config: `~/.config/tonnytray/config.json`
 - TonnyTray database: `~/.local/share/tonnytray/tonnytray.db`
-- Python environment: `.venv/`
+- WAL file: `raw_voice_ingest.jsonl` (working directory)
+- Integration config: `TonnyTray/backend/config.json`
 
-### Entry Points
-
-- WhisperLiveKit server: `whisperlivekit/basic_server.py`
-- Tauri main: `TonnyTray/src-tauri/src/lib.rs`
-- React main: `TonnyTray/src/main.tsx`
-- Log tailer utility: `TonnyTray/src/log-tailer.html`
-- Chrome extension: `chrome-extension/background.js`
-
-### Build Outputs
-
-- Tauri release: `TonnyTray/target/release/bundle/`
-- Frontend build: `TonnyTray/dist/`
-- Rust debug: `TonnyTray/src-tauri/target/debug/`
-
-## Development Workflow Recommendations
-
-### Working on Frontend
-
-1. Start WhisperLiveKit server: `./scripts/start_server.sh`
-2. Start Tauri in dev mode: `cd TonnyTray && npm run tauri:dev`
-3. Frontend hot-reloads automatically
-4. Backend requires restart for Rust changes
-
-### Working on Rust Backend
-
-1. Make changes in `TonnyTray/src-tauri/src/`
-2. Run tests: `cargo test`
-3. Check with clippy: `cargo clippy`
-4. Format: `cargo fmt`
-5. Restart Tauri: `npm run tauri:dev`
-
-### Working on WhisperLiveKit
-
-1. Make changes in `whisperlivekit/`
-2. Restart server: `./scripts/stop_server.sh && ./scripts/start_server.sh`
-3. Test with client: `./bin/auto-type` or `uv run python scripts/test_connection.py`
-
-### Adding New Features
-
-1. **Define types**: Update `TonnyTray/src/types/index.ts` and `src-tauri/src/state.rs`
-2. **Add Rust IPC command**: In `src-tauri/src/lib.rs`, register new handler
-3. **Add service wrapper**: In `TonnyTray/src/services/tauri.ts`
-4. **Create hooks if needed**: In `TonnyTray/src/hooks/`
-5. **Build UI components**: In `TonnyTray/src/components/`
-6. **Write tests**: Unit tests, integration tests, E2E tests
-7. **Update documentation**: This file and component READMEs
-
-## Common Issues
-
-### "Command not found: uv"
-
-Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-
-### Tauri Build Fails on Linux
-
-Install system dependencies:
+### Environment Variables
 
 ```bash
-sudo apt install libwebkit2gtk-4.0-dev build-essential curl wget libssl-dev libgtk-3-dev
+ELEVENLABS_API_KEY=sk-...
+N8N_WEBHOOK_URL=https://nodered.delo.sh/webhook/transcription
+RABBITMQ_URL=amqp://guest:guest@localhost/
+WHISPER_MODEL=base
+WHISPER_LANGUAGE=en
 ```
 
-### WhisperLiveKit Connection Issues
+## Key References
 
-1. Check server is running: `ps aux | grep whisper`
-2. Test connection: `uv run python scripts/test_connection.py`
-3. Check logs: `tail -f whisper.log`
-4. Verify port not in use: `lsof -i :8888`
-
-### Audio Device Issues
-
-List devices: `./bin/auto-type --list-devices`
-Manually select: `./bin/auto-type --device 6`
-
-### Frontend State Not Updating
-
-Check Tauri event listeners are registered in `useTauriState.ts`. Events must match backend `emit` calls exactly.
-
-## Performance Considerations
-
-### TonnyTray
-
-- Startup time: ~1-2 seconds
-- Memory (idle): ~10-20 MB
-- Audio latency: <50ms
-- IPC latency: <10ms
-- Uses `Arc<Mutex<T>>` for thread-safe state access
-- Audio processing in separate thread
-
-### WhisperLiveKit
-
-- Model loading time: 3-10 seconds (depends on model size)
-- Transcription latency: 200-500ms
-- Memory: 500MB-2GB (depends on model)
-- Models: tiny, base, small, medium, large-v3
-
-## Remote Development
-
-Server accessible remotely at `https://whisper.delo.sh` (configured in docker-compose.yml with Traefik labels).
-
-Connect clients to remote:
-
-```bash
-./bin/auto-type --remote whisper.delo.sh
-```
-
-## Platform Support
-
-- **Linux**: Fully supported (Wayland + X11)
-- **macOS**: Planned
-- **Windows**: Planned
+- `GOD.md` - Full component GOD document with event payload schemas, data models, IPC command reference
+- `docs/bloodbank-integration.md` - Bloodbank event publishing details
+- `TonnyTray/docs/threads/IPC_REFERENCE.md` - Complete IPC command documentation
