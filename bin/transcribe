@@ -12,6 +12,8 @@ TRANSCRIBE_USER="${TRANSCRIBE_USER:-delorenj}"
 TRANSCRIBE_DIR="/home/delorenj/code/33GOD/HeyMa"
 REMOTE="${TRANSCRIBE_USER}@${TRANSCRIBE_HOST}"
 MISE_INIT='source ~/.profile 2>/dev/null; eval "$(mise activate bash)" 2>/dev/null'
+DIARIZATION_VENV="${DIARIZATION_VENV:-${TRANSCRIBE_DIR}/.venv-diarization}"
+DIARIZATION_PYTHON="${DIARIZATION_PYTHON:-${DIARIZATION_VENV}/bin/python}"
 
 AUDIO="${1:?Usage: transcribe <audio-file> [options]}"
 shift
@@ -25,9 +27,93 @@ is_local() {
     [[ "$(hostname)" == "${TRANSCRIBE_HOSTNAME}" ]]
 }
 
+has_explicit_device_arg() {
+    local arg
+    for arg in "${EXTRA_ARGS[@]}"; do
+        [[ "$arg" == "--device" || "$arg" == --device=* ]] && return 0
+    done
+    return 1
+}
+
+has_groq_arg() {
+    local arg
+    for arg in "${EXTRA_ARGS[@]}"; do
+        [[ "$arg" == "--groq" ]] && return 0
+    done
+    return 1
+}
+
+has_diarization_arg() {
+    local arg
+    for arg in "${EXTRA_ARGS[@]}"; do
+        [[ "$arg" == "--diarization" ]] && return 0
+    done
+    return 1
+}
+
+should_retry_on_cpu() {
+    if has_explicit_device_arg || has_groq_arg; then
+        return 1
+    fi
+    return 0
+}
+
+run_local_transcribe() {
+    local force_cpu="${1:-false}"
+    local -a cmd_args
+    local -a runner_cmd
+    cmd_args=("$AUDIO" "${EXTRA_ARGS[@]}")
+    if [[ "$force_cpu" == "true" ]]; then
+        cmd_args+=("--device" "cpu")
+    fi
+
+    if has_diarization_arg; then
+        if [[ -x "$DIARIZATION_PYTHON" ]]; then
+            runner_cmd=("$DIARIZATION_PYTHON")
+        else
+            echo "[warn] --diarization requested but ${DIARIZATION_PYTHON} is missing; using default uv environment." >&2
+            runner_cmd=(uv run python)
+        fi
+    else
+        runner_cmd=(uv run python)
+    fi
+
+    "${runner_cmd[@]}" scripts/transcribe.py "${cmd_args[@]}"
+}
+
+run_remote_transcribe() {
+    local force_cpu="${1:-false}"
+    local -a remote_args
+    local escaped_args=""
+    local runner_cmd="uv run python"
+    remote_args=("${EXTRA_ARGS[@]}")
+    if [[ "$force_cpu" == "true" ]]; then
+        remote_args+=("--device" "cpu")
+    fi
+    if ((${#remote_args[@]} > 0)); then
+        printf -v escaped_args ' %q' "${remote_args[@]}"
+    fi
+    if has_diarization_arg; then
+        if ssh -q "$REMOTE" "test -x '${DIARIZATION_PYTHON}'"; then
+            runner_cmd="'${DIARIZATION_PYTHON}'"
+        else
+            echo "[warn] --diarization requested but ${DIARIZATION_PYTHON} is missing on remote; using default uv environment." >&2
+        fi
+    fi
+    ssh -q "$REMOTE" "${MISE_INIT}; cd ${TRANSCRIBE_DIR} && PYTHONUNBUFFERED=1 ${runner_cmd} scripts/transcribe.py '${REMOTE_FILE}' --progress-file '${REMOTE_LOG}'${escaped_args}"
+}
+
 if is_local; then
     cd "$TRANSCRIBE_DIR"
-    exec uv run python scripts/transcribe.py "$AUDIO" "${EXTRA_ARGS[@]}"
+    if run_local_transcribe; then
+        exit 0
+    fi
+    if should_retry_on_cpu; then
+        echo "[warn] Transcription failed in auto mode; retrying with --device cpu..." >&2
+        run_local_transcribe true
+        exit $?
+    fi
+    exit 1
 fi
 
 # --- Remote execution ---
@@ -58,8 +144,20 @@ ssh -q "$REMOTE" "tail -f '${REMOTE_LOG}'" &
 TAIL_PID=$!
 
 # 3. Run transcription (blocks until done)
-ssh -q "$REMOTE" "${MISE_INIT}; cd ${TRANSCRIBE_DIR} && PYTHONUNBUFFERED=1 uv run python scripts/transcribe.py '${REMOTE_FILE}' --progress-file '${REMOTE_LOG}' ${EXTRA_ARGS[*]:-}"
-TRANSCRIBE_EXIT=$?
+if run_remote_transcribe; then
+    TRANSCRIBE_EXIT=0
+else
+    TRANSCRIBE_EXIT=$?
+    if should_retry_on_cpu; then
+        echo "[warn] Remote transcription failed in auto mode; retrying with --device cpu..." >&2
+        ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
+        if run_remote_transcribe true; then
+            TRANSCRIBE_EXIT=0
+        else
+            TRANSCRIBE_EXIT=$?
+        fi
+    fi
+fi
 
 # 4. Give tail a moment to catch up, then kill it
 sleep 1

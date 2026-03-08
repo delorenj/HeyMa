@@ -9,9 +9,11 @@ Usage:
 """
 
 import argparse
+import ctypes
 import json
 import sys
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -27,22 +29,72 @@ def log(msg: str):
             f.flush()
 
 
+def cuda_runtime_available() -> tuple[bool, str]:
+    """Check whether the host can safely use CUDA + cuDNN ops at runtime."""
+    if shutil.which("nvidia-smi") is None:
+        return False, "nvidia-smi not found"
+
+    candidates = (
+        "libcudnn_ops.so.9.1.0",
+        "libcudnn_ops.so.9.1",
+        "libcudnn_ops.so.9",
+        "libcudnn_ops.so",
+    )
+
+    for lib_name in candidates:
+        try:
+            handle = ctypes.CDLL(lib_name)
+        except OSError:
+            continue
+
+        if hasattr(handle, "cudnnCreateTensorDescriptor"):
+            return True, lib_name
+
+    return False, "missing libcudnn_ops runtime/symbol"
+
+
+def missing_diarization_dependencies() -> list[str]:
+    """Return a list of missing modules required for Sortformer diarization."""
+    missing = []
+    try:
+        import librosa  # noqa: F401
+    except ImportError:
+        missing.append("librosa")
+
+    try:
+        import nemo  # noqa: F401
+    except ImportError:
+        missing.append("nemo_toolkit[asr]")
+
+    return missing
+
+
 def transcribe_local(audio_path: str, model_size: str, language: str | None, device: str | None = None) -> dict:
     """Transcribe using faster-whisper locally."""
     from faster_whisper import WhisperModel
+
+    cuda_ok, cuda_reason = cuda_runtime_available()
 
     if device == "cpu":
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
         log("  Device: cpu (int8)")
     elif device == "cuda":
+        if not cuda_ok:
+            raise RuntimeError(f"CUDA requested but unavailable: {cuda_reason}")
         model = WhisperModel(model_size, device="cuda", compute_type="float16")
         log("  Device: cuda (float16)")
     else:
-        # Auto: try CUDA, fall back to CPU if cuDNN or other GPU libs fail
-        try:
-            model = WhisperModel(model_size, device="cuda", compute_type="float16")
-            log("  Device: cuda (float16)")
-        except Exception:
+        # Auto: use CUDA only when runtime preflight succeeds.
+        if cuda_ok:
+            try:
+                model = WhisperModel(model_size, device="cuda", compute_type="float16")
+                log("  Device: cuda (float16)")
+            except Exception as exc:
+                log(f"  CUDA init failed ({exc}); using cpu (int8)")
+                model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                log("  Device: cpu (int8 fallback)")
+        else:
+            log(f"  CUDA unavailable ({cuda_reason}); using cpu (int8)")
             model = WhisperModel(model_size, device="cpu", compute_type="int8")
             log("  Device: cpu (int8 fallback)")
     segments, info = model.transcribe(
@@ -104,74 +156,86 @@ def diarize_local(audio_path: str) -> list:
         log(f"Error: Failed to load diarization model: {e}")
         return []
 
-    log("  Running diarization...")
-    signal, sr = librosa.load(audio_path, sr=16000)
-    
-    # Process in 1-second chunks
-    chunk_size = 16000
-    chunks = [signal[i:i+chunk_size] for i in range(0, len(signal), chunk_size)]
-    
-    previous_chunk = None
-    l_chunk_feat_seq_t = []
-    for chunk in chunks:
-        audio_signal_chunk = torch.tensor(chunk).unsqueeze(0).to(diar_model.device)
-        audio_signal_length_chunk = torch.tensor([audio_signal_chunk.shape[1]]).to(diar_model.device)
-        processed_signal_chunk, processed_signal_length_chunk = audio2mel.get_features(audio_signal_chunk, audio_signal_length_chunk)
-        if previous_chunk is not None:
-            to_add = previous_chunk[:, :, -99:]
-            total = torch.concat([to_add, processed_signal_chunk], dim=2)
-        else:
-            total = processed_signal_chunk
-        previous_chunk = processed_signal_chunk
-        l_chunk_feat_seq_t.append(torch.transpose(total, 1, 2))
+    # Force diarization to CPU for stability on hosts where CUDA runtime is partial.
+    cpu_device = torch.device("cpu")
+    try:
+        diar_model = diar_model.to(cpu_device)
+        audio2mel = audio2mel.to(cpu_device)
+    except Exception:
+        pass
 
-    batch_size = 1
-    streaming_state = init_streaming_state(
-        diar_model.sortformer_modules,
-        batch_size=batch_size,
-        async_streaming=True,
-        device=diar_model.device
-    )
-    total_preds = torch.zeros((batch_size, 0, diar_model.sortformer_modules.n_spk), device=diar_model.device)
+    log("  Running diarization (cpu)...")
+    try:
+        signal, sr = librosa.load(audio_path, sr=16000)
+        
+        # Process in 1-second chunks
+        chunk_size = 16000
+        chunks = [signal[i:i+chunk_size] for i in range(0, len(signal), chunk_size)]
+        
+        previous_chunk = None
+        l_chunk_feat_seq_t = []
+        for chunk in chunks:
+            audio_signal_chunk = torch.tensor(chunk).unsqueeze(0).to(diar_model.device)
+            audio_signal_length_chunk = torch.tensor([audio_signal_chunk.shape[1]]).to(diar_model.device)
+            processed_signal_chunk, processed_signal_length_chunk = audio2mel.get_features(audio_signal_chunk, audio_signal_length_chunk)
+            if previous_chunk is not None:
+                to_add = previous_chunk[:, :, -99:]
+                total = torch.concat([to_add, processed_signal_chunk], dim=2)
+            else:
+                total = processed_signal_chunk
+            previous_chunk = processed_signal_chunk
+            l_chunk_feat_seq_t.append(torch.transpose(total, 1, 2))
 
-    chunk_duration_seconds = diar_model.sortformer_modules.chunk_len * diar_model.sortformer_modules.subsampling_factor * diar_model.preprocessor._cfg.window_stride
+        batch_size = 1
+        streaming_state = init_streaming_state(
+            diar_model.sortformer_modules,
+            batch_size=batch_size,
+            async_streaming=True,
+            device=diar_model.device
+        )
+        total_preds = torch.zeros((batch_size, 0, diar_model.sortformer_modules.n_spk), device=diar_model.device)
 
-    speaker_segments = []
-    l_speakers = [{'start_time': 0, 'end_time': 0, 'speaker': 0}]
-    len_prediction = None
-    left_offset = 0
-    right_offset = 8
-    
-    for i, chunk_feat_seq_t in enumerate(l_chunk_feat_seq_t):
-        with torch.inference_mode():
-            streaming_state, total_preds = diar_model.forward_streaming_step(
-                processed_signal=chunk_feat_seq_t,
-                processed_signal_length=torch.tensor([chunk_feat_seq_t.shape[1]]),
-                streaming_state=streaming_state,
-                total_preds=total_preds,
-                left_offset=left_offset,
-                right_offset=right_offset,
-            )
-            left_offset = 8
-            preds_np = total_preds[0].cpu().numpy()
-            active_speakers = np.argmax(preds_np, axis=1)
-            if len_prediction is None:
-                len_prediction = len(active_speakers)
-            frame_duration = chunk_duration_seconds / len_prediction
-            active_speakers = active_speakers[-len_prediction:]
-            for idx, spk in enumerate(active_speakers):
-                curr_start = i * chunk_duration_seconds + idx * frame_duration
-                curr_end = i * chunk_duration_seconds + (idx + 1) * frame_duration
-                if spk != l_speakers[-1]['speaker']:
-                    l_speakers.append({
-                        'start_time': curr_start,
-                        'end_time': curr_end,
-                        'speaker': spk
-                    })
-                else:
-                    l_speakers[-1]['end_time'] = curr_end
-    
-    return l_speakers
+        chunk_duration_seconds = diar_model.sortformer_modules.chunk_len * diar_model.sortformer_modules.subsampling_factor * diar_model.preprocessor._cfg.window_stride
+
+        l_speakers = [{'start_time': 0, 'end_time': 0, 'speaker': 0}]
+        len_prediction = None
+        left_offset = 0
+        right_offset = 8
+        
+        for i, chunk_feat_seq_t in enumerate(l_chunk_feat_seq_t):
+            with torch.inference_mode():
+                streaming_state, total_preds = diar_model.forward_streaming_step(
+                    processed_signal=chunk_feat_seq_t,
+                    processed_signal_length=torch.tensor([chunk_feat_seq_t.shape[1]]),
+                    streaming_state=streaming_state,
+                    total_preds=total_preds,
+                    left_offset=left_offset,
+                    right_offset=right_offset,
+                )
+                left_offset = 8
+                preds_np = total_preds[0].cpu().numpy()
+                active_speakers = np.argmax(preds_np, axis=1)
+                if len_prediction is None:
+                    len_prediction = len(active_speakers)
+                frame_duration = chunk_duration_seconds / len_prediction
+                active_speakers = active_speakers[-len_prediction:]
+                for idx, spk in enumerate(active_speakers):
+                    curr_start = i * chunk_duration_seconds + idx * frame_duration
+                    curr_end = i * chunk_duration_seconds + (idx + 1) * frame_duration
+                    if spk != l_speakers[-1]['speaker']:
+                        l_speakers.append({
+                            'start_time': curr_start,
+                            'end_time': curr_end,
+                            'speaker': spk
+                        })
+                    else:
+                        l_speakers[-1]['end_time'] = curr_end
+        
+        return l_speakers
+    except Exception as e:
+        log(f"Error: Diarization failed: {e}")
+        log("Continuing without speaker labels.")
+        return []
 
 
 def transcribe_groq(audio_path: str, model: str, language: str | None) -> dict:
@@ -331,6 +395,14 @@ def main():
     if not Path(audio_path).exists():
         print(f"Error: File not found: {audio_path}", file=sys.stderr)
         sys.exit(1)
+
+    if args.diarization:
+        missing = missing_diarization_dependencies()
+        if missing:
+            log(f"Warning: --diarization requested but missing dependencies: {', '.join(missing)}")
+            log('Install with: uv pip install "nemo_toolkit[asr]"')
+            log("Continuing without diarization.")
+            args.diarization = False
 
     global _progress_file
     _progress_file = args.progress_file
