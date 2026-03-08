@@ -137,4 +137,4 @@ run_*.sh
 test_*.py
 launch.json
 .DS_Store
-test/*
+test/**.btr
