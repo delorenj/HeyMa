@@ -29,7 +29,8 @@ is_local() {
 
 has_explicit_device_arg() {
     local arg
-    for arg in "${EXTRA_ARGS[@]}"; do
+    for arg in "${EXTRA_ARGS[@]}"
+    do
         [[ "$arg" == "--device" || "$arg" == --device=* ]] && return 0
     done
     return 1
@@ -37,7 +38,8 @@ has_explicit_device_arg() {
 
 has_groq_arg() {
     local arg
-    for arg in "${EXTRA_ARGS[@]}"; do
+    for arg in "${EXTRA_ARGS[@]}"
+    do
         [[ "$arg" == "--groq" ]] && return 0
     done
     return 1
@@ -45,7 +47,8 @@ has_groq_arg() {
 
 has_diarization_arg() {
     local arg
-    for arg in "${EXTRA_ARGS[@]}"; do
+    for arg in "${EXTRA_ARGS[@]}"
+    do
         [[ "$arg" == "--diarization" ]] && return 0
     done
     return 1
@@ -103,84 +106,102 @@ run_remote_transcribe() {
     ssh -q "$REMOTE" "${MISE_INIT}; cd ${TRANSCRIBE_DIR} && PYTHONUNBUFFERED=1 ${runner_cmd} scripts/transcribe.py '${REMOTE_FILE}' --progress-file '${REMOTE_LOG}'${escaped_args}"
 }
 
+LOCAL_MD=""
+
 if is_local; then
     cd "$TRANSCRIBE_DIR"
-    if run_local_transcribe; then
-        exit 0
-    fi
-    if should_retry_on_cpu; then
+    LOCAL_LOG=$(mktemp)
+    if run_local_transcribe | tee "$LOCAL_LOG"; then
+        LOCAL_MD=$(grep '^Written:' "$LOCAL_LOG" | sed 's/Written: //')
+    elif should_retry_on_cpu; then
         echo "[warn] Transcription failed in auto mode; retrying with --device cpu..." >&2
-        run_local_transcribe true
-        exit $?
-    fi
-    exit 1
-fi
-
-# --- Remote execution ---
-REMOTE_STAGING="/tmp/transcribe-staging"
-FILENAME="$(basename "$AUDIO")"
-REMOTE_FILE="${REMOTE_STAGING}/${FILENAME}"
-REMOTE_LOG="${REMOTE_STAGING}/${FILENAME}.log"
-TAIL_PID=""
-
-cleanup() {
-    # Kill the tail process if it's still running
-    [[ -n "$TAIL_PID" ]] && kill "$TAIL_PID" 2>/dev/null || true
-    wait "$TAIL_PID" 2>/dev/null || true
-    # Clean up remote staging
-    ssh -q "$REMOTE" "rm -f '${REMOTE_FILE}' '${REMOTE_LOG}'" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# 1. Push file
-echo "[remote] Pushing ${FILENAME} to ${TRANSCRIBE_HOST}..." >&2
-ssh -q "$REMOTE" "mkdir -p ${REMOTE_STAGING}"
-scp -q "$AUDIO" "${REMOTE}:${REMOTE_FILE}"
-echo "[remote] Upload complete. Starting transcription..." >&2
-
-# 2. Create empty log file, then start tailing it in the background
-ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
-ssh -q "$REMOTE" "tail -f '${REMOTE_LOG}'" &
-TAIL_PID=$!
-
-# 3. Run transcription (blocks until done)
-if run_remote_transcribe; then
-    TRANSCRIBE_EXIT=0
-else
-    TRANSCRIBE_EXIT=$?
-    if should_retry_on_cpu; then
-        echo "[warn] Remote transcription failed in auto mode; retrying with --device cpu..." >&2
-        ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
-        if run_remote_transcribe true; then
-            TRANSCRIBE_EXIT=0
-        else
-            TRANSCRIBE_EXIT=$?
+        if run_local_transcribe true | tee "$LOCAL_LOG"; then
+            LOCAL_MD=$(grep '^Written:' "$LOCAL_LOG" | sed 's/Written: //')
         fi
     fi
-fi
-
-# 4. Give tail a moment to catch up, then kill it
-sleep 1
-kill "$TAIL_PID" 2>/dev/null || true
-wait "$TAIL_PID" 2>/dev/null || true
-TAIL_PID=""
-
-if [[ $TRANSCRIBE_EXIT -ne 0 ]]; then
-    echo "[error] Transcription failed (exit $TRANSCRIBE_EXIT)" >&2
-    exit 1
-fi
-
-# 5. Parse the "Written:" line from the remote log
-REMOTE_MD=$(ssh -q "$REMOTE" "grep '^Written:' '${REMOTE_LOG}'" | sed 's/Written: //')
-
-if [[ -n "$REMOTE_MD" ]]; then
-    LOCAL_DIR="${HOME}/d/Transcripts"
-    mkdir -p "$LOCAL_DIR"
-    LOCAL_MD="${LOCAL_DIR}/$(basename "$REMOTE_MD")"
-
-    scp -q "${REMOTE}:${REMOTE_MD}" "$LOCAL_MD"
-    echo "[local] Downloaded: ${LOCAL_MD}" >&2
+    rm -f "$LOCAL_LOG"
+    if [[ -z "${LOCAL_MD:-}" ]]; then
+        echo "[error] Transcription failed or no output file produced" >&2
+        exit 1
+    fi
 else
-    echo "[error] No output file produced" >&2
-    exit 1
+    # --- Remote execution ---
+    REMOTE_STAGING="/tmp/transcribe-staging"
+    FILENAME="$(basename "$AUDIO")"
+    REMOTE_FILE="${REMOTE_STAGING}/${FILENAME}"
+    REMOTE_LOG="${REMOTE_STAGING}/${FILENAME}.log"
+    TAIL_PID=""
+
+    cleanup() {
+        # Kill the tail process if it's still running
+        [[ -n "$TAIL_PID" ]] && kill "$TAIL_PID" 2>/dev/null || true
+        wait "$TAIL_PID" 2>/dev/null || true
+        # Clean up remote staging
+        ssh -q "$REMOTE" "rm -f '${REMOTE_FILE}' '${REMOTE_LOG}'" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    # 1. Push file
+    echo "[remote] Pushing ${FILENAME} to ${TRANSCRIBE_HOST}..." >&2
+    ssh -q "$REMOTE" "mkdir -p ${REMOTE_STAGING}"
+    scp -q "$AUDIO" "${REMOTE}:${REMOTE_FILE}"
+    echo "[remote] Upload complete. Starting transcription..." >&2
+
+    # 2. Create empty log file, then start tailing it in the background
+    ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
+    ssh -q "$REMOTE" "tail -f '${REMOTE_LOG}'" &
+    TAIL_PID=$!
+
+    # 3. Run transcription (blocks until done)
+    if run_remote_transcribe; then
+        TRANSCRIBE_EXIT=0
+    else
+        TRANSCRIBE_EXIT=$?
+        if should_retry_on_cpu; then
+            echo "[warn] Remote transcription failed in auto mode; retrying with --device cpu..." >&2
+            ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
+            if run_remote_transcribe true; then
+                TRANSCRIBE_EXIT=0
+            else
+                TRANSCRIBE_EXIT=$?
+            fi
+        fi
+    fi
+
+    # 4. Give tail a moment to catch up, then kill it
+    sleep 1
+    kill "$TAIL_PID" 2>/dev/null || true
+    wait "$TAIL_PID" 2>/dev/null || true
+    TAIL_PID=""
+
+    if [[ $TRANSCRIBE_EXIT -ne 0 ]]; then
+        echo "[error] Transcription failed (exit $TRANSCRIBE_EXIT)" >&2
+        exit 1
+    fi
+
+    # 5. Parse the "Written:" line from the remote log
+    REMOTE_MD=$(ssh -q "$REMOTE" "grep '^Written:' '${REMOTE_LOG}'" | sed 's/Written: //')
+
+    if [[ -n "$REMOTE_MD" ]]; then
+        LOCAL_DIR="${HOME}/d/Transcripts"
+        mkdir -p "$LOCAL_DIR"
+        LOCAL_MD="${LOCAL_DIR}/$(basename "$REMOTE_MD")"
+
+        scp -q "${REMOTE}:${REMOTE_MD}" "$LOCAL_MD"
+        echo "[local] Downloaded: ${LOCAL_MD}" >&2
+    else
+        echo "[error] No output file produced" >&2
+        exit 1
+    fi
+fi
+
+# Pipe content to clipboard
+if [[ -n "${LOCAL_MD:-}" && -f "$LOCAL_MD" ]]; then
+    if command -v xclip >/dev/null 2>&1; then
+        xclip -selection clipboard < "$LOCAL_MD"
+        echo "[local] Copied transcription to clipboard" >&2
+    elif command -v wl-copy >/dev/null 2>&1; then
+        wl-copy < "$LOCAL_MD"
+        echo "[local] Copied transcription to clipboard" >&2
+    fi
 fi
