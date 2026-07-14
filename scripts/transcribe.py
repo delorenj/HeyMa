@@ -19,6 +19,86 @@ from pathlib import Path
 
 
 _progress_file = None
+_cudnn_lib_dirs: list[Path] = []
+
+
+def _configure_cudnn_runtime_paths() -> None:
+    """Expose bundled cuDNN wheel libs to the dynamic loader when present."""
+    candidate_dirs = []
+
+    # Preferred: nvidia-cudnn-cu12 wheel layout in the active environment.
+    try:
+        import nvidia.cudnn as cudnn_pkg  # type: ignore
+
+        if getattr(cudnn_pkg, "__file__", None):
+            candidate_dirs.append(Path(cudnn_pkg.__file__).resolve().parent / "lib")
+    except Exception:
+        pass
+
+    # Fallback: infer from this interpreter's site-packages location.
+    for root in {Path(sys.prefix), Path(sys.base_prefix)}:
+        for pattern in (
+            "lib/python*/site-packages/nvidia/cudnn/lib",
+            "Lib/site-packages/nvidia/cudnn/lib",
+        ):
+            for match in root.glob(pattern):
+                candidate_dirs.append(match)
+
+    existing = [path for path in candidate_dirs if path.exists()]
+    if not existing:
+        return
+
+    global _cudnn_lib_dirs
+    seen = set()
+    _cudnn_lib_dirs = []
+    for path in existing:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        _cudnn_lib_dirs.append(path)
+
+    ld_parts = [part for part in os.environ.get("LD_LIBRARY_PATH", "").split(":") if part]
+    for directory in reversed([str(path) for path in _cudnn_lib_dirs]):
+        if directory not in ld_parts:
+            ld_parts.insert(0, directory)
+    os.environ["LD_LIBRARY_PATH"] = ":".join(ld_parts)
+
+    # Preload cuDNN shared objects by absolute path so sanitized environments
+    # (where LD_LIBRARY_PATH is not honored at process start) still resolve.
+    preload_order = [
+        "libcudnn_graph.so.9",
+        "libcudnn_ops.so.9",
+        "libcudnn_cnn.so.9",
+        "libcudnn_adv.so.9",
+        "libcudnn_engines_precompiled.so.9",
+        "libcudnn_engines_runtime_compiled.so.9",
+        "libcudnn_heuristic.so.9",
+        "libcudnn.so.9",
+    ]
+    for lib_dir in _cudnn_lib_dirs:
+        absolute_candidates = {name: lib_dir / name for name in preload_order}
+        for path in sorted(lib_dir.glob("libcudnn*.so.9")):
+            absolute_candidates.setdefault(path.name, path)
+
+        for lib_name in preload_order:
+            lib_path = absolute_candidates.get(lib_name)
+            if lib_path is None or not lib_path.exists():
+                continue
+            try:
+                ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                continue
+        for extra_name, extra_path in absolute_candidates.items():
+            if extra_name in preload_order or not extra_path.exists():
+                continue
+            try:
+                ctypes.CDLL(str(extra_path), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                continue
+
+
+_configure_cudnn_runtime_paths()
 
 def log(msg: str):
     """Write to stderr and optionally to a progress file for remote tailing."""
@@ -33,6 +113,19 @@ def cuda_runtime_available() -> tuple[bool, str]:
     """Check whether the host can safely use CUDA + cuDNN ops at runtime."""
     if shutil.which("nvidia-smi") is None:
         return False, "nvidia-smi not found"
+
+    absolute_candidates = []
+    for lib_dir in _cudnn_lib_dirs:
+        absolute_candidates.extend(sorted(lib_dir.glob("libcudnn_ops.so.9*")))
+
+    for lib_path in absolute_candidates:
+        try:
+            handle = ctypes.CDLL(str(lib_path), mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            continue
+
+        if hasattr(handle, "cudnnCreateTensorDescriptor"):
+            return True, str(lib_path)
 
     candidates = (
         "libcudnn_ops.so.9.1.0",

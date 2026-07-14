@@ -1,122 +1,245 @@
 #!/usr/bin/env bash
-# Batch transcribe an audio file to markdown
-# Usage: transcribe /path/to/file.mp3 [options]
+# Batch transcribe an audio file to markdown.
 #
-# If run on a machine that isn't the transcription host, the file is pushed
-# to the host via scp, transcribed remotely, and the markdown is pulled back.
-# Progress is shown via tail -f on a remote log file.
+# Modes
+#   local : when run on $TRANSCRIBE_HOSTNAME, invoke faster-whisper directly
+#   remote: otherwise, scp the file to the host, transcribe there, scp the .md back
+#
+# Stdout contract
+#   On success, exactly one line is printed to stdout: the absolute path of the
+#   markdown transcript. All progress/log output goes to stderr. This makes the
+#   script safe to invoke from n8n executeCommand (capture .stdout = path).
+#
+# --archive-s3
+#   BACKUP-FIRST POLICY (the audio is the irreplaceable artifact):
+#   BEFORE transcription runs, upload the source audio to
+#   s3://${TRANSCRIBE_S3_BUCKET:-recordings}/YYYY-MM-DD/HHMMSS-<filename> via
+#   `mc` (alias ${TRANSCRIBE_S3_ALIAS:-delo}) using the file's mtime for the
+#   key, and VERIFY it landed (mc stat). The local source is NEVER deleted.
+#   If the upload fails, we keep the source AND drop a safety copy into
+#   $TRANSCRIBE_STASH_DIR (a non-synced local vault) so the audio cannot be
+#   lost even if S3 is down or the inbox (a receive-only Syncthing folder with
+#   no versioning) is cleared by a remote peer. Transcription still proceeds
+#   so a backup hiccup never costs us the transcript too.
+
 set -euo pipefail
 
+TRANSCRIBE_HOSTNAME="${TRANSCRIBE_HOSTNAME:-big-chungus}"
 TRANSCRIBE_HOST="${TRANSCRIBE_HOST:-192.168.1.12}"
 TRANSCRIBE_USER="${TRANSCRIBE_USER:-delorenj}"
-TRANSCRIBE_DIR="/home/delorenj/code/33GOD/HeyMa"
+# Derive the repo dir from THIS script's real path (it's invoked via a
+# ~/.local/bin symlink), so it keeps working when HeyMa is relocated. HeyMa
+# moved code/33GOD/HeyMa -> code/HeyMa (~2026-07-01) and the old hardcoded path
+# silently broke every transcription for two weeks. Self-locating prevents a repeat.
+_TRANSCRIBE_SELF="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+_TRANSCRIBE_DEFAULT_DIR="$(cd "$(dirname "$_TRANSCRIBE_SELF")/.." 2>/dev/null && pwd)" || _TRANSCRIBE_DEFAULT_DIR="/home/delorenj/code/HeyMa"
+TRANSCRIBE_DIR="${TRANSCRIBE_DIR:-$_TRANSCRIBE_DEFAULT_DIR}"
 REMOTE="${TRANSCRIBE_USER}@${TRANSCRIBE_HOST}"
 MISE_INIT='source ~/.profile 2>/dev/null; eval "$(mise activate bash)" 2>/dev/null'
 DIARIZATION_VENV="${DIARIZATION_VENV:-${TRANSCRIBE_DIR}/.venv-diarization}"
 DIARIZATION_PYTHON="${DIARIZATION_PYTHON:-${DIARIZATION_VENV}/bin/python}"
 
-AUDIO="${1:?Usage: transcribe <audio-file> [options]}"
+S3_ALIAS="${TRANSCRIBE_S3_ALIAS:-delo}"
+S3_BUCKET="${TRANSCRIBE_S3_BUCKET:-recordings}"
+MC_BIN="${MC_BIN:-/usr/local/bin/mc}"
+
+log() { printf '%s\n' "$*" >&2; }
+
+AUDIO="${1:?Usage: transcribe <audio-file> [options] [--archive-s3]}"
 shift
-EXTRA_ARGS=("$@")
+ARCHIVE_S3=false
+EXTRA_ARGS=()
+while (("$#" > 0)); do
+  case "$1" in
+    --archive-s3) ARCHIVE_S3=true; shift ;;
+    *) EXTRA_ARGS+=("$1"); shift ;;
+  esac
+done
 
 AUDIO="$(realpath "$AUDIO")"
 
-TRANSCRIBE_HOSTNAME="${TRANSCRIBE_HOSTNAME:-big-chungus}"
+is_local() { [[ "$(hostname)" == "${TRANSCRIBE_HOSTNAME}" ]]; }
 
-is_local() {
-    [[ "$(hostname)" == "${TRANSCRIBE_HOSTNAME}" ]]
-}
-
-has_explicit_device_arg() {
-    local arg
-    for arg in "${EXTRA_ARGS[@]}"; do
-        [[ "$arg" == "--device" || "$arg" == --device=* ]] && return 0
-    done
-    return 1
-}
-
-has_groq_arg() {
-    local arg
-    for arg in "${EXTRA_ARGS[@]}"; do
-        [[ "$arg" == "--groq" ]] && return 0
-    done
-    return 1
-}
-
-has_diarization_arg() {
-    local arg
-    for arg in "${EXTRA_ARGS[@]}"; do
-        [[ "$arg" == "--diarization" ]] && return 0
-    done
-    return 1
+has_arg() {
+  local needle="$1" arg
+  if ((${#EXTRA_ARGS[@]} == 0)); then return 1; fi
+  for arg in "${EXTRA_ARGS[@]}"; do
+    [[ "$arg" == "$needle" || "$arg" == "${needle}="* ]] && return 0
+  done
+  return 1
 }
 
 should_retry_on_cpu() {
-    if has_explicit_device_arg || has_groq_arg; then
-        return 1
-    fi
-    return 0
+  has_arg --device && return 1
+  has_arg --groq && return 1
+  return 0
 }
 
 run_local_transcribe() {
-    local force_cpu="${1:-false}"
-    local -a cmd_args
-    local -a runner_cmd
-    cmd_args=("$AUDIO" "${EXTRA_ARGS[@]}")
-    if [[ "$force_cpu" == "true" ]]; then
-        cmd_args+=("--device" "cpu")
-    fi
+  local force_cpu="${1:-false}"
+  local -a cmd_args runner
+  local cudnn_lib_dir=""
 
-    if has_diarization_arg; then
-        if [[ -x "$DIARIZATION_PYTHON" ]]; then
-            runner_cmd=("$DIARIZATION_PYTHON")
-        else
-            echo "[warn] --diarization requested but ${DIARIZATION_PYTHON} is missing; using default uv environment." >&2
-            runner_cmd=(uv run python)
-        fi
-    else
-        runner_cmd=(uv run python)
-    fi
+  # Ensure cuDNN wheel libs are visible at process start.
+  # cuDNN 9 dispatches to multiple sub-libraries by SONAME during inference.
+  if [[ -x "$DIARIZATION_PYTHON" ]]; then
+    cudnn_lib_dir="$($DIARIZATION_PYTHON - <<'PY' 2>/dev/null || true
+import site
+from pathlib import Path
+for base in site.getsitepackages():
+    p = Path(base) / 'nvidia' / 'cudnn' / 'lib'
+    if (p / 'libcudnn_ops.so.9').exists():
+        print(p)
+        break
+PY
+)"
+  fi
+  if [[ -z "$cudnn_lib_dir" ]]; then
+    cudnn_lib_dir="$(uv run python - <<'PY' 2>/dev/null || true
+import site
+from pathlib import Path
+for base in site.getsitepackages():
+    p = Path(base) / 'nvidia' / 'cudnn' / 'lib'
+    if (p / 'libcudnn_ops.so.9').exists():
+        print(p)
+        break
+PY
+)"
+  fi
+  if [[ -n "$cudnn_lib_dir" ]]; then
+    export LD_LIBRARY_PATH="$cudnn_lib_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
 
-    "${runner_cmd[@]}" scripts/transcribe.py "${cmd_args[@]}"
+  cmd_args=("$AUDIO")
+  if ((${#EXTRA_ARGS[@]} > 0)); then cmd_args+=("${EXTRA_ARGS[@]}"); fi
+  [[ "$force_cpu" == "true" ]] && cmd_args+=("--device" "cpu")
+
+  # Diarization is now enabled by default and requires the diarization venv.
+  if [[ -x "$DIARIZATION_PYTHON" ]]; then
+    runner=("$DIARIZATION_PYTHON")
+  else
+    log "[warn] Diarization venv ${DIARIZATION_PYTHON} missing; run scripts/setup-diarization-venv.sh."
+    log "[warn] Falling back to default uv env (diarization will be skipped if deps are missing)."
+    runner=(mise x -- uv run python)
+  fi
+
+  ( cd "$TRANSCRIBE_DIR" && PYTHONUNBUFFERED=1 "${runner[@]}" scripts/transcribe.py "${cmd_args[@]}" )
 }
 
 run_remote_transcribe() {
-    local force_cpu="${1:-false}"
-    local -a remote_args
-    local escaped_args=""
-    local runner_cmd="uv run python"
-    remote_args=("${EXTRA_ARGS[@]}")
-    if [[ "$force_cpu" == "true" ]]; then
-        remote_args+=("--device" "cpu")
-    fi
-    if ((${#remote_args[@]} > 0)); then
-        printf -v escaped_args ' %q' "${remote_args[@]}"
-    fi
-    if has_diarization_arg; then
-        if ssh -q "$REMOTE" "test -x '${DIARIZATION_PYTHON}'"; then
-            runner_cmd="'${DIARIZATION_PYTHON}'"
-        else
-            echo "[warn] --diarization requested but ${DIARIZATION_PYTHON} is missing on remote; using default uv environment." >&2
-        fi
-    fi
-    ssh -q "$REMOTE" "${MISE_INIT}; cd ${TRANSCRIBE_DIR} && PYTHONUNBUFFERED=1 ${runner_cmd} scripts/transcribe.py '${REMOTE_FILE}' --progress-file '${REMOTE_LOG}'${escaped_args}"
+  local force_cpu="${1:-false}"
+  local -a remote_args=()
+  local escaped_args=""
+  local runner_cmd="mise x -- uv run python"
+  if ((${#EXTRA_ARGS[@]} > 0)); then remote_args=("${EXTRA_ARGS[@]}"); fi
+  [[ "$force_cpu" == "true" ]] && remote_args+=("--device" "cpu")
+  if ((${#remote_args[@]} > 0)); then
+    printf -v escaped_args ' %q' "${remote_args[@]}"
+  fi
+  if ssh -q "$REMOTE" "test -x '${DIARIZATION_PYTHON}'"; then
+    runner_cmd="'${DIARIZATION_PYTHON}'"
+  fi
+  ssh -q "$REMOTE" "${MISE_INIT}; cd ${TRANSCRIBE_DIR} && PYTHONUNBUFFERED=1 ${runner_cmd} scripts/transcribe.py '${REMOTE_FILE}' --progress-file '${REMOTE_LOG}'${escaped_args}"
 }
 
+# Print "YYYY-MM-DD/HHMMSS-<basename>" key for s3 archive of $1, using mtime.
+s3_key_for() {
+  local path="$1" ft date_str time_str
+  ft="$(stat -c %Y -- "$path")"
+  date_str="$(date -d "@${ft}" +%Y-%m-%d)"
+  time_str="$(date -d "@${ft}" +%H%M%S)"
+  printf '%s/%s-%s' "$date_str" "$time_str" "$(basename "$path")"
+}
+
+# Local, NON-SYNCED safety vault. The inbox is a receive-only Syncthing folder
+# with file versioning DISABLED, so a remote peer's deletion (or a folder-marker
+# reset) can erase a source recording with zero recovery. When S3 is unreachable
+# we copy the source here so the audio is never the only-copy in a volatile dir.
+# Must live OUTSIDE any synced folder.
+STASH_DIR="${TRANSCRIBE_STASH_DIR:-${HOME}/audio/recovered}"
+
+stash_local() {
+  local src="$1" dest ft
+  [[ -f "$src" ]] || return 0
+  mkdir -p "$STASH_DIR" || { log "[warn] could not create stash dir $STASH_DIR"; return 0; }
+  ft="$(stat -c %Y -- "$src" 2>/dev/null || echo 0)"
+  dest="${STASH_DIR}/$(date -d "@${ft}" +%Y%m%d-%H%M%S)-$(basename "$src")"
+  if [[ -e "$dest" ]]; then
+    log "[stash] Safety copy already present: $dest"
+  elif cp -n -- "$src" "$dest"; then
+    log "[stash] Safety copy preserved: $dest"
+  else
+    log "[warn] failed to stash safety copy of $src"
+  fi
+}
+
+# Archive the source audio to S3 FIRST (called before transcription) and VERIFY
+# it persisted. The source is NEVER deleted. On any failure, keep the source and
+# drop a local safety copy. Returns 0 if the audio is durably stored (S3 verified
+# OR local stash made), non-zero only if we could not secure it anywhere.
+archive_to_s3() {
+  local src="$1" key
+  if [[ ! -x "$MC_BIN" ]]; then
+    log "[error] --archive-s3 requested but $MC_BIN not found; keeping source + stashing copy."
+    stash_local "$src"
+    return 1
+  fi
+  key="$(s3_key_for "$src")"
+  log "[s3] (backup-first) Uploading source -> ${S3_ALIAS}/${S3_BUCKET}/${key}"
+  if "$MC_BIN" cp --quiet "$src" "${S3_ALIAS}/${S3_BUCKET}/${key}" >&2 \
+     && "$MC_BIN" stat "${S3_ALIAS}/${S3_BUCKET}/${key}" >/dev/null 2>&1; then
+    log "[s3] Upload verified. Source preserved locally (never deleted): $src"
+    return 0
+  fi
+  log "[error] S3 upload/verify FAILED; preserving source + stashing local safety copy."
+  stash_local "$src"
+  return 1
+}
+
+# ---- main: local path ----
 if is_local; then
-    cd "$TRANSCRIBE_DIR"
-    if run_local_transcribe; then
-        exit 0
-    fi
+  LOG_FILE="$(mktemp /tmp/transcribe.XXXXXX.log)"
+  trap 'rm -f "$LOG_FILE"' EXIT
+
+  # STEP 1 (PRIORITY): back up the source audio to S3 BEFORE transcribing.
+  # The audio is the irreplaceable artifact; the transcript can always be
+  # regenerated from it. We never delete the source.
+  if [[ "$ARCHIVE_S3" == "true" ]]; then
+    archive_to_s3 "$AUDIO" || log "[warn] backup did not reach S3; proceeding (source is preserved/stashed)."
+  fi
+
+  # STEP 2: transcribe.
+  # Stream stderr to log file AND to caller's stderr via tee. The `2>&1 1>/dev/null`
+  # routes only stderr into the pipe; pipefail surfaces the upstream exit code.
+  if { run_local_transcribe false 2>&1 1>/dev/null | tee "$LOG_FILE" >&2; }; then
+    :
+  else
+    rc=$?
     if should_retry_on_cpu; then
-        echo "[warn] Transcription failed in auto mode; retrying with --device cpu..." >&2
-        run_local_transcribe true
+      log "[warn] Transcription failed (exit $rc); retrying with --device cpu..."
+      if { run_local_transcribe true 2>&1 1>/dev/null | tee -a "$LOG_FILE" >&2; }; then
+        :
+      else
         exit $?
+      fi
+    else
+      exit $rc
     fi
+  fi
+
+  MD_PATH="$(awk '/^Written: / { sub(/^Written: /, ""); last=$0 } END { if (last) print last }' "$LOG_FILE")"
+  if [[ -z "$MD_PATH" || ! -f "$MD_PATH" ]]; then
+    log "[error] Transcription completed but no 'Written:' path produced."
     exit 1
+  fi
+
+  # The source audio is NEVER deleted. It stays in the inbox and (if --archive-s3)
+  # is already safe in S3.
+  printf '%s\n' "$MD_PATH"
+  exit 0
 fi
 
-# --- Remote execution ---
+# ---- main: remote path ----
 REMOTE_STAGING="/tmp/transcribe-staging"
 FILENAME="$(basename "$AUDIO")"
 REMOTE_FILE="${REMOTE_STAGING}/${FILENAME}"
@@ -124,63 +247,72 @@ REMOTE_LOG="${REMOTE_STAGING}/${FILENAME}.log"
 TAIL_PID=""
 
 cleanup() {
-    # Kill the tail process if it's still running
-    [[ -n "$TAIL_PID" ]] && kill "$TAIL_PID" 2>/dev/null || true
-    wait "$TAIL_PID" 2>/dev/null || true
-    # Clean up remote staging
-    ssh -q "$REMOTE" "rm -f '${REMOTE_FILE}' '${REMOTE_LOG}'" 2>/dev/null || true
+  [[ -n "$TAIL_PID" ]] && kill "$TAIL_PID" 2>/dev/null || true
+  wait "$TAIL_PID" 2>/dev/null || true
+  ssh -q "$REMOTE" "rm -f '${REMOTE_FILE}' '${REMOTE_LOG}'" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-# 1. Push file
-echo "[remote] Pushing ${FILENAME} to ${TRANSCRIBE_HOST}..." >&2
+log "[remote] Pushing ${FILENAME} to ${TRANSCRIBE_HOST}..."
 ssh -q "$REMOTE" "mkdir -p ${REMOTE_STAGING}"
 scp -q "$AUDIO" "${REMOTE}:${REMOTE_FILE}"
-echo "[remote] Upload complete. Starting transcription..." >&2
+log "[remote] Upload complete."
 
-# 2. Create empty log file, then start tailing it in the background
-ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
-ssh -q "$REMOTE" "tail -f '${REMOTE_LOG}'" &
-TAIL_PID=$!
-
-# 3. Run transcription (blocks until done)
-if run_remote_transcribe; then
-    TRANSCRIBE_EXIT=0
-else
-    TRANSCRIBE_EXIT=$?
-    if should_retry_on_cpu; then
-        echo "[warn] Remote transcription failed in auto mode; retrying with --device cpu..." >&2
-        ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
-        if run_remote_transcribe true; then
-            TRANSCRIBE_EXIT=0
-        else
-            TRANSCRIBE_EXIT=$?
-        fi
-    fi
+# STEP 1 (PRIORITY): back up the source to S3 BEFORE transcribing, via the
+# already-staged remote copy, and verify it landed. The source is never deleted.
+if [[ "$ARCHIVE_S3" == "true" ]]; then
+  KEY="$(s3_key_for "$AUDIO")"
+  log "[s3] (backup-first) Uploading via remote mc -> ${S3_ALIAS}/${S3_BUCKET}/${KEY}"
+  if ssh -q "$REMOTE" "${MC_BIN} cp --quiet '${REMOTE_FILE}' '${S3_ALIAS}/${S3_BUCKET}/${KEY}' && ${MC_BIN} stat '${S3_ALIAS}/${S3_BUCKET}/${KEY}' >/dev/null" >&2; then
+    log "[s3] Upload verified. Local source preserved (never deleted): $AUDIO"
+  else
+    log "[error] S3 upload/verify FAILED; preserving source + stashing local safety copy."
+    stash_local "$AUDIO"
+  fi
 fi
 
-# 4. Give tail a moment to catch up, then kill it
+log "[remote] Starting transcription..."
+ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
+ssh -q "$REMOTE" "tail -f '${REMOTE_LOG}'" >&2 &
+TAIL_PID=$!
+
+if run_remote_transcribe false; then
+  TRANSCRIBE_EXIT=0
+else
+  TRANSCRIBE_EXIT=$?
+  if should_retry_on_cpu; then
+    log "[warn] Remote transcription failed (exit $TRANSCRIBE_EXIT); retrying with --device cpu..."
+    ssh -q "$REMOTE" "truncate -s 0 '${REMOTE_LOG}'"
+    if run_remote_transcribe true; then
+      TRANSCRIBE_EXIT=0
+    else
+      TRANSCRIBE_EXIT=$?
+    fi
+  fi
+fi
+
 sleep 1
 kill "$TAIL_PID" 2>/dev/null || true
 wait "$TAIL_PID" 2>/dev/null || true
 TAIL_PID=""
 
 if [[ $TRANSCRIBE_EXIT -ne 0 ]]; then
-    echo "[error] Transcription failed (exit $TRANSCRIBE_EXIT)" >&2
-    exit 1
+  log "[error] Transcription failed (exit $TRANSCRIBE_EXIT)"
+  exit 1
 fi
 
-# 5. Parse the "Written:" line from the remote log
-REMOTE_MD=$(ssh -q "$REMOTE" "grep '^Written:' '${REMOTE_LOG}'" | sed 's/Written: //')
-
-if [[ -n "$REMOTE_MD" ]]; then
-    LOCAL_DIR="${HOME}/d/Transcripts"
-    mkdir -p "$LOCAL_DIR"
-    LOCAL_MD="${LOCAL_DIR}/$(basename "$REMOTE_MD")"
-
-    scp -q "${REMOTE}:${REMOTE_MD}" "$LOCAL_MD"
-    echo "[local] Downloaded: ${LOCAL_MD}" >&2
-else
-    echo "[error] No output file produced" >&2
-    exit 1
+REMOTE_MD=$(ssh -q "$REMOTE" "grep '^Written:' '${REMOTE_LOG}' | tail -n1 | sed 's/^Written: //'")
+if [[ -z "$REMOTE_MD" ]]; then
+  log "[error] No output file produced"
+  exit 1
 fi
+
+LOCAL_DIR="${TRANSCRIPTS:-${HOME}/d/Notes/Transcripts}"
+mkdir -p "$LOCAL_DIR"
+LOCAL_MD="${LOCAL_DIR}/$(basename "$REMOTE_MD")"
+scp -q "${REMOTE}:${REMOTE_MD}" "$LOCAL_MD"
+log "[remote] Downloaded: ${LOCAL_MD}"
+
+# Source audio was already backed up to S3 before transcription (STEP 1 above)
+# and is NEVER deleted.
+printf '%s\n' "$LOCAL_MD"
