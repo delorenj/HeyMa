@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""secure-source — durably archive an audio source to S3 (via mc), stash a local
+safety copy on failure, and NEVER delete the source. Prints one JSON status line
+to stdout.
+
+Extracted from HeyMa bin/transcribe (archive_to_s3 + stash_local) so n8n can own
+"secure the source" as its own atomic, visible node instead of burying it in the
+transcribe god-script. Backup-first / never-delete is the invariant.
+
+Always exits 0: a backup hiccup must never fail the calling pipeline (the source
+is preserved locally and stashed; transcription still proceeds).
+
+Env overrides: TRANSCRIBE_S3_ALIAS (delo), TRANSCRIBE_S3_BUCKET (recordings),
+MC_BIN (/usr/local/bin/mc), TRANSCRIBE_STASH_DIR (~/audio/recovered).
+
+Usage: secure-source <audio-file>   # -> {"ok":true,"s3Uri":"s3://...","src":"..."}
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+
+
+def main():
+    if len(sys.argv) < 2 or not sys.argv[1]:
+        print(json.dumps({"ok": False, "error": "usage: secure-source <audio-file>"}))
+        return 0
+    src = os.path.realpath(sys.argv[1])
+    alias = os.environ.get("TRANSCRIBE_S3_ALIAS", "delo")
+    bucket = os.environ.get("TRANSCRIBE_S3_BUCKET", "recordings")
+    mc = os.environ.get("MC_BIN", "/usr/local/bin/mc")
+    stash_dir = os.environ.get("TRANSCRIBE_STASH_DIR", os.path.expanduser("~/audio/recovered"))
+
+    try:
+        mtime = os.stat(src).st_mtime
+    except OSError as e:
+        print(json.dumps({"ok": False, "stashed": False, "error": f"stat failed: {e}", "src": src}))
+        return 0
+    dt = datetime.fromtimestamp(mtime)
+    base = os.path.basename(src)
+    key = f"{dt:%Y-%m-%d}/{dt:%H%M%S}-{base}"
+    dest = f"{alias}/{bucket}/{key}"
+
+    ok = False
+    if os.path.exists(mc):
+        try:
+            subprocess.run([mc, "cp", "--quiet", src, dest], check=True, stdout=sys.stderr, stderr=sys.stderr)
+            subprocess.run([mc, "stat", dest], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ok = True
+        except Exception as e:  # noqa: BLE001 — any mc failure -> stash fallback
+            print(f"[secure-source] S3 upload/verify failed: {e}", file=sys.stderr)
+    else:
+        print(f"[secure-source] mc not found at {mc}", file=sys.stderr)
+
+    if ok:
+        print(json.dumps({"ok": True, "stashed": False, "s3Uri": f"s3://{bucket}/{key}", "src": src}))
+        return 0
+
+    stashed_path = None
+    try:
+        os.makedirs(stash_dir, exist_ok=True)
+        cand = os.path.join(stash_dir, f"{dt:%Y%m%d-%H%M%S}-{base}")
+        if not os.path.exists(cand):
+            shutil.copy2(src, cand)
+        stashed_path = cand
+    except Exception as e:  # noqa: BLE001
+        print(f"[secure-source] stash failed: {e}", file=sys.stderr)
+    print(json.dumps({"ok": False, "stashed": stashed_path is not None, "stashPath": stashed_path, "src": src}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
