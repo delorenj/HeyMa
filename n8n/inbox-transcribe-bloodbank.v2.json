@@ -1,6 +1,6 @@
 [
   {
-    "updatedAt": "2026-07-14T20:24:31.000Z",
+    "updatedAt": "2026-07-14T21:17:37.000Z",
     "createdAt": "2026-07-14T18:50:44.470Z",
     "id": "r2TUca8smk5HDNZx",
     "name": "Inbox → Transcribe → Bloodbank (v2)",
@@ -73,21 +73,22 @@
         "parameters": {
           "mode": "runOnceForEachItem",
           "language": "javaScript",
-          "jsCode": "const j = $input.item.json;\nconst sourcePath = j.sourcePath || j.path;\nconst transcriptionId = String($execution.id);\nconst started = { transcription_id: transcriptionId, file_path: sourcePath, engine: 'whisper' };\nj.sourcePath = sourcePath;\nj.filePath = sourcePath;\nj.transcriptionId = transcriptionId;\nj.srcB64 = Buffer.from(sourcePath, 'utf8').toString('base64');\nj.startedB64 = Buffer.from(JSON.stringify(started)).toString('base64');\nreturn $input.item;"
+          "jsCode": "const j = $input.item.json;\nconst sourcePath = j.sourcePath || j.path;\nconst transcriptionId = String($execution.id);\nj.sourcePath = sourcePath;\nj.filePath = sourcePath;\nj.transcriptionId = transcriptionId;\nj.srcB64 = Buffer.from(sourcePath, 'utf8').toString('base64');\nj.startedData = { transcription_id: transcriptionId, file_path: sourcePath, engine: 'whisper' };\nreturn $input.item;"
         }
       },
       {
         "id": "8447bb80-bdc2-499e-b756-20add502fa5a",
         "name": "Emit Transcription Started",
-        "type": "n8n-nodes-base.executeCommand",
+        "type": "n8n-nodes-bloodbank.bloodbank",
         "typeVersion": 1,
         "position": [
           672,
           96
         ],
         "parameters": {
-          "executeOnce": false,
-          "command": "=export PATH=\"$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:$PATH\"\nprintf %s '{{ $json.startedB64 }}' | base64 -d | bb-emit --type bloodbank.v1.audio.transcription.started"
+          "event": "bloodbank.v1.audio.transcription.started",
+          "data": "={{ $json.startedData }}",
+          "connection": {}
         }
       },
       {
@@ -160,21 +161,22 @@
         "parameters": {
           "mode": "runOnceForEachItem",
           "language": "javaScript",
-          "jsCode": "const t = JSON.parse($input.item.json.stdout);\nconst p = $('Prepare Job').first().json;\nconst data = {\n  transcription_id: p.transcriptionId,\n  file_path: p.filePath,\n  transcript_text: '',\n  transcript_uri: 'file://' + t.mdPath,\n  engine: 'whisper',\n};\n$input.item.json.mdPath = t.mdPath;\n$input.item.json.completedB64 = Buffer.from(JSON.stringify(data)).toString('base64');\nreturn $input.item;"
+          "jsCode": "const t = JSON.parse($input.item.json.stdout);\nconst p = $('Prepare Job').first().json;\n$input.item.json.mdPath = t.mdPath;\n$input.item.json.completedData = { transcription_id: p.transcriptionId, file_path: p.filePath, transcript_text: '', transcript_uri: 'file://' + t.mdPath, engine: 'whisper' };\nreturn $input.item;"
         }
       },
       {
         "id": "4ae80b9d-237d-4078-b687-ff5606b53383",
         "name": "Emit Transcription Completed",
-        "type": "n8n-nodes-base.executeCommand",
+        "type": "n8n-nodes-bloodbank.bloodbank",
         "typeVersion": 1,
         "position": [
           1792,
           0
         ],
         "parameters": {
-          "executeOnce": false,
-          "command": "=export PATH=\"$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:$PATH\"\nprintf %s '{{ $json.completedB64 }}' | base64 -d | bb-emit --type bloodbank.v1.audio.transcription.completed"
+          "event": "bloodbank.v1.audio.transcription.completed",
+          "data": "={{ $json.completedData }}",
+          "connection": {}
         }
       },
       {
@@ -189,21 +191,22 @@
         "parameters": {
           "mode": "runOnceForEachItem",
           "language": "javaScript",
-          "jsCode": "let t = {};\ntry { t = JSON.parse($input.item.json.stdout); } catch (e) {}\nconst p = $('Prepare Job').first().json;\nconst data = {\n  transcription_id: p.transcriptionId,\n  file_path: p.filePath,\n  error_code: 'engine.error',\n  error_message: (t && t.error) ? String(t.error) : 'transcription failed',\n  retryable: true,\n};\n$input.item.json.failedB64 = Buffer.from(JSON.stringify(data)).toString('base64');\nreturn $input.item;"
+          "jsCode": "let t = {};\ntry { t = JSON.parse($input.item.json.stdout); } catch (e) {}\nconst p = $('Prepare Job').first().json;\n$input.item.json.failedData = { transcription_id: p.transcriptionId, file_path: p.filePath, error_code: 'engine.error', error_message: (t && t.error) ? String(t.error) : 'transcription failed', retryable: true };\nreturn $input.item;"
         }
       },
       {
         "id": "fe913741-3f54-4067-ac58-e9078669399c",
         "name": "Emit Transcription Failed",
-        "type": "n8n-nodes-base.executeCommand",
+        "type": "n8n-nodes-bloodbank.bloodbank",
         "typeVersion": 1,
         "position": [
           1792,
           192
         ],
         "parameters": {
-          "executeOnce": false,
-          "command": "=export PATH=\"$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:$PATH\"\nprintf %s '{{ $json.failedB64 }}' | base64 -d | bb-emit --type bloodbank.v1.audio.transcription.failed"
+          "event": "bloodbank.v1.audio.transcription.failed",
+          "data": "={{ $json.failedData }}",
+          "connection": {}
         }
       },
       {
@@ -360,9 +363,9 @@
       "builderVariant": "mcp"
     },
     "pinData": null,
-    "versionId": "c8e44ca7-7d38-476c-8bbb-4c7618d883f1",
-    "activeVersionId": "c8e44ca7-7d38-476c-8bbb-4c7618d883f1",
-    "versionCounter": 4,
+    "versionId": "4aedb3d5-993b-489d-98eb-7a6e462115c7",
+    "activeVersionId": "4aedb3d5-993b-489d-98eb-7a6e462115c7",
+    "versionCounter": 7,
     "triggerCount": 2,
     "tags": [],
     "shared": [
