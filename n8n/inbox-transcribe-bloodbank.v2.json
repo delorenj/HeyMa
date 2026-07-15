@@ -1,6 +1,6 @@
 [
   {
-    "updatedAt": "2026-07-14T21:17:37.000Z",
+    "updatedAt": "2026-07-15T03:45:10.000Z",
     "createdAt": "2026-07-14T18:50:44.470Z",
     "id": "r2TUca8smk5HDNZx",
     "name": "Inbox → Transcribe → Bloodbank (v2)",
@@ -116,7 +116,7 @@
         ],
         "parameters": {
           "executeOnce": false,
-          "command": "=export PATH=\"$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:$PATH\"\nSRC=\"$(printf %s '{{ $('Prepare Job').first().json.srcB64 }}' | base64 -d)\"\nif MD=\"$(transcribe \"$SRC\")\"; then\n  python3 -c 'import json,sys;print(json.dumps({\"ok\":True,\"mdPath\":sys.argv[1]}))' \"$MD\"\nelse\n  RC=$?\n  python3 -c 'import json,sys;print(json.dumps({\"ok\":False,\"rc\":int(sys.argv[1]),\"error\":\"transcription failed; see execution log\"}))' \"$RC\"\nfi"
+          "command": "=export PATH=\"$HOME/.local/share/mise/shims:$HOME/.local/bin:/usr/local/bin:$PATH\"\nSRC=\"$(printf %s '{{ $('Prepare Job').first().json.srcB64 }}' | base64 -d)\"\nif MD=\"$(transcribe \"$SRC\")\"; then\n  METAB64=\"$(base64 -w0 \"${MD%.*}.meta.json\" 2>/dev/null || echo '')\"\n  python3 -c 'import json,sys;print(json.dumps({\"ok\":True,\"mdPath\":sys.argv[1],\"metaB64\":sys.argv[2]}))' \"$MD\" \"$METAB64\"\nelse\n  RC=$?\n  python3 -c 'import json,sys;print(json.dumps({\"ok\":False,\"rc\":int(sys.argv[1]),\"error\":\"transcription failed; see execution log\"}))' \"$RC\"\nfi"
         }
       },
       {
@@ -161,7 +161,7 @@
         "parameters": {
           "mode": "runOnceForEachItem",
           "language": "javaScript",
-          "jsCode": "const t = JSON.parse($input.item.json.stdout);\nconst p = $('Prepare Job').first().json;\n$input.item.json.mdPath = t.mdPath;\n$input.item.json.completedData = { transcription_id: p.transcriptionId, file_path: p.filePath, transcript_text: '', transcript_uri: 'file://' + t.mdPath, engine: 'whisper' };\nreturn $input.item;"
+          "jsCode": "const t = JSON.parse($input.item.json.stdout);\nconst p = $('Prepare Job').first().json;\nlet meta = {};\ntry { if (t.metaB64) meta = JSON.parse(Buffer.from(t.metaB64, \"base64\").toString(\"utf8\")); } catch (e) {}\nlet s3 = {};\ntry { s3 = JSON.parse($('Secure Source (S3 + stash)').first().json.stdout); } catch (e) {}\n$input.item.json.mdPath = t.mdPath;\n$input.item.json.completedData = {\n  transcription_id: p.transcriptionId,\n  file_path: p.filePath,\n  transcript_text: '',\n  transcript_uri: 'file://' + t.mdPath,\n  engine: 'whisper',\n  engine_model: meta.model || 'large-v3',\n  duration_seconds: meta.duration_seconds != null ? meta.duration_seconds : null,\n  language_detected: meta.language || null,\n  word_count: meta.word_count != null ? meta.word_count : null,\n  s3_uri: s3.s3Uri || null,\n  stashed: !!s3.stashed,\n};\nreturn $input.item;"
         }
       },
       {
@@ -191,7 +191,7 @@
         "parameters": {
           "mode": "runOnceForEachItem",
           "language": "javaScript",
-          "jsCode": "let t = {};\ntry { t = JSON.parse($input.item.json.stdout); } catch (e) {}\nconst p = $('Prepare Job').first().json;\n$input.item.json.failedData = { transcription_id: p.transcriptionId, file_path: p.filePath, error_code: 'engine.error', error_message: (t && t.error) ? String(t.error) : 'transcription failed', retryable: true };\nreturn $input.item;"
+          "jsCode": "let t = {};\ntry { t = JSON.parse($input.item.json.stdout); } catch (e) {}\nconst p = $('Prepare Job').first().json;\nlet s3 = {};\ntry { s3 = JSON.parse($('Secure Source (S3 + stash)').first().json.stdout); } catch (e) {}\n$input.item.json.failedData = {\n  transcription_id: p.transcriptionId,\n  file_path: p.filePath,\n  error_code: 'engine.error',\n  error_message: (t && t.error) ? String(t.error) : 'transcription failed',\n  retryable: true,\n  engine: 'whisper',\n  s3_uri: s3.s3Uri || null,\n  stashed: !!s3.stashed,\n};\nreturn $input.item;"
         }
       },
       {
@@ -363,9 +363,9 @@
       "builderVariant": "mcp"
     },
     "pinData": null,
-    "versionId": "4aedb3d5-993b-489d-98eb-7a6e462115c7",
-    "activeVersionId": "4aedb3d5-993b-489d-98eb-7a6e462115c7",
-    "versionCounter": 7,
+    "versionId": "2f502f0c-77dd-4b78-b538-157a02fee4dc",
+    "activeVersionId": "2f502f0c-77dd-4b78-b538-157a02fee4dc",
+    "versionCounter": 10,
     "triggerCount": 2,
     "tags": [],
     "shared": [
