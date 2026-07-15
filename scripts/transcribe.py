@@ -473,7 +473,7 @@ def main():
     parser = argparse.ArgumentParser(description="Transcribe audio to markdown")
     parser.add_argument("audio", help="Path to audio file (MP3, WAV, etc.)")
     parser.add_argument("-o", "--output", help="Output markdown file (default: same name as input with .md)")
-    parser.add_argument("-m", "--model", default="base", help="Whisper model size: tiny, base, small, medium, large-v3 (default: base)")
+    parser.add_argument("-m", "--model", default="large-v3", help="Whisper model size: tiny, base, small, medium, large-v3 (default: large-v3)")
     parser.add_argument("-l", "--language", default=None, help="Language code (e.g., en). Auto-detected if omitted.")
     parser.add_argument("--groq", action="store_true", help="Use Groq API instead of local model")
     parser.add_argument("--timestamps", action="store_true", help="Include segment timestamps in output")
@@ -524,16 +524,19 @@ def main():
     else:
         transcript_dir = Path.home() / "d" / "Transcripts"
         transcript_dir.mkdir(parents=True, exist_ok=True)
-        dur = result["duration"] or 0
-        dur_h = int(dur // 3600)
-        dur_m = int((dur % 3600) // 60)
-        # Use file creation date (birth time if available, else mtime)
-        stat = Path(audio_path).stat()
-        file_time = getattr(stat, "st_birthtime", None) or stat.st_mtime
-        date_str = datetime.fromtimestamp(file_time).strftime("%Y%m%d")
-        filename = f"{date_str}-{dur_h}h{dur_m:02d}m"
+        # Name the transcript after the SOURCE file stem so distinct recordings
+        # never collide. The old "<date>-<duration>" scheme silently overwrote
+        # short same-day clips (18 voice memos collapsed onto 2 files). The stem
+        # is unique per recording; a numeric guard covers any residual clash and
+        # guarantees we NEVER overwrite an existing transcript.
+        stem = Path(audio_path).stem
         suffix = ".json" if args.json else ".md"
-        output_path = str(transcript_dir / f"{filename}{suffix}")
+        candidate = transcript_dir / f"{stem}{suffix}"
+        n = 1
+        while candidate.exists():
+            candidate = transcript_dir / f"{stem}-{n}{suffix}"
+            n += 1
+        output_path = str(candidate)
 
     if args.json:
         # Include diarization in JSON if present
@@ -548,6 +551,23 @@ def main():
     else:
         Path(output_path).write_text(output, encoding="utf-8")
         log(f"Written: {output_path}")
+        # Sidecar metadata for observability (the n8n pipeline reads this to
+        # enrich the audio.transcription.completed event: model, duration,
+        # language, word_count). Only for markdown output.
+        if not args.json:
+            meta = {
+                "mdPath": output_path,
+                "model": result.get("model"),
+                "backend": result.get("backend"),
+                "duration_seconds": result.get("duration"),
+                "language": result.get("language"),
+                "word_count": len((result.get("text") or "").split()),
+                "segment_count": len(result.get("segments") or []),
+                "diarized": bool(diarization),
+            }
+            meta_path = str(Path(output_path).with_suffix(".meta.json"))
+            Path(meta_path).write_text(json.dumps(meta), encoding="utf-8")
+            log(f"Meta: {meta_path}")
 
 
 if __name__ == "__main__":
