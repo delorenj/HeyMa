@@ -114,12 +114,24 @@ PY
   if ((${#EXTRA_ARGS[@]} > 0)); then cmd_args+=("${EXTRA_ARGS[@]}"); fi
   [[ "$force_cpu" == "true" ]] && cmd_args+=("--device" "cpu")
 
-  # Diarization is now enabled by default and requires the diarization venv.
+  # Prefer the dedicated diarization venv (.venv-diarization) when present: it
+  # carries nemo_toolkit[asr] + librosa on top of the GPU faster-whisper stack.
+  # When it exists we AUTO-ENABLE speaker diarization so a bare `transcribe
+  # <file>` (how the n8n pipeline invokes it) "just works". This is safe:
+  # transcribe.py guards --diarization (if deps are missing it logs a warning
+  # and continues without speaker labels), and diarize_local() degrades
+  # gracefully on any runtime error. We do NOT auto-add it for the Groq API
+  # path (no local diarization there) or if the caller already passed the flag.
+  # When the venv is absent we fall back to the main uv env and stay fast by
+  # NOT diarizing (its deps are intentionally not installed).
   if [[ -x "$DIARIZATION_PYTHON" ]]; then
     runner=("$DIARIZATION_PYTHON")
+    if ! has_arg --diarization && ! has_arg --groq; then
+      cmd_args+=("--diarization")
+    fi
   else
-    log "[warn] Diarization venv ${DIARIZATION_PYTHON} missing; run scripts/setup-diarization-venv.sh."
-    log "[warn] Falling back to default uv env (diarization will be skipped if deps are missing)."
+    log "[warn] Diarization venv ${DIARIZATION_PYTHON} missing; diarization will be skipped."
+    log "[warn] Create it with: uv venv --python 3.12 .venv-diarization && uv pip install --python .venv-diarization/bin/python -e . 'nemo_toolkit[asr]'"
     runner=(mise x -- uv run python)
   fi
 
@@ -133,11 +145,16 @@ run_remote_transcribe() {
   local runner_cmd="mise x -- uv run python"
   if ((${#EXTRA_ARGS[@]} > 0)); then remote_args=("${EXTRA_ARGS[@]}"); fi
   [[ "$force_cpu" == "true" ]] && remote_args+=("--device" "cpu")
-  if ((${#remote_args[@]} > 0)); then
-    printf -v escaped_args ' %q' "${remote_args[@]}"
-  fi
+  # Auto-enable diarization when the remote host has the diarization venv, matching
+  # the local path. Guarded the same way (not for --groq / already-passed).
   if ssh -q "$REMOTE" "test -x '${DIARIZATION_PYTHON}'"; then
     runner_cmd="'${DIARIZATION_PYTHON}'"
+    if ! has_arg --diarization && ! has_arg --groq; then
+      remote_args+=("--diarization")
+    fi
+  fi
+  if ((${#remote_args[@]} > 0)); then
+    printf -v escaped_args ' %q' "${remote_args[@]}"
   fi
   ssh -q "$REMOTE" "${MISE_INIT}; cd ${TRANSCRIBE_DIR} && PYTHONUNBUFFERED=1 ${runner_cmd} scripts/transcribe.py '${REMOTE_FILE}' --progress-file '${REMOTE_LOG}'${escaped_args}"
 }
