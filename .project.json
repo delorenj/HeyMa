@@ -1,0 +1,21 @@
+{
+  "project_name": "transcription-queue",
+  "project_description": "Ingress for audio to be transcribed",
+  "project_slug": "transcription-queue",
+  "repo_path": "/home/delorenj/audio",
+  "ticket_provider": {
+    "type": "plane",
+    "workspace": "",
+    "identifier": "",
+    "board_id": "",
+    "state": "planned"
+  },
+  "agents": {},
+  "automation": {
+    "reconcile": {
+      "enabled": false,
+      "grace_hours": 0,
+      "auto_review": true
+    }
+  }
+}

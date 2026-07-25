@@ -1,0 +1,6 @@
+slug: transcription-enhance
+description: TODO — placeholder registered by Wax; write the script then flip enabled.
+enabled: false
+requires: []
+timeout_s: 900
+command: ["/home/delorenj/audio/passes.d/bin/transcription-enhance", "{md_path}"]

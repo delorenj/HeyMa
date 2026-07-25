@@ -139,3 +139,25 @@ test_*.py
 launch.json
 .DS_Store
 test/**.btr
+**/.claude/settings.local.json
+~/DevCloud/.gitignore_global
+node_modules
+*.mp4
+*.mp3
+*.zip
+*.aab
+.lastagent
+
+# Secrets — .env is materialized by `op inject -i .env.op > .env` on mise enter.
+# NEVER commit it. .env.op holds only 1Password references or safe literals and IS committed.
+.env
+.env.*
+!.env.op
+archive/**/*
+dropoff/**/*
+inbox/**/*
+stream/**/*
+runtime/
+var/
+assets/
+recovered/**/*

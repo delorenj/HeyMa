@@ -1,0 +1,202 @@
+{
+  "name": "Inbox → Local Transcribe (Whisper)",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerOn": "folder",
+        "path": "/home/delorenj/audio/inbox",
+        "events": [
+          "add"
+        ],
+        "options": {
+          "awaitWriteFinish": true,
+          "ignored": "/(\\.processed|voice-memos|202[3-9]|ASR|meetily)(/|$)",
+          "ignoreInitial": true,
+          "ignoreMode": "match"
+        }
+      },
+      "id": "5f5e8c4b-f0e3-44f3-b93d-46aef2777a68",
+      "name": "Watch Inbox",
+      "type": "n8n-nodes-base.localFileTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "executeOnce": true,
+      "retryOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "Bxgua92kxXkycFB4",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/Bxgua92kxXkycFB4",
+          "cachedResultName": "Parse File for Audio"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "3d5c02c6-a339-4ea1-b0aa-70c8e29aaee9",
+      "name": "Call Parse File for Audio",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        224,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=set -e\nexport PATH=\"$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH\"\n/home/delorenj/.local/bin/transcribe \"{{ $json.sourcePath }}\" --archive-s3\n"
+      },
+      "id": "e9fd7713-c999-4301-8392-63248fa3998d",
+      "name": "Run Transcribe",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        448,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "triggerOn": "folder",
+        "path": "/home/delorenj/audio/ingest",
+        "events": [
+          "add"
+        ],
+        "options": {
+          "awaitWriteFinish": true,
+          "ignoreInitial": true,
+          "ignoreMode": "match"
+        }
+      },
+      "id": "84b87170-3ed4-4540-8374-f3237126ab37",
+      "name": "Watch Ingest (local)",
+      "type": "n8n-nodes-base.localFileTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "executeOnce": true,
+      "retryOnFail": true,
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "pinData": {
+    "Watch Inbox": [
+      {
+        "json": {
+          "event": "add",
+          "path": "/home/delorenj/audio/inbox/clip_0055.mp3"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Watch Inbox": {
+      "main": [
+        [
+          {
+            "node": "Call Parse File for Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Parse File for Audio": {
+      "main": [
+        [
+          {
+            "node": "Run Transcribe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Transcribe": {
+      "main": [
+        []
+      ]
+    },
+    "Watch Ingest (local)": {
+      "main": [
+        [
+          {
+            "node": "Call Parse File for Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "a4763ec0-61fa-48f6-866d-77fe017e4cab",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "d3c84561a28d140faaca6df3dd8af78ebe62704589f3369fc804248a689e90aa"
+  },
+  "id": "Yw0WvYW1yAU1QG49",
+  "tags": [
+    {
+      "updatedAt": "2026-05-13T11:46:34.692Z",
+      "createdAt": "2026-05-13T11:46:34.692Z",
+      "id": "752Bb0usBLeAytwk",
+      "name": "obsidian"
+    },
+    {
+      "updatedAt": "2026-05-12T18:21:30.029Z",
+      "createdAt": "2026-05-12T18:21:30.029Z",
+      "id": "BS3cDTeiQDCZvzaO",
+      "name": "audio"
+    },
+    {
+      "updatedAt": "2026-05-13T11:46:34.597Z",
+      "createdAt": "2026-05-13T11:46:34.597Z",
+      "id": "alPetPXT9IN4qgqE",
+      "name": "fireflies-replacement"
+    },
+    {
+      "updatedAt": "2026-05-13T11:46:34.790Z",
+      "createdAt": "2026-05-13T11:46:34.790Z",
+      "id": "gQP4HjIL8SP1xdkh",
+      "name": "draft"
+    },
+    {
+      "updatedAt": "2026-05-13T12:08:07.550Z",
+      "createdAt": "2026-05-13T12:08:07.550Z",
+      "id": "oASpXOrLJfm10Xjd",
+      "name": "whisper"
+    },
+    {
+      "updatedAt": "2025-10-19T19:04:34.475Z",
+      "createdAt": "2025-10-19T19:04:34.475Z",
+      "id": "qZ1hmEiiWs0MvTEl",
+      "name": "transcripts"
+    }
+  ]
+}

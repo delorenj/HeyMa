@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# Wrapper script to run n8n_webhook_client.py with mise-managed uv
-set -euo pipefail
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
-
-exec mise x -- uv run python scripts/n8n_webhook_client.py "$@"
