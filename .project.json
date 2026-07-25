@@ -1,14 +1,14 @@
 {
-  "project_name": "transcription-queue",
-  "project_description": "Ingress for audio to be transcribed",
+  "project_name": "HeyMa",
+  "project_description": "33GOD TTS/STT Audio Pipeline",
   "project_slug": "transcription-queue",
-  "repo_path": "/home/delorenj/audio",
+  "repo_path": "/home/delorenj/HeyMa",
   "ticket_provider": {
     "type": "plane",
-    "workspace": "",
-    "identifier": "",
-    "board_id": "",
-    "state": "planned"
+    "workspace": "33god",
+    "identifier": "heyma",
+    "board_id": "7485039f-85b0-47db-ad99-d11497f043d7",
+    "state": "active"
   },
   "agents": {},
   "automation": {

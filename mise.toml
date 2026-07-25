@@ -8,6 +8,7 @@ _.file = [".env"]
 # `create = false` means mise will not create one on its own.
 CODEX_HOME = { value = ".codex", path = true }
 VAULTDOCS = "/home/delorenj/d/Sandbox/audio"
+
 # This block will handle the linking of
 # agent files to the main AGENTS.md file.
 #
@@ -16,14 +17,26 @@ VAULTDOCS = "/home/delorenj/d/Sandbox/audio"
 # any given level of nesting.
 [[hooks.enter]]
 script = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+[[hooks.enter]]
+script = "op inject -i .env.op > .env"
+[[hooks.enter]]
+script = "sync-skills.py --scope project"
 
 [[watch_files]]
 patterns = ["AGENTS.md"]
 task = "link-agentfiles"
 
+[[watch_files]]
+patterns = [".agents/skills.json"]
+task = "skills-sync"
+
 [tasks.link-agentfiles]
 description = "Symlink all agent files to AGENTS.md"
 run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
+
+[tasks.skills-sync]
+description = "Sync skills from manifest to local CLI dirs"
+run = "sync-skills.py --scope project"
 
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
