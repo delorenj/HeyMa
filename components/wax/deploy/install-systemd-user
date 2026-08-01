@@ -1,0 +1,53 @@
+#!/usr/bin/python3
+"""Render Wax's user unit for the repository's actual installation location."""
+
+import argparse
+from pathlib import Path
+
+
+def locations():
+    component = next(
+        parent for parent in Path(__file__).resolve().parents
+        if (parent / "pyproject.toml").is_file()
+    )
+    repo = next(parent for parent in component.parents if (parent / ".project.json").is_file())
+    return component, repo
+
+
+def systemd_quote(value: Path) -> str:
+    """Quote a literal ExecStart path, including systemd's own specifiers."""
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("%", "%%").replace("$", "\\x24")
+    return f'"{escaped}"'
+
+
+def render(component=None, repo=None) -> str:
+    if component is None or repo is None:
+        component, repo = locations()
+    template = component / "deploy" / "systemd" / "user" / "waxd.service"
+    documentation_uri = (component / "docs" / "WAX-DESIGN.md").as_uri()
+    return (
+        template.read_text()
+        # Percent is systemd's specifier marker. Doubling preserves each URI
+        # percent escape after unit parsing (%% -> literal %).
+        .replace("@WAX_DOCUMENTATION_URI@", documentation_uri.replace("%", "%%"))
+        .replace("@WAX_EXEC_START@", systemd_quote(repo / "bin" / "waxd"))
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    rendered = render()
+    if args.dry_run:
+        print(rendered, end="")
+        return
+    target = Path.home() / ".config" / "systemd" / "user" / "waxd.service"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered)
+    print(target)
+
+
+if __name__ == "__main__":
+    main()

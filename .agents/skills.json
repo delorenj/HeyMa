@@ -1,0 +1,307 @@
+{
+  "$schema": "https://raw.githubusercontent.com/skillex/schemas/main/skills.schema.json",
+  "inherit_global": true,
+  "registry": "https://github.com/delorenj/skillex.git",
+  "skills": [
+    {
+      "name": "bmad-advanced-elicitation",
+      "registry_path": "packs/bmad/6.10.2/bmad-advanced-elicitation"
+    },
+    {
+      "name": "bmad-agent-analyst",
+      "registry_path": "packs/bmad/6.10.2/bmad-agent-analyst"
+    },
+    {
+      "name": "bmad-agent-architect",
+      "registry_path": "packs/bmad/6.10.2/bmad-agent-architect"
+    },
+    {
+      "name": "bmad-agent-builder",
+      "registry_path": "packs/bmad/6.10.2/bmad-agent-builder"
+    },
+    {
+      "name": "bmad-agent-dev",
+      "registry_path": "packs/bmad/6.10.2/bmad-agent-dev"
+    },
+    {
+      "name": "bmad-agent-pm",
+      "registry_path": "packs/bmad/6.10.2/bmad-agent-pm"
+    },
+    {
+      "name": "bmad-agent-tech-writer",
+      "registry_path": "packs/bmad/6.10.2/bmad-agent-tech-writer"
+    },
+    {
+      "name": "bmad-agent-ux-designer",
+      "registry_path": "packs/bmad/6.10.2/bmad-agent-ux-designer"
+    },
+    {
+      "name": "bmad-architecture",
+      "registry_path": "packs/bmad/6.10.2/bmad-architecture"
+    },
+    {
+      "name": "bmad-bmb-setup",
+      "registry_path": "packs/bmad/6.10.2/bmad-bmb-setup"
+    },
+    {
+      "name": "bmad-brainstorming",
+      "registry_path": "packs/bmad/6.10.2/bmad-brainstorming"
+    },
+    {
+      "name": "bmad-check-implementation-readiness",
+      "registry_path": "packs/bmad/6.10.2/bmad-check-implementation-readiness"
+    },
+    {
+      "name": "bmad-checkpoint-preview",
+      "registry_path": "packs/bmad/6.10.2/bmad-checkpoint-preview"
+    },
+    {
+      "name": "bmad-cis-agent-brainstorming-coach",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-agent-brainstorming-coach"
+    },
+    {
+      "name": "bmad-cis-agent-creative-problem-solver",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-agent-creative-problem-solver"
+    },
+    {
+      "name": "bmad-cis-agent-design-thinking-coach",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-agent-design-thinking-coach"
+    },
+    {
+      "name": "bmad-cis-agent-innovation-strategist",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-agent-innovation-strategist"
+    },
+    {
+      "name": "bmad-cis-agent-presentation-master",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-agent-presentation-master"
+    },
+    {
+      "name": "bmad-cis-agent-storyteller",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-agent-storyteller"
+    },
+    {
+      "name": "bmad-cis-design-thinking",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-design-thinking"
+    },
+    {
+      "name": "bmad-cis-innovation-strategy",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-innovation-strategy"
+    },
+    {
+      "name": "bmad-cis-problem-solving",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-problem-solving"
+    },
+    {
+      "name": "bmad-cis-storytelling",
+      "registry_path": "packs/bmad/6.10.2/bmad-cis-storytelling"
+    },
+    {
+      "name": "bmad-code-review",
+      "registry_path": "packs/bmad/6.10.2/bmad-code-review"
+    },
+    {
+      "name": "bmad-correct-course",
+      "registry_path": "packs/bmad/6.10.2/bmad-correct-course"
+    },
+    {
+      "name": "bmad-create-architecture",
+      "registry_path": "packs/bmad/6.10.2/bmad-create-architecture"
+    },
+    {
+      "name": "bmad-create-epics-and-stories",
+      "registry_path": "packs/bmad/6.10.2/bmad-create-epics-and-stories"
+    },
+    {
+      "name": "bmad-create-prd",
+      "registry_path": "packs/bmad/6.10.2/bmad-create-prd"
+    },
+    {
+      "name": "bmad-create-story",
+      "registry_path": "packs/bmad/6.10.2/bmad-create-story"
+    },
+    {
+      "name": "bmad-customize",
+      "registry_path": "packs/bmad/6.10.2/bmad-customize"
+    },
+    {
+      "name": "bmad-dev-auto",
+      "registry_path": "packs/bmad/6.10.2/bmad-dev-auto"
+    },
+    {
+      "name": "bmad-dev-story",
+      "registry_path": "packs/bmad/6.10.2/bmad-dev-story"
+    },
+    {
+      "name": "bmad-document-project",
+      "registry_path": "packs/bmad/6.10.2/bmad-document-project"
+    },
+    {
+      "name": "bmad-domain-research",
+      "registry_path": "packs/bmad/6.10.2/bmad-domain-research"
+    },
+    {
+      "name": "bmad-edit-prd",
+      "registry_path": "packs/bmad/6.10.2/bmad-edit-prd"
+    },
+    {
+      "name": "bmad-editorial-review-prose",
+      "registry_path": "packs/bmad/6.10.2/bmad-editorial-review-prose"
+    },
+    {
+      "name": "bmad-editorial-review-structure",
+      "registry_path": "packs/bmad/6.10.2/bmad-editorial-review-structure"
+    },
+    {
+      "name": "bmad-eval-runner",
+      "registry_path": "packs/bmad/6.10.2/bmad-eval-runner"
+    },
+    {
+      "name": "bmad-forge-idea",
+      "registry_path": "packs/bmad/6.10.2/bmad-forge-idea"
+    },
+    {
+      "name": "bmad-generate-project-context",
+      "registry_path": "packs/bmad/6.10.2/bmad-generate-project-context"
+    },
+    {
+      "name": "bmad-help",
+      "registry_path": "packs/bmad/6.10.2/bmad-help"
+    },
+    {
+      "name": "bmad-index-docs",
+      "registry_path": "packs/bmad/6.10.2/bmad-index-docs"
+    },
+    {
+      "name": "bmad-loop-resolve",
+      "registry_path": "packs/bmad/6.10.2/bmad-loop-resolve"
+    },
+    {
+      "name": "bmad-loop-setup",
+      "registry_path": "packs/bmad/6.10.2/bmad-loop-setup"
+    },
+    {
+      "name": "bmad-loop-sweep",
+      "registry_path": "packs/bmad/6.10.2/bmad-loop-sweep"
+    },
+    {
+      "name": "bmad-market-research",
+      "registry_path": "packs/bmad/6.10.2/bmad-market-research"
+    },
+    {
+      "name": "bmad-module-builder",
+      "registry_path": "packs/bmad/6.10.2/bmad-module-builder"
+    },
+    {
+      "name": "bmad-party-mode",
+      "registry_path": "packs/bmad/6.10.2/bmad-party-mode"
+    },
+    {
+      "name": "bmad-prd",
+      "registry_path": "packs/bmad/6.10.2/bmad-prd"
+    },
+    {
+      "name": "bmad-prfaq",
+      "registry_path": "packs/bmad/6.10.2/bmad-prfaq"
+    },
+    {
+      "name": "bmad-product-brief",
+      "registry_path": "packs/bmad/6.10.2/bmad-product-brief"
+    },
+    {
+      "name": "bmad-qa-generate-e2e-tests",
+      "registry_path": "packs/bmad/6.10.2/bmad-qa-generate-e2e-tests"
+    },
+    {
+      "name": "bmad-quick-dev",
+      "registry_path": "packs/bmad/6.10.2/bmad-quick-dev"
+    },
+    {
+      "name": "bmad-retrospective",
+      "registry_path": "packs/bmad/6.10.2/bmad-retrospective"
+    },
+    {
+      "name": "bmad-review-adversarial-general",
+      "registry_path": "packs/bmad/6.10.2/bmad-review-adversarial-general"
+    },
+    {
+      "name": "bmad-review-edge-case-hunter",
+      "registry_path": "packs/bmad/6.10.2/bmad-review-edge-case-hunter"
+    },
+    {
+      "name": "bmad-review-verification-gap",
+      "registry_path": "packs/bmad/6.10.2/bmad-review-verification-gap"
+    },
+    {
+      "name": "bmad-shard-doc",
+      "registry_path": "packs/bmad/6.10.2/bmad-shard-doc"
+    },
+    {
+      "name": "bmad-spec",
+      "registry_path": "packs/bmad/6.10.2/bmad-spec"
+    },
+    {
+      "name": "bmad-sprint-planning",
+      "registry_path": "packs/bmad/6.10.2/bmad-sprint-planning"
+    },
+    {
+      "name": "bmad-sprint-status",
+      "registry_path": "packs/bmad/6.10.2/bmad-sprint-status"
+    },
+    {
+      "name": "bmad-tea",
+      "registry_path": "packs/bmad/6.10.2/bmad-tea"
+    },
+    {
+      "name": "bmad-teach-me-testing",
+      "registry_path": "packs/bmad/6.10.2/bmad-teach-me-testing"
+    },
+    {
+      "name": "bmad-technical-research",
+      "registry_path": "packs/bmad/6.10.2/bmad-technical-research"
+    },
+    {
+      "name": "bmad-testarch-atdd",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-atdd"
+    },
+    {
+      "name": "bmad-testarch-automate",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-automate"
+    },
+    {
+      "name": "bmad-testarch-ci",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-ci"
+    },
+    {
+      "name": "bmad-testarch-framework",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-framework"
+    },
+    {
+      "name": "bmad-testarch-nfr",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-nfr"
+    },
+    {
+      "name": "bmad-testarch-test-design",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-test-design"
+    },
+    {
+      "name": "bmad-testarch-test-review",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-test-review"
+    },
+    {
+      "name": "bmad-testarch-trace",
+      "registry_path": "packs/bmad/6.10.2/bmad-testarch-trace"
+    },
+    {
+      "name": "bmad-ux",
+      "registry_path": "packs/bmad/6.10.2/bmad-ux"
+    },
+    {
+      "name": "bmad-validate-prd",
+      "registry_path": "packs/bmad/6.10.2/bmad-validate-prd"
+    },
+    {
+      "name": "bmad-workflow-builder",
+      "registry_path": "packs/bmad/6.10.2/bmad-workflow-builder"
+    }
+  ]
+}

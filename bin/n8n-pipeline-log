@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Follow one n8n execution, including synchronous sub-workflows.
+
+Reads n8n's durable event log rather than execution result data, because result
+data is not persisted until long-running nodes finish. Integrated executions
+are correlated to the open Execute Workflow node that launched them.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable, Iterator
+
+DEFAULT_LOG_DIR = Path.home() / ".n8n"
+EVENT_GLOB = "n8nEventLog*.log"
+TERMINAL_EVENTS = {"n8n.workflow.success", "n8n.workflow.failed", "n8n.workflow.crashed"}
+
+
+@dataclass(frozen=True)
+class TraceEvent:
+    timestamp: str
+    event_name: str
+    execution_id: str
+    workflow_id: str
+    workflow_name: str
+    node_name: str | None = None
+    node_type: str | None = None
+    execution_mode: str | None = None
+    success: bool | None = None
+    error: str | None = None
+
+
+def parse_line(line: str) -> TraceEvent | None:
+    try:
+        raw = json.loads(line)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    name = raw.get("eventName", "")
+    if not (name.startswith("n8n.workflow.") or name.startswith("n8n.node.")):
+        return None
+    payload = raw.get("payload") or {}
+    execution_id = payload.get("executionId")
+    if execution_id is None:
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        error = error.get("message") or json.dumps(error, separators=(",", ":"))
+    return TraceEvent(
+        timestamp=str(raw.get("ts", "")),
+        event_name=name,
+        execution_id=str(execution_id),
+        workflow_id=str(payload.get("workflowId", "")),
+        workflow_name=str(payload.get("workflowName", "")),
+        node_name=payload.get("nodeName"),
+        node_type=payload.get("nodeType"),
+        execution_mode=payload.get("mode"),
+        success=payload.get("success"),
+        error=str(error) if error else None,
+    )
+
+
+def ordered_logs(log_dir: Path) -> list[Path]:
+    paths = list(log_dir.glob(EVENT_GLOB))
+    return sorted(paths, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+
+def read_events(paths: Iterable[Path]) -> Iterator[TraceEvent]:
+    for path in paths:
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    event = parse_line(line)
+                    if event:
+                        yield event
+        except FileNotFoundError:
+            continue
+
+
+def latest_root_execution(events: Iterable[TraceEvent]) -> TraceEvent | None:
+    """Return the newest non-integrated workflow start in log order."""
+    latest = None
+    for event in events:
+        if event.event_name != "n8n.workflow.started":
+            continue
+        if event.execution_mode == "integrated":
+            continue
+        latest = event
+    return latest
+
+
+class PipelineTrace:
+    def __init__(self, root_execution_id: str):
+        self.root = root_execution_id
+        self.depths: dict[str, int] = {root_execution_id: 0}
+        self.open_workflow_calls: list[str] = []
+        self.started = False
+        self.finished = False
+        self.seen: set[tuple[str, str, str, str | None]] = set()
+
+    def accept(self, event: TraceEvent) -> tuple[TraceEvent, int] | None:
+        key = (event.timestamp, event.event_name, event.execution_id, event.node_name)
+        if key in self.seen:
+            return None
+
+        if event.execution_id == self.root and event.event_name == "n8n.workflow.started":
+            self.started = True
+        if not self.started:
+            return None
+
+        if (
+            event.event_name == "n8n.workflow.started"
+            and event.execution_id not in self.depths
+            and self.open_workflow_calls
+        ):
+            parent_id = self.open_workflow_calls[-1]
+            self.depths[event.execution_id] = self.depths[parent_id] + 1
+
+        if event.execution_id not in self.depths:
+            return None
+
+        if event.event_name == "n8n.node.started" and event.node_type == "n8n-nodes-base.executeWorkflow":
+            self.open_workflow_calls.append(event.execution_id)
+        elif event.event_name == "n8n.node.finished" and event.node_type == "n8n-nodes-base.executeWorkflow":
+            for index in range(len(self.open_workflow_calls) - 1, -1, -1):
+                if self.open_workflow_calls[index] == event.execution_id:
+                    del self.open_workflow_calls[index]
+                    break
+
+        if event.execution_id == self.root and event.event_name in TERMINAL_EVENTS:
+            self.finished = True
+
+        self.seen.add(key)
+        return event, self.depths[event.execution_id]
+
+
+def local_time(timestamp: str) -> str:
+    try:
+        value = datetime.fromisoformat(timestamp)
+        return value.astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    except ValueError:
+        return timestamp
+
+
+def format_event(event: TraceEvent, depth: int, json_output: bool = False) -> str:
+    phase = event.event_name.rsplit(".", 1)[-1].upper()
+    if json_output:
+        return json.dumps(
+            {
+                "timestamp": event.timestamp,
+                "executionId": event.execution_id,
+                "depth": depth,
+                "workflowId": event.workflow_id,
+                "workflow": event.workflow_name,
+                "event": event.event_name,
+                "node": event.node_name,
+                "nodeType": event.node_type,
+                "mode": event.execution_mode,
+                "success": event.success,
+                "error": event.error,
+            },
+            separators=(",", ":"),
+        )
+    indent = "  " * depth
+    target = event.node_name or event.workflow_name
+    suffix = f" error={event.error}" if event.error else ""
+    return (
+        f"{local_time(event.timestamp)}  exec={event.execution_id:<8} "
+        f"{indent}{phase:<8} {target}{suffix}"
+    )
+
+
+def follow_file(path: Path, offset: int) -> Iterator[str]:
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        handle.seek(offset)
+        while True:
+            line = handle.readline()
+            if line:
+                yield line
+            else:
+                break
+
+
+def run(args: argparse.Namespace) -> int:
+    log_dir = Path(args.log_dir).expanduser()
+    if not log_dir.is_dir():
+        print(f"n8n event-log directory not found: {log_dir}", file=sys.stderr)
+        return 2
+
+    paths = ordered_logs(log_dir)
+    execution_id = args.execution_id
+    follow = args.follow
+    if execution_id is None:
+        latest = latest_root_execution(read_events(paths))
+        if latest is None:
+            print(
+                f"no root executions were found in {log_dir}/{EVENT_GLOB}",
+                file=sys.stderr,
+            )
+            return 1
+        execution_id = latest.execution_id
+        follow = True
+        print(
+            f"following latest root execution {execution_id}: {latest.workflow_name}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    trace = PipelineTrace(str(execution_id))
+    for event in read_events(paths):
+        accepted = trace.accept(event)
+        if accepted:
+            print(format_event(*accepted, json_output=args.json), flush=True)
+
+    if not trace.started:
+        print(
+            f"execution {execution_id} was not found in {log_dir}/{EVENT_GLOB}",
+            file=sys.stderr,
+        )
+        return 1
+    if not follow or trace.finished:
+        return 0
+
+    offsets = {path: path.stat().st_size for path in paths}
+    try:
+        while not trace.finished:
+            for path in ordered_logs(log_dir):
+                offset = offsets.get(path, 0)
+                size = path.stat().st_size
+                if size < offset:
+                    offset = 0
+                for line in follow_file(path, offset):
+                    offset += len(line.encode("utf-8"))
+                    event = parse_line(line)
+                    if event:
+                        accepted = trace.accept(event)
+                        if accepted:
+                            print(format_event(*accepted, json_output=args.json), flush=True)
+                offsets[path] = offset
+            time.sleep(args.poll_interval)
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Show the full n8n node path for an execution and its sub-workflows."
+    )
+    parser.add_argument(
+        "execution_id",
+        nargs="?",
+        help="root n8n execution ID (default: latest root execution, followed live)",
+    )
+    parser.add_argument("-f", "--follow", action="store_true", help="follow until the root finishes")
+    parser.add_argument("--json", action="store_true", help="emit one JSON object per event")
+    parser.add_argument(
+        "--log-dir",
+        default=os.environ.get("N8N_LOG_DIR", str(DEFAULT_LOG_DIR)),
+        help="directory containing n8nEventLog*.log",
+    )
+    parser.add_argument("--poll-interval", type=float, default=0.5, help=argparse.SUPPRESS)
+    return parser
+
+
+if __name__ == "__main__":
+    raise SystemExit(run(build_parser().parse_args()))

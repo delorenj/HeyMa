@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+launcher=$(readlink -f "$0")
+repo_root=$(dirname "$(dirname "$launcher")")
+exec "$repo_root/components/wax/bin/wax" "$@"

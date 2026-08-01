@@ -1,0 +1,303 @@
+#!/usr/bin/python3
+# NOTE: /usr/bin/python3 explicitly, never `env python3` — mise's Python is
+# first on PATH and lacks gi/evdev, which would break the tray and hotkey.
+"""wax — control and inspect the Wax recorder.
+
+Works with or without the daemon. `state --cold` is a pure function of the
+filesystem, so it answers correctly even after waxd has been SIGKILLed.
+"""
+
+import argparse
+import fcntl
+import json
+import sys
+from pathlib import Path
+
+COMPONENT_ROOT = next(
+    parent for parent in Path(__file__).resolve().parents
+    if (parent / "pyproject.toml").is_file()
+)
+sys.path.insert(0, str(COMPONENT_ROOT / "src"))
+
+from wax import archive, capture, events, ledger, migrate, passes, paths, reconcile, sanity, sentinel, state, transcribe_adapter, worker  # noqa: E402
+
+
+def _emit(obj, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(obj, indent=2, sort_keys=True, default=str))
+    else:
+        if isinstance(obj, dict) and "state" in obj:
+            line = obj["state"]
+            if obj.get("cause_code"):
+                line += f"  ({obj['cause_code']})"
+            print(line)
+            if obj.get("evidence"):
+                print(f"  evidence: {obj['evidence']}")
+            for k in ("rid", "pending", "active_item", "partial_bytes"):
+                if obj.get(k) is not None:
+                    print(f"  {k}: {obj[k]}")
+        else:
+            print(json.dumps(obj, indent=2, sort_keys=True, default=str))
+
+
+class _Lock:
+    """Serialise capture lifecycle ops so two starts cannot race the state check."""
+
+    def __enter__(self):
+        paths.ensure_dirs()
+        self.fh = open(paths.LOCK, "w")
+        fcntl.flock(self.fh, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *a):
+        fcntl.flock(self.fh, fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def _active_rid() -> str:
+    rids = sentinel.list_captures()
+    if not rids:
+        raise SystemExit("no active capture")
+    return rids[0]
+
+
+def main() -> int:
+    # --json accepted at ANY position: `wax --json state stream` and
+    # `wax state stream --json` both work. Requiring it before the subcommand
+    # is the kind of papercut that makes a tool feel hostile at 3am.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+
+    ap = argparse.ArgumentParser(prog="wax", parents=[common])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    rec = sub.add_parser("rec", help="capture lifecycle", parents=[common]).add_subparsers(dest="sub", required=True)
+    s = rec.add_parser("start", parents=[common]); s.add_argument("--label"); s.add_argument("--bitrate", default="32k")
+    rec.add_parser("stop", parents=[common]).add_argument("rid", nargs="?")
+    rec.add_parser("cancel", parents=[common]).add_argument("rid", nargs="?")
+    rec.add_parser("salvage", parents=[common]).add_argument("rid", nargs="?")
+    rec.add_parser("list", parents=[common])
+    t = rec.add_parser("toggle", help="start if ready, stop if recording", parents=[common])
+    t.add_argument("--label")
+
+    st = sub.add_parser("state", help="derive a machine's state from disk", parents=[common])
+    st.add_argument("machine", choices=["stream", "inbox", "both"], default="both", nargs="?")
+    st.add_argument("--cold", action="store_true", help="(default) pure filesystem derivation")
+
+    sub.add_parser("status", help="full snapshot of both machines", parents=[common])
+
+    pl = sub.add_parser("pipeline", parents=[common]); pl.add_argument("action", choices=["enable", "disable", "status"])
+
+    h = sub.add_parser("history", help="append-only transition log", parents=[common])
+    h.add_argument("-n", type=int, default=20); h.add_argument("--machine", choices=["stream", "inbox", "item"])
+    sub.add_parser("items", help="ledger item states", parents=[common])
+
+    ep = sub.add_parser("ep", help="enrichment passes", parents=[common]).add_subparsers(dest="sub", required=True)
+    ep.add_parser("list", parents=[common])
+    epr = ep.add_parser("run", parents=[common]); epr.add_argument("slug"); epr.add_argument("item_id")
+    epa = ep.add_parser("run-all", parents=[common]); epa.add_argument("item_id")
+    eps = ep.add_parser("status", parents=[common]); eps.add_argument("item_id", nargs="?")
+
+    rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
+    rc.add_argument("--rebuild", action="store_true")
+
+    ev = sub.add_parser("events", help="bloodbank outbox", parents=[common])
+    ev.add_argument("action", choices=["backlog", "drain"], nargs="?", default="backlog")
+
+    mg = sub.add_parser("migrate", help="fold legacy dirs into the one inbox", parents=[common])
+    mg.add_argument("--plan", action="store_true", help="READ-ONLY: classify and write a manifest")
+    mg.add_argument("--dry-run", action="store_true", help="show exactly what apply would do")
+    mg.add_argument("--apply", action="store_true", help="EXECUTE the plan (moves/copies; deletes nothing)")
+
+    ar = sub.add_parser("archive", help="upload to S3 and size-verify", parents=[common])
+    ar.add_argument("file"); ar.add_argument("--audit", action="store_true")
+
+    tr = sub.add_parser("transcribe", help="transcribe with the sanity gate", parents=[common])
+    tr.add_argument("file")
+
+    dr = sub.add_parser("drain", help="process inbox items now (one-shot)", parents=[common])
+    dr.add_argument("-n", type=int, default=1, help="max items to process")
+
+    args = ap.parse_args()
+    J = args.json
+
+    if args.cmd == "rec":
+        if args.sub == "toggle":
+            # Single entry point for the hotkey. The lock is held across the
+            # decision AND the action so a double-tap cannot start two captures
+            # or race a stop.
+            with _Lock():
+                cur = state.stream_state()
+                if cur["state"] == "recording":
+                    out = capture.stop(cur["rid"])
+                    out["action"] = "stopped"
+                elif cur["state"] == "ready":
+                    r = capture.start(trigger="hotkey", label=args.label)
+                    out = {"action": "started", "rid": r.get("rid"),
+                           "target": r.get("target_name")}
+                else:
+                    # Never silently do nothing: an unexpected state is exactly
+                    # when the user most needs to be told.
+                    out = {"action": "refused", "state": cur["state"],
+                           "cause_code": cur.get("cause_code"),
+                           "evidence": cur.get("evidence")}
+            _emit(out, J)
+            return 0 if out["action"] != "refused" else 2
+        if args.sub == "start":
+            with _Lock():
+                rec_json = capture.start(trigger="cli", label=args.label, bitrate=args.bitrate)
+            _emit({"started": rec_json.get("rid"), "target": rec_json.get("target_name"),
+                   "source": rec_json.get("device_source"), "pid": rec_json.get("pid")}, J)
+            return 0
+        if args.sub == "list":
+            _emit([{"rid": r, "segments": len(sentinel.segments(r)),
+                    "bytes": sentinel.segment_bytes(r)} for r in sentinel.list_captures()], J)
+            return 0
+        rid = args.rid or _active_rid()
+        with _Lock():
+            if args.sub == "stop":
+                _emit(capture.stop(rid), J)
+            elif args.sub == "cancel":
+                _emit(capture.cancel(rid), J)
+            elif args.sub == "salvage":
+                _emit(capture.salvage(rid), J)
+        return 0
+
+    if args.cmd == "state":
+        if args.machine == "stream":
+            out = state.stream_state()
+        elif args.machine == "inbox":
+            out = state.inbox_state()
+        else:
+            out = state.snapshot()
+        _emit(out, J)
+        # Exit code carries severity so scripts can gate on it.
+        sev = out.get("state") if "state" in out else None
+        if sev in ("error", "error-partial"):
+            return 2
+        return 0
+
+    if args.cmd == "status":
+        _emit(ledger.enrich(state.snapshot()), True)
+        return 0
+
+    if args.cmd == "history":
+        rows = ledger.history(limit=args.n, machine=args.machine)
+        if J:
+            _emit(rows, True)
+        else:
+            for r in reversed(rows):
+                arrow = f"{r['from_state'] or '-'} -> {r['to_state']}"
+                print(f"  [{r['seq']:>4}] {r['at'][11:19]} {r['machine']:<7} {arrow:<34} "
+                      f"{r['cause_code'] or ''} {(r['subject'] or '')[:18]}")
+        return 0
+
+    if args.cmd == "items":
+        _emit(ledger.counts(), J)
+        return 0
+
+    if args.cmd == "archive":
+        f = Path(args.file)
+        if args.audit:
+            _emit(archive.audit([f]), J)
+            return 0
+        _emit(archive.archive(f), J)
+        return 0
+
+    if args.cmd == "transcribe":
+        _emit(transcribe_adapter.transcribe(Path(args.file)), J)
+        return 0
+
+    if args.cmd == "ep":
+        if args.sub == "list":
+            _emit([{k: v for k, v in e.items() if not k.startswith("_")}
+                   for e in sorted(passes.registry().values(), key=lambda x: x["slug"])], J)
+        elif args.sub == "run":
+            _emit(passes.run(args.item_id, args.slug), J)
+        elif args.sub == "run-all":
+            _emit(passes.run_all(args.item_id), J)
+        elif args.sub == "status":
+            _emit(passes.status(args.item_id), J)
+        return 0
+
+    if args.cmd == "reconcile":
+        if not args.rebuild:
+            print("pass --rebuild to reconstruct the ledger", file=sys.stderr)
+            return 2
+        _emit(reconcile.rebuild(), J)
+        return 0
+
+    if args.cmd == "events":
+        _emit(events.drain() if args.action == "drain" else {"backlog": events.backlog()}, J)
+        return 0
+
+    if args.cmd == "drain":
+        done = []
+        for _ in range(args.n):
+            r = worker.run_once()
+            if r is None:
+                break
+            done.append(r)
+        _emit(done or {"drained": 0, "note": "nothing pending"}, J)
+        return 0
+
+    if args.cmd == "migrate":
+        if args.apply or args.dry_run:
+            r = migrate.apply(dry_run=not args.apply)
+            if J:
+                _emit(r, True)
+            else:
+                print(f"  {'DRY RUN' if r['dry_run'] else 'APPLIED'}: total={r['total']} "
+                      f"moved={r['moved']} copied={r['copied']} skipped={r['skipped']} failed={r['failed']}")
+                for x in r["results"]:
+                    if x["result"] in ("failed", "vanished"):
+                        print(f"    !! {x['result']}: {x['name']} {x.get('error','')}")
+                if r.get("manifest"):
+                    print(f"  manifest: {r['manifest']}")
+            return 2 if r["failed"] else 0
+        if not args.plan:
+            print("refusing to act without --plan/--dry-run/--apply", file=sys.stderr)
+            return 2
+        m = migrate.plan()
+        path = migrate.write_manifest(m)
+        if J:
+            _emit(m, True)
+            return 0
+        t = m["totals"]
+        print(f"  candidates          {t['candidates']}  ({t['bytes']/1e9:.2f} GB)")
+        print(f"  unique content      {t['unique_content']}")
+        print(f"  exact duplicates    {t['exact_duplicates']}  (skipped, not deleted)")
+        print(f"  name collisions     {t['name_collisions']}  <- a bare mv would destroy one side")
+        print(f"  already in S3       {t['with_s3_backup']}")
+        print(f"  NOT in S3           {t['without_s3_backup']}")
+        print(f"  already transcribed {t['with_transcript']}")
+        print(f"  NOT transcribed     {t['without_transcript']}")
+        if m["name_collisions"]:
+            print("\n  collisions:")
+            for n, shas in m["name_collisions"].items():
+                print(f"    {n}: {len(shas)} distinct contents")
+        print(f"\n  manifest: {path}")
+        print("  nothing was moved.")
+        return 0
+
+    if args.cmd == "pipeline":
+        if args.action == "enable":
+            state.ENABLED_FLAG.parent.mkdir(parents=True, exist_ok=True)
+            state.ENABLED_FLAG.touch()
+        elif args.action == "disable":
+            state.ENABLED_FLAG.unlink(missing_ok=True)
+        _emit({"enabled": state.pipeline_enabled()}, J)
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (capture.CaptureError, archive.ArchiveError, passes.PassError,
+            transcribe_adapter.TranscribeError, SystemExit) as e:
+        if isinstance(e, SystemExit):
+            raise
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)

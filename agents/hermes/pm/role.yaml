@@ -1,0 +1,70 @@
+# Hermes agent role manifest.  Tracked in the PROJECT repository.
+# The agent's actual state (memory, sessions, evolving SOUL) lives in the
+# runtime submodule.  This file is the immutable contract for this role.
+
+repo: heyma
+role: pm
+agent_id: heyma-pm
+display_name: "Heyma PM"
+purpose: "pm agent for heyma"
+
+# Inference target (empty = inherit from global ~/.hermes/config.yaml)
+model:
+  provider: ""
+  name: "plane"
+# Hermes profile name. ~/.hermes/profiles/<name> symlinks to ./runtime/, so both
+# HERMES_HOME and `hermes --profile <name>` resolve to the runtime submodule.
+profile: heyma-pm
+
+# Telegram bot identity (one bot per agent — see docs/architecture.md).
+telegram:
+  bot_username: "heyma_pm_bot"
+
+# Ticket-provider binding (linear | plane | trello).
+# The heartbeat reconciliation pass talks ONLY to this via .scripts/lib/ticket-provider.sh;
+# swapping providers is a one-line change here. Filled in by 42-ticket-provider.sh.
+ticket_provider:
+  name: plane
+  board_id: "7485039f-85b0-47db-ad99-d11497f043d7"
+  board_url: ""
+  workspace: "33god"
+  project: ""     # Plane project uuid (set by 42-ticket-provider.sh)
+  # Optional normalized-state name overrides for non-standard boards.
+  in_review: "Ready for QA"
+  completed: ""   # e.g. "Done"
+
+# Board-reconciliation knobs for the heartbeat sentinel pass.
+reconcile:
+  enabled: false             # heartbeat runs the autonomous board-reconciliation pass ONLY when true; default off = checkpoint-only
+  grace_hours: 0             # 0 = no human-approval wait (adversarially-reviewed review-lane = done); set >0 to require a wait
+  auto_review: true          # autonomous adversarial review (act, do not wait) on/off
+
+# Plane project (1:1 with this agent) — retained for fleet-registry back-compat.
+plane:
+  # Empty -> resolved from ~/.config/hermes-agent-template/config.toml [plane].workspace
+  workspace: ""
+  # identifier is set by .scripts/42-ticket-provider.sh after creation (plane only)
+  identifier: "heyma"
+# Bloodbank wiring (consumed + produced subjects).
+bloodbank:
+  subscribe:
+    - "bloodbank.evt.v1.repo.>"
+    - "bloodbank.cmd.v1.agent.>"
+  routing:
+    repo: "heyma"
+    target_agent_id: "heyma-pm"
+  producer: "hermes-agent:heyma-pm"
+
+# Runtime repo (git-tracked HERMES_HOME, auto-checkpointed).
+runtime:
+  # Empty owner -> resolved from config.toml [github].runtime_repo_owner.
+  github_owner: ""
+  github_repo: "agent-hm-heyma-pm"
+  submodule_path: "./runtime"
+  checkpoint:
+    cadence: "heartbeat"
+    on_session_end: true
+
+# Provenance — managed by the template, do not hand-edit.
+provisioned_at: "2026-07-31T11:32:13Z"
+provisioned_by: hermes-agent-template

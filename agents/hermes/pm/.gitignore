@@ -1,0 +1,9 @@
+# Per-role ignores in agents/hermes/pm/
+
+# Runtime state is owned locally (and may have its own repository). Never track
+# it from the HeyMa project repository.
+runtime/
+
+# Provisioning state is local as well.
+.scripts/.provision.log
+.scripts/.last-run

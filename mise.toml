@@ -2,7 +2,7 @@
 # https://mise.jdx.dev/configuration.html
 
 [env]
-_.path = [".mise/scripts", "agents/hermes/pm"]
+_.path = [".mise/scripts", "bin", "agents/hermes/pm"]
 _.file = [".env"]
 # Auto-activate a Python venv when one exists at ./.venv.
 # `create = false` means mise will not create one on its own.
@@ -18,9 +18,11 @@ VAULTDOCS = "/home/delorenj/d/Sandbox/audio"
 [[hooks.enter]]
 script = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 [[hooks.enter]]
-script = "op inject -i .env.op > .env"
+script = "op inject --force -i .env.op -o .env"
 [[hooks.enter]]
-script = "sync-skills.py --scope project"
+script = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'"
+[[hooks.enter]]
+script = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
 
 [[watch_files]]
 patterns = ["AGENTS.md"]
@@ -36,7 +38,12 @@ run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 
 [tasks.skills-sync]
 description = "Sync skills from manifest to local CLI dirs"
-run = "sync-skills.py --scope project"
+depends = ["skills-provision-bmad"]
+run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
+
+[tasks.skills-provision-bmad]
+description = "Provision pinned BMAD skills from the Skillex pack"
+run = "python3 '{{config_root}}/.mise/scripts/provision-bmad-skills.py'"
 
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]

@@ -1,0 +1,6 @@
+slug: mem-ops
+description: TODO — placeholder registered by Wax; write the script then flip enabled.
+enabled: false
+requires: []
+timeout_s: 900
+command: ["{component_root}/config/passes.d/bin/mem-ops", "{md_path}"]
