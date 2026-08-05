@@ -1,5 +1,5 @@
 # Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
-_src_path: /home/delorenj/.local/share/mise/installs/node/26.5.0/lib/node_modules/@delorenj/pjangler/templates/commonproject
-project_description: Ingress for audio to be transcribed
-project_name: transcription-queue
+_src_path: /home/delorenj/code/33GOD/pjangler/templates/commonproject
+project_description: 33GOD TTS/STT Audio Pipeline
+project_name: HeyMa
 ticket_provider: plane

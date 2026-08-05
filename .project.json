@@ -10,7 +10,12 @@
     "board_id": "7485039f-85b0-47db-ad99-d11497f043d7",
     "state": "active"
   },
-  "agents": {},
+  "agents": {
+    "heyma-pm": {
+      "role": "pm",
+      "role_dir": "agents/hermes/pm"
+    }
+  },
   "automation": {
     "reconcile": {
       "enabled": false,
