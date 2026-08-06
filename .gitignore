@@ -161,3 +161,4 @@ node_modules
 runtime/
 assets/
 /recovered/**
+/skipped/**

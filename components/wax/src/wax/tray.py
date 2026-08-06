@@ -48,6 +48,28 @@ ICONS = {
 }
 
 
+def format_bytes(value) -> str:
+    """Compact binary size for queue rows."""
+    try:
+        size = float(value or 0)
+    except (TypeError, ValueError):
+        return "?"
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return "?"
+
+
+def queue_label(item: dict) -> str:
+    icon = "▶" if item.get("active") else "✓" if item.get("state") == "complete" else "•"
+    detail = format_bytes(item.get("bytes"))
+    if item.get("duration_s"):
+        seconds = int(item["duration_s"])
+        detail = f"{seconds // 60}:{seconds % 60:02d} · {detail}"
+    return f"{icon} {item.get('orig_name') or item.get('item_id')}  ({detail})"
+
+
 def colour_for(snap: dict) -> tuple[str, str]:
     """Map a state snapshot to (colour, tooltip). Recording always wins.
 
@@ -73,12 +95,16 @@ def colour_for(snap: dict) -> tuple[str, str]:
 
 
 class Tray:
-    def __init__(self, on_toggle=None, on_quit=None, on_open=None):
+    def __init__(self, on_toggle=None, on_quit=None, on_open=None,
+                 on_skip=None, on_clear_completed=None):
         self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
+        self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
         self.indicator = None
         self.registered = False
         self._colour = None
         self._tip = ""
+        self._queue_items = []
+        self._queue_signature = None
         self._build()
         self._watch_bus()
 
@@ -92,6 +118,12 @@ class Tray:
         self.item_status = Gtk.MenuItem(label="…")
         self.item_status.set_sensitive(False)
         m.append(self.item_status)
+
+        self.item_queue = Gtk.MenuItem(label="Queue")
+        self.queue_menu = Gtk.Menu()
+        self.item_queue.set_submenu(self.queue_menu)
+        m.append(self.item_queue)
+        self._render_queue()
 
         m.append(Gtk.SeparatorMenuItem())
         op = Gtk.MenuItem(label="Open inbox")
@@ -112,7 +144,7 @@ class Tray:
         already tried (and failed) to claim the path.
         """
         ind, self.indicator = self.indicator, None
-        self.item_toggle = self.item_status = None
+        self.item_toggle = self.item_status = self.item_queue = self.queue_menu = None
         if ind is not None:
             try:
                 ind.set_status(AppIndicator.IndicatorStatus.PASSIVE)
@@ -192,6 +224,57 @@ class Tray:
         return False
 
     # -- updates ---------------------------------------------------------
+    def _render_queue(self) -> None:
+        menu = getattr(self, "queue_menu", None)
+        if menu is None:
+            return
+        for child in menu.get_children():
+            menu.remove(child)
+        queued = [x for x in self._queue_items if x.get("state") != "complete"]
+        completed = [x for x in self._queue_items if x.get("state") == "complete"]
+        summary = Gtk.MenuItem(label=f"{len(queued)} queued · {len(completed)} done")
+        summary.set_sensitive(False)
+        menu.append(summary)
+        if self._queue_items:
+            menu.append(Gtk.SeparatorMenuItem())
+        for item in self._queue_items:
+            row = Gtk.MenuItem(label=queue_label(item))
+            row.set_tooltip_text(item.get("path") or "")
+            if not item.get("active") and item.get("state") != "complete":
+                row.connect("button-press-event", self._queue_right_click, item["item_id"])
+            else:
+                row.set_sensitive(False)
+            menu.append(row)
+        if completed:
+            menu.append(Gtk.SeparatorMenuItem())
+            clear = Gtk.MenuItem(label="Clear completed")
+            clear.connect("activate", lambda *_: self.on_clear_completed and self.on_clear_completed())
+            menu.append(clear)
+        menu.show_all()
+
+    def _queue_right_click(self, _widget, event, item_id: str):
+        if getattr(event, "button", 0) != 3:
+            return False
+        context = Gtk.Menu()
+        skip = Gtk.MenuItem(label="Skip (preserve audio)")
+        skip.connect("activate", lambda *_: self.on_skip and self.on_skip(item_id))
+        context.append(skip)
+        context.show_all()
+        context.popup_at_pointer(event)
+        return True
+
+    def set_queue(self, items: list[dict]) -> None:
+        """Thread-safe queue-menu update; rebuild only when visible data changes."""
+        signature = tuple(
+            (x.get("item_id"), x.get("state"), x.get("active"), x.get("bytes"), x.get("duration_s"))
+            for x in items
+        )
+        if signature == self._queue_signature:
+            return
+        self._queue_signature = signature
+        self._queue_items = [dict(x) for x in items]
+        GLib.idle_add(lambda: (self._render_queue(), False)[1])
+
     def set(self, colour: str, tooltip: str = "", recording: bool = False) -> None:
         """Thread-safe icon update."""
         self._colour, self._tip = colour, tooltip

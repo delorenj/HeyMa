@@ -54,7 +54,13 @@ class Daemon:
     def __init__(self):
         self._lock = _singleton()
         self.snapshot: dict = {}
-        self.tray = tray_mod.Tray(on_toggle=self.toggle, on_quit=self.quit, on_open=self.open_inbox)
+        self.tray = tray_mod.Tray(
+            on_toggle=self.toggle,
+            on_quit=self.quit,
+            on_open=self.open_inbox,
+            on_skip=self.skip_item,
+            on_clear_completed=self.clear_completed,
+        )
         self._serve_socket()
         # Drains the inbox in its own thread so a long transcription can never
         # stall the tray or make status unpollable.
@@ -82,6 +88,11 @@ class Daemon:
         self.snapshot = snap
         colour, tip = tray_mod.colour_for(snap)
         self.tray.set(colour, tip, recording=(snap.get("stream", {}).get("state") == "recording"))
+        try:
+            active = (snap.get("inbox") or {}).get("active_item")
+            self.tray.set_queue(ledger.tray_items(active))
+        except Exception as e:  # noqa: BLE001 - queue UI must not affect recording
+            snap["tray_queue_error"] = str(e)
         self._mirror(snap, colour)
         return True
 
@@ -155,6 +166,22 @@ class Daemon:
 
     def open_inbox(self) -> None:
         subprocess.Popen(["xdg-open", str(paths.INBOX)])
+
+    def skip_item(self, item_id: str) -> None:
+        def act():
+            try:
+                result = worker_mod.skip_item(item_id)
+                tray_mod._notify("Wax: item skipped", Path(result["path"]).name)
+            except Exception as e:  # noqa: BLE001 - operator feedback, daemon stays alive
+                tray_mod._notify("Wax: could not skip item", str(e))
+        threading.Thread(target=act, daemon=True).start()
+
+    def clear_completed(self) -> None:
+        try:
+            ledger.clear_tray_completed()
+            self.tray.set_queue(ledger.tray_items((self.snapshot.get("inbox") or {}).get("active_item")))
+        except Exception as e:  # noqa: BLE001
+            tray_mod._notify("Wax: could not clear completed", str(e))
 
     def quit(self) -> None:
         # Never stops an in-flight encoder: it lives in its own scope.

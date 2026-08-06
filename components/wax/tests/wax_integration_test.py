@@ -96,6 +96,41 @@ class WaxIntegrationTest(unittest.TestCase):
             self.assertEqual(state["pending"], 1)
             self.assertEqual(state["cause_code"], "scheduler_disabled")
 
+    def test_skip_moves_audio_out_of_queue_without_deleting_it(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            audio = inbox / "skip-me.ogg"
+            audio.write_bytes(b"preserve these bytes")
+            env = os.environ.copy()
+            env["WAX_ROOT"] = runtime_root
+            identify = subprocess.run(
+                [
+                    "python3", "-c",
+                    "from wax import ledger; from pathlib import Path; "
+                    "print(ledger.upsert_item(Path(r'" + str(audio) + "')))"
+                ],
+                cwd=REPO_ROOT,
+                env={**env, "PYTHONPATH": str(COMPONENT_ROOT / "src")},
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            result = subprocess.run(
+                [str(REPO_ROOT / "bin" / "wax"), "skip", identify, "--json"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(result.stdout)
+            skipped = root / "skipped" / audio.name
+            self.assertEqual(payload["state"], "skipped")
+            self.assertFalse(audio.exists())
+            self.assertEqual(skipped.read_bytes(), b"preserve these bytes")
+
 
 if __name__ == "__main__":
     unittest.main()

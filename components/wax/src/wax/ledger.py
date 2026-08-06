@@ -360,6 +360,42 @@ def counts() -> dict[str, int]:
     return out
 
 
+def tray_items(active_item: Optional[str] = None) -> list[dict[str, Any]]:
+    """Current inbox plus completed items not yet dismissed from the tray."""
+    conn = connect()
+    marker = conn.execute("SELECT v FROM meta WHERE k='tray_completed_after'").fetchone()
+    completed_after = marker["v"] if marker else ""
+    queued = conn.execute(
+        "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
+        "WHERE state IN ('pending','archived','transcribed') ORDER BY first_seen,orig_name"
+    ).fetchall()
+    completed = conn.execute(
+        "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
+        "WHERE state='complete' AND updated_at>? ORDER BY updated_at DESC",
+        (completed_after,),
+    ).fetchall()
+    out = []
+    for row in [*queued, *completed]:
+        item = dict(row)
+        # Old ledgers can contain resumable states whose audio was parked in a
+        # previous runtime root. They are audit history, not actionable queue
+        # rows, and must not expose a Skip action that can never succeed.
+        if item["state"] != "complete" and Path(item["path"]).parent != paths.INBOX:
+            continue
+        item["active"] = item["item_id"] == active_item
+        out.append(item)
+    return out
+
+
+def clear_tray_completed() -> None:
+    """Persistently dismiss completed rows without deleting ledger history."""
+    connect().execute(
+        "INSERT INTO meta(k,v) VALUES('tray_completed_after',?) "
+        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+        (sentinel.utcnow(),),
+    )
+
+
 def history(limit: int = 20, machine: Optional[str] = None) -> list[dict[str, Any]]:
     conn = connect()
     if machine:

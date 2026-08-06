@@ -69,6 +69,23 @@ class TrayIconTest(unittest.TestCase):
         }
         self.assertEqual(self.tray.colour_for(snapshot)[0], "red")
 
+    def test_queue_labels_show_state_name_and_size(self):
+        queued = self.tray.queue_label({
+            "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1572864,
+            "state": "pending", "active": False,
+        })
+        active = self.tray.queue_label({
+            "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1024,
+            "duration_s": 125, "state": "archived", "active": True,
+        })
+        done = self.tray.queue_label({
+            "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1,
+            "state": "complete", "active": False,
+        })
+        self.assertEqual(queued, "• meeting.ogg  (1.5 MiB)")
+        self.assertEqual(active, "▶ meeting.ogg  (2:05 · 1.0 KiB)")
+        self.assertTrue(done.startswith("✓ meeting.ogg"))
+
 
 if __name__ == "__main__":
     unittest.main()

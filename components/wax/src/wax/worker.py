@@ -29,6 +29,7 @@ from typing import Any, Optional
 from . import archive, ledger, paths, procutil, rename, sentinel, state, transcribe_adapter
 
 POLL_S = 5.0
+_SELECTION_LOCK = threading.Lock()
 
 
 def _write_claim(item_id: str, path: Path, stage: str) -> None:
@@ -159,16 +160,50 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
 
 
 def run_once() -> Optional[dict[str, Any]]:
-    nxt = next_item()
-    if nxt is None:
-        return None
-    item_id, path, action = nxt
+    # Selection and operator skip share a short lock. The expensive work runs
+    # outside it; the durable claim closes the race before the lock is released.
+    with _SELECTION_LOCK:
+        nxt = next_item()
+        if nxt is None:
+            return None
+        item_id, path, action = nxt
+        _write_claim(item_id, path, "park" if action == "park" else "claimed")
     try:
         if action == "park":
             return park_duplicate(item_id, path)
         return process(item_id, path)
     finally:
         _clear_claim()
+
+
+def skip_item(item_id: str) -> dict[str, Any]:
+    """Preserve a queued file outside the inbox and exclude it from processing."""
+    with _SELECTION_LOCK:
+        claim = state._active_claim()
+        if claim and claim.get("item") == item_id:
+            raise RuntimeError("the active item cannot be skipped")
+        conn = ledger.connect()
+        row = conn.execute(
+            "SELECT path,state,orig_name FROM items WHERE item_id=?", (item_id,)
+        ).fetchone()
+        if not row:
+            raise RuntimeError(f"unknown queue item: {item_id}")
+        if row["state"] not in WORK_STATES:
+            raise RuntimeError(f"item is not queued: {row['state']}")
+        source = Path(row["path"])
+        try:
+            source.resolve().relative_to(paths.INBOX.resolve())
+        except (OSError, ValueError) as e:
+            raise RuntimeError("queued item is not in the inbox") from e
+        if not source.is_file():
+            raise RuntimeError("queued audio is missing")
+        paths.SKIPPED.mkdir(parents=True, exist_ok=True)
+        moved = rename.move_noclobber(source, paths.SKIPPED / source.name)
+        conn.execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
+                     (str(moved), sentinel.utcnow(), item_id))
+        ledger.set_item_state(item_id, "skipped", cause="operator_skip",
+                              evidence=str(moved).replace(str(paths.AUDIO), "~/HeyMa"))
+        return {"item_id": item_id, "state": "skipped", "path": str(moved)}
 
 
 class Worker(threading.Thread):

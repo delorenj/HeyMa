@@ -25,6 +25,7 @@ DROPOFF = AUDIO / "dropoff"      # Syncthing receiveonly device feed; we only RE
 ARCHIVE = AUDIO / "archive"      # audio parked after S3 verify
 QUARANTINE = AUDIO / "quarantine"
 RECOVERED = AUDIO / "recovered"  # salvage + S3-failure stash
+SKIPPED = AUDIO / "skipped"      # operator-deferred items; preserved, not processed
 VAR = AUDIO / "var"
 
 LOCK = VAR / "waxd.lock"
@@ -40,7 +41,7 @@ VAULT = Path(os.environ.get("WAX_VAULT", HOME / "d" / "Transcripts"))
 # produces an unrecoverable partial.
 MIN_FREE_BYTES = int(os.environ.get("WAX_MIN_FREE_BYTES", 5 * 1024**3))
 
-ALL_DIRS = (STREAM, INBOX, ARCHIVE, QUARANTINE, RECOVERED, VAR, LOGS)
+ALL_DIRS = (STREAM, INBOX, ARCHIVE, QUARANTINE, RECOVERED, SKIPPED, VAR, LOGS)
 
 
 def ensure_dirs() -> None:
