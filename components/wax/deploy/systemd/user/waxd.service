@@ -1,0 +1,19 @@
+[Unit]
+Description=Wax recorder daemon (tray + state mirror)
+Documentation=@WAX_DOCUMENTATION_URI@
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service
+OnFailure=wax-alert.service
+
+[Service]
+Type=simple
+ExecStart=@WAX_EXEC_START@
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+PrivateTmp=false
+Environment=WAX_SEGMENT_SECONDS=60
+
+[Install]
+WantedBy=graphical-session.target

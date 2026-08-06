@@ -18,7 +18,7 @@ lib/
 lib64/
 parts/
 sdist/
-var/
+/var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
@@ -153,11 +153,11 @@ node_modules
 .env
 .env.*
 !.env.op
-archive/**/*
-dropoff/**/*
-inbox/**/*
-stream/**/*
+/archive/**
+/dropoff/**
+/inbox/**
+/stream/**
+/quarantine/**
 runtime/
-var/
 assets/
-recovered/**/*
+/recovered/**

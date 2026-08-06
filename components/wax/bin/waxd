@@ -1,0 +1,189 @@
+#!/usr/bin/python3
+# NOTE: /usr/bin/python3 explicitly, never `env python3` — mise's Python is
+# first on PATH and has no gi, which would break the tray silently.
+"""waxd — owns the tray, mirrors state, and serves status.
+
+Deliberately NOT the owner of the capture lifecycle: `wax rec …` works whether
+or not this daemon is running, and a capture started by the CLI survives
+`systemctl --user restart waxd` because the encoder lives in its own transient
+scope. The daemon is a *view* plus a convenience toggle, so its death can never
+cost you a recording.
+"""
+
+import fcntl
+import json
+import os
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+COMPONENT_ROOT = next(
+    parent for parent in Path(__file__).resolve().parents
+    if (parent / "pyproject.toml").is_file()
+)
+sys.path.insert(0, str(COMPONENT_ROOT / "src"))
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib  # noqa: E402
+
+from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, worker as worker_mod  # noqa: E402
+
+POLL_MS = 1000
+SINGLETON = paths.VAR / "waxd.singleton.lock"
+
+
+def _singleton():
+    paths.ensure_dirs()
+    fh = open(SINGLETON, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("waxd already running", file=sys.stderr)
+        raise SystemExit(1)
+    fh.write(f"{os.getpid()}\n")
+    fh.flush()
+    return fh  # keep referenced for process lifetime
+
+
+class Daemon:
+    def __init__(self):
+        self._lock = _singleton()
+        self.snapshot: dict = {}
+        self.tray = tray_mod.Tray(on_toggle=self.toggle, on_quit=self.quit, on_open=self.open_inbox)
+        self._serve_socket()
+        # Drains the inbox in its own thread so a long transcription can never
+        # stall the tray or make status unpollable.
+        self.worker = worker_mod.Worker()
+        self.worker.start()
+        GLib.timeout_add(POLL_MS, self._tick)
+        GLib.timeout_add(10000, self._drain)
+        self._tick()
+
+    # -- status ----------------------------------------------------------
+    def _tick(self) -> bool:
+        try:
+            snap = state.snapshot()
+            # Mint ledger rows for anything that appeared in the inbox by ANY
+            # route — hotkey, Syncthing, a script, a hand-drop. INBOX IS INBOX.
+            try:
+                ledger.reconcile_inbox(origin="inbox")
+                ledger.note_machine("stream", snap.get("stream", {}))
+                ledger.note_machine("inbox", snap.get("inbox", {}))
+                snap = ledger.enrich(snap)
+            except Exception as e:  # noqa: BLE001 - ledger trouble must not blind the tray
+                snap["ledger_error"] = str(e)
+        except Exception as e:  # noqa: BLE001 - a status error must not kill the loop
+            snap = {"error": str(e), "stream": {"state": "error"}, "inbox": {"state": "error"}}
+        self.snapshot = snap
+        colour, tip = tray_mod.colour_for(snap)
+        self.tray.set(colour, tip, recording=(snap.get("stream", {}).get("state") == "recording"))
+        self._mirror(snap, colour)
+        return True
+
+    def _drain(self) -> bool:
+        """Publish queued events. Failure is expected and harmless — rows stay
+        unpublished and the backlog shows up in status."""
+        try:
+            events_mod.drain()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    def _mirror(self, snap: dict, colour: str) -> None:
+        """Degraded-mode mirror: readable even if the socket is wedged."""
+        payload = dict(snap)
+        payload["daemon"] = {"pid": os.getpid()}
+        payload["tray"] = {"colour": colour, "registered": self.tray.registered}
+        try:
+            payload["outbox_backlog"] = events_mod.backlog()
+        except Exception as e:  # noqa: BLE001
+            # Report WHY, don't swallow into None — an unexplained null in a
+            # status field is how you end up debugging the monitor instead of
+            # the system.
+            payload["outbox_backlog"] = None
+            payload["outbox_error"] = f"{type(e).__name__}: {e}"
+        tmp = paths.STATE_JSON.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
+            os.replace(tmp, paths.STATE_JSON)
+        except OSError:
+            pass
+
+    # -- socket ----------------------------------------------------------
+    def _serve_socket(self) -> None:
+        daemon = self
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                # Timeout so one wedged reader cannot make status unpollable.
+                self.request.settimeout(10)
+                try:
+                    self.request.sendall(
+                        json.dumps(daemon.snapshot, indent=2, sort_keys=True, default=str).encode() + b"\n"
+                    )
+                except (OSError, socket.timeout):
+                    pass
+
+        class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        try:
+            paths.SOCK.unlink(missing_ok=True)
+            self.server = Server(str(paths.SOCK), Handler)
+        except OSError as e:
+            print(f"waxd: socket unavailable ({e}); state.json mirror still written", file=sys.stderr)
+            return
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    # -- actions ---------------------------------------------------------
+    def toggle(self) -> None:
+        # Runs the same CLI path the hotkey uses, so there is exactly one
+        # toggle implementation and one lock protecting it.
+        threading.Thread(
+            target=lambda: subprocess.run(
+                [sys.executable, str(COMPONENT_ROOT / "bin" / "wax"), "rec", "toggle"],
+                check=False,
+            ),
+            daemon=True,
+        ).start()
+
+    def open_inbox(self) -> None:
+        subprocess.Popen(["xdg-open", str(paths.INBOX)])
+
+    def quit(self) -> None:
+        # Never stops an in-flight encoder: it lives in its own scope.
+        try:
+            self.worker.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.server.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+        paths.SOCK.unlink(missing_ok=True)
+        Gtk_main_quit()
+
+
+def Gtk_main_quit():
+    from gi.repository import Gtk
+    Gtk.main_quit()
+
+
+def main() -> int:
+    from gi.repository import Gtk
+    Daemon()
+    try:
+        Gtk.main()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
