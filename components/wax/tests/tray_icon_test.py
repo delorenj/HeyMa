@@ -76,15 +76,24 @@ class TrayIconTest(unittest.TestCase):
         })
         active = self.tray.queue_label({
             "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1024,
-            "duration_s": 125, "state": "archived", "active": True,
+            "duration_s": 125, "state": "archived", "active": True, "stage": "transcribe",
         })
         done = self.tray.queue_label({
             "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1,
             "state": "complete", "active": False,
         })
         self.assertEqual(queued, "• meeting.ogg  (1.5 MiB)")
-        self.assertEqual(active, "▶ meeting.ogg  (2:05 · 1.0 KiB)")
+        self.assertEqual(active, "◐ Transcribing: meeting.ogg  (2:05 · 1.0 KiB)")
         self.assertTrue(done.startswith("✓ meeting.ogg"))
+
+    def test_failed_items_force_yellow_even_while_worker_is_active(self):
+        colour, tooltip = self.tray.colour_for({
+            "stream": {"state": "ready"},
+            "inbox": {"state": "ready-and-active", "pending": 4},
+            "items": {"failed": 2},
+        })
+        self.assertEqual(colour, "yellow")
+        self.assertIn("failed items: 2", tooltip)
 
 
 if __name__ == "__main__":

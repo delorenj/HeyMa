@@ -86,11 +86,24 @@ class Daemon:
         except Exception as e:  # noqa: BLE001 - a status error must not kill the loop
             snap = {"error": str(e), "stream": {"state": "error"}, "inbox": {"state": "error"}}
         self.snapshot = snap
+        active = (snap.get("inbox") or {}).get("active_item")
+        stage = (snap.get("inbox") or {}).get("active_stage")
+        queue_items = []
+        try:
+            queue_items = ledger.tray_items(active, stage)
+            active_row = next((item for item in queue_items if item.get("active")), None)
+            if active_row:
+                verb = tray_mod.STAGE_VERBS.get(stage, stage or "working").lower()
+                elapsed = int((snap.get("inbox") or {}).get("active_elapsed_s") or 0)
+                snap["inbox"]["evidence"] = (
+                    f"{verb} {active_row['orig_name']} · {elapsed // 60}m {elapsed % 60:02d}s"
+                )
+        except Exception as e:  # noqa: BLE001 - queue UI must not affect recording
+            snap["tray_queue_error"] = str(e)
         colour, tip = tray_mod.colour_for(snap)
         self.tray.set(colour, tip, recording=(snap.get("stream", {}).get("state") == "recording"))
         try:
-            active = (snap.get("inbox") or {}).get("active_item")
-            self.tray.set_queue(ledger.tray_items(active))
+            self.tray.set_queue(queue_items)
         except Exception as e:  # noqa: BLE001 - queue UI must not affect recording
             snap["tray_queue_error"] = str(e)
         self._mirror(snap, colour)
@@ -179,7 +192,8 @@ class Daemon:
     def clear_completed(self) -> None:
         try:
             ledger.clear_tray_completed()
-            self.tray.set_queue(ledger.tray_items((self.snapshot.get("inbox") or {}).get("active_item")))
+            inbox = self.snapshot.get("inbox") or {}
+            self.tray.set_queue(ledger.tray_items(inbox.get("active_item"), inbox.get("active_stage")))
         except Exception as e:  # noqa: BLE001
             tray_mod._notify("Wax: could not clear completed", str(e))
 

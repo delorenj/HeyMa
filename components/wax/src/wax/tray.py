@@ -46,6 +46,13 @@ ICONS = {
     "red": str(ICON_DIR / "wax-tray-icon-red.png"),
     "yellow": str(ICON_DIR / "wax-tray-icon-yellow.png"),
 }
+SPINNER = ("◐", "◓", "◑", "◒")
+STAGE_VERBS = {
+    "claimed": "Starting",
+    "archive": "Uploading",
+    "transcribe": "Transcribing",
+    "park": "Finishing",
+}
 
 
 def format_bytes(value) -> str:
@@ -61,13 +68,18 @@ def format_bytes(value) -> str:
     return "?"
 
 
-def queue_label(item: dict) -> str:
-    icon = "▶" if item.get("active") else "✓" if item.get("state") == "complete" else "•"
+def queue_label(item: dict, spinner_frame: int = 0) -> str:
+    if item.get("active"):
+        icon = SPINNER[spinner_frame % len(SPINNER)]
+    else:
+        icon = "✓" if item.get("state") == "complete" else "•"
     detail = format_bytes(item.get("bytes"))
     if item.get("duration_s"):
         seconds = int(item["duration_s"])
         detail = f"{seconds // 60}:{seconds % 60:02d} · {detail}"
-    return f"{icon} {item.get('orig_name') or item.get('item_id')}  ({detail})"
+    stage = STAGE_VERBS.get(item.get("stage"), item.get("stage") or "")
+    prefix = f"{stage}: " if item.get("active") and stage else ""
+    return f"{icon} {prefix}{item.get('orig_name') or item.get('item_id')}  ({detail})"
 
 
 def colour_for(snap: dict) -> tuple[str, str]:
@@ -81,13 +93,16 @@ def colour_for(snap: dict) -> tuple[str, str]:
     s, i = stream.get("state"), inbox.get("state")
 
     tip = f"stream: {s}\ninbox: {i}"
+    failed = (snap.get("items") or {}).get("failed", 0)
     cause = stream.get("cause_code") or inbox.get("cause_code")
     if cause:
         tip += f"\ncause: {cause}"
+    if failed:
+        tip += f"\nfailed items: {failed}"
 
     if s == "recording":
         return "red", tip
-    if s in ("not-ready", "error-partial", "error") or i in ("error",) or (inbox.get("pending") or 0) and i != "ready-and-active":
+    if failed or s in ("not-ready", "error-partial", "error") or i in ("error",) or (inbox.get("pending") or 0) and i != "ready-and-active":
         return "yellow", tip
     if i == "stopped":
         return "yellow", tip
@@ -105,8 +120,11 @@ class Tray:
         self._tip = ""
         self._queue_items = []
         self._queue_signature = None
+        self._queue_rows = {}
+        self._spinner_frame = 0
         self._build()
         self._watch_bus()
+        GLib.timeout_add(250, self._animate_queue)
 
     # -- construction ----------------------------------------------------
     def _menu(self) -> Gtk.Menu:
@@ -232,13 +250,19 @@ class Tray:
             menu.remove(child)
         queued = [x for x in self._queue_items if x.get("state") != "complete"]
         completed = [x for x in self._queue_items if x.get("state") == "complete"]
+        active = next((x for x in queued if x.get("active")), None)
+        if getattr(self, "item_queue", None) is not None:
+            stage = STAGE_VERBS.get((active or {}).get("stage"), "Working") if active else "Idle"
+            self.item_queue.set_label(f"Queue — {stage} · {len(queued)} remaining")
         summary = Gtk.MenuItem(label=f"{len(queued)} queued · {len(completed)} done")
         summary.set_sensitive(False)
         menu.append(summary)
         if self._queue_items:
             menu.append(Gtk.SeparatorMenuItem())
+        self._queue_rows = {}
         for item in self._queue_items:
-            row = Gtk.MenuItem(label=queue_label(item))
+            row = Gtk.MenuItem(label=queue_label(item, self._spinner_frame))
+            self._queue_rows[item["item_id"]] = row
             row.set_tooltip_text(item.get("path") or "")
             if not item.get("active") and item.get("state") != "complete":
                 row.connect("button-press-event", self._queue_right_click, item["item_id"])
@@ -251,6 +275,15 @@ class Tray:
             clear.connect("activate", lambda *_: self.on_clear_completed and self.on_clear_completed())
             menu.append(clear)
         menu.show_all()
+
+    def _animate_queue(self) -> bool:
+        """Animate only the active row; no menu rebuild and no ledger polling."""
+        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER)
+        active = next((x for x in self._queue_items if x.get("active")), None)
+        row = self._queue_rows.get(active.get("item_id")) if active else None
+        if row is not None:
+            row.set_label(queue_label(active, self._spinner_frame))
+        return True
 
     def _queue_right_click(self, _widget, event, item_id: str):
         if getattr(event, "button", 0) != 3:

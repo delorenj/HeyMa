@@ -360,20 +360,27 @@ def counts() -> dict[str, int]:
     return out
 
 
-def tray_items(active_item: Optional[str] = None) -> list[dict[str, Any]]:
+def tray_items(active_item: Optional[str] = None,
+               active_stage: Optional[str] = None) -> list[dict[str, Any]]:
     """Current inbox plus completed items not yet dismissed from the tray."""
     conn = connect()
     marker = conn.execute("SELECT v FROM meta WHERE k='tray_completed_after'").fetchone()
     completed_after = marker["v"] if marker else ""
-    queued = conn.execute(
+    queued_rows = conn.execute(
         "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
-        "WHERE state IN ('pending','archived','transcribed') ORDER BY first_seen,orig_name"
+        "WHERE state IN ('pending','archived','transcribed')"
     ).fetchall()
     completed = conn.execute(
         "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
         "WHERE state='complete' AND updated_at>? ORDER BY updated_at DESC",
         (completed_after,),
     ).fetchall()
+    # Match worker.next_item() exactly: it walks state.inbox_items(), whose
+    # ordering is the lexical Path order. Ledger first_seen order is not the
+    # processing order and made the tray actively misleading.
+    queued_by_path = {row["path"]: row for row in queued_rows}
+    queued = [queued_by_path[str(path)] for path in sorted(paths.INBOX.iterdir())
+              if str(path) in queued_by_path] if paths.INBOX.exists() else []
     out = []
     for row in [*queued, *completed]:
         item = dict(row)
@@ -383,8 +390,11 @@ def tray_items(active_item: Optional[str] = None) -> list[dict[str, Any]]:
         if item["state"] != "complete" and Path(item["path"]).parent != paths.INBOX:
             continue
         item["active"] = item["item_id"] == active_item
+        item["stage"] = active_stage if item["active"] else None
         out.append(item)
-    return out
+    # Defensive: a resumed/nonstandard active item is always visually first,
+    # even if a future worker policy changes its selection order.
+    return sorted(out, key=lambda item: (not item["active"], item["state"] == "complete"))
 
 
 def clear_tray_completed() -> None:

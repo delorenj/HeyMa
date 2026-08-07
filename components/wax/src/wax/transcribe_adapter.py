@@ -31,6 +31,14 @@ class TranscribeError(RuntimeError):
     pass
 
 
+def transcribe_env(logfile: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    env["TRANSCRIBE_LOG_FILE"] = str(logfile)
+    if env.get("WAX_DIARIZATION", "").lower() not in {"1", "true", "yes", "on"}:
+        env["DIARIZATION_VENV"] = str(paths.VAR / ".diarization-disabled")
+    return env
+
+
 def transcribe_command() -> Path:
     """Resolve the configured transcriber and reject missing/non-executable paths."""
     configured = os.environ.get("WAX_TRANSCRIBE", "").strip()
@@ -76,8 +84,13 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     st = audio.stat()
     before = (st.st_size, st.st_mtime_ns)
 
-    env = dict(os.environ)
-    env["TRANSCRIBE_LOG_FILE"] = str(logfile)
+    env = transcribe_env(logfile)
+    # The legacy wrapper auto-enables Sortformer whenever its diarization venv
+    # exists. Sortformer materializes the entire recording plus per-second
+    # features in RAM; long backlog files drove waxd to 27-61 GiB and the OOM
+    # killer repeatedly terminated the pipeline. Keep the reliable ASR path as
+    # the default. Operators can explicitly opt back in after the diarizer is
+    # made streaming/bounded with WAX_DIARIZATION=1.
 
     cmd = [str(transcribe_command()), str(audio)] + (extra or [])
     try:

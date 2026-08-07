@@ -50,6 +50,14 @@ class PortabilityTest(unittest.TestCase):
             with self.assertRaisesRegex(transcribe_adapter.TranscribeError, "WAX_TRANSCRIBE"):
                 transcribe_adapter.transcribe_command()
 
+    def test_pipeline_disables_unbounded_diarization_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            env = transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
+            self.assertIn(".diarization-disabled", env["DIARIZATION_VENV"])
+        with patch.dict(os.environ, {"WAX_DIARIZATION": "1", "DIARIZATION_VENV": "/opt/diar"}, clear=True):
+            env = transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
+            self.assertEqual(env["DIARIZATION_VENV"], "/opt/diar")
+
     def test_systemd_template_is_relocation_safe(self):
         template = (COMPONENT_ROOT / "deploy/systemd/user/waxd.service").read_text()
         self.assertNotIn("%h/HeyMa", template)
