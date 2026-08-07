@@ -72,13 +72,19 @@ def queue_label(item: dict, spinner_frame: int = 0) -> str:
     if item.get("active"):
         icon = SPINNER[spinner_frame % len(SPINNER)]
     else:
-        icon = "✓" if item.get("state") == "complete" else "•"
+        if item.get("state") in ("failed", "suspect"):
+            icon = "⚠"
+        else:
+            icon = "✓" if item.get("state") == "complete" else "•"
     detail = format_bytes(item.get("bytes"))
     if item.get("duration_s"):
         seconds = int(item["duration_s"])
         detail = f"{seconds // 60}:{seconds % 60:02d} · {detail}"
     stage = STAGE_VERBS.get(item.get("stage"), item.get("stage") or "")
-    prefix = f"{stage}: " if item.get("active") and stage else ""
+    if item.get("state") in ("failed", "suspect"):
+        prefix = f"{item['state'].title()}: "
+    else:
+        prefix = f"{stage}: " if item.get("active") and stage else ""
     return f"{icon} {prefix}{item.get('orig_name') or item.get('item_id')}  ({detail})"
 
 
@@ -248,13 +254,18 @@ class Tray:
             return
         for child in menu.get_children():
             menu.remove(child)
-        queued = [x for x in self._queue_items if x.get("state") != "complete"]
+        errors = [x for x in self._queue_items if x.get("state") in ("failed", "suspect")]
+        queued = [x for x in self._queue_items
+                  if x.get("state") not in ("complete", "failed", "suspect")]
         completed = [x for x in self._queue_items if x.get("state") == "complete"]
         active = next((x for x in queued if x.get("active")), None)
         if getattr(self, "item_queue", None) is not None:
             stage = STAGE_VERBS.get((active or {}).get("stage"), "Working") if active else "Idle"
-            self.item_queue.set_label(f"Queue — {stage} · {len(queued)} remaining")
-        summary = Gtk.MenuItem(label=f"{len(queued)} queued · {len(completed)} done")
+            suffix = f" · {len(errors)} failed" if errors else ""
+            self.item_queue.set_label(f"Queue — {stage} · {len(queued)} remaining{suffix}")
+        summary = Gtk.MenuItem(
+            label=f"{len(queued)} queued · {len(completed)} done · {len(errors)} failed"
+        )
         summary.set_sensitive(False)
         menu.append(summary)
         if self._queue_items:
@@ -263,8 +274,11 @@ class Tray:
         for item in self._queue_items:
             row = Gtk.MenuItem(label=queue_label(item, self._spinner_frame))
             self._queue_rows[item["item_id"]] = row
-            row.set_tooltip_text(item.get("path") or "")
-            if not item.get("active") and item.get("state") != "complete":
+            error = item.get("error") or {}
+            tooltip = error.get("evidence") or error.get("cause_code") or item.get("path") or ""
+            row.set_tooltip_text(tooltip)
+            if (not item.get("active") and
+                    item.get("state") not in ("complete", "failed", "suspect")):
                 row.connect("button-press-event", self._queue_right_click, item["item_id"])
             else:
                 row.set_sensitive(False)

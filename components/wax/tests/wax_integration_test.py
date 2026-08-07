@@ -131,6 +131,32 @@ class WaxIntegrationTest(unittest.TestCase):
             self.assertFalse(audio.exists())
             self.assertEqual(skipped.read_bytes(), b"preserve these bytes")
 
+    def test_failed_item_stays_visible_without_blocking_next_pending_item(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            failed = inbox / "01-failed.ogg"
+            pending = inbox / "02-pending.ogg"
+            failed.write_bytes(b"failed audio remains")
+            pending.write_bytes(b"healthy audio follows")
+            env = {**os.environ, "WAX_ROOT": runtime_root,
+                   "PYTHONPATH": str(COMPONENT_ROOT / "src")}
+            script = (
+                "from wax import ledger,worker; from pathlib import Path; "
+                f"bad=ledger.upsert_item(Path(r'{failed}')); "
+                f"good=ledger.upsert_item(Path(r'{pending}')); "
+                "ledger.set_item_state(bad,'failed',cause='test_failure'); "
+                "print(worker.next_item()[0]); print(good)"
+            )
+            result = subprocess.run(
+                ["python3", "-c", script], cwd=REPO_ROOT, env=env,
+                capture_output=True, text=True, check=True,
+            )
+            selected, expected = result.stdout.splitlines()
+            self.assertEqual(selected, expected)
+            self.assertTrue(failed.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -368,7 +368,7 @@ def tray_items(active_item: Optional[str] = None,
     completed_after = marker["v"] if marker else ""
     queued_rows = conn.execute(
         "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
-        "WHERE state IN ('pending','archived','transcribed')"
+        "WHERE state IN ('pending','archived','transcribed','failed','suspect')"
     ).fetchall()
     completed = conn.execute(
         "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
@@ -389,12 +389,22 @@ def tray_items(active_item: Optional[str] = None,
         # rows, and must not expose a Skip action that can never succeed.
         if item["state"] != "complete" and Path(item["path"]).parent != paths.INBOX:
             continue
+        if item["state"] in ("failed", "suspect"):
+            reason = conn.execute(
+                "SELECT cause_code,evidence FROM transitions WHERE subject=? "
+                "ORDER BY seq DESC LIMIT 1", (item["item_id"],)
+            ).fetchone()
+            item["error"] = dict(reason) if reason else {}
         item["active"] = item["item_id"] == active_item
         item["stage"] = active_stage if item["active"] else None
         out.append(item)
     # Defensive: a resumed/nonstandard active item is always visually first,
     # even if a future worker policy changes its selection order.
-    return sorted(out, key=lambda item: (not item["active"], item["state"] == "complete"))
+    return sorted(out, key=lambda item: (
+        not item["active"],
+        item["state"] in ("failed", "suspect", "complete"),
+        item["state"] == "complete",
+    ))
 
 
 def clear_tray_completed() -> None:

@@ -77,8 +77,13 @@ def next_item() -> Optional[tuple[str, Path, str]]:
         st = row["state"] if row else "pending"
         if st in WORK_STATES:
             return item_id, p, "process"
-        if st in ("complete", "suspect", "failed"):
+        if st == "complete":
             return item_id, p, "park"
+        if st in ("suspect", "failed", "skipped"):
+            # Poison items remain visible and preserved in the inbox until an
+            # explicit operator action. Continue scanning so they never wedge
+            # healthy work behind them.
+            continue
     return None
 
 

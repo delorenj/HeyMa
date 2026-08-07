@@ -85,6 +85,11 @@ class TrayIconTest(unittest.TestCase):
         self.assertEqual(queued, "• meeting.ogg  (1.5 MiB)")
         self.assertEqual(active, "◐ Transcribing: meeting.ogg  (2:05 · 1.0 KiB)")
         self.assertTrue(done.startswith("✓ meeting.ogg"))
+        failed = self.tray.queue_label({
+            "item_id": "bad", "orig_name": "broken.ogg", "bytes": 12,
+            "state": "failed", "active": False,
+        })
+        self.assertTrue(failed.startswith("⚠ Failed: broken.ogg"))
 
     def test_failed_items_force_yellow_even_while_worker_is_active(self):
         colour, tooltip = self.tray.colour_for({
