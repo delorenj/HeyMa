@@ -136,6 +136,7 @@ run_*.sh
 
 # Debug & testing
 test_*.py
+!tests/test_transcribe_contract.py
 launch.json
 .DS_Store
 test/**.btr
