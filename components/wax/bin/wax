@@ -201,7 +201,11 @@ def main() -> int:
 
     if args.cmd == "queue":
         active = (state.inbox_state() or {}).get("active_item")
-        _emit(ledger.tray_items(active), J)
+        rows = ledger.tray_items(active)
+        active_row = next((row for row in rows if row.get("active")), None)
+        if active_row:
+            active_row.update(transcribe_adapter.progress_for(active_row["item_id"]))
+        _emit(rows, J)
         return 0
 
     if args.cmd == "skip":

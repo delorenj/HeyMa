@@ -18,6 +18,7 @@ lets the script own its file lock.
 
 import os
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime
@@ -27,6 +28,7 @@ from typing import Any, Optional
 from . import archive, config, desktop, frontmatter, ledger, paths, sanity, sentinel
 
 PROGRESS_TIMEOUT_S = 900
+PROGRESS_PREFIX = "Transcription-Progress: "
 
 
 class TranscribeError(RuntimeError):
@@ -34,6 +36,10 @@ class TranscribeError(RuntimeError):
 
 
 class TranscriptionSizeError(TranscribeError):
+    pass
+
+
+class TranscriptionDurationError(TranscribeError):
     pass
 
 
@@ -58,6 +64,58 @@ def parse_metadata(stderr: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def parse_progress(text: str) -> dict[str, Any]:
+    """Return the latest structured heartbeat, with legacy-log fallbacks."""
+    for line in reversed((text or "").splitlines()):
+        if line.startswith(PROGRESS_PREFIX):
+            try:
+                value = json.loads(line[len(PROGRESS_PREFIX):])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(value, dict) or not value.get("stage"):
+                continue
+            out = {"stage": str(value["stage"])}
+            if value.get("percent") is not None:
+                try:
+                    out["progress_pct"] = max(0, min(100, int(value["percent"])))
+                except (TypeError, ValueError):
+                    pass
+            detail = value.get("detail") or value.get("position")
+            if detail:
+                out["progress_detail"] = str(detail)
+            return out
+        # Existing jobs predate structured heartbeats. Their log still tells
+        # us when ASR's 99% was followed by the separate diarization phase.
+        if "Running diarization" in line:
+            return {"stage": "diarize"}
+        if "Loading diarization model" in line:
+            return {"stage": "diarize", "progress_pct": 0}
+        if line.startswith("Done. Duration:"):
+            return {"stage": "finalize"}
+        match = re.search(r"\[\s*(\d{1,3})%\]", line)
+        if match:
+            return {"stage": "transcribe", "progress_pct": min(100, int(match.group(1)))}
+    return {}
+
+
+def progress_for(item_id: str) -> dict[str, Any]:
+    """Read progress for the active attempt without touching the ledger."""
+    logdir = paths.LOGS / item_id
+    try:
+        logs = sorted(logdir.glob("transcription.*.log"), key=lambda path: path.stat().st_mtime_ns)
+        if not logs:
+            return {}
+        # Progress records are short; cap the read so a noisy dependency can
+        # never make the once-per-second tray poll expensive.
+        with logs[-1].open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - 256 * 1024))
+            text = handle.read().decode("utf-8", errors="replace")
+        return parse_progress(text)
+    except OSError:
+        return {}
 
 
 def transcribe_command() -> Path:
@@ -101,6 +159,12 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     if not config.transcription_size_allowed(size):
         raise TranscriptionSizeError(
             f"audio is {size} bytes; MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION={limit} bytes"
+        )
+    duration_s = sanity.probe_duration(audio)
+    if duration_s is not None and not config.transcription_duration_allowed(duration_s):
+        limit_s = config.max_audio_duration_for_transcription()
+        raise TranscriptionDurationError(
+            f"audio is {duration_s:.3f}s; MAX_AUDIO_DURATION_FOR_TRANSCRIPTION={limit_s:.3f}s"
         )
     item_id = item_id or ledger.identify(audio)
 

@@ -63,6 +63,18 @@ class PortabilityTest(unittest.TestCase):
         stderr = 'noise\nTranscription-Metadata: {"duration_seconds": 12.5, "diarized": true}\n'
         self.assertEqual(transcribe_adapter.parse_metadata(stderr)["duration_seconds"], 12.5)
 
+    def test_progress_parser_does_not_misreport_diarization_as_asr_99(self):
+        legacy = "  [ 99%] 02:58:19 / 180m 0s\n  Running diarization (cpu)...\n"
+        self.assertEqual(transcribe_adapter.parse_progress(legacy), {"stage": "diarize"})
+        structured = (
+            'Transcription-Progress: {"stage":"diarize","percent":37,'
+            '"chunks_done":370,"chunks_total":1000}\n'
+        )
+        self.assertEqual(
+            transcribe_adapter.parse_progress(structured),
+            {"stage": "diarize", "progress_pct": 37},
+        )
+
     def test_adapter_dings_at_process_start_and_successful_completion(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
