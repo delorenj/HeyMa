@@ -117,7 +117,7 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     if env.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
         if "--diarization" not in requested and "--no-diarization" not in requested:
             requested.append("--no-diarization")
-    cmd = [str(transcribe_command()), str(audio)] + requested
+    cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
     desktop.ding("start")
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=86400)
