@@ -4,6 +4,7 @@ import tempfile
 import subprocess
 import importlib.util
 import shutil
+from types import SimpleNamespace
 from importlib.machinery import SourceFileLoader
 import unittest
 from pathlib import Path
@@ -50,13 +51,45 @@ class PortabilityTest(unittest.TestCase):
             with self.assertRaisesRegex(transcribe_adapter.TranscribeError, "WAX_TRANSCRIBE"):
                 transcribe_adapter.transcribe_command()
 
-    def test_pipeline_disables_unbounded_diarization_by_default(self):
+    def test_pipeline_enables_diarization_by_default_with_explicit_opt_out(self):
         with patch.dict(os.environ, {}, clear=True):
             env = transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
-            self.assertIn(".diarization-disabled", env["DIARIZATION_VENV"])
-        with patch.dict(os.environ, {"WAX_DIARIZATION": "1", "DIARIZATION_VENV": "/opt/diar"}, clear=True):
+            self.assertNotIn("DIARIZATION_VENV", env)
+        with patch.dict(os.environ, {"WAX_DIARIZATION": "0", "DIARIZATION_VENV": "/opt/diar"}, clear=True):
             env = transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
-            self.assertEqual(env["DIARIZATION_VENV"], "/opt/diar")
+            self.assertIn(".diarization-disabled", env["DIARIZATION_VENV"])
+
+    def test_in_band_transcription_metadata(self):
+        stderr = 'noise\nTranscription-Metadata: {"duration_seconds": 12.5, "diarized": true}\n'
+        self.assertEqual(transcribe_adapter.parse_metadata(stderr)["duration_seconds"], 12.5)
+
+    def test_adapter_dings_at_process_start_and_successful_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "audio.ogg"
+            md = root / "derived.md"
+            audio.write_bytes(b"audio")
+            md.write_text("# transcript\n")
+            metadata = (
+                'Transcription-Metadata: {"duration_seconds": 1, "word_count": 1, '
+                '"diarized": true, "model": "large-v3"}\n'
+            )
+            connection = SimpleNamespace(execute=lambda *_args, **_kwargs: None)
+            verdict = {"ok": True, "reason_code": None, "audio_duration_s": 1.0,
+                       "asr_duration_s": 1.0, "duration_ratio": 1.0}
+            with patch.object(transcribe_adapter, "transcribe_command", return_value=Path("/bin/true")), \
+                    patch.object(transcribe_adapter.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stdout=str(md) + "\n", stderr=metadata)), \
+                    patch.object(transcribe_adapter.sanity, "check", return_value=verdict), \
+                    patch.object(transcribe_adapter.sanity, "source_unchanged", return_value=True), \
+                    patch.object(transcribe_adapter, "vault_name", return_value=md.name), \
+                    patch.object(transcribe_adapter.paths, "VAULT", root), \
+                    patch.object(transcribe_adapter.paths, "LOGS", root / "logs"), \
+                    patch.object(transcribe_adapter.ledger, "connect", return_value=connection), \
+                    patch.object(transcribe_adapter.ledger, "set_item_state"), \
+                    patch.object(transcribe_adapter.desktop, "ding") as ding:
+                transcribe_adapter.transcribe(audio, item_id="item")
+            self.assertEqual([call.args[0] for call in ding.call_args_list], ["start", "complete"])
 
     def test_systemd_template_is_relocation_safe(self):
         template = (COMPONENT_ROOT / "deploy/systemd/user/waxd.service").read_text()

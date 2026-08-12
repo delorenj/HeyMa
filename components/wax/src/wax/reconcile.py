@@ -14,7 +14,6 @@ the only copy of anything.
 
 import json
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from . import archive, frontmatter, ledger, paths, sentinel
@@ -41,7 +40,7 @@ def scan_s3() -> dict[str, int]:
     """Recover backup records from the .by-content sidecar index."""
     recovered = 0
     try:
-        r = subprocess.run(
+        subprocess.run(
             ["mc", "cat"], capture_output=True, text=True, timeout=5)  # probe mc exists
     except (OSError, subprocess.SubprocessError):
         return {"s3_sidecars": 0, "note": "mc unavailable"}
@@ -105,10 +104,10 @@ def scan_vault() -> dict[str, int]:
             if not isinstance(rec, dict):
                 continue
             conn.execute(
-                "INSERT INTO passes(item_id,ep_slug,state,attempt,command_id,updated_at,detail) "
-                "VALUES(?,?,?,?,?,?,'rebuilt-from-frontmatter') "
-                "ON CONFLICT(item_id,ep_slug) DO UPDATE SET state=excluded.state",
-                (item_id, slug, rec.get("state") or "unknown", rec.get("attempt") or 1,
+                "INSERT INTO passes(item_id,ep_slug,version,state,attempt,command_id,updated_at,detail) "
+                "VALUES(?,?,?,?,?,?,?,'rebuilt-from-frontmatter') "
+                "ON CONFLICT(item_id,ep_slug) DO UPDATE SET version=excluded.version,state=excluded.state",
+                (item_id, slug, rec.get("version") or 1, rec.get("state") or "unknown", rec.get("attempt") or 1,
                  rec.get("command_id"), rec.get("at") or sentinel.utcnow()),
             )
             passes_found += 1

@@ -1,0 +1,12 @@
+slug: title-slug
+version: 1
+description: Summarize a transcript, assign a grounded title, and rename it to a date-prefixed kebab-case filename.
+enabled: true
+auto: true
+requires: []
+timeout_s: 600
+frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
+env:
+  WAX_TITLE_MODEL: qwen3.6:latest
+  WAX_OLLAMA_URL: http://127.0.0.1:11434
+command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]

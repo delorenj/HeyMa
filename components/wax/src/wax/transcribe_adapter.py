@@ -17,12 +17,14 @@ lets the script own its file lock.
 """
 
 import os
+import json
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import frontmatter, ledger, paths, sanity, sentinel
+from . import archive, config, desktop, frontmatter, ledger, paths, sanity, sentinel
 
 PROGRESS_TIMEOUT_S = 900
 
@@ -31,12 +33,31 @@ class TranscribeError(RuntimeError):
     pass
 
 
+class TranscriptionSizeError(TranscribeError):
+    pass
+
+
 def transcribe_env(logfile: Path) -> dict[str, str]:
     env = dict(os.environ)
     env["TRANSCRIBE_LOG_FILE"] = str(logfile)
-    if env.get("WAX_DIARIZATION", "").lower() not in {"1", "true", "yes", "on"}:
+    # Diarization is the default. An explicit false value is the only opt-out.
+    if env.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
         env["DIARIZATION_VENV"] = str(paths.VAR / ".diarization-disabled")
     return env
+
+
+def parse_metadata(stderr: str) -> dict[str, Any]:
+    """Read the in-band metadata record emitted by transcribe.py."""
+    prefix = "Transcription-Metadata: "
+    for line in reversed((stderr or "").splitlines()):
+        if not line.startswith(prefix):
+            continue
+        try:
+            value = json.loads(line[len(prefix):])
+            return value if isinstance(value, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def transcribe_command() -> Path:
@@ -75,6 +96,12 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     """Transcribe one item. Publishes only if the sanity gate passes."""
     if not audio.is_file():
         raise TranscribeError(f"not a file: {audio}")
+    size = audio.stat().st_size
+    limit = config.max_audio_file_size_for_transcription()
+    if not config.transcription_size_allowed(size):
+        raise TranscriptionSizeError(
+            f"audio is {size} bytes; MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION={limit} bytes"
+        )
     item_id = item_id or ledger.identify(audio)
 
     logdir = paths.LOGS / (item_id or audio.stem)
@@ -85,14 +112,13 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     before = (st.st_size, st.st_mtime_ns)
 
     env = transcribe_env(logfile)
-    # The legacy wrapper auto-enables Sortformer whenever its diarization venv
-    # exists. Sortformer materializes the entire recording plus per-second
-    # features in RAM; long backlog files drove waxd to 27-61 GiB and the OOM
-    # killer repeatedly terminated the pipeline. Keep the reliable ASR path as
-    # the default. Operators can explicitly opt back in after the diarizer is
-    # made streaming/bounded with WAX_DIARIZATION=1.
 
-    cmd = [str(transcribe_command()), str(audio)] + (extra or [])
+    requested = list(extra or [])
+    if env.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
+        if "--diarization" not in requested and "--no-diarization" not in requested:
+            requested.append("--no-diarization")
+    cmd = [str(transcribe_command()), str(audio)] + requested
+    desktop.ding("start")
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=86400)
     except subprocess.TimeoutExpired as e:
@@ -109,15 +135,7 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     if md is None or not md.is_file():
         raise TranscribeError(f"no 'Written:' path produced; log retained: {logfile}")
 
-    meta_path = md.with_suffix("").with_suffix(".meta.json") if md.suffix == ".md" else None
-    meta_path = md.parent / (md.stem + ".meta.json")
-    meta = {}
-    if meta_path.is_file():
-        import json
-        try:
-            meta = json.loads(meta_path.read_text())
-        except json.JSONDecodeError:
-            meta = {}
+    meta = parse_metadata(r.stderr)
 
     verdict = sanity.check(audio, meta)
 
@@ -145,8 +163,6 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
         from . import rename as rn
         try:
             final = rn.move_noclobber(md, desired)
-            if meta_path.is_file():
-                rn.move_noclobber(meta_path, final.parent / (final.stem + ".meta.json"))
         except OSError:
             final = md
 
@@ -156,7 +172,18 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     # ledger be rebuilt from the vault alone.
     if item_id:
         try:
-            frontmatter.merge(final, {
+            try:
+                refs = archive.references(item_id)
+            except Exception:  # noqa: BLE001 - provenance backfill must not discard a transcript
+                refs = []
+            provenance: dict[str, Any] = {
+                "schema-version": 1,
+                "asset-kind": "transcript",
+                "specialist": "transcripts",
+                "source": "audio-recording",
+                "captured": datetime.fromtimestamp(audio.stat().st_mtime).astimezone().isoformat(
+                    timespec="seconds"
+                ),
                 frontmatter.ITEM_KEY: item_id,
                 frontmatter.WAX_KEY: {
                     "transcribed_at": sentinel.utcnow(),
@@ -164,7 +191,14 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                     "duration_ratio": verdict["duration_ratio"],
                     "source_audio": audio.name,
                 },
-            })
+            }
+            if refs:
+                provenance.update({
+                    "source-sha256": refs[0]["sha256"],
+                    "source-s3-key": refs[0]["s3_key"],
+                    "source-s3-uri": f"s3://{refs[0]['bucket']}/{refs[0]['s3_key']}",
+                })
+            frontmatter.merge(final, provenance)
         except OSError:
             pass
 
@@ -182,4 +216,5 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
         ledger.set_item_state(item_id, "transcribed", cause="gate_passed",
                               evidence=f"ratio={verdict['duration_ratio']} -> {final.name}")
 
+    desktop.ding("complete")
     return {"item_id": item_id, "md_path": str(final), "log": str(logfile), **verdict}

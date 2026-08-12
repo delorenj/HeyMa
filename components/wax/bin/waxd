@@ -60,6 +60,7 @@ class Daemon:
             on_open=self.open_inbox,
             on_skip=self.skip_item,
             on_clear_completed=self.clear_completed,
+            on_open_transcript=self.open_transcript,
         )
         self._serve_socket()
         # Drains the inbox in its own thread so a long transcription can never
@@ -179,6 +180,13 @@ class Daemon:
 
     def open_inbox(self) -> None:
         subprocess.Popen(["xdg-open", str(paths.INBOX)])
+
+    def open_transcript(self, md_path: str) -> None:
+        path = Path(md_path)
+        if not path.is_file():
+            tray_mod._notify("Wax: transcript missing", str(path))
+            return
+        subprocess.Popen(["xdg-open", tray_mod.obsidian_uri(str(path))])
 
     def skip_item(self, item_id: str) -> None:
         def act():

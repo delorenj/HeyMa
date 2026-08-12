@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import archive, ledger, paths, procutil, rename, sentinel, state, transcribe_adapter
+from . import archive, config, ledger, passes, paths, procutil, rename, sentinel, state, transcribe_adapter
 
 POLL_S = 5.0
 _SELECTION_LOCK = threading.Lock()
@@ -92,8 +92,10 @@ def park_duplicate(item_id: str, path: Path) -> dict[str, Any]:
     dest_dir = paths.ARCHIVE / "duplicates"
     dest_dir.mkdir(parents=True, exist_ok=True)
     moved = rename.move_noclobber(path, dest_dir / path.name)
-    ledger.record_transition("item", item_id, None, "parked-duplicate", "already_processed",
-                             str(moved).replace(str(paths.AUDIO), "~/HeyMa"))
+    ledger.connect().execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
+                             (str(moved), sentinel.utcnow(), item_id))
+    ledger.set_item_state(item_id, "complete", cause="already_processed",
+                          evidence=str(moved).replace(str(paths.AUDIO), "~/HeyMa"))
     return {"item_id": item_id, "parked_duplicate": str(moved)}
 
 
@@ -127,6 +129,32 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
         result["error"] = f"archive failed: {e}"
         return result
 
+    # Durability and transcription policy are deliberately separate. Oversized
+    # audio is archived first, then preserved outside the live queue without
+    # ever starting Whisper. The adapter repeats this check so manual/direct
+    # transcription calls cannot bypass the policy.
+    size = path.stat().st_size
+    if not config.transcription_size_allowed(size):
+        limit = config.max_audio_file_size_for_transcription()
+        dest_dir = paths.SKIPPED / "oversize"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        moved = rename.move_noclobber(path, dest_dir / path.name)
+        conn.execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
+                     (str(moved), sentinel.utcnow(), item_id))
+        ledger.set_item_state(
+            item_id,
+            "skipped",
+            cause="file_too_large_for_transcription",
+            evidence=f"{size} bytes >= {limit}; archived then moved to {moved}",
+        )
+        result["skipped"] = {
+            "reason": "file_too_large_for_transcription",
+            "bytes": size,
+            "limit_bytes": limit,
+            "path": str(moved),
+        }
+        return result
+
     # ---- 2. transcription (skipped if this item already has one) -------
     if start_state == "transcribed":
         result["transcribe"] = {"skipped": "already transcribed"}
@@ -144,7 +172,14 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
             result["error"] = str(e)[:400]
             return result
 
-    # ---- 3. park the audio, but only against a LIVE re-verify ----------
+    # ---- 3. independent enrichment passes -----------------------------
+    # The audio remains in the inbox until every enabled auto pass has had an
+    # attempt. A failed EP is recorded independently and never blocks another
+    # EP or prevents the verified audio from being parked safely.
+    _write_claim(item_id, path, "enrich")
+    result["enrichment"] = passes.run_auto(item_id)
+
+    # ---- 4. park the audio, but only against a LIVE re-verify ----------
     key = result["archive"]["s3_key"]
     if archive.remote_size(key) != path.stat().st_size:
         ledger.set_item_state(item_id, "failed", cause="s3_reverify_failed",

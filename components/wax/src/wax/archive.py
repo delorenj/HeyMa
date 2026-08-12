@@ -14,12 +14,14 @@ idempotent instead of minting mtime-derived twins.
 
 import json
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
-from . import ledger, paths, sentinel
+from . import frontmatter, ledger, paths, sentinel
 
 ALIAS = "delo"
 BUCKET = "recordings"
@@ -53,7 +55,21 @@ def key_for(path: Path, sha256: str) -> str:
 
 def remote_size(key: str) -> Optional[int]:
     o = _mc_json(["stat", "--json", f"{ALIAS}/{BUCKET}/{key}"])
-    if not o:
+    if o and o.get("status") == "success":
+        try:
+            return int(o.get("size"))
+        except (TypeError, ValueError):
+            pass
+
+    # Some S3 gateways permit PutObject/ListBucket but reject HeadObject.
+    # `mc stat` then reports "Insufficient permissions" even though the exact
+    # object exists.  Ask `mc ls` for the full object path as a verification
+    # fallback; without the exact-key check a prefix match could bless the
+    # wrong object.
+    o = _mc_json(["ls", "--json", f"{ALIAS}/{BUCKET}/{key}"])
+    if not o or o.get("status") != "success" or o.get("type") != "file":
+        return None
+    if o.get("key") != Path(key).name:
         return None
     try:
         return int(o.get("size"))
@@ -115,16 +131,166 @@ def _write_sidecar(item_id: Optional[str], key: str, sha: str, size: int, path: 
     These are what make `wax reconcile --rebuild` possible: the ledger can be
     thrown away and reconstructed from S3 + the vault.
     """
-    doc = {"item_id": item_id, "sha256": sha, "bytes": size, "orig_name": path.name,
-           "s3_key": key, "archived_at": sentinel.utcnow()}
-    blob = json.dumps(doc, indent=2, sort_keys=True)
-    tmp = paths.VAR / f".sidecar-{sha[:12]}.json"
-    tmp.write_text(blob)
-    for dest in (f"{ALIAS}/{BUCKET}/{key}.wax.json",
-                 f"{ALIAS}/{BUCKET}/.by-content/{sha}.json"):
-        subprocess.run([MC, "cp", "--quiet", str(tmp), dest],
-                       capture_output=True, text=True, timeout=300)
-    tmp.unlink(missing_ok=True)
+    # An idempotent re-archive must not erase enrichment written after the
+    # original upload. Preserve the transcript projection and any future
+    # sidecar fields, then repair the authoritative archive identity values.
+    doc = _cat_json(f"{ALIAS}/{BUCKET}/{key}.wax.json") or {}
+    doc.update({
+        "item_id": item_id,
+        "sha256": sha,
+        "bytes": size,
+        "orig_name": path.name,
+        "s3_key": key,
+        "archived_at": doc.get("archived_at") or sentinel.utcnow(),
+    })
+    _write_sidecar_doc(doc, strict=False)
+
+
+def _sidecar_destinations(doc: dict[str, Any]) -> tuple[str, str]:
+    return (
+        f"{ALIAS}/{BUCKET}/{doc['s3_key']}.wax.json",
+        f"{ALIAS}/{BUCKET}/.by-content/{doc['sha256']}.json",
+    )
+
+
+def _cat_json(target: str) -> Optional[dict[str, Any]]:
+    try:
+        result = subprocess.run(
+            [MC, "cat", target], capture_output=True, text=True, timeout=120,
+        )
+        value = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _write_sidecar_doc(doc: dict[str, Any], *, strict: bool) -> list[str]:
+    """Write both recovery projections; strict mode also reads them back."""
+    paths.VAR.mkdir(parents=True, exist_ok=True)
+    failures: list[str] = []
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", prefix=".wax-sidecar-", dir=paths.VAR, delete=False,
+    ) as handle:
+        json.dump(doc, handle, indent=2, sort_keys=True)
+        handle.flush()
+        tmp = Path(handle.name)
+    try:
+        for dest in _sidecar_destinations(doc):
+            try:
+                result = subprocess.run(
+                    [MC, "cp", "--quiet", str(tmp), dest],
+                    capture_output=True, text=True, timeout=300,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                failures.append(f"{dest}: {exc}")
+                continue
+            if result.returncode != 0:
+                failures.append(f"{dest}: {(result.stderr or 'mc cp failed')[-300:]}")
+                continue
+            if strict and _cat_json(dest) != doc:
+                failures.append(f"{dest}: read-back mismatch")
+    finally:
+        tmp.unlink(missing_ok=True)
+    if strict and failures:
+        raise ArchiveError("transcript sidecar update failed — " + "; ".join(failures))
+    return failures
+
+
+def references(item_id: str) -> list[dict[str, Any]]:
+    """Stable archive references for a content-identified item."""
+    rows = ledger.connect().execute(
+        "SELECT i.sha256,i.orig_name,i.bytes,b.s3_key,b.bucket,b.verified_at "
+        "FROM items i JOIN backups b USING(item_id) WHERE i.item_id=? "
+        "ORDER BY b.verified_at DESC,b.s3_key",
+        (item_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _tag_audio_object(ref: dict[str, Any], transcript_name: str, title_slug: str) -> Optional[str]:
+    """Mirror the link as S3 object tags. Tag failure never moves the object."""
+    tags = {
+        "Transcription": "Complete",
+        "ItemId": str(ref.get("sha256") or "")[:16],
+        "Transcript": transcript_name[:256],
+        "TitleSlug": title_slug[:256],
+    }
+    target = f"{ALIAS}/{ref['bucket']}/{ref['s3_key']}"
+    try:
+        result = subprocess.run(
+            [MC, "tag", "set", "--json", target, urlencode(tags)],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if result.returncode != 0:
+        return (result.stderr or result.stdout or "mc tag set failed")[-300:]
+    return None
+
+
+def link_transcript(item_id: str, md: Path) -> dict[str, Any]:
+    """Link immutable S3 audio to its mutable human-facing transcript name.
+
+    Renaming an S3 object is a copy+delete operation. Wax instead updates the
+    two small recovery sidecars and object tags, leaving the verified audio key
+    and bytes untouched.
+    """
+    refs = references(item_id)
+    if not refs:
+        raise ArchiveError(f"no verified S3 backup recorded for item {item_id}")
+    fm, _ = frontmatter.read(md)
+    title = str(fm.get("title") or md.stem)
+    title_slug = str(fm.get("title-slug") or md.stem)
+    try:
+        vault_path = str(md.resolve().relative_to(paths.VAULT.parent.resolve()))
+    except ValueError:
+        vault_path = md.name
+    transcript = {
+        "filename": md.name,
+        "vault_path": vault_path,
+        "title": title,
+        "title_slug": title_slug,
+        "linked_at": sentinel.utcnow(),
+    }
+    if fm.get("summary"):
+        transcript["summary"] = fm["summary"]
+
+    tag_failures: list[dict[str, str]] = []
+    for ref in refs:
+        sidecar_target = f"{ALIAS}/{ref['bucket']}/{ref['s3_key']}.wax.json"
+        doc = _cat_json(sidecar_target) or {
+            "item_id": item_id,
+            "sha256": ref["sha256"],
+            "bytes": ref["bytes"],
+            "orig_name": ref["orig_name"],
+            "s3_key": ref["s3_key"],
+            "archived_at": ref["verified_at"],
+        }
+        # Always repair the identity fields from the authoritative ledger.
+        doc.update({
+            "item_id": item_id,
+            "sha256": ref["sha256"],
+            "bytes": ref["bytes"],
+            "orig_name": ref["orig_name"],
+            "s3_key": ref["s3_key"],
+            "transcript": transcript,
+        })
+        _write_sidecar_doc(doc, strict=True)
+        tag_error = _tag_audio_object(ref, md.name, title_slug)
+        if tag_error:
+            tag_failures.append({"s3_key": ref["s3_key"], "error": tag_error})
+    if tag_failures:
+        raise ArchiveError(
+            "transcript sidecars verified but S3 object tags failed — "
+            + "; ".join(f"{failure['s3_key']}: {failure['error']}" for failure in tag_failures)
+        )
+    return {
+        "item_id": item_id,
+        "transcript": transcript,
+        "s3_keys": [ref["s3_key"] for ref in refs],
+        "sidecars_verified": True,
+        "tags_updated": True,
+    }
 
 
 def is_backed_up(item_id: str) -> bool:

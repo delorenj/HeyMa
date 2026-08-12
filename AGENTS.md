@@ -2,6 +2,15 @@
 
 Project home for the audio transcription workflow.
 
+## Skills (Skillex)
+
+- `./.agents/skills/` is the canonical folder for project-scoped skills.
+- `~/.agents/skills/` is the canonical folder for global skills.
+- Create and maintain skill source in the appropriate canonical folder; do not
+  author canonical skills under `.codex/skills/`.
+- For skills specific to this repository, initialize them under
+  `./.agents/skills/`. Use the global folder only when global scope is intended.
+
 ## Overview
 
 Recordings are transcribed locally with **faster-whisper** (NOT Fireflies anymore —

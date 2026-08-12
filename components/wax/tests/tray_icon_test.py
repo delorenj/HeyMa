@@ -80,11 +80,11 @@ class TrayIconTest(unittest.TestCase):
         })
         done = self.tray.queue_label({
             "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1,
-            "state": "complete", "active": False,
+            "state": "complete", "active": False, "md_path": "/vault/derived-note.md",
         })
         self.assertEqual(queued, "• meeting.ogg  (1.5 MiB)")
         self.assertEqual(active, "◐ Transcribing: meeting.ogg  (2:05 · 1.0 KiB)")
-        self.assertTrue(done.startswith("✓ meeting.ogg"))
+        self.assertTrue(done.startswith("✓ derived-note.md"))
         failed = self.tray.queue_label({
             "item_id": "bad", "orig_name": "broken.ogg", "bytes": 12,
             "state": "failed", "active": False,
@@ -95,10 +95,24 @@ class TrayIconTest(unittest.TestCase):
         colour, tooltip = self.tray.colour_for({
             "stream": {"state": "ready"},
             "inbox": {"state": "ready-and-active", "pending": 4},
-            "items": {"failed": 2},
+            "queue": {"failed": 2},
         })
         self.assertEqual(colour, "yellow")
         self.assertIn("failed items: 2", tooltip)
+
+    def test_historical_failures_do_not_tint_an_empty_queue(self):
+        colour, tooltip = self.tray.colour_for({
+            "stream": {"state": "ready"},
+            "inbox": {"state": "ready-and-waiting", "pending": 0},
+            "queue": {"failed": 0},
+            "items": {"failed": 99},
+        })
+        self.assertEqual(colour, "green")
+        self.assertNotIn("failed items", tooltip)
+
+    def test_obsidian_uri_uses_absolute_transcript_path(self):
+        uri = self.tray.obsidian_uri("/home/me/My Vault/a note.md")
+        self.assertEqual(uri, "obsidian://open?path=/home/me/My%20Vault/a%20note.md")
 
 
 if __name__ == "__main__":

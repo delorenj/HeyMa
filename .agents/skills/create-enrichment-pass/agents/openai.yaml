@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Enrichment Pass"
+  short_description: "Build interchangeable document enrichment passes"
+  default_prompt: "Use $create-enrichment-pass to design and implement a portable enrichment pass for Markdown documents."

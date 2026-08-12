@@ -23,6 +23,8 @@ Two hard rules, both learned the expensive way:
 """
 
 import gc
+from pathlib import Path
+from urllib.parse import quote
 
 import gi
 
@@ -36,7 +38,7 @@ except (ValueError, ImportError):  # pragma: no cover - fallback for older stack
 
 from gi.repository import GLib, Gio, Gtk  # noqa: E402
 
-from . import component
+from . import component  # noqa: E402
 
 ICON_DIR = component.TRAY_ASSETS
 WATCHER = "org.kde.StatusNotifierWatcher"
@@ -51,6 +53,7 @@ STAGE_VERBS = {
     "claimed": "Starting",
     "archive": "Uploading",
     "transcribe": "Transcribing",
+    "enrich": "Enriching",
     "park": "Finishing",
 }
 
@@ -85,7 +88,15 @@ def queue_label(item: dict, spinner_frame: int = 0) -> str:
         prefix = f"{item['state'].title()}: "
     else:
         prefix = f"{stage}: " if item.get("active") and stage else ""
-    return f"{icon} {prefix}{item.get('orig_name') or item.get('item_id')}  ({detail})"
+    display_name = item.get("orig_name") or item.get("item_id")
+    if item.get("state") == "complete" and item.get("md_path"):
+        display_name = Path(item["md_path"]).name
+    return f"{icon} {prefix}{display_name}  ({detail})"
+
+
+def obsidian_uri(path: str) -> str:
+    """Obsidian's absolute-path URI, escaped without losing path separators."""
+    return "obsidian://open?path=" + quote(str(Path(path).resolve()), safe="/")
 
 
 def colour_for(snap: dict) -> tuple[str, str]:
@@ -99,7 +110,9 @@ def colour_for(snap: dict) -> tuple[str, str]:
     s, i = stream.get("state"), inbox.get("state")
 
     tip = f"stream: {s}\ninbox: {i}"
-    failed = (snap.get("items") or {}).get("failed", 0)
+    # Use failures physically present in the actionable tray queue. Historical
+    # ledger failures are audit history and must not keep the icon yellow.
+    failed = (snap.get("queue") or {}).get("failed", 0)
     cause = stream.get("cause_code") or inbox.get("cause_code")
     if cause:
         tip += f"\ncause: {cause}"
@@ -117,9 +130,10 @@ def colour_for(snap: dict) -> tuple[str, str]:
 
 class Tray:
     def __init__(self, on_toggle=None, on_quit=None, on_open=None,
-                 on_skip=None, on_clear_completed=None):
+                 on_skip=None, on_clear_completed=None, on_open_transcript=None):
         self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
         self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
+        self.on_open_transcript = on_open_transcript
         self.indicator = None
         self.registered = False
         self._colour = None
@@ -277,7 +291,14 @@ class Tray:
             error = item.get("error") or {}
             tooltip = error.get("evidence") or error.get("cause_code") or item.get("path") or ""
             row.set_tooltip_text(tooltip)
-            if (not item.get("active") and
+            if item.get("state") == "complete" and item.get("md_path"):
+                row.set_tooltip_text(item["md_path"])
+                row.connect(
+                    "activate",
+                    lambda _widget, path=item["md_path"]: self.on_open_transcript
+                    and self.on_open_transcript(path),
+                )
+            elif (not item.get("active") and
                     item.get("state") not in ("complete", "failed", "suspect")):
                 row.connect("button-press-event", self._queue_right_click, item["item_id"])
             else:
@@ -313,7 +334,8 @@ class Tray:
     def set_queue(self, items: list[dict]) -> None:
         """Thread-safe queue-menu update; rebuild only when visible data changes."""
         signature = tuple(
-            (x.get("item_id"), x.get("state"), x.get("active"), x.get("bytes"), x.get("duration_s"))
+            (x.get("item_id"), x.get("state"), x.get("active"), x.get("bytes"),
+             x.get("duration_s"), x.get("md_path"))
             for x in items
         )
         if signature == self._queue_signature:

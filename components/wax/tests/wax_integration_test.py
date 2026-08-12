@@ -157,6 +157,61 @@ class WaxIntegrationTest(unittest.TestCase):
             self.assertEqual(selected, expected)
             self.assertTrue(failed.exists())
 
+    def test_failed_only_inbox_is_not_reported_as_stranded_work(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            failed = inbox / "broken.ogg"
+            failed.write_bytes(b"broken")
+            env = {**os.environ, "WAX_ROOT": runtime_root,
+                   "PYTHONPATH": str(COMPONENT_ROOT / "src")}
+            script = (
+                "from wax import ledger,state; from pathlib import Path; "
+                "state.QUEUE_GRACE_S=0; state.ENABLED_FLAG.parent.mkdir(parents=True,exist_ok=True); "
+                "state.ENABLED_FLAG.touch(); "
+                f"item=ledger.upsert_item(Path(r'{failed}')); "
+                "ledger.set_item_state(item,'failed',cause='decode_failed'); "
+                "snap=ledger.enrich(state.snapshot(run_preflight=False)); "
+                "print(snap['inbox']['cause_code']); print(snap['queue']['failed'])"
+            )
+            result = subprocess.run(
+                ["python3", "-c", script], cwd=REPO_ROOT, env=env,
+                capture_output=True, text=True, check=True,
+            )
+            cause, failed_count = result.stdout.splitlines()
+            self.assertEqual(cause, "failed_items")
+            self.assertEqual(failed_count, "1")
+
+    def test_completed_tray_item_carries_derived_transcript_path(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            archive = root / "archive"
+            vault = root / "vault"
+            archive.mkdir()
+            vault.mkdir()
+            audio = archive / "source.ogg"
+            transcript = vault / "derived-transcript.md"
+            audio.write_bytes(b"audio")
+            transcript.write_text("# transcript\n")
+            env = {**os.environ, "WAX_ROOT": runtime_root, "WAX_VAULT": str(vault),
+                   "PYTHONPATH": str(COMPONENT_ROOT / "src")}
+            script = (
+                "from wax import ledger,sentinel; from pathlib import Path; "
+                f"item=ledger.upsert_item(Path(r'{audio}'),origin='archive'); "
+                "sql='INSERT INTO transcripts(item_id,md_path,created_at) VALUES(?,?,?)'; "
+                f"ledger.connect().execute(sql,(item,r'{transcript}',sentinel.utcnow())); "
+                "ledger.set_item_state(item,'complete',cause='test'); "
+                "row=ledger.tray_items()[0]; print(row['orig_name']); print(row['md_path'])"
+            )
+            result = subprocess.run(
+                ["python3", "-c", script], cwd=REPO_ROOT, env=env,
+                capture_output=True, text=True, check=True,
+            )
+            source_name, md_path = result.stdout.splitlines()
+            self.assertEqual(source_name, "source.ogg")
+            self.assertEqual(md_path, str(transcript))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,8 @@ KillMode=mixed
 TimeoutStopSec=30
 PrivateTmp=false
 Environment=WAX_SEGMENT_SECONDS=60
+Environment=MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION=300MB
+Environment=WAX_DIARIZATION=1
 
 [Install]
 WantedBy=graphical-session.target

@@ -17,7 +17,6 @@ hash when that triple changes.
 """
 
 import hashlib
-import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -95,6 +94,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
 CREATE TABLE IF NOT EXISTS passes (
     item_id    TEXT NOT NULL,
     ep_slug    TEXT NOT NULL,
+    version    INTEGER NOT NULL DEFAULT 1,
     state      TEXT NOT NULL,
     attempt    INTEGER NOT NULL DEFAULT 1,
     command_id TEXT,
@@ -115,6 +115,18 @@ def connect() -> sqlite3.Connection:
         conn = sqlite3.connect(paths.DB, timeout=10.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS does not evolve ledgers created by older
+        # Wax versions. Pass versions are what let an upgraded EP run once
+        # again without repeatedly rerunning an already-completed definition.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(passes)")}
+        if "version" not in columns:
+            try:
+                conn.execute("ALTER TABLE passes ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+            except sqlite3.OperationalError as exc:
+                # A simultaneous CLI/daemon cold start may have won the same
+                # additive migration after our PRAGMA read.
+                if "duplicate column" not in str(exc).lower():
+                    raise
         _local.conn = conn
     return conn
 
@@ -207,7 +219,6 @@ def upsert_item(path: Path, *, origin: str = "manual") -> Optional[str]:
             conn.execute("UPDATE items SET path=?, updated_at=? WHERE item_id=?", (str(path), now, item_id))
         return item_id
 
-    digest = conn.execute("SELECT item_id FROM files_seen WHERE path=?", (str(path),)).fetchone()
     conn.execute(
         "INSERT INTO items(item_id,sha256,path,orig_name,bytes,origin,state,first_seen,updated_at) "
         "VALUES(?,?,?,?,?,?,'pending',?,?)",
@@ -360,6 +371,25 @@ def counts() -> dict[str, int]:
     return out
 
 
+def inbox_counts() -> dict[str, int]:
+    """Ledger states for files physically present in the live inbox."""
+    from . import state as state_mod
+    paths_now = [str(path) for path in state_mod.inbox_items()]
+    out = {"total": len(paths_now), "actionable": 0, "failed": 0}
+    if not paths_now:
+        return out
+    placeholders = ",".join("?" for _ in paths_now)
+    rows = connect().execute(
+        f"SELECT state,COUNT(*) AS n FROM items WHERE path IN ({placeholders}) GROUP BY state",
+        paths_now,
+    ).fetchall()
+    by_state = {row["state"]: row["n"] for row in rows}
+    out["actionable"] = sum(by_state.get(state, 0) for state in ("pending", "archived", "transcribed"))
+    out["failed"] = sum(by_state.get(state, 0) for state in ("failed", "suspect"))
+    out["known"] = sum(by_state.values())
+    return out
+
+
 def tray_items(active_item: Optional[str] = None,
                active_stage: Optional[str] = None) -> list[dict[str, Any]]:
     """Current inbox plus completed items not yet dismissed from the tray."""
@@ -367,12 +397,15 @@ def tray_items(active_item: Optional[str] = None,
     marker = conn.execute("SELECT v FROM meta WHERE k='tray_completed_after'").fetchone()
     completed_after = marker["v"] if marker else ""
     queued_rows = conn.execute(
-        "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
-        "WHERE state IN ('pending','archived','transcribed','failed','suspect')"
+        "SELECT i.item_id,i.orig_name,i.path,i.bytes,i.duration_s,i.state,i.updated_at,"
+        "t.md_path FROM items i LEFT JOIN transcripts t USING(item_id) "
+        "WHERE i.state IN ('pending','archived','transcribed','failed','suspect')"
     ).fetchall()
     completed = conn.execute(
-        "SELECT item_id,orig_name,path,bytes,duration_s,state,updated_at FROM items "
-        "WHERE state='complete' AND updated_at>? ORDER BY updated_at DESC",
+        "SELECT i.item_id,i.orig_name,i.path,i.bytes,i.duration_s,i.state,i.updated_at,"
+        "t.md_path FROM items i LEFT JOIN transcripts t USING(item_id) "
+        "WHERE i.state='complete' AND i.updated_at>? AND t.md_path IS NOT NULL "
+        "ORDER BY i.updated_at DESC",
         (completed_after,),
     ).fetchall()
     # Match worker.next_item() exactly: it walks state.inbox_items(), whose
@@ -434,12 +467,18 @@ def enrich(snap: dict[str, Any]) -> dict[str, Any]:
     path must keep working when the DB is missing, locked, or being rebuilt.
     """
     try:
-        conn = connect()
-        rows = conn.execute("SELECT COUNT(*) AS n FROM items WHERE state='pending'").fetchone()["n"]
         inbox = snap.setdefault("inbox", {})
         fs_entries = inbox.get("pending", 0)
-        inbox["ledger_rows"] = rows
-        inbox["reconciled"] = (rows == fs_entries)
+        queue = inbox_counts()
+        inbox["ledger_rows"] = queue.get("known", 0)
+        inbox["reconciled"] = (queue.get("known", 0) == fs_entries)
+        snap["queue"] = queue
+        # A failed item intentionally remains visible, but it is not queued
+        # work and must never be diagnosed as a dead worker/stranded claim.
+        if (inbox.get("state") == "error" and inbox.get("cause_code") == "stranded_work"
+                and queue["failed"] and not queue["actionable"]):
+            inbox["cause_code"] = "failed_items"
+            inbox["evidence"] = f"{queue['failed']} failed item(s) preserved in inbox"
         snap["generation"] = generation()
         snap["items"] = counts()
         # Keep `wax status` and the state.json mirror reporting the SAME fields;
