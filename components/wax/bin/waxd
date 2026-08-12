@@ -31,7 +31,7 @@ import gi  # noqa: E402
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib  # noqa: E402
 
-from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, worker as worker_mod  # noqa: E402
+from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, transcribe_adapter, worker as worker_mod  # noqa: E402
 
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
@@ -94,7 +94,16 @@ class Daemon:
             queue_items = ledger.tray_items(active, stage)
             active_row = next((item for item in queue_items if item.get("active")), None)
             if active_row:
+                progress = transcribe_adapter.progress_for(active_row["item_id"])
+                if progress:
+                    active_row.update(progress)
+                    stage = active_row.get("stage") or stage
+                    snap["inbox"]["active_stage"] = stage
+                    if active_row.get("progress_pct") is not None:
+                        snap["inbox"]["active_progress_pct"] = active_row["progress_pct"]
                 verb = tray_mod.STAGE_VERBS.get(stage, stage or "working").lower()
+                if active_row.get("progress_pct") is not None:
+                    verb = f"{verb} {active_row['progress_pct']}%"
                 elapsed = int((snap.get("inbox") or {}).get("active_elapsed_s") or 0)
                 snap["inbox"]["evidence"] = (
                     f"{verb} {active_row['orig_name']} · {elapsed // 60}m {elapsed % 60:02d}s"

@@ -52,7 +52,10 @@ SPINNER = ("◐", "◓", "◑", "◒")
 STAGE_VERBS = {
     "claimed": "Starting",
     "archive": "Uploading",
+    "preparing": "Preparing",
     "transcribe": "Transcribing",
+    "diarize": "Diarizing",
+    "finalize": "Finalizing",
     "enrich": "Enriching",
     "park": "Finishing",
 }
@@ -84,6 +87,8 @@ def queue_label(item: dict, spinner_frame: int = 0) -> str:
         seconds = int(item["duration_s"])
         detail = f"{seconds // 60}:{seconds % 60:02d} · {detail}"
     stage = STAGE_VERBS.get(item.get("stage"), item.get("stage") or "")
+    if item.get("active") and item.get("progress_pct") is not None:
+        stage = f"{stage} {int(item['progress_pct'])}%"
     if item.get("state") in ("failed", "suspect"):
         prefix = f"{item['state'].title()}: "
     else:
@@ -275,6 +280,8 @@ class Tray:
         active = next((x for x in queued if x.get("active")), None)
         if getattr(self, "item_queue", None) is not None:
             stage = STAGE_VERBS.get((active or {}).get("stage"), "Working") if active else "Idle"
+            if active and active.get("progress_pct") is not None:
+                stage = f"{stage} {int(active['progress_pct'])}%"
             suffix = f" · {len(errors)} failed" if errors else ""
             self.item_queue.set_label(f"Queue — {stage} · {len(queued)} remaining{suffix}")
         summary = Gtk.MenuItem(
@@ -334,7 +341,8 @@ class Tray:
     def set_queue(self, items: list[dict]) -> None:
         """Thread-safe queue-menu update; rebuild only when visible data changes."""
         signature = tuple(
-            (x.get("item_id"), x.get("state"), x.get("active"), x.get("bytes"),
+            (x.get("item_id"), x.get("state"), x.get("active"), x.get("stage"),
+             x.get("progress_pct"), x.get("progress_detail"), x.get("bytes"),
              x.get("duration_s"), x.get("md_path"))
             for x in items
         )

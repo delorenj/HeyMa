@@ -40,7 +40,9 @@ flowchart TB
 
   IN --> ARCH["archiver — own queue,<br/>runs on file.recorded"]
   ARCH -->|mc cp + ETag verify ×3| S3["s3://recordings/YYYY-MM-DD/&lt;sha12&gt;-name<br/>+ &lt;key&gt;.wax.json  + .by-content/&lt;sha256&gt;.json<br/>+ tag Transcription=Complete"]
-  IN --> TR["transcriber — concurrency 1<br/>bin/transcribe owns its own flock"]
+  IN --> POLICY{"transcription policy:<br/>&lt;300 MB AND &lt;3 h"}
+  POLICY -->|pass| TR["transcriber — concurrency 1<br/>bin/transcribe owns its own flock"]
+  POLICY -->|blocked after S3 verify| SKIP["~/HeyMa/skipped/<br/>preserved, never deleted"]
   TR --> GATE{"duration gate:<br/>ffprobe dur vs whisper info.duration"}
   GATE -->|pass| MD["~/d/Transcripts/YYYYMMDD-HHMMSS-slug.md<br/>frontmatter: pipeline-status, wax-item-id,<br/>source-s3-key, source-sha256, wax: map"]
   GATE -->|fail| SUS["&lt;stem&gt;.suspect.md + item stays in inbox"]
@@ -57,6 +59,15 @@ flowchart TB
 ```
 
 Event emissions, in flow order: `session.started` → (`session.ended` | `session.failed` | `session.canceled`) → `file.recorded` → `file.sent` → `transcription.started` → (`transcription.completed` | `transcription.failed`) → `task.requested`+`task.started`→(`task.completed`|`task.failed`) per EP. Plus `status.updated` on **every** edge of both machines and `heartbeat.recorded` every 60s.
+
+Transcription has two independent, exclusive compute ceilings:
+`MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` (default `300MB`) and
+`MAX_AUDIO_DURATION_FOR_TRANSCRIPTION` (default `3h`). Compression makes either
+one insufficient alone: the 2026-08-11 runaway capture was 13.9 hours but only
+171 MiB. Wax archives and byte-verifies the source first, then moves a blocked
+item to `skipped/oversize/` or `skipped/overduration/` without launching
+Whisper. The direct adapter and `bin/transcribe` repeat both checks so alternate
+entry points cannot bypass the policy.
 
 ---
 

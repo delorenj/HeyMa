@@ -15,6 +15,7 @@ TimeoutStopSec=30
 PrivateTmp=false
 Environment=WAX_SEGMENT_SECONDS=60
 Environment=MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION=300MB
+Environment=MAX_AUDIO_DURATION_FOR_TRANSCRIPTION=3h
 Environment=WAX_DIARIZATION=1
 
 [Install]

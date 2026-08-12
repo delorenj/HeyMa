@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import archive, config, ledger, passes, paths, procutil, rename, sentinel, state, transcribe_adapter
+from . import archive, config, ledger, passes, paths, procutil, rename, sanity, sentinel, state, transcribe_adapter
 
 POLL_S = 5.0
 _SELECTION_LOCK = threading.Lock()
@@ -151,6 +151,37 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
             "reason": "file_too_large_for_transcription",
             "bytes": size,
             "limit_bytes": limit,
+            "path": str(moved),
+        }
+        return result
+
+    # File size is not a proxy for compute. At 28.7 kbps, a 13.9-hour Ogg is
+    # only 171 MiB and legitimately passes a 300 MB byte ceiling. Probe the
+    # container and enforce an independent wall-clock duration ceiling before
+    # Whisper allocates a model or takes the single transcription slot.
+    duration_s = sanity.probe_duration(path)
+    if duration_s is not None:
+        conn.execute(
+            "UPDATE items SET duration_s=?,updated_at=? WHERE item_id=?",
+            (duration_s, sentinel.utcnow(), item_id),
+        )
+    if duration_s is not None and not config.transcription_duration_allowed(duration_s):
+        limit_s = config.max_audio_duration_for_transcription()
+        dest_dir = paths.SKIPPED / "overduration"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        moved = rename.move_noclobber(path, dest_dir / path.name)
+        conn.execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
+                     (str(moved), sentinel.utcnow(), item_id))
+        ledger.set_item_state(
+            item_id,
+            "skipped",
+            cause="audio_too_long_for_transcription",
+            evidence=f"{duration_s:.3f}s >= {limit_s:.3f}s; archived then moved to {moved}",
+        )
+        result["skipped"] = {
+            "reason": "audio_too_long_for_transcription",
+            "duration_s": duration_s,
+            "limit_s": limit_s,
             "path": str(moved),
         }
         return result

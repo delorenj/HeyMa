@@ -76,14 +76,15 @@ class TrayIconTest(unittest.TestCase):
         })
         active = self.tray.queue_label({
             "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1024,
-            "duration_s": 125, "state": "archived", "active": True, "stage": "transcribe",
+            "duration_s": 125, "state": "archived", "active": True,
+            "stage": "diarize", "progress_pct": 37,
         })
         done = self.tray.queue_label({
             "item_id": "abc", "orig_name": "meeting.ogg", "bytes": 1,
             "state": "complete", "active": False, "md_path": "/vault/derived-note.md",
         })
         self.assertEqual(queued, "• meeting.ogg  (1.5 MiB)")
-        self.assertEqual(active, "◐ Transcribing: meeting.ogg  (2:05 · 1.0 KiB)")
+        self.assertEqual(active, "◐ Diarizing 37%: meeting.ogg  (2:05 · 1.0 KiB)")
         self.assertTrue(done.startswith("✓ derived-note.md"))
         failed = self.tray.queue_label({
             "item_id": "bad", "orig_name": "broken.ogg", "bytes": 12,
