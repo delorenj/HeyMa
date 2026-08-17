@@ -163,3 +163,18 @@ runtime/
 assets/
 /recovered/**
 /skipped/**
+
+# Canonical project agent sources live in .agents/. The legacy singular tree,
+# per-CLI projections, and CLI runtime databases are generated/local state.
+/.agent/
+/.claude/
+/.codex/
+/.gemini/
+/.copilot/
+/.opencode/
+/.kimi-code/
+/.github/agents/
+
+# Machine-local Skillex resolution and generated BMAD workflow snapshots.
+/.agents/skills.json
+/_bmad/render/
