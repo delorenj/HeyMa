@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.heyma.local/provider-status-header-v1.schema.json",
+  "title": "HeyMa provider status header v1",
+  "description": "Common root fields composed by wax.status.v1, vinyl.status.v1, and voxxy.health.v1. Product schemas add fields and close the root with unevaluatedProperties=false.",
+  "type": "object",
+  "required": [
+    "schema",
+    "instance_id",
+    "epoch",
+    "generation",
+    "updated_at",
+    "maintenance"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+\\.v[1-9][0-9]*$"
+    },
+    "instance_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "description": "Stable for one installed product instance."
+    },
+    "epoch": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "description": "Changes whenever the provider's generation sequence resets."
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Increments for semantic state, action, or maintenance-lease changes; heartbeat-only writes do not increment it."
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Provider heartbeat in RFC 3339 UTC, refreshed at least every five seconds."
+    },
+    "maintenance": {
+      "$ref": "#/$defs/maintenanceProjection"
+    }
+  },
+  "$defs": {
+    "maintenanceProjection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["state"],
+          "properties": {
+            "state": {"const": "inactive"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "state",
+            "lease_id",
+            "owner",
+            "reason",
+            "issued_at",
+            "expires_at"
+          ],
+          "properties": {
+            "state": {"const": "active"},
+            "lease_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "owner": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "issued_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}
