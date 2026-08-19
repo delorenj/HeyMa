@@ -102,8 +102,10 @@ def _singleton():
 class Daemon:
     def __init__(self):
         self._lock = _singleton()
-        # {key: (last detail, monotonic first-seen)} for _condition().
-        self._conditions: dict[str, tuple[Optional[str], float]] = {}
+        # key -> (detail, first_at, last_logged_at). first_at dates the fault
+        # for the "(still, Ns)" suffix; last_logged_at drives the repeat
+        # window. They must be separate — see _condition.
+        self._conditions: dict[str, tuple[Optional[str], float, float]] = {}
         self.snapshot: dict = {}
         self.tray = tray_mod.Tray(
             on_toggle=self.toggle,
@@ -137,18 +139,24 @@ class Daemon:
         printing nothing did. Re-asserted every LOG_REPEAT_S so a fault that
         outlives the journal window still says so.
         """
-        seen, first_at = self._conditions.get(key, (None, 0.0))
+        seen, first_at, last_at = self._conditions.get(key, (None, 0.0, 0.0))
         now = time.monotonic()
         if detail is None:
             if seen is not None:
                 self._conditions.pop(key, None)
                 log.info("%s %s", key, recovered)
             return
-        if detail == seen and (now - first_at) < LOG_REPEAT_S:
+        if detail == seen and (now - last_at) < LOG_REPEAT_S:
             return
-        self._conditions[key] = (detail, now if detail != seen else first_at)
+        # The repeat window is measured from the LAST log, not from first_at.
+        # Measuring it from first_at meant that once a fault outlived
+        # LOG_REPEAT_S the re-assert never reset its own timer, so the
+        # condition logged on every 1 Hz tick forever — observed doing exactly
+        # that for diarization_degraded at "(still, 1158s/1159s/1160s)".
+        repeat = detail == seen
+        self._conditions[key] = (detail, first_at if repeat else now, now)
         log.log(level, "%s: %s%s", key, detail,
-                "" if detail != seen else f" (still, {int(now - first_at)}s)")
+                f" (still, {int(now - first_at)}s)" if repeat else "")
 
     def _tick(self) -> bool:
         try:
