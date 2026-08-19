@@ -12,13 +12,16 @@ cost you a recording.
 
 import fcntl
 import json
+import logging
 import os
 import socket
 import socketserver
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
+from typing import Optional
 
 COMPONENT_ROOT = next(
     parent for parent in Path(__file__).resolve().parents
@@ -36,6 +39,52 @@ from wax import capture, events as events_mod, ledger, paths, state, tray as tra
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
 
+# Contract B names loggers "wax.<module>", but __name__ is "__main__" in a
+# script, so the name comes from the filename instead — "wax.waxd", which is
+# what the journal shows and what an operator would grep for.
+log = logging.getLogger("wax." + Path(__file__).name)
+
+# systemd stamps its own timestamp and unit name onto every captured stderr
+# line, so repeating either here just makes the journal harder to read. Level
+# and logger name are the two things it cannot know.
+LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
+
+# A condition inside _tick recurs at 1 Hz. Logging it unconditionally writes
+# ~86k identical lines a day, which is exactly as unreadable as the silence it
+# replaced, so a repeating condition is logged on CHANGE and then re-asserted
+# only this often — long enough to stay quiet, short enough that a fault cannot
+# scroll out of a journal window unmentioned.
+LOG_REPEAT_S = 300.0
+
+
+def _configure_logging() -> None:
+    """The ONE handler configuration for the whole component (contract B).
+
+    Library modules only ever call getLogger("wax.<module>"); none of them
+    configures a handler. With nobody installing one, Python's lastResort
+    handler prints WARNING and above unformatted and DROPS every INFO line —
+    which is why a week of 100% pass failure and empty diarization produced
+    zero waxd lines in the journal. Installing it here, before anything else
+    runs, is what makes the daemon capable of saying it is unwell.
+    """
+    requested = os.environ.get("WAX_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+    # getLevelName() is the only mapping that answers for aliases (FATAL, WARN)
+    # without getattr() happily returning logging.StreamHandler for a typo.
+    level = logging.getLevelName(requested)
+    bad = None
+    if not isinstance(level, int):
+        bad, level = requested, logging.INFO
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.setLevel(level)
+    root = logging.getLogger()
+    # Replace rather than append: a second handler would double every line if
+    # this were ever reached twice.
+    root.handlers[:] = [handler]
+    root.setLevel(level)
+    if bad:
+        log.warning("WAX_LOG_LEVEL=%r is not a level name; using INFO", bad)
+
 
 def _singleton():
     paths.ensure_dirs()
@@ -43,7 +92,7 @@ def _singleton():
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("waxd already running", file=sys.stderr)
+        log.error("waxd already running (singleton lock held): %s", SINGLETON)
         raise SystemExit(1)
     fh.write(f"{os.getpid()}\n")
     fh.flush()
@@ -53,6 +102,8 @@ def _singleton():
 class Daemon:
     def __init__(self):
         self._lock = _singleton()
+        # {key: (last detail, monotonic first-seen)} for _condition().
+        self._conditions: dict[str, tuple[Optional[str], float]] = {}
         self.snapshot: dict = {}
         self.tray = tray_mod.Tray(
             on_toggle=self.toggle,
@@ -72,6 +123,33 @@ class Daemon:
         self._tick()
 
     # -- status ----------------------------------------------------------
+    def _condition(self, key: str, detail: Optional[str], *,
+                   level: int = logging.WARNING, recovered: str = "recovered") -> None:
+        """Report a tick-rate condition on CHANGE, not once per second.
+
+        Swallowing a tick exception into a snapshot field is right — the tray
+        must survive a broken ledger — but it was ALSO the only record of it,
+        and nobody reads a JSON field they have no reason to open. So each of
+        these now reaches the journal too. `detail=None` clears the condition.
+
+        Deduplicated because _tick runs at 1 Hz: an unconditional line is 86k
+        journal entries a day, which buries the signal just as thoroughly as
+        printing nothing did. Re-asserted every LOG_REPEAT_S so a fault that
+        outlives the journal window still says so.
+        """
+        seen, first_at = self._conditions.get(key, (None, 0.0))
+        now = time.monotonic()
+        if detail is None:
+            if seen is not None:
+                self._conditions.pop(key, None)
+                log.info("%s %s", key, recovered)
+            return
+        if detail == seen and (now - first_at) < LOG_REPEAT_S:
+            return
+        self._conditions[key] = (detail, now if detail != seen else first_at)
+        log.log(level, "%s: %s%s", key, detail,
+                "" if detail != seen else f" (still, {int(now - first_at)}s)")
+
     def _tick(self) -> bool:
         try:
             snap = state.snapshot()
@@ -82,10 +160,40 @@ class Daemon:
                 ledger.note_machine("stream", snap.get("stream", {}))
                 ledger.note_machine("inbox", snap.get("inbox", {}))
                 snap = ledger.enrich(snap)
+                self._condition("ledger_error", None)
             except Exception as e:  # noqa: BLE001 - ledger trouble must not blind the tray
                 snap["ledger_error"] = str(e)
+                self._condition("ledger_error", f"{type(e).__name__}: {e}")
         except Exception as e:  # noqa: BLE001 - a status error must not kill the loop
             snap = {"error": str(e), "stream": {"state": "error"}, "inbox": {"state": "error"}}
+            self._condition("snapshot_error", f"{type(e).__name__}: {e}", level=logging.ERROR)
+        else:
+            self._condition("snapshot_error", None)
+        # Sub-stage health from contract A. The tray colour can only carry one
+        # summary; these are the two facts that ran at 100% failure for a week
+        # behind a green icon, so they get their own journal line the moment
+        # they change.
+        #
+        # Guarded on the block EXISTING, not on its contents: when enrich() did
+        # not run the keys are absent, and reading that as "not failing" would
+        # log a recovery the daemon has no evidence for — the same false
+        # all-clear this whole change exists to stop.
+        if snap.get("passes") is not None:
+            health = snap["passes"]
+            self._condition(
+                "passes_failed",
+                (f"{health['failed']} item(s) with a failed pass at the current version "
+                 f"({', '.join(health.get('slugs') or []) or 'unknown slug'}) — "
+                 f"retry with `wax ep sweep`") if health.get("failed") else None,
+                recovered="cleared")
+        if snap.get("diarization") is not None:
+            diar = snap["diarization"]
+            self._condition(
+                "diarization_degraded",
+                (f"the newest {diar.get('recent_undiarized')} transcript(s) have no speakers; "
+                 f"run `wax doctor` to see which dependency is missing")
+                if diar.get("degraded") else None,
+                recovered="cleared")
         self.snapshot = snap
         active = (snap.get("inbox") or {}).get("active_item")
         stage = (snap.get("inbox") or {}).get("active_stage")
@@ -108,14 +216,17 @@ class Daemon:
                 snap["inbox"]["evidence"] = (
                     f"{verb} {active_row['orig_name']} · {elapsed // 60}m {elapsed % 60:02d}s"
                 )
+            self._condition("tray_queue_error", None)
         except Exception as e:  # noqa: BLE001 - queue UI must not affect recording
             snap["tray_queue_error"] = str(e)
+            self._condition("tray_queue_error", f"{type(e).__name__}: {e}")
         colour, tip = tray_mod.colour_for(snap)
         self.tray.set(colour, tip, recording=(snap.get("stream", {}).get("state") == "recording"))
         try:
             self.tray.set_queue(queue_items)
         except Exception as e:  # noqa: BLE001 - queue UI must not affect recording
             snap["tray_queue_error"] = str(e)
+            self._condition("tray_menu_error", f"{type(e).__name__}: {e}")
         self._mirror(snap, colour)
         return True
 
@@ -124,8 +235,11 @@ class Daemon:
         unpublished and the backlog shows up in status."""
         try:
             events_mod.drain()
-        except Exception:  # noqa: BLE001
-            pass
+            self._condition("outbox_drain_error", None)
+        except Exception as e:  # noqa: BLE001
+            # Deduplicated like the tick conditions: a NATS outage fires this
+            # every 10 s, and the backlog count in status is the real measure.
+            self._condition("outbox_drain_error", f"{type(e).__name__}: {e}")
         return True
 
     def _mirror(self, snap: dict, colour: str) -> None:
@@ -141,12 +255,16 @@ class Daemon:
             # the system.
             payload["outbox_backlog"] = None
             payload["outbox_error"] = f"{type(e).__name__}: {e}"
+            self._condition("outbox_backlog_error", f"{type(e).__name__}: {e}")
         tmp = paths.STATE_JSON.with_suffix(".tmp")
         try:
             tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
             os.replace(tmp, paths.STATE_JSON)
-        except OSError:
-            pass
+            self._condition("state_mirror_error", None)
+        except OSError as e:
+            # `wax doctor` calls a stale mirror a FAILED probe, so the daemon
+            # had better be able to say why it went stale.
+            self._condition("state_mirror_error", str(e))
 
     # -- socket ----------------------------------------------------------
     def _serve_socket(self) -> None:
@@ -171,7 +289,8 @@ class Daemon:
             paths.SOCK.unlink(missing_ok=True)
             self.server = Server(str(paths.SOCK), Handler)
         except OSError as e:
-            print(f"waxd: socket unavailable ({e}); state.json mirror still written", file=sys.stderr)
+            log.error("socket unavailable (%s); state.json mirror at %s still written",
+                      e, paths.STATE_JSON)
             return
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -235,11 +354,30 @@ def Gtk_main_quit():
 
 def main() -> int:
     from gi.repository import Gtk
+    # Before ANY wax module can log. Everything below this line is now capable
+    # of reaching the journal; nothing above it was.
+    _configure_logging()
+    # One startup line naming what this process actually resolved. Two outages
+    # were prolonged by an assumed ledger path and an assumed transcriber, both
+    # of which are answerable in one line at boot.
+    log.info("waxd %d starting: root=%s ledger=%s vault=%s passes=%s level=%s",
+             os.getpid(), paths.AUDIO, paths.DB, paths.VAULT,
+             os.environ.get("WAX_PASSES_DIR", "<component default>"),
+             logging.getLevelName(logging.getLogger().level))
+    try:
+        transcriber = transcribe_adapter.transcribe_command()
+        log.info("transcriber: %s (diarization %s)",
+                 transcriber, transcribe_adapter.diarization_mode())
+    except transcribe_adapter.TranscribeError as e:
+        # Not fatal here — the worker raises per item — but it is the single
+        # most useful thing to know at boot, so it must not wait for an item.
+        log.error("transcriber unresolvable: %s (run `wax doctor`)", e)
     Daemon()
     try:
         Gtk.main()
     except KeyboardInterrupt:
         pass
+    log.info("waxd %d exiting", os.getpid())
     return 0
 
 

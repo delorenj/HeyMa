@@ -25,7 +25,7 @@ class TitleSlugPassTest(unittest.TestCase):
             md.write_text(original)
             with patch.object(
                 TITLE_SLUG,
-                "ollama_enrichment",
+                "hosted_enrichment",
                 return_value={
                     "title": "Modular Transcript Enrichment",
                     "summary": "The speaker defines a modular pass architecture.",
@@ -43,7 +43,7 @@ class TitleSlugPassTest(unittest.TestCase):
                 "---\ntitle: Human Title\nsummary: Human summary.\n"
                 "title-slug: human-title\n---\nBody\n"
             )
-            with patch.object(TITLE_SLUG, "ollama_enrichment") as model:
+            with patch.object(TITLE_SLUG, "hosted_enrichment") as model:
                 result = TITLE_SLUG.build_result(md)
             model.assert_not_called()
             self.assertEqual(result["frontmatter"]["title"], "Human Title")

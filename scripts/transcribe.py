@@ -228,6 +228,18 @@ def missing_diarization_dependencies() -> list[str]:
     except ImportError:
         missing.append("nemo_toolkit[asr]")
 
+    # Probe the module diarize_local() actually imports, not just its deps.
+    # librosa and nemo both import fine even when the vendored whisperlivekit/
+    # tree is gone (commit 1d21e8b deleted it), so the old two-module preflight
+    # passed, 29m24s of GPU ASR ran to completion, and only then did the import
+    # fail and return []. Import it for real: importlib.util.find_spec on a
+    # SUBMODULE raises ModuleNotFoundError when the parent package is absent,
+    # which would crash the preflight instead of reporting the gap.
+    try:
+        import whisperlivekit.diarization.sortformer_backend_offline  # noqa: F401
+    except ImportError:
+        missing.append("whisperlivekit (diarization.sortformer_backend_offline)")
+
     return missing
 
 
@@ -512,7 +524,8 @@ def format_duration(seconds: float) -> str:
     return f"{m}m {s}s"
 
 
-def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diarization: list = None) -> str:
+def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diarization: list = None,
+                diarization_requested: bool = False) -> str:
     """Format transcription result as markdown."""
     # Machine-readable enrichment belongs in frontmatter. Keeping it out of the
     # prose means the transcript begins with the transcript, while Obsidian and
@@ -525,6 +538,11 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
         "engine-model": result.get("model"),
         "transcription-backend": result.get("backend"),
         "diarized": bool(diarization),
+        # `diarized: false` alone cannot distinguish "one person was talking"
+        # from "we asked for speakers and the diarizer gave us nothing". Pair it
+        # with the request so a week of silently undiarized transcripts is
+        # readable off the note itself.
+        "diarization-requested": bool(diarization_requested),
     }
     lines = ["---"]
     for key, value in metadata.items():
@@ -609,6 +627,12 @@ def main():
         print(f"Error: File not found: {audio_path}", file=sys.stderr)
         sys.exit(1)
 
+    # Record what was ASKED FOR before the preflight is allowed to turn it off.
+    # Downstream (Wax) needs the request, not just the outcome: without it a
+    # failed diarization is byte-identical to an honest single-speaker recording,
+    # which is how both outages ran at 100% failure behind a green tray.
+    diarization_requested = bool(args.diarization and not args.groq)
+
     if args.diarization:
         missing = missing_diarization_dependencies()
         if missing:
@@ -637,6 +661,14 @@ def main():
         else:
             diarization = None
 
+    # Requested-but-empty is a FAILURE, not a quiet single-speaker result. Say so
+    # on stderr in a shape the adapter greps for, and keep exit 0 so a 3h ASR run
+    # is never thrown away over a missing speaker track.
+    diarization_degraded = diarization_requested and not diarization
+    if diarization_degraded:
+        log("Warning: DIARIZATION-DEGRADED: diarization was requested but produced no "
+            "speaker turns; this transcript is single-speaker by failure, not by content.")
+
     report_progress("finalize", 0)
     log(f"Done. Duration: {format_duration(result['duration'])} | Language: {result['language']}")
 
@@ -664,9 +696,11 @@ def main():
         # Include diarization in JSON if present
         if diarization:
             result["diarization"] = diarization
+        result["diarization_requested"] = diarization_requested
         output = json.dumps(result, indent=2, ensure_ascii=False)
     else:
-        output = to_markdown(result, audio_path, args.timestamps, diarization)
+        output = to_markdown(result, audio_path, args.timestamps, diarization,
+                             diarization_requested)
 
     if args.stdout:
         print(output)
@@ -681,6 +715,8 @@ def main():
             "word_count": len((result.get("text") or "").split()),
             "segment_count": len(result.get("segments") or []),
             "diarized": bool(diarization),
+            "diarization_requested": diarization_requested,
+            "diarization_degraded": diarization_degraded,
         }
         # Metadata is carried in-band for the parent process. It is deliberately
         # not persisted as a sibling .meta.json artifact.

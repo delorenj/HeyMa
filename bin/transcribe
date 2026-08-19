@@ -31,8 +31,11 @@ TRANSCRIBE_USER="${TRANSCRIBE_USER:-delorenj}"
 # ~/.local/bin symlink), so it keeps working when HeyMa is relocated. HeyMa
 # moved code/33GOD/HeyMa -> code/HeyMa (~2026-07-01) and the old hardcoded path
 # silently broke every transcription for two weeks. Self-locating prevents a repeat.
+# The last-resort default is the LIVE tree: code/HeyMa was retired 2026-08-19
+# (see its STALE-CHECKOUT.md) and no longer holds the diarization runtime, so
+# falling back there would have quietly reproduced the outage it once caused.
 _TRANSCRIBE_SELF="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-_TRANSCRIBE_DEFAULT_DIR="$(cd "$(dirname "$_TRANSCRIBE_SELF")/.." 2>/dev/null && pwd)" || _TRANSCRIBE_DEFAULT_DIR="/home/delorenj/code/HeyMa"
+_TRANSCRIBE_DEFAULT_DIR="$(cd "$(dirname "$_TRANSCRIBE_SELF")/.." 2>/dev/null && pwd)" || _TRANSCRIBE_DEFAULT_DIR="/home/delorenj/HeyMa"
 TRANSCRIBE_DIR="${TRANSCRIBE_DIR:-$_TRANSCRIBE_DEFAULT_DIR}"
 REMOTE="${TRANSCRIBE_USER}@${TRANSCRIBE_HOST}"
 MISE_INIT='source ~/.profile 2>/dev/null; eval "$(mise activate bash)" 2>/dev/null'
@@ -196,6 +199,9 @@ PY
     fi
   else
     log "[warn] Diarization venv ${DIARIZATION_PYTHON} missing; diarization will be skipped."
+    # The editable install needs a project file at ${TRANSCRIBE_DIR}: commit
+    # 1d21e8b deleted the root pyproject.toml along with whisperlivekit/, so
+    # recover it first (git show 1d21e8b^:pyproject.toml) or the last step fails.
     log "[warn] Create it with: uv venv --python 3.12 .venv-diarization && uv pip install --python .venv-diarization/bin/python -e . 'nemo_toolkit[asr]'"
     runner=(nice -n 15 mise x -- uv run python)
   fi

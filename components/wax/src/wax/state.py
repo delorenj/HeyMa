@@ -7,6 +7,7 @@ matters most (`error-partial`) is by definition the one that follows an
 uncontrolled exit, exactly when in-memory state is gone.
 """
 
+import logging
 import os
 import shutil
 import subprocess
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import paths, sentinel
+
+log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
 MEDIA_SUFFIXES = {".ogg", ".opus", ".mp3", ".m4a", ".wav", ".flac", ".aac", ".mov", ".mp4", ".mkv", ".webm", ".wma", ".aiff"}
 
@@ -181,11 +184,61 @@ def _active_claim() -> Optional[dict[str, Any]]:
     return claim
 
 
+# Syncthing's own bookkeeping, which lives INSIDE the inbox but is not inbox
+# content. `.stversions` is the dangerous one: versioning on this folder is
+# staggered with 365d retention, so it holds a copy of every version of every
+# file ever synced here — descending into it would adopt the entire deletion
+# history as fresh work. The names are redundant with the dot-prefix rule
+# below and are kept explicit so these two stay excluded even if that rule is
+# ever relaxed.
+SYNC_PRIVATE_DIRS = (".stfolder", ".stversions")
+
+# inbox_items() runs on the waxd poll loop, so this is emitted once per CHANGE
+# rather than once per call — an unconditional line would bury the journal and
+# nobody would read it.
+_nested_logged: Optional[int] = None
+
+
 def inbox_items() -> list[Path]:
-    return sorted(
-        p for p in paths.INBOX.iterdir()
-        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in MEDIA_SUFFIXES
-    ) if paths.INBOX.exists() else []
+    """Every media file under the inbox, at ANY depth.
+
+    Recursive, not flat. reconcile.scan_local() has always walked the inbox
+    with rglob while this walked it with iterdir, so the two halves of the
+    system disagreed about what the inbox held: 5 files totalling
+    1,074,201,440 B under inbox/2025 and inbox/2026 (measured 2026-08-19) had
+    no ledger row, could never be returned by worker.next_item(), and the tray
+    truthfully reported the inbox empty for as long as they sat there.
+    """
+    global _nested_logged
+    if not paths.INBOX.exists():
+        return []
+
+    items: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(paths.INBOX):
+        # Prune in place, so we never DESCEND — filtering the results instead
+        # would still stat every version in .stversions on every poll. The
+        # dot-prefix test rather than a fixed name list is deliberate:
+        # Syncthing renames markers aside on a folder reset, and this inbox is
+        # carrying a `.stfolder.removed-20260629-053824` that a name-only list
+        # would have walked straight into.
+        dirnames[:] = [d for d in dirnames
+                       if d not in SYNC_PRIVATE_DIRS and not d.startswith(".")]
+        here = Path(dirpath)
+        for name in filenames:
+            if name.startswith(".") or Path(name).suffix.lower() not in MEDIA_SUFFIXES:
+                continue
+            p = here / name
+            if p.is_file():
+                items.append(p)
+    items.sort()
+
+    nested = sum(1 for p in items if p.parent != paths.INBOX)
+    if nested != _nested_logged:
+        _nested_logged = nested
+        if nested:
+            log.info("inbox holds %d media file(s) in subdirectories of %d total; "
+                     "they are queue entries like any other", nested, len(items))
+    return items
 
 
 def inbox_state() -> dict[str, Any]:
@@ -231,8 +284,16 @@ def inbox_state() -> dict[str, Any]:
                 "active_item": None,
                 "evidence": f"{pending} item(s) in inbox, no live worker claim for {waited:.0f}s"}
 
+    # Deliberately NOT "no errors". This function reads the inbox listing and
+    # the enable flag and nothing else — it never touches the passes table or
+    # transcripts.diarized — so the old "inbox empty, scheduler enabled, no
+    # errors" asserted a fact it had not checked. It was measured printing
+    # exactly that five seconds after a title-slug failure was written to the
+    # ledger, and it printed it every day of a week-long diarization outage.
+    # An evidence string may only claim what it inspected; stage health rides
+    # on the snapshot's own health blocks, added by ledger.enrich().
     return {"state": "ready-and-waiting", "cause_code": None, "pending": 0,
-            "active_item": None, "evidence": "inbox empty, scheduler enabled, no errors"}
+            "active_item": None, "evidence": "inbox empty, scheduler enabled"}
 
 
 def snapshot(*, run_preflight: bool = True) -> dict[str, Any]:

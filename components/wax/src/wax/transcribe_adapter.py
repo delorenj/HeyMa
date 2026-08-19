@@ -16,6 +16,7 @@ deadlock its own child on every job. Wax serialises with its own semaphore and
 lets the script own its file lock.
 """
 
+import logging
 import os
 import json
 import re
@@ -27,8 +28,23 @@ from typing import Any, Optional
 
 from . import archive, config, desktop, frontmatter, ledger, paths, sanity, sentinel
 
+log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
+
 PROGRESS_TIMEOUT_S = 900
 PROGRESS_PREFIX = "Transcription-Progress: "
+DEGRADED_MARKER = "DIARIZATION-DEGRADED"
+
+# WAX_DIARIZATION is THREE-state, not two. The unit ships WAX_DIARIZATION=1 and
+# the old code branched only on falsy values, so the knob that reads as
+# "diarization is on" was inert — it granted confidence it could not back, for
+# the whole week diarization silently returned []. BMAD story 1-1 keeps the env
+# knob until Canonical Config lands, so it has to be honest instead of gone:
+#
+#   unset/empty -> "default"  : bin/transcribe auto-enables when the venv exists
+#   truthy      -> "required" : ask for it explicitly; a degraded run is an ERROR
+#   falsy       -> "disabled" : pass --no-diarization and hide the venv
+DIARIZATION_TRUTHY = {"1", "true", "yes", "on"}
+DIARIZATION_FALSY = {"0", "false", "no", "off"}
 
 
 class TranscribeError(RuntimeError):
@@ -43,11 +59,27 @@ class TranscriptionDurationError(TranscribeError):
     pass
 
 
+def diarization_mode(env: Optional[dict[str, str]] = None) -> str:
+    """Resolve WAX_DIARIZATION to "default" | "required" | "disabled".
+
+    An unrecognised value is treated as "default": a typo must not silently
+    disable diarization, and it must not silently claim to require it either.
+    """
+    raw = (env if env is not None else os.environ).get("WAX_DIARIZATION", "").strip().lower()
+    if raw in DIARIZATION_FALSY:
+        return "disabled"
+    if raw in DIARIZATION_TRUTHY:
+        return "required"
+    return "default"
+
+
 def transcribe_env(logfile: Path) -> dict[str, str]:
     env = dict(os.environ)
     env["TRANSCRIBE_LOG_FILE"] = str(logfile)
-    # Diarization is the default. An explicit false value is the only opt-out.
-    if env.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
+    # Diarization is the default. An explicit false value is the only opt-out;
+    # pointing DIARIZATION_VENV at a path that cannot exist is how bin/transcribe
+    # is told to take its no-diarization branch.
+    if diarization_mode(env) == "disabled":
         env["DIARIZATION_VENV"] = str(paths.VAR / ".diarization-disabled")
     return env
 
@@ -177,10 +209,16 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
 
     env = transcribe_env(logfile)
 
+    mode = diarization_mode(env)
     requested = list(extra or [])
-    if env.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
-        if "--diarization" not in requested and "--no-diarization" not in requested:
+    if "--diarization" not in requested and "--no-diarization" not in requested:
+        if mode == "disabled":
             requested.append("--no-diarization")
+        elif mode == "required":
+            # Ask for it by name rather than relying on bin/transcribe's
+            # venv-present auto-enable, so transcribe.py runs its dependency
+            # preflight and says what is missing instead of quietly skipping.
+            requested.append("--diarization")
     cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
     desktop.ding("start")
     try:
@@ -200,6 +238,29 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
         raise TranscribeError(f"no 'Written:' path produced; log retained: {logfile}")
 
     meta = parse_metadata(r.stderr)
+
+    # Diarization degrades by returning nothing instead of failing, so the item
+    # state stays "transcribed" while the speaker track has in fact been empty
+    # since 2026-08-12. Name the condition once, here, and carry it to both the
+    # journal and the note so a human surface can finally represent it.
+    diar_requested = bool(meta.get("diarization_requested")) or mode == "required"
+    if "diarization_degraded" in meta:
+        diar_degraded = bool(meta["diarization_degraded"])
+    else:
+        # Older transcribe.py builds emit neither flag; the stderr marker (and,
+        # failing that, requested-but-not-diarized) is the fallback signal.
+        diar_degraded = DEGRADED_MARKER in (r.stderr or "") or (
+            diar_requested and not meta.get("diarized")
+        )
+    if diar_degraded:
+        detail = "diarization requested but produced no speaker turns: %s (mode=%s, log=%s)"
+        if mode == "required":
+            # WAX_DIARIZATION=1 means require it. The transcript is still
+            # published — hours of ASR are not worth discarding over a missing
+            # speaker track — but this must never read as a clean run.
+            log.error(detail, audio.name, mode, logfile)
+        else:
+            log.warning(detail, audio.name, mode, logfile)
 
     verdict = sanity.check(audio, meta)
 
@@ -254,6 +315,12 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                     "audio_duration_s": verdict["audio_duration_s"],
                     "duration_ratio": verdict["duration_ratio"],
                     "source_audio": audio.name,
+                    # The ledger's transcripts table can only say diarized 0/1.
+                    # Until it grows a column, the note is the only durable
+                    # record of the difference between "one speaker" and
+                    # "the diarizer gave us nothing".
+                    "diarization_requested": diar_requested,
+                    "diarization_degraded": diar_degraded,
                 },
             }
             if refs:

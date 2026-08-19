@@ -17,6 +17,13 @@ Environment=WAX_SEGMENT_SECONDS=60
 Environment=MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION=300MB
 Environment=MAX_AUDIO_DURATION_FOR_TRANSCRIPTION=3h
 Environment=WAX_DIARIZATION=1
+# Pin the transcriber by absolute path. `transcribe` used to be found on PATH,
+# where a ~/.local/bin symlink pointed at a SECOND checkout 9 commits behind —
+# so a `git reset --hard` in a tree nobody was editing silently disabled
+# diarization for the tree everybody was. PATH must never get to decide which
+# code runs. Rendered from the checkout that installs it, exactly like
+# ExecStart, so the pin relocates with the repo instead of naming one machine.
+Environment=@WAX_TRANSCRIBE_ENV@
 
 [Install]
 WantedBy=graphical-session.target

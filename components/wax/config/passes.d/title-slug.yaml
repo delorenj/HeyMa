@@ -1,12 +1,30 @@
 slug: title-slug
-version: 1
+# v2 retires local Ollama for this pass. The runner re-runs a pass whose
+# registered version is newer than the version recorded on the item, so the bump
+# is what makes every version-1 `failed` row (the whole 2026-08-15..19 outage)
+# eligible again without hand-editing the ledger.
+version: 2
 description: Summarize a transcript, assign a grounded title, and rename it to a date-prefixed kebab-case filename.
 enabled: true
 auto: true
 requires: []
-timeout_s: 600
+# Must stay above WAX_TITLE_REQUEST_TIMEOUT_S: if the runner's kill lands first
+# the pass never gets to classify its own timeout and the failure is anonymous.
+timeout_s: 180
 frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
+# Provider is pure config — the pass speaks only OpenAI-compatible
+# /chat/completions. Moving to Pokee Isaac is these three values:
+#   WAX_TITLE_API_BASE: https://api.pokee.ai/v1
+#   WAX_TITLE_MODEL: pokee-isaac
+#   WAX_TITLE_API_KEY_OP: op://DeLoSecrets/Pokee/wax
+# Do not pick a model for its context window: the pass truncates every
+# transcript to MAX_CONTEXT_CHARS (24,000 chars, ~6k tokens) before sending, so
+# Isaac's 10M window buys nothing here. Judge on titling quality and price.
 env:
-  WAX_TITLE_MODEL: qwen3.6:latest
-  WAX_OLLAMA_URL: http://127.0.0.1:11434
+  WAX_TITLE_API_BASE: https://openrouter.ai/api/v1
+  WAX_TITLE_MODEL: google/gemini-3.7-flash
+  # References only. A literal key in this file would be a committed credential.
+  WAX_TITLE_API_KEY_OP: op://DeLoSecrets/OpenRouter/wax
+  WAX_TITLE_API_KEY_OP_FALLBACK: op://DeLoSecrets/OpenRouter/hermes
+  WAX_TITLE_REQUEST_TIMEOUT_S: "120"
 command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]

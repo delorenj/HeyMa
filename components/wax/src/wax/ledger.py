@@ -17,12 +17,29 @@ hash when that triple changes.
 """
 
 import hashlib
+import logging
+import os
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Optional
 
 from . import paths, sentinel
+
+log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
+
+# How many of the newest transcripts have to come back undiarized before we call
+# diarization degraded. 5 is chosen to be longer than any plausible run of
+# genuinely single-speaker recordings (a voice memo streak), yet short enough
+# that a fix clears the flag within a day of normal recording volume — the
+# whisperlivekit outage sat at 100% undiarized for a week with nothing to show
+# for it.
+DIARIZATION_SAMPLE = 5
+
+# Authority is transcribe_adapter.transcribe_env(): diarization is ON unless
+# WAX_DIARIZATION explicitly says otherwise. Duplicated rather than imported
+# because transcribe_adapter imports this module.
+_DIARIZATION_OFF = {"0", "false", "no", "off"}
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -363,10 +380,32 @@ def reconcile_inbox(origin: str = "manual") -> dict[str, Any]:
     return {"present": len(present), "minted": len(minted), "item_ids": present}
 
 
-def counts() -> dict[str, int]:
+def counts(live_only: bool = False) -> dict[str, int]:
+    """Item states by count. `live_only` drops rows whose file is gone.
+
+    Both views are legitimate and they answer different questions, so callers
+    must pick deliberately. The unfiltered view is the HISTORICAL record — it
+    includes items whose audio now exists only in S3, which is the normal end
+    state for an archived recording and must not read as data loss. The live
+    view is the only one comparable to inbox/queue counts, which are derived
+    from disk: 3 rows still pointing under the retired /home/delorenj/audio/
+    root pinned items.pending at 2 forever while inbox.pending and queue.total
+    were 0, and every human reading that pair concluded the wrong thing.
+
+    Filtering costs one stat() per row — measured 0.139 ms for all 206 rows via
+    os.path.exists (Path.exists is 3.5x that), which is affordable at waxd's
+    1 Hz tick.
+    """
     conn = connect()
-    out = {r["state"]: r["n"] for r in
-           conn.execute("SELECT state, COUNT(*) AS n FROM items GROUP BY state")}
+    if not live_only:
+        out = {r["state"]: r["n"] for r in
+               conn.execute("SELECT state, COUNT(*) AS n FROM items GROUP BY state")}
+    else:
+        out = {}
+        for row in conn.execute("SELECT state, path FROM items"):
+            if not os.path.exists(row["path"]):
+                continue
+            out[row["state"]] = out.get(row["state"], 0) + 1
     out["total"] = sum(out.values())
     return out
 
@@ -390,23 +429,150 @@ def inbox_counts() -> dict[str, int]:
     return out
 
 
+# ------------------------------------------------------------ stage health ----
+#
+# Item state answers "did the file get through the pipeline"; it says nothing
+# about whether the value-producing sub-stages actually produced value. Both
+# outages of 2026-08 (a deleted Ollama model, a deleted whisperlivekit subtree)
+# degraded by returning EMPTY rather than failing, so every item still reached
+# `complete` and every human-facing surface stayed green for a week. These
+# helpers give the snapshot somewhere to put that.
+
+
+def _enabled_pass_versions() -> dict[str, int]:
+    """{slug: version} for currently-ENABLED passes, from the YAML registry.
+
+    Imported lazily: passes.py imports this module at module scope, so a
+    top-level `from . import passes` is a genuine cycle.
+
+    Not cached. registry() measures 1.46 ms per load (6 YAML files); at the 1 Hz
+    waxd tick that is ~0.15% of a core, cheap enough to prefer freshness over a
+    cache that could pin a stale version across an EP version bump — and clearing
+    stale-version failures is precisely what the version gate below exists for.
+    """
+    from . import passes
+    return {slug: int(ep.get("version") or 1)
+            for slug, ep in passes.registry().items() if ep.get("enabled")}
+
+
+def _current_pass_gate() -> tuple[str, list[Any]]:
+    """SQL predicate + params matching pass rows of enabled passes AT their
+    currently-registered version, and the empty predicate when none qualify.
+
+    The version half is load-bearing: bumping an EP's version is how a fixed
+    pass is declared different from the one that failed, so a v1 failure must
+    stop counting the moment the registry says v2 — otherwise the 11 title-slug
+    failures from the dead-model outage stay red forever and the signal is dead.
+
+    No MAX(attempt) subquery is needed: passes' PRIMARY KEY is (item_id,
+    ep_slug), so the single stored row per pair IS the latest attempt.
+    """
+    try:
+        versions = _enabled_pass_versions()
+    except Exception as exc:  # noqa: BLE001 - registry trouble must not blind status
+        log.warning("pass registry unreadable, pass health suppressed: %s: %s",
+                    type(exc).__name__, exc)
+        return "0", []
+    if not versions:
+        return "0", []
+    params: list[Any] = []
+    for slug, version in sorted(versions.items()):
+        params.extend((slug, version))
+    return "(" + " OR ".join("(ep_slug=? AND version=?)" for _ in versions) + ")", params
+
+
+def passes_failed() -> dict[str, Any]:
+    """Distinct items whose latest attempt of a current, enabled pass failed."""
+    gate, params = _current_pass_gate()
+    rows = connect().execute(
+        f"SELECT DISTINCT item_id, ep_slug FROM passes WHERE state='failed' AND {gate}",
+        params,
+    ).fetchall()
+    return {
+        "failed": len({row["item_id"] for row in rows}),
+        "slugs": sorted({row["ep_slug"] for row in rows}),
+    }
+
+
+def diarization_health() -> dict[str, Any]:
+    """Whether the newest transcripts came back with speakers attached."""
+    if os.environ.get("WAX_DIARIZATION", "").lower() in _DIARIZATION_OFF:
+        return {"degraded": False, "recent_undiarized": 0}
+    rows = connect().execute(
+        "SELECT diarized FROM transcripts ORDER BY created_at DESC LIMIT ?",
+        (DIARIZATION_SAMPLE,),
+    ).fetchall()
+    # NULL counts as undiarized: it means no diarization evidence was recorded,
+    # which is the same operational fact as a 0. (Only 4 such rows exist, all
+    # from 2026-07-25 before transcribe_adapter started writing the column, and
+    # created_at ordering keeps them out of the newest-5 window from now on.)
+    undiarized = sum(1 for row in rows if not row["diarized"])
+    return {
+        # A short ledger must not read as degraded — with fewer than
+        # DIARIZATION_SAMPLE transcripts there is no run to judge.
+        "degraded": len(rows) == DIARIZATION_SAMPLE and undiarized == DIARIZATION_SAMPLE,
+        "recent_undiarized": undiarized,
+    }
+
+
+def failed_passes_for_sweep(max_attempts: int) -> list[tuple[str, str, int]]:
+    """Stranded failed passes worth re-driving, as (item_id, slug, next_attempt).
+
+    The third element is the attempt number the caller should hand to
+    `passes.run(...)` — i.e. the recorded attempt PLUS ONE, matching how
+    run_auto numbers a retry. Passing back the recorded attempt would overwrite
+    the failure row in place and lose the count that bounds this sweep.
+
+    Deliberately NOT gated on version, unlike passes_failed(): a version bump
+    means the definition changed, which is the strongest possible reason to run
+    it again. Gated on `enabled` so a retired pass is never resurrected, and
+    joined to transcripts because a pass has nothing to operate on until the
+    markdown exists.
+    """
+    try:
+        slugs = sorted(_enabled_pass_versions())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pass registry unreadable, sweep found nothing: %s: %s",
+                    type(exc).__name__, exc)
+        return []
+    if not slugs:
+        return []
+    placeholders = ",".join("?" for _ in slugs)
+    rows = connect().execute(
+        "SELECT p.item_id, p.ep_slug, p.attempt FROM passes p JOIN transcripts t USING(item_id) "
+        f"WHERE p.state='failed' AND p.ep_slug IN ({placeholders}) AND p.attempt < ? "
+        "ORDER BY p.updated_at",
+        (*slugs, max_attempts),
+    ).fetchall()
+    return [(row["item_id"], row["ep_slug"], int(row["attempt"] or 0) + 1) for row in rows]
+
+
 def tray_items(active_item: Optional[str] = None,
                active_stage: Optional[str] = None) -> list[dict[str, Any]]:
     """Current inbox plus completed items not yet dismissed from the tray."""
     conn = connect()
     marker = conn.execute("SELECT v FROM meta WHERE k='tray_completed_after'").fetchone()
     completed_after = marker["v"] if marker else ""
-    queued_rows = conn.execute(
+    # Aggregate the pass rows BEFORE joining them. 46 of the 47 items with pass
+    # history carry two rows each, so a plain `LEFT JOIN passes` fans every one
+    # of them out into duplicate tray entries.
+    gate, gate_params = _current_pass_gate()
+    select = (
         "SELECT i.item_id,i.orig_name,i.path,i.bytes,i.duration_s,i.state,i.updated_at,"
-        "t.md_path FROM items i LEFT JOIN transcripts t USING(item_id) "
-        "WHERE i.state IN ('pending','archived','transcribed','failed','suspect')"
+        "t.md_path,pf.passes_failed,pf.passes_failed_slugs "
+        "FROM items i LEFT JOIN transcripts t USING(item_id) "
+        "LEFT JOIN (SELECT item_id, COUNT(*) AS passes_failed, "
+        "group_concat(ep_slug) AS passes_failed_slugs FROM passes "
+        f"WHERE state='failed' AND {gate} GROUP BY item_id) pf USING(item_id) "
+    )
+    queued_rows = conn.execute(
+        select + "WHERE i.state IN ('pending','archived','transcribed','failed','suspect')",
+        gate_params,
     ).fetchall()
     completed = conn.execute(
-        "SELECT i.item_id,i.orig_name,i.path,i.bytes,i.duration_s,i.state,i.updated_at,"
-        "t.md_path FROM items i LEFT JOIN transcripts t USING(item_id) "
-        "WHERE i.state='complete' AND i.updated_at>? AND t.md_path IS NOT NULL "
+        select + "WHERE i.state='complete' AND i.updated_at>? AND t.md_path IS NOT NULL "
         "ORDER BY i.updated_at DESC",
-        (completed_after,),
+        (*gate_params, completed_after),
     ).fetchall()
     # Match worker.next_item() exactly: it walks state.inbox_items(), whose
     # ordering is the lexical Path order. Ledger first_seen order is not the
@@ -417,6 +583,11 @@ def tray_items(active_item: Optional[str] = None,
     out = []
     for row in [*queued, *completed]:
         item = dict(row)
+        # group_concat's ordering is unspecified; sort so a tray row's badge is
+        # stable between ticks instead of shuffling its slugs.
+        item["passes_failed"] = int(item.get("passes_failed") or 0)
+        item["passes_failed_slugs"] = sorted(
+            slug for slug in (item.get("passes_failed_slugs") or "").split(",") if slug)
         # Old ledgers can contain resumable states whose audio was parked in a
         # previous runtime root. They are audit history, not actionable queue
         # rows, and must not expose a Skip action that can never succeed.
@@ -480,7 +651,25 @@ def enrich(snap: dict[str, Any]) -> dict[str, Any]:
             inbox["cause_code"] = "failed_items"
             inbox["evidence"] = f"{queue['failed']} failed item(s) preserved in inbox"
         snap["generation"] = generation()
+        # `items` stays the historical record (every row ever minted, including
+        # items whose audio now lives only in S3); `items_live` is the same
+        # tally restricted to files still on disk. Only the latter is comparable
+        # to `inbox`/`queue`, which are derived from disk — see counts().
         snap["items"] = counts()
+        snap["items_live"] = counts(live_only=True)
+        # Sub-stage health. enrich() runs on the 1 Hz waxd tick, so neither block
+        # may raise: a broken pass registry must degrade to "nothing to report"
+        # in the snapshot and shout in the journal, never take the tray down.
+        try:
+            snap["passes"] = passes_failed()
+        except Exception as e:  # noqa: BLE001
+            log.warning("pass health unavailable: %s: %s", type(e).__name__, e)
+            snap["passes"] = {"failed": 0, "slugs": []}
+        try:
+            snap["diarization"] = diarization_health()
+        except Exception as e:  # noqa: BLE001
+            log.warning("diarization health unavailable: %s: %s", type(e).__name__, e)
+            snap["diarization"] = {"degraded": False, "recent_undiarized": 0}
         # Keep `wax status` and the state.json mirror reporting the SAME fields;
         # a key present in one and absent in the other reads as an error.
         try:

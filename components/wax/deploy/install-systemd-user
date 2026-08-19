@@ -1,8 +1,15 @@
 #!/usr/bin/python3
-"""Render Wax's user unit for the repository's actual installation location."""
+"""Render Wax's user units for the repository's actual installation location."""
 
 import argparse
 from pathlib import Path
+
+# Both units install together, always. waxd.service names wax-alert.service in
+# OnFailure=, and for three weeks the alert unit existed only as an untracked
+# file in ~/.config/systemd/user — so any fresh clone rendered a daemon whose
+# failure handler did not exist, and the one channel that survives a dead tray
+# was silently absent on exactly the machines that had never seen it work.
+UNITS = ("waxd.service", "wax-alert.service")
 
 
 def locations():
@@ -14,17 +21,17 @@ def locations():
     return component, repo
 
 
-def systemd_quote(value: Path) -> str:
-    """Quote a literal ExecStart path, including systemd's own specifiers."""
+def systemd_quote(value) -> str:
+    """Quote a literal unit value, including systemd's own specifiers."""
     escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
     escaped = escaped.replace("%", "%%").replace("$", "\\x24")
     return f'"{escaped}"'
 
 
-def render(component=None, repo=None) -> str:
+def render_unit(name: str, component=None, repo=None) -> str:
     if component is None or repo is None:
         component, repo = locations()
-    template = component / "deploy" / "systemd" / "user" / "waxd.service"
+    template = component / "deploy" / "systemd" / "user" / name
     documentation_uri = (component / "docs" / "WAX-DESIGN.md").as_uri()
     return (
         template.read_text()
@@ -32,21 +39,33 @@ def render(component=None, repo=None) -> str:
         # percent escape after unit parsing (%% -> literal %).
         .replace("@WAX_DOCUMENTATION_URI@", documentation_uri.replace("%", "%%"))
         .replace("@WAX_EXEC_START@", systemd_quote(repo / "bin" / "waxd"))
+        # The quotes wrap the whole NAME=value assignment, not just the path:
+        # Environment= splits on unquoted whitespace, so a repo under a path
+        # with a space would otherwise arrive as two words and lose the tail.
+        .replace("@WAX_TRANSCRIBE_ENV@",
+                 systemd_quote(f"WAX_TRANSCRIBE={repo / 'bin' / 'transcribe'}"))
     )
+
+
+def render(component=None, repo=None) -> str:
+    """waxd.service alone — the original entry point, kept for existing callers."""
+    return render_unit("waxd.service", component, repo)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    rendered = render()
-    if args.dry_run:
-        print(rendered, end="")
-        return
-    target = Path.home() / ".config" / "systemd" / "user" / "waxd.service"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(rendered)
-    print(target)
+    target_dir = Path.home() / ".config" / "systemd" / "user"
+    for name in UNITS:
+        rendered = render_unit(name)
+        if args.dry_run:
+            print(rendered, end="")
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / name
+        target.write_text(rendered)
+        print(target)
 
 
 if __name__ == "__main__":

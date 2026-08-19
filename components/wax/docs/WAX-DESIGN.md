@@ -12,9 +12,9 @@ Name: recording is pressing ephemeral sound into a permanent record — which is
 |---|---|
 | `~/HeyMa/inbox` (Syncthing **receiveonly**, 23 files) + `~/HeyMa/ingest` (plain, 74 files) | **`~/HeyMa/inbox` is a plain local dir and the only inbox.** `~/HeyMa/ingest` is deleted. |
 | Syncthing folder `id=audio` points at `~/HeyMa/inbox` | Syncthing folder `id=audio` repointed to **`~/HeyMa/dropoff`** (still receiveonly, still staggered/365d). `waxd` **copies** out of it, never writes into it. |
-| KRecorder GUI → `~/Music/clip_NNNN.mp3` | `Ctrl+Alt+Shift+R`. KRecorder retired. `~/Music` untouched by anything. |
+| KRecorder GUI → `~/Music/clip_NNNN.mp3` | `Ctrl+\` (GNOME custom keybinding → `wax rec toggle`). KRecorder retired. `~/Music` untouched by anything. |
 | `audio-watcher.service` relays all 38 GB of `~/Music` | Disabled + **masked**. |
-| n8n `r2TUca8smk5HDNZx` localFileTrigger ×2 | Deactivated (archived, not deleted). |
+| n8n `r2TUca8smk5HDNZx` localFileTrigger ×2 | Unpublished **and** archived (not deleted) — actually done 2026-08-19. This row read "Deactivated" for six weeks while the API still reported `active: true, isArchived: false`; the workflow's own description also claimed "Inactive". It was quiet only because Wax had moved off `/home/delorenj/audio/{inbox,ingest}`, so any write to those paths would still have fired an out-of-band transcribe with no ledger row and a duplicate S3 object. **A doc row is not a deactivation.** |
 | No state, no ledger, 41 of 74 ingest files never transcribed | SQLite ledger at `~/HeyMa/var/wax.db`; the untranscribed backlog drains at concurrency 1. |
 
 **The ~97 files** (verified: 23 in inbox + 74 in ingest): `wax migrate --plan` classifies each by sha256 → has-transcript / has-S3-object / neither, then `--apply` moves them into the single inbox with `renameat2(RENAME_NOREPLACE)`. **This matters:** `/home/delorenj/HeyMa/inbox/clip_0057.mp3` (2,826,092 B) and `/home/delorenj/HeyMa/ingest/clip_0057.mp3` (9,658,988 B) are *different files with the same name*. A bare `mv` destroys one. Wax renames the loser to `clip_0057__ingest.mp3` and logs it. Nothing is deleted, ever; a byte-conservation check (`comm -23 before.sha after.sha` must be empty) gates the phase.
@@ -27,8 +27,8 @@ Also on the floor and unaccounted for by anyone: `/home/delorenj/HeyMa/Xfinity_2
 
 ```mermaid
 flowchart TB
-  HK["Ctrl+Alt+Shift+R<br/>evdev, physical kbds only"] -->|unix socket RPC| D
-  CLI["wax rec start/stop"] -->|unix socket RPC| D
+  HK["Ctrl+backslash — GNOME custom keybinding<br/>~/.local/bin/wax-toggle"] --> CLI
+  CLI["wax rec start/stop/toggle"] -->|unix socket RPC| D
   CMD["bloodbank.cmd.v1.audio.session.start"] -->|NATS sub| D
 
   D["waxd — single owner<br/>flock ~/HeyMa/var/waxd.lock"]
@@ -39,7 +39,7 @@ flowchart TB
   DROP["~/HeyMa/dropoff<br/>Syncthing receiveonly, 5 devices"] -->|copy2 to .staging, then renameat2| IN
 
   IN --> ARCH["archiver — own queue,<br/>runs on file.recorded"]
-  ARCH -->|mc cp + ETag verify ×3| S3["s3://recordings/YYYY-MM-DD/&lt;sha12&gt;-name<br/>+ &lt;key&gt;.wax.json  + .by-content/&lt;sha256&gt;.json<br/>+ tag Transcription=Complete"]
+  ARCH -->|"mc cp + size/ETag verify ×3"| S3["s3://recordings/YYYY-MM-DD/&lt;sha12&gt;-name<br/>+ &lt;key&gt;.wax.json  + .by-content/&lt;sha256&gt;.json<br/>+ tag Transcription=Complete"]
   IN --> POLICY{"transcription policy:<br/>&lt;300 MB AND &lt;3 h"}
   POLICY -->|pass| TR["transcriber — concurrency 1<br/>bin/transcribe owns its own flock"]
   POLICY -->|blocked after S3 verify| SKIP["~/HeyMa/skipped/<br/>preserved, never deleted"]
@@ -276,7 +276,7 @@ The user's three cold-start predicates become the **bootstrap inference rules**,
 | `s3://recordings/<key>.wax.json` + `.by-content/<sha256>.json` | **Durable + self-describing.** Comes back in the *same* `mc ls --recursive` that enumerates the audio, so a full reconcile is O(1) requests. Survives loss of the vault and of the ledger (`wax reconcile --rebuild`). | one LIST |
 | `mc tag set delo/recordings/<key> "Transcription=Complete&ItemId=<id>&Model=large-v3&TranscribedAt=<iso>"` | **Annotation + future ILM driver.** Exactly what the user asked for, human-visible in the console. | one PutObjectTagging, moves zero bytes |
 
-Why tags cannot be the index, plainly: S3/MinIO has **no tag-query API**, so "which audio has no transcript?" costs one `GetObjectTagging` per object — measured **23.28 s for 528 objects vs 0.166 s for a full recursive LIST** (140×, linear forever, every call crossing Cloudflare). `PutObject` **wipes the tagset**, so any re-archive silently un-tags. The bucket is un-versioned, so a lost tag write is unrecoverable. And `mc stat` intermittently returns a mapped 403 "Insufficient permissions" with root credentials that succeeds on retry (reproduced live this session: 1 failure, then 3 successes on the identical key) — which today produces a **false** "S3 FAILED" because `bin/transcribe:207` has no retry. Wax retries 3× with backoff, compares ETag+size rather than trusting exit 0, and — critically — parses the error type on the pre-upload `.by-content` HEAD so a 403 is never read as "object absent."
+Why tags cannot be the index, plainly: S3/MinIO has **no tag-query API**, so "which audio has no transcript?" costs one `GetObjectTagging` per object — measured **23.28 s for 528 objects vs 0.166 s for a full recursive LIST** (140×, linear forever, every call crossing Cloudflare). `PutObject` **wipes the tagset**, so any re-archive silently un-tags. The bucket is un-versioned, so a lost tag write is unrecoverable. And `mc stat` intermittently returns a mapped 403 "Insufficient permissions" with root credentials that succeeds on retry (reproduced live this session: 1 failure, then 3 successes on the identical key) — which today produces a **false** "S3 FAILED" because `bin/transcribe:207` has no retry. What `archive.py` actually does today (this paragraph promised ETag verification for months while `grep -rni etag src/` returned nothing — only the size half had ever been written): `ATTEMPTS = 3` uploads with `time.sleep(2 * attempt)` backoff, each verified by `verify_remote()` rather than by trusting `mc cp`'s exit 0. Size is checked **always** and is the gate; the ETag then refines it, and `verify_remote()` returns the `method` it used so the ledger row and sidecar record *how* the bytes were proven — `"verified"` with no method beside it is exactly the claim under which a 262,144 B stub stood in for a 16.5-hour recording. Methods: `size+md5` when the ETag is single-part (on this bucket that is literally the object's MD5 — verified 2026-08-19 against a 286 B sidecar's `085a44747e...`) and matches a locally computed MD5; `md5` **and `ok=False`** when it does not, i.e. same length, different bytes, which size alone would have blessed; `size+multipart-etag` when the ETag carries a `-<parts>` suffix, because md5-of-md5s over parts the server chose and never reports cannot be recomputed without guessing `mc`'s part size, and a wrong guess would fail a perfectly good backup. Multipart is the common case, not a corner: `mc` used 16 MiB parts for both audio objects measured that day, so essentially every recording verifies by size while only the small sidecars get a real MD5 check. `remote_stat()` asks `mc stat --json` first and falls back to `mc ls --json` on the **full object path with an exact basename match**, because some gateways permit PutObject/ListBucket while rejecting HeadObject and then report "Insufficient permissions" for an object that exists; the exact-key check is what stops a prefix match blessing the wrong object. There is no pre-upload `.by-content` HEAD: `_mc_json()` returns `None` for any non-zero `mc` exit, so a 403 and a genuine absence are indistinguishable *there* — safe only because `None` never means "verified", it just costs a redundant re-upload of identical bytes to an idempotent content-addressed key.
 
 Correction to the host facts you were given: **`delo` and `deloroot` are the same root credential** (`delorenj`, `MINIO_ROOT_USER`) against the same `https://s3.delo.sh`; the only difference in `~/.mc/config.json` is `s3v4` vs `S3v4`. `deloroot = privileged` is a stale belief. `delodrive` points at a dead IP (`172.19.0.9`; the container is actually `172.19.0.41`, no host ports) — do not use it.
 
@@ -324,9 +324,18 @@ wax:
 
 The encoder is spawned into a **transient scope** (`systemd-run --user --scope --collect -- ffmpeg ...`) so it genuinely outlives `waxd`. This matters: the sibling units on this box (`audio-watcher.service`, `vocalinux-faster-whisper.service`) both run the systemd default `KillMode=control-group`, which SIGTERMs the *entire cgroup* — a `systemctl --user restart waxd` mid-recording would otherwise kill the encoder too. `waxd.service` also sets `KillMode=mixed`, `TimeoutStopSec=120`, `PrivateTmp=false` (transcribe needs the real `/tmp`; `/tmp` here is tmpfs).
 
-**Hotkey:** `Ctrl+Alt+Shift+R` = toggle, `Ctrl+Alt+Shift+X` = cancel/discard. evdev, reading `/dev/input/event*` directly — works on Wayland with **no root** because `delorenj` is in group `input` and the nodes are `crw-rw-r-- root:input`. Devices resolved **by name** at startup and re-resolved on `/dev/input` hotplug: `Keychron K4 Pro Keyboard`, `Logitech G Pro`. The three **virtual** keyboards are explicitly excluded — `ydotoold virtual device`, `gsr-ui virtual keyboard` (that's the enabled `gpu-screen-recorder` extension), `solaar-keyboard` — so injected/synthetic input can never start or stop a recording. 750 ms debounce; a second press while `STOPPING` is a logged no-op. If zero physical keyboards resolve, `waxd` enters `stream=error` and notifies, rather than silently running without a hotkey.
+**Hotkey — what is actually built.** A GNOME custom keybinding, and nothing else. Live values:
 
-Optional secondary: a GNOME `custom2` binding on `<Super><Alt>r` pointing at the bare path `/home/delorenj/.local/bin/wax-toggle` (g_shell_parse_argv — no shell, no pipes). Both converge on the same socket RPC, so no race. Verified: `custom-keybindings` currently holds exactly `custom0` (Paste Image) and `custom1` (1Pass) — **rewrite the list including both or you clobber them**.
+```
+/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom3/
+  name    = 'Wax record toggle'
+  binding = '<Control>backslash'
+  command = '/home/delorenj/.local/bin/wax-toggle'
+```
+
+`wax-toggle` is a 60-line `/usr/bin/python3` wrapper that runs `wax --json rec toggle` and raises a `notify-send` for **every** outcome including refusals — a hotkey that silently does nothing is how you end up believing you recorded a meeting. It is a bare absolute path with no shell metacharacters because GNOME parses the command with `g_shell_parse_argv`, which does not run a shell. There is no separate cancel/discard chord; `wax rec cancel` is CLI-only. `custom-keybindings` currently holds `custom0`–`custom4` — **rewrite the list including all of them or you clobber the others.**
+
+> **Unbuilt (Phase 2 candidate, not a description of the system).** The original design specified an evdev hotkey subsystem in `wax/hotkey.py`: `Ctrl+Alt+Shift+R`/`Ctrl+Alt+Shift+X`, `/dev/input/event*` read directly (no root — `delorenj` is in group `input`), physical keyboards resolved by name with the virtual ones (`ydotoold virtual device`, `gsr-ui virtual keyboard`, `solaar-keyboard`) excluded so injected input can never start a recording, 750 ms debounce, and `stream=error` if zero physical keyboards resolve. **None of it was ever written** — there is no `hotkey.py` and no `evdev` import anywhere in `src/wax/`. It buys two things the GNOME binding cannot: rejection of synthetic input, and a chord that survives the desktop session's keybinding daemon. Neither has bitten yet, so it stays a candidate.
 
 **Tray — read this before you plan around it.** GNOME 49 on Wayland. The AppIndicator/SNI substrate is **NOT WORKING RIGHT NOW**, contrary to what you were told:
 
@@ -344,9 +353,9 @@ Consequences baked into the design:
 - Tray registration failure sets `tray.registered=false` and fires `notify-send` — it **never** blocks recording and **never** puts the stream machine in `error`. A daemon that refuses to record because its icon didn't load is worse than no icon. (The candidate design had exactly this bug: sticky `error` on tray failure, reported only via the tray that just failed.)
 - YELLOW alone is not the failure channel. `waxd.service` gets `OnFailure=wax-alert.service` (a `notify-send` + `ntfy` one-liner), so a crash-looping daemon is visible even with no icon.
 
-Icon mapping (precedence, evaluated on every generation bump): `stream==recording` → **RED** (you must always be able to see you are recording, even if the pipeline is on fire); elif `stream ∈ {not-ready, error-partial, error}` OR `inbox ∈ {error, stopped}` OR `failed>0` OR `outbox_backlog>50` OR last S3 archive failed → **YELLOW**; else **GREEN**. Tooltip carries both state strings + `cause_code`. The exact PNG assets live in `components/wax/assets/tray/` and are resolved from the component root, never from a manually installed user icon theme. All GTK mutation from worker threads goes through `GLib.idle_add`.
+Icon mapping (precedence, evaluated on every generation bump): `stream==recording` → **RED** (you must always be able to see you are recording, even if the pipeline is on fire); elif `stream ∈ {not-ready, error-partial, error}` OR `inbox ∈ {error, stopped}` OR `failed>0` OR `passes.failed>0` OR `diarization.degraded` OR `outbox_backlog > OUTBOX_BACKLOG_ALARM` (=50) OR last S3 archive failed → **YELLOW**; else **GREEN**. The `passes`/`diarization` terms are load-bearing, not decoration: `failed` tallies ITEM states and the worker marks an item `complete` ~215 ms after recording a pass failure, so before they existed a sub-stage at 100% failure was *structurally unrepresentable* here and the icon stayed green for five days. Tooltip carries both state strings + `cause_code`. The exact PNG assets live in `components/wax/assets/tray/` and are resolved from the component root, never from a manually installed user icon theme. All GTK mutation from worker threads goes through `GLib.idle_add`.
 
-Pattern (not package) copied from `/home/delorenj/.local/share/vocalinux-install/src/vocalinux/ui/tray_indicator.py`: the `AppIndicator3` → `AyatanaAppIndicator3` import fallback (:17-26), `Indicator.new_with_path()` + `set_icon_theme_path` + `set_status(ACTIVE)` (:194-201), the `StatusNotifierWatcher` preflight probe over `Gio.DBusProxy` (:245-270), `set_icon_full(name, tooltip)` (:408-435). And `keyboard_backends/evdev_backend.py` for the hotkey loop.
+Pattern (not package) copied from `/home/delorenj/.local/share/vocalinux-install/src/vocalinux/ui/tray_indicator.py`: the `AppIndicator3` → `AyatanaAppIndicator3` import fallback (:17-26), `Indicator.new_with_path()` + `set_icon_theme_path` + `set_status(ACTIVE)` (:194-201), the `StatusNotifierWatcher` preflight probe over `Gio.DBusProxy` (:245-270), `set_icon_full(name, tooltip)` (:408-435). (Its `keyboard_backends/evdev_backend.py` was to be the model for the hotkey loop — moot, since that loop was never built; see above.)
 
 ### Why not just extend vocalinux
 
@@ -373,7 +382,7 @@ So: **separate process, separate systemd unit, separate tray icon, separate hotk
 
 ## Build plan
 
-Working hotkey recording lands in **Phase 2**.
+Working hotkey recording lands in **Phase 2** — and in the end it landed as a GNOME custom keybinding calling `wax rec toggle`, not as the evdev reader below. Phase 2 as written is **unbuilt**.
 
 **Phase 0 — Stop the bleeding. Nothing is built until this is done.** *(~1 h)*
 - `gnome-extensions enable ubuntu-appindicators@ubuntu.com`; verify `busctl --user list | grep StatusNotifier` returns a match. **The tray substrate is off right now.**
@@ -388,8 +397,9 @@ Working hotkey recording lands in **Phase 2**.
 Files: stable shims `bin/{wax,waxd}`, component launchers `components/wax/bin/{wax,waxd}`, and package `components/wax/src/wax/`. Runtime remains `~/HeyMa/{stream,var,archive,quarantine}`. Sentinel protocol (fork → write self pid/starttime/boot_id → fsync file **and** parent dir → exec), `renameat2` via ctypes, `wax rec start|stop|cancel`, `wax status --json`, `wax state stream --cold --json`, singleton `flock ~/HeyMa/var/waxd.lock`.
 Verify: `wax rec start` → exactly one `*.ogg.partial` in `~/HeyMa/stream`, `~/HeyMa/inbox` unchanged; `wax rec stop` → dated `.ogg` in inbox, `ffprobe` duration within 0.5 s of wall clock. **Cold fixtures:** hand-build each state in a temp dir and assert `wax state stream --cold` from a process that has never run — including `kill -9` the encoder (→`error-partial`), edit `boot_id` (→`error-partial`), touch `.stop` then kill the finalizer (→`error-partial` after deadline, **not** a permanent `not-ready`), bare `.partial` >10 s with no `rec.json` (→`error`).
 
-**Phase 2 — Hotkey. ⇐ You can stop using KRecorder here.** *(~250 LOC, 0.5 day)*
+**Phase 2 — Hotkey. NOT BUILT.** *(~250 LOC, 0.5 day)*
 Files: `wax/hotkey.py`. evdev, name-resolved physical keyboards, virtual-device exclusion, debounce.
+**Superseded in practice** by dconf `custom3` (`<Control>backslash` → `~/.local/bin/wax-toggle` → `wax rec toggle`), which shipped instead and is what the hotkey does today. The verification below has never been run.
 Verify: chord from a fullscreen window toggles recording. **Domain-separation proof:** while Wax is recording, double-tap Ctrl and dictate into a text field — text injects, Wax's recording continues, `ffprobe` shows full span and `sox <file> -n stat` shows non-zero RMS. Then `kill -9` vocalinux mid-recording; `systemd-cgls --user | grep ffmpeg` shows Wax's encoder untouched. `evtest` on event18/14/13 confirms virtual devices are ignored.
 
 **Phase 3 — Tray.** *(~300 LOC, 0.5 day)*

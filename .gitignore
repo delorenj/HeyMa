@@ -184,3 +184,11 @@ assets/
 # same reason. Run `mise run skills:sync` to rebuild it.
 /.agents/skills/
 /_bmad/render/
+
+# Diarization runtime. Both were relocated here from a second checkout at
+# ~/code/HeyMa on 2026-08-19, because PATH resolution — not the repo — was
+# deciding which tree waxd actually ran. Neither belongs in this history:
+# whisperlivekit/ is vendored upstream source (QuentinFuxa/WhisperLiveKit),
+# and .venv-diarization is a 7.9 GB CUDA venv.
+/whisperlivekit/
+/.venv-diarization/

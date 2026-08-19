@@ -45,6 +45,29 @@ run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
 description = "Provision every Skillex pack declared in .agents/skills.json"
 run = "python3 '{{config_root}}/.mise/scripts/provision-packs.py'"
 
+# Wax entry points. `bin/wax` is the stable shim that resolves the component
+# launcher relative to itself, so these never name a checkout path.
+[tasks."wax:doctor"]
+description = "Diagnose the pipeline end to end (start here when something looks wrong)"
+run = "'{{config_root}}/bin/wax' doctor"
+
+[tasks."wax:status"]
+description = "Full snapshot of both state machines, the queue and pass health"
+run = "'{{config_root}}/bin/wax' status"
+
+[tasks."wax:sweep"]
+description = "Retry enrichment passes whose latest attempt failed"
+run = "'{{config_root}}/bin/wax' ep sweep"
+
+[tasks."wax:test"]
+description = "Run the Wax test suite"
+dir = "{{config_root}}/components/wax"
+run = "python3 -m pytest tests"
+
+[tasks."wax:logs"]
+description = "Tail the waxd journal"
+run = "journalctl --user -u waxd.service -n 200 -f"
+
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"

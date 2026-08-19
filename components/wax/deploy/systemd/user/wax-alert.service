@@ -1,0 +1,18 @@
+[Unit]
+Description=Alert that waxd failed
+
+[Service]
+# YELLOW alone is not a failure channel: if waxd is dead, or the screen is
+# locked and the AppIndicator extension is unloaded, there is no icon to look
+# at. This fires on waxd's OnFailure so a crash-looping daemon is still visible.
+Type=oneshot
+ExecStart=/usr/bin/notify-send -a Wax -u critical -i dialog-error "Wax daemon failed" "waxd is not running — recording via hotkey may be unavailable. Check: systemctl --user status waxd"
+# Authenticated push via the house helper. Anonymous POSTs to
+# ntfy.delo.sh/transcripts return 403, so the previous raw-curl leg
+# silently never delivered — verified 2026-07-27. The helper reads NTFY_TOKEN
+# from ~/.config/infra-alerts/env, so no credential ever lands in this unit.
+# %h and %H rather than literals: this unit shipped for three weeks as an
+# untracked file in ~/.config with this machine's home and hostname baked in,
+# which is precisely why a fresh install produced a waxd.service whose
+# OnFailure= named a target that did not exist.
+ExecStart=-%h/.local/bin/ntfy-alert --title "Wax daemon failed" --priority urgent "waxd exited non-zero on %H. Check: systemctl --user status waxd"
