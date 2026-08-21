@@ -238,7 +238,7 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_LOG_LEVEL", "bin/waxd (the one handler, contract B)", "INFO"),
     ("WAX_TITLE_API_BASE", "passes.d/bin/title-slug", "https://openrouter.ai/api/v1"),
     ("WAX_TITLE_MODEL", "passes.d/bin/title-slug", "google/gemini-3.7-flash"),
-    ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug", "op://DeLoSecrets/OpenRouter/wax"),
+    ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug", "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"),
     ("WAX_TITLE_API_KEY_OP_FALLBACK", "passes.d/bin/title-slug",
      "op://DeLoSecrets/OpenRouter/hermes"),
     ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug", "120"),
@@ -477,7 +477,7 @@ def probe_all() -> list[dict[str, Any]]:
 
     api_base = _title("WAX_TITLE_API_BASE", "https://openrouter.ai/api/v1").rstrip("/")
     model = _title("WAX_TITLE_MODEL", "google/gemini-3.7-flash")
-    primary = _title("WAX_TITLE_API_KEY_OP", "op://DeLoSecrets/OpenRouter/wax")
+    primary = _title("WAX_TITLE_API_KEY_OP", "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential")
     fallback = _title("WAX_TITLE_API_KEY_OP_FALLBACK", "op://DeLoSecrets/OpenRouter/hermes")
     # Resolution order is title-slug's own, evaluated once per reference so the
     # probe costs two `op read` calls at most.

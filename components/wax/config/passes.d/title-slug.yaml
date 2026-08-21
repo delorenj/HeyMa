@@ -24,7 +24,7 @@ env:
   WAX_TITLE_API_BASE: https://openrouter.ai/api/v1
   WAX_TITLE_MODEL: google/gemini-3.7-flash
   # References only. A literal key in this file would be a committed credential.
-  WAX_TITLE_API_KEY_OP: op://DeLoSecrets/OpenRouter/wax
+  WAX_TITLE_API_KEY_OP: op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential
   WAX_TITLE_API_KEY_OP_FALLBACK: op://DeLoSecrets/OpenRouter/hermes
   WAX_TITLE_REQUEST_TIMEOUT_S: "120"
 command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]

@@ -57,7 +57,7 @@ MAX_OUTPUT_TOKENS = 2_048
 # env block; the defaults exist so the pass still runs from a bare shell.
 DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "google/gemini-3.7-flash"
-DEFAULT_API_KEY_OP = "op://DeLoSecrets/OpenRouter/wax"
+DEFAULT_API_KEY_OP = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
 DEFAULT_API_KEY_OP_FALLBACK = "op://DeLoSecrets/OpenRouter/hermes"
 DEFAULT_REQUEST_TIMEOUT_S = 120.0
 
