@@ -28,8 +28,8 @@ Also on the floor and unaccounted for by anyone: `/home/delorenj/HeyMa/Xfinity_2
 ```mermaid
 flowchart TB
   HK["Ctrl+backslash — GNOME custom keybinding<br/>~/.local/bin/wax-toggle"] --> CLI
-  CLI["wax rec start/stop/toggle"] -->|unix socket RPC| D
-  CMD["bloodbank.cmd.v1.audio.session.start"] -->|NATS sub| D
+  N8N["n8n-nodes-heyma<br/>Start / Stop Recording"] --> CLI
+  CLI["wax rec start/stop/toggle<br/>shared flock + durable sentinels"] --> FF
 
   D["waxd — single owner<br/>flock ~/HeyMa/var/waxd.lock"]
   D -->|systemd-run --user --scope| FF["ffmpeg -f pulse -c:a libopus"]
@@ -55,7 +55,7 @@ flowchart TB
   OUT -->|JetStream PubAck| NATS["nats://127.0.0.1:4222"]
   NATS --> CS["Candystore 127.0.0.1:8683<br/>subscribes bloodbank.evt.v1.&gt; ONLY"]
   D --> TRAY["AppIndicator tray<br/>RED / GREEN / YELLOW"]
-  D --> SOCK["~/HeyMa/var/waxd.sock<br/>+ ~/HeyMa/var/state.json mirror"]
+  D --> SOCK["~/HeyMa/var/waxd.sock — raw status snapshot only<br/>+ ~/HeyMa/var/state.json mirror"]
 ```
 
 Event emissions, in flow order: `session.started` → (`session.ended` | `session.failed` | `session.canceled`) → `file.recorded` → `file.sent` → `transcription.started` → (`transcription.completed` | `transcription.failed`) → `task.requested`+`task.started`→(`task.completed`|`task.failed`) per EP. Plus `status.updated` on **every** edge of both machines and `heartbeat.recorded` every 60s.
@@ -200,6 +200,12 @@ jq . /home/delorenj/HeyMa/var/state.json
 ---
 
 ## Bloodbank events & commands
+
+**Implementation status (2026-08-21):** Wax publishes the event subjects below
+and emits EP command mirrors, but `waxd` does not subscribe to the session command
+subjects. External start/stop clients must invoke the absolute `wax` CLI; the
+private `n8n-nodes-heyma` package does exactly that. The session command rows are
+the intended contract, not a currently live control transport.
 
 All under the **already-active** `audio` domain. Every entity used — `session`, `file`, `transcription`, `task`, `status`, `heartbeat` — is **verified present** in `ALLOWED_ENTITIES` (`/home/delorenj/code/33GOD/bloodbank/services/agent-hooks/core/validate.py`), and every action is verified in `EVENT_ACTIONS`/`COMMAND_ACTIONS`. **No `validate.py` PR is on the critical path.** `recorder`, `pipeline`, `enrichment` are *not* allowlisted — using them would block shipping on a code PR for zero semantic gain.
 

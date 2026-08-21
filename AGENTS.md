@@ -1,9 +1,11 @@
 # AGENTS.md
 
 HeyMa is the **Wax** audio pipeline: record → archive → transcribe → enrich.
-One daemon owns all of it. There is no n8n, no Fireflies, no `watch_audio.sh`,
-no `./ingest`, and no second checkout — if a doc mentions any of those, it is
-stale, and `~/audio/*` is a retired runtime root that nothing reads.
+One daemon owns all of it. n8n may invoke Wax through the private
+`n8n-nodes-heyma` control adapter, but it never watches files, archives,
+transcribes, or enriches. There is no Fireflies, no `watch_audio.sh`, no
+`./ingest`, and no second checkout — if a doc assigns pipeline stages to any of
+those, it is stale, and `~/audio/*` is a retired runtime root that nothing reads.
 
 > ## Something looks wrong? Load the `heyma-pipeline-doctor` skill FIRST.
 > `.agents/skills/heyma-pipeline-doctor/` — or run `mise run wax:doctor`.
@@ -26,8 +28,9 @@ lives beside the code. All of it is one filesystem, which is what makes
 | `archive/` | audio parked after S3 verify |
 | `skipped/`, `quarantine/`, `recovered/` | preserved, never processed / never deleted |
 | `var/wax.db` | SQLite ledger: `items · backups · transcripts · passes · outbox · transitions` |
-| `var/{state.json,waxd.sock,waxd.lock}` | live mirror, RPC socket, singleton lock |
+| `var/{state.json,waxd.sock,waxd.lock}` | live mirror, raw status socket, singleton lock |
 | `~/d/Transcripts/` | where transcripts land (`WAX_VAULT`); really `~/code/DeLoDocs/Transcripts` |
+| `components/n8n-nodes-heyma/` | private self-hosted n8n adapter; invokes the absolute Wax CLI and owns no pipeline state |
 
 ## waxd — the single owner
 
