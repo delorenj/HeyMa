@@ -69,6 +69,20 @@ item to `skipped/oversize/` or `skipped/overduration/` without launching
 Whisper. The direct adapter and `bin/transcribe` repeat both checks so alternate
 entry points cannot bypass the policy.
 
+Diarization has a device contract independent of Whisper's. The deployed unit
+sets `WAX_DIARIZATION=1` and `WAX_DIARIZATION_DEVICE=cuda`: the first requires a
+speaker track, while the second makes CUDA strict rather than best-effort. An
+ASR retry with `--device cpu` therefore leaves Sortformer on CUDA. Only an
+explicit diarizer setting of `cpu` or `auto` permits CPU. The implementation is
+the tracked, side-effect-free
+`components/wax/src/wax/diarization_sortformer.py`; importing it allocates no
+model, and each run loads exactly one model on the resolved device. The pinned
+runtime manifest is `components/wax/requirements-diarization.txt`, rebuilt with
+`mise run wax:diarization:install`. Both that installer and `wax doctor` execute
+a real Sortformer streaming forward pass on CUDA—an import or green tray alone
+is not device evidence. Successful transcripts persist requested and actual
+diarization device in their frontmatter and in-band metadata.
+
 ---
 
 ## State machine: `~/HeyMa/stream`

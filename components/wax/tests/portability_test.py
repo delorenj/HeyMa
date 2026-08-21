@@ -55,9 +55,18 @@ class PortabilityTest(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             env = transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
             self.assertNotIn("DIARIZATION_VENV", env)
+            self.assertEqual(env["WAX_DIARIZATION_DEVICE"], "cuda")
         with patch.dict(os.environ, {"WAX_DIARIZATION": "0", "DIARIZATION_VENV": "/opt/diar"}, clear=True):
             env = transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
             self.assertIn(".diarization-disabled", env["DIARIZATION_VENV"])
+
+    def test_diarization_device_is_explicit_and_validated(self):
+        with patch.dict(os.environ, {"WAX_DIARIZATION_DEVICE": "cpu"}, clear=True):
+            env = transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
+            self.assertEqual(env["WAX_DIARIZATION_DEVICE"], "cpu")
+        with patch.dict(os.environ, {"WAX_DIARIZATION_DEVICE": "typo"}, clear=True):
+            with self.assertRaisesRegex(transcribe_adapter.TranscribeError, "expected cuda"):
+                transcribe_adapter.transcribe_env(Path("/tmp/wax-test.log"))
 
     def test_in_band_transcription_metadata(self):
         stderr = 'noise\nTranscription-Metadata: {"duration_seconds": 12.5, "diarized": true}\n'
@@ -108,6 +117,17 @@ class PortabilityTest(unittest.TestCase):
         self.assertNotIn("%h/HeyMa", template)
         self.assertIn("@WAX_EXEC_START@", template)
         self.assertIn("@WAX_DOCUMENTATION_URI@", template)
+        self.assertIn("Environment=WAX_DIARIZATION_DEVICE=cuda", template)
+
+    def test_diarization_runtime_has_a_rebuild_contract(self):
+        installer = COMPONENT_ROOT / "deploy/install-diarization"
+        requirements = COMPONENT_ROOT / "requirements-diarization.txt"
+        adapter = COMPONENT_ROOT / "src/wax/diarization_sortformer.py"
+        self.assertTrue(installer.is_file())
+        self.assertTrue(os.access(installer, os.X_OK))
+        self.assertTrue(requirements.is_file())
+        self.assertIn("nemo-toolkit[asr]==", requirements.read_text())
+        self.assertIn("def cuda_smoke()", adapter.read_text())
 
     def test_systemd_installer_renders_current_checkout(self):
         installer = COMPONENT_ROOT / "deploy/install-systemd-user"

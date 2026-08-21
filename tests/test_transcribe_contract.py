@@ -38,14 +38,18 @@ class TranscribeArtifactContractTest(unittest.TestCase):
             with patch.object(sys, "argv", ["transcribe.py", str(audio), "-o", str(output)]), \
                     patch.object(TRANSCRIBE, "missing_diarization_dependencies", return_value=[]), \
                     patch.object(TRANSCRIBE, "transcribe_local", return_value=result), \
-                    patch.object(TRANSCRIBE, "diarize_local", return_value=diarization) as diarize, \
+                    patch.object(
+                        TRANSCRIBE, "diarize_local", return_value=(diarization, "cuda:0")
+                    ) as diarize, \
                     contextlib.redirect_stderr(stderr):
                 TRANSCRIBE.main()
 
-            diarize.assert_called_once_with(str(audio))
+            diarize.assert_called_once_with(str(audio), "cuda")
             text = output.read_text()
             self.assertTrue(text.startswith("---\n"))
             self.assertIn("diarized: true", text)
+            self.assertIn('diarization-device-requested: "cuda"', text)
+            self.assertIn('diarization-device: "cuda:0"', text)
             self.assertIn("# Transcription: meeting.ogg", text)
             self.assertIn("**Speaker 1", text)
             self.assertNotIn("- **Source**", text)
@@ -112,8 +116,16 @@ class TranscribeArtifactContractTest(unittest.TestCase):
             to=lambda _device: audio2mel,
             get_features=lambda *_args: (FakeTensor((1, 128, 100)), None),
         )
+        class FakeDevice:
+            def __init__(self, name):
+                self.name = str(name)
+                self.type = self.name.split(":", 1)[0]
+
+            def __str__(self):
+                return self.name
+
         fake_torch = types.ModuleType("torch")
-        fake_torch.device = lambda name: name
+        fake_torch.device = FakeDevice
         fake_torch.tensor = lambda value, **_kwargs: FakeTensor((len(value),))
         fake_torch.zeros = lambda shape, **_kwargs: FakeTensor(shape)
         fake_torch.concat = lambda _values, dim=0: FakeTensor((1, 128, 199))
@@ -123,21 +135,34 @@ class TranscribeArtifactContractTest(unittest.TestCase):
         fake_librosa = types.ModuleType("librosa")
         fake_librosa.load = lambda *_args, **_kwargs: ([0.0] * 48_000, 16_000)
         fake_backend = types.ModuleType(
-            "whisperlivekit.diarization.sortformer_backend_offline"
+            "wax.diarization_sortformer"
         )
-        fake_backend.load_model = lambda: (model, audio2mel)
+        fake_backend.load_model = lambda device=None: (model, audio2mel)
         fake_backend.init_streaming_state = lambda *_args, **_kwargs: object()
 
         modules_patch = {
             "librosa": fake_librosa,
             "torch": fake_torch,
-            "whisperlivekit.diarization.sortformer_backend_offline": fake_backend,
+            "wax.diarization_sortformer": fake_backend,
         }
         with patch.dict(sys.modules, modules_patch), contextlib.redirect_stderr(io.StringIO()):
-            segments = TRANSCRIBE.diarize_local("fake.ogg")
+            segments, device = TRANSCRIBE.diarize_local("fake.ogg", "cpu")
 
         self.assertEqual(calls, [0, 0, 0])
         self.assertTrue(segments)
+        self.assertEqual(device, "cpu")
+
+    def test_cuda_diarization_never_silently_falls_back(self):
+        fake_torch = types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            device=lambda value: value,
+        )
+        with self.assertRaisesRegex(RuntimeError, "CUDA diarization requested"):
+            TRANSCRIBE.resolve_diarization_device("cuda", fake_torch)
+
+        self.assertEqual(
+            TRANSCRIBE.resolve_diarization_device("auto", fake_torch), "cpu"
+        )
 
 
 if __name__ == "__main__":

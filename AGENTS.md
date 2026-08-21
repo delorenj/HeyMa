@@ -65,6 +65,13 @@ wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 
 mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:test`, `wax:logs`.
 
+Diarization is required and GPU-strict by default:
+`WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`. Its device is independent
+of Whisper's, so an ASR CPU retry must not move Sortformer off CUDA. The owned
+adapter is `components/wax/src/wax/diarization_sortformer.py`; rebuild a deleted
+or damaged runtime with `mise run wax:diarization:install`. `wax doctor` proves
+the path with a real Sortformer CUDA forward pass, not an import-only check.
+
 ## S3: backup-first, never-delete
 
 The audio is the irreplaceable artifact. `archive.py` uploads **before**

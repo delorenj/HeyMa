@@ -45,6 +45,7 @@ DEGRADED_MARKER = "DIARIZATION-DEGRADED"
 #   falsy       -> "disabled" : pass --no-diarization and hide the venv
 DIARIZATION_TRUTHY = {"1", "true", "yes", "on"}
 DIARIZATION_FALSY = {"0", "false", "no", "off"}
+DIARIZATION_DEVICES = {"cuda", "cpu", "auto"}
 
 
 class TranscribeError(RuntimeError):
@@ -73,9 +74,23 @@ def diarization_mode(env: Optional[dict[str, str]] = None) -> str:
     return "default"
 
 
+def diarization_device(env: Optional[dict[str, str]] = None) -> str:
+    """Resolve the independent Sortformer device; CUDA is the strict default."""
+    raw = (env if env is not None else os.environ).get(
+        "WAX_DIARIZATION_DEVICE", "cuda"
+    ).strip().lower()
+    value = raw or "cuda"
+    if value not in DIARIZATION_DEVICES:
+        raise TranscribeError(
+            f"invalid WAX_DIARIZATION_DEVICE={value!r}; expected cuda, cpu, or auto"
+        )
+    return value
+
+
 def transcribe_env(logfile: Path) -> dict[str, str]:
     env = dict(os.environ)
     env["TRANSCRIBE_LOG_FILE"] = str(logfile)
+    env["WAX_DIARIZATION_DEVICE"] = diarization_device(env)
     # Diarization is the default. An explicit false value is the only opt-out;
     # pointing DIARIZATION_VENV at a path that cannot exist is how bin/transcribe
     # is told to take its no-diarization branch.
@@ -321,6 +336,10 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                     # "the diarizer gave us nothing".
                     "diarization_requested": diar_requested,
                     "diarization_degraded": diar_degraded,
+                    "diarization_device_requested": meta.get(
+                        "diarization_device_requested"
+                    ),
+                    "diarization_device": meta.get("diarization_device"),
                 },
             }
             if refs:
@@ -348,4 +367,13 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                               evidence=f"ratio={verdict['duration_ratio']} -> {final.name}")
 
     desktop.ding("complete")
-    return {"item_id": item_id, "md_path": str(final), "log": str(logfile), **verdict}
+    return {
+        "item_id": item_id,
+        "md_path": str(final),
+        "log": str(logfile),
+        "diarization_requested": diar_requested,
+        "diarization_degraded": diar_degraded,
+        "diarization_device_requested": meta.get("diarization_device_requested"),
+        "diarization_device": meta.get("diarization_device"),
+        **verdict,
+    }

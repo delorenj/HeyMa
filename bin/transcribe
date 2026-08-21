@@ -41,6 +41,12 @@ REMOTE="${TRANSCRIBE_USER}@${TRANSCRIBE_HOST}"
 MISE_INIT='source ~/.profile 2>/dev/null; eval "$(mise activate bash)" 2>/dev/null'
 DIARIZATION_VENV="${DIARIZATION_VENV:-${TRANSCRIBE_DIR}/.venv-diarization}"
 DIARIZATION_PYTHON="${DIARIZATION_PYTHON:-${DIARIZATION_VENV}/bin/python}"
+# CUDA is a requirement by default, not a best-effort preference. ASR has its
+# own device/fallback policy; keeping this separate prevents an ASR CPU retry
+# from silently switching Sortformer to CPU too. Operators can deliberately
+# select cpu or auto with WAX_DIARIZATION_DEVICE or --diarization-device.
+WAX_DIARIZATION_DEVICE="${WAX_DIARIZATION_DEVICE:-cuda}"
+export WAX_DIARIZATION_DEVICE
 
 S3_ALIAS="${TRANSCRIBE_S3_ALIAS:-delo}"
 S3_BUCKET="${TRANSCRIBE_S3_BUCKET:-recordings}"
@@ -181,14 +187,16 @@ PY
   cmd_args=("$AUDIO")
   if ((${#EXTRA_ARGS[@]} > 0)); then cmd_args+=("${EXTRA_ARGS[@]}"); fi
   [[ "$force_cpu" == "true" ]] && cmd_args+=("--device" "cpu")
+  if ! has_arg --diarization-device; then
+    cmd_args+=("--diarization-device" "$WAX_DIARIZATION_DEVICE")
+  fi
 
   # Prefer the dedicated diarization venv (.venv-diarization) when present: it
   # carries nemo_toolkit[asr] + librosa on top of the GPU faster-whisper stack.
   # When it exists we AUTO-ENABLE speaker diarization so a bare `transcribe
   # <file>` (how the n8n pipeline invokes it) "just works". This is safe:
-  # transcribe.py guards --diarization (if deps are missing it logs a warning
-  # and continues without speaker labels), and diarize_local() degrades
-  # gracefully on any runtime error. We do NOT auto-add it for the Groq API
+  # transcribe.py guards --diarization and emits explicit degraded/device
+  # evidence if the stage cannot run. We do NOT auto-add it for the Groq API
   # path (no local diarization there) or if the caller already passed the flag.
   # When the venv is absent we fall back to the main uv env and stay fast by
   # NOT diarizing (its deps are intentionally not installed).
@@ -199,10 +207,9 @@ PY
     fi
   else
     log "[warn] Diarization venv ${DIARIZATION_PYTHON} missing; diarization will be skipped."
-    # The editable install needs a project file at ${TRANSCRIBE_DIR}: commit
-    # 1d21e8b deleted the root pyproject.toml along with whisperlivekit/, so
-    # recover it first (git show 1d21e8b^:pyproject.toml) or the last step fails.
-    log "[warn] Create it with: uv venv --python 3.12 .venv-diarization && uv pip install --python .venv-diarization/bin/python -e . 'nemo_toolkit[asr]'"
+    # The tracked installer repairs a missing or partially deleted environment
+    # from the pinned manifest and proves it with a real Sortformer CUDA step.
+    log "[warn] Create it with: mise run wax:diarization:install"
     runner=(nice -n 15 mise x -- uv run python)
   fi
 
@@ -216,6 +223,9 @@ run_remote_transcribe() {
   local runner_cmd="mise x -- uv run python"
   if ((${#EXTRA_ARGS[@]} > 0)); then remote_args=("${EXTRA_ARGS[@]}"); fi
   [[ "$force_cpu" == "true" ]] && remote_args+=("--device" "cpu")
+  if ! has_arg --diarization-device; then
+    remote_args+=("--diarization-device" "$WAX_DIARIZATION_DEVICE")
+  fi
   # Auto-enable diarization when the remote host has the diarization venv, matching
   # the local path. Guarded the same way (not for --groq / already-passed).
   if ssh -q "$REMOTE" "test -x '${DIARIZATION_PYTHON}'"; then

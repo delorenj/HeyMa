@@ -92,10 +92,9 @@ MIRROR_MAX_AGE_S = 180      # waxd rewrites state.json at 1 Hz; 180 s is 180 mis
 OUTBOX_STALE_S = 600
 CMD_TIMEOUT_S = 20          # every subprocess doctor spawns; it must never hang
 HTTP_TIMEOUT_S = 15
-# Measured 6.2 s on this host: the import restores the Sortformer checkpoint
-# from the HF cache, which is exactly the work a real run would do. A cold cache
-# does the download, hence the wide ceiling.
-DIARIZATION_IMPORT_TIMEOUT_S = 300
+# NeMo's import is substantial even though the owned adapter deliberately does
+# not restore weights at import time. Keep it bounded so doctor cannot hang.
+DIARIZATION_IMPORT_TIMEOUT_S = 120
 
 
 def _repo_root() -> Path:
@@ -231,6 +230,7 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_FRONTMATTERS", "wax/passes.py", "<venv, then PATH>"),
     ("WAX_TRANSCRIBE", "wax/transcribe_adapter.py", "<PATH lookup: transcribe>"),
     ("WAX_DIARIZATION", "wax/transcribe_adapter.py, wax/ledger.py", "<unset = default mode>"),
+    ("WAX_DIARIZATION_DEVICE", "scripts/transcribe.py", "cuda"),
     ("MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION", "wax/config.py", "300MB"),
     ("MAX_AUDIO_DURATION_FOR_TRANSCRIPTION", "wax/config.py", "3h"),
     ("WAX_NATS_HOST", "wax/natsclient.py", "127.0.0.1"),
@@ -447,27 +447,72 @@ def probe_all() -> list[dict[str, Any]]:
         transcribe_dir = Path(effective.get("TRANSCRIBE_DIR") or base.parent.parent)
         venv = Path(effective.get("DIARIZATION_VENV") or (transcribe_dir / ".venv-diarization"))
         python = Path(effective.get("DIARIZATION_PYTHON") or (venv / "bin" / "python"))
-        fix = (f"uv venv --python 3.12 {venv} && uv pip install --python {python} -e . "
-               "'nemo_toolkit[asr]'   (and confirm whisperlivekit/ is present in the repo — "
-               "deleting that vendored tree is what made diarization return [] in silence)")
+        fix = f"cd {repo} && mise run wax:diarization:install"
         if not python.is_file():
             add(_probe("diarization importable", FAIL, f"no interpreter at {python}", fix))
         else:
             started = time.time()
-            # Import the module transcribe.py's preflight imports, not a proxy:
-            # librosa and nemo were both present the whole week diarization was
-            # returning [], because the thing that was missing was this one.
-            rc, _, err = _run([str(python), "-c",
-                               "import whisperlivekit.diarization.sortformer_backend_offline"],
-                              timeout=DIARIZATION_IMPORT_TIMEOUT_S)
+            wax_src = transcribe_dir / "components" / "wax" / "src"
+            import_probe = (
+                "import sys; "
+                f"sys.path.insert(0, {str(wax_src)!r}); "
+                "import librosa, nemo, wax.diarization_sortformer"
+            )
+            rc, _, err = _run(
+                [str(python), "-c", import_probe],
+                timeout=DIARIZATION_IMPORT_TIMEOUT_S,
+            )
             took = round(time.time() - started, 1)
             if rc == 0:
                 add(_probe("diarization importable", PASS,
-                           f"whisperlivekit.diarization.sortformer_backend_offline via {python} ({took}s)"))
+                           f"tracked wax.diarization_sortformer via {python} ({took}s)"))
             else:
                 last = [l for l in (err or "").strip().splitlines() if l.strip()]
                 add(_probe("diarization importable", FAIL,
                            f"{python} rc={rc}: {last[-1] if last else 'no output'}", fix))
+
+            try:
+                device_policy = transcribe_adapter.diarization_device(effective)
+            except transcribe_adapter.TranscribeError as exc:
+                add(_probe("diarization device policy", FAIL, str(exc),
+                           "set WAX_DIARIZATION_DEVICE=cuda in waxd.service and restart"))
+                device_policy = "invalid"
+            else:
+                add(_probe(
+                    "diarization device policy",
+                    PASS if device_policy == "cuda" else WARN,
+                    f"WAX_DIARIZATION_DEVICE={device_policy}"
+                    + (" (strict GPU requirement)" if device_policy == "cuda" else
+                       " (CPU use is possible; cuda is the production default)"),
+                    "set WAX_DIARIZATION_DEVICE=cuda in waxd.service and restart"
+                    if device_policy != "cuda" else "",
+                ))
+
+            if device_policy in {"cuda", "auto"}:
+                cuda_probe = (
+                    "import json, sys; "
+                    f"sys.path.insert(0, {str(wax_src)!r}); "
+                    "from wax.diarization_sortformer import cuda_smoke; "
+                    "print(json.dumps(cuda_smoke(), sort_keys=True))"
+                )
+                rc, cuda_out, cuda_err = _run(
+                    [str(python), "-c", cuda_probe],
+                    timeout=DIARIZATION_IMPORT_TIMEOUT_S,
+                )
+                if rc == 0:
+                    lines = [line for line in cuda_out.splitlines() if line.strip()]
+                    add(_probe("diarization cuda runtime", PASS,
+                               lines[-1] if lines else "CUDA smoke passed"))
+                else:
+                    last = [l for l in (cuda_err or "").strip().splitlines() if l.strip()]
+                    add(_probe(
+                        "diarization cuda runtime", FAIL,
+                        f"{python} rc={rc}: {last[-1] if last else 'no output'}",
+                        fix,
+                    ))
+            elif device_policy == "cpu":
+                add(_probe("diarization cuda runtime", WARN,
+                           "not exercised because WAX_DIARIZATION_DEVICE=cpu"))
 
     # -- title-slug provider ----------------------------------------------
     yenv = yaml_env()

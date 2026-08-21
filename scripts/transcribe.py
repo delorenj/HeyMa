@@ -20,9 +20,19 @@ from datetime import datetime
 from pathlib import Path
 
 
+# This script is also invoked directly by the dedicated diarization venv, which
+# does not install heyma-wax. Resolve the tracked component package relative to
+# this file so neither cwd nor an ignored vendored directory decides what runs.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_WAX_SRC = _REPO_ROOT / "components" / "wax" / "src"
+if str(_WAX_SRC) not in sys.path:
+    sys.path.insert(0, str(_WAX_SRC))
+
+
 _progress_file = None
 _cudnn_lib_dirs: list[Path] = []
 _PROGRESS_PREFIX = "Transcription-Progress: "
+_DIARIZATION_DEVICES = ("cuda", "cpu", "auto")
 
 
 def _configure_cudnn_runtime_paths() -> None:
@@ -228,17 +238,13 @@ def missing_diarization_dependencies() -> list[str]:
     except ImportError:
         missing.append("nemo_toolkit[asr]")
 
-    # Probe the module diarize_local() actually imports, not just its deps.
-    # librosa and nemo both import fine even when the vendored whisperlivekit/
-    # tree is gone (commit 1d21e8b deleted it), so the old two-module preflight
-    # passed, 29m24s of GPU ASR ran to completion, and only then did the import
-    # fail and return []. Import it for real: importlib.util.find_spec on a
-    # SUBMODULE raises ModuleNotFoundError when the parent package is absent,
-    # which would crash the preflight instead of reporting the gap.
+    # Probe the exact owned adapter diarize_local() imports, not just its deps.
+    # The old two-module preflight passed after the private backend was deleted,
+    # burned 29m24s on ASR, and failed only when diarization began.
     try:
-        import whisperlivekit.diarization.sortformer_backend_offline  # noqa: F401
+        import wax.diarization_sortformer  # noqa: F401
     except ImportError:
-        missing.append("whisperlivekit (diarization.sortformer_backend_offline)")
+        missing.append("wax.diarization_sortformer")
 
     return missing
 
@@ -321,40 +327,79 @@ def transcribe_local(audio_path: str, model_size: str, language: str | None, dev
     }
 
 
-def diarize_local(audio_path: str) -> list:
-    """Identify speakers using Sortformer."""
+def resolve_diarization_device(requested: str, torch_module):
+    """Resolve the diarizer device without silently downgrading CUDA.
+
+    ``cuda`` is the operational default and is strict. ``auto`` is the only
+    mode allowed to choose CPU when CUDA is unavailable; ``cpu`` is an explicit
+    operator opt-out. This is separate from Whisper's device so an ASR CPU
+    retry cannot move diarization off the GPU as collateral damage.
+    """
+    if requested not in _DIARIZATION_DEVICES:
+        raise ValueError(
+            f"invalid diarization device {requested!r}; expected one of "
+            f"{', '.join(_DIARIZATION_DEVICES)}"
+        )
+    actual = requested
+    if requested == "auto":
+        actual = "cuda" if torch_module.cuda.is_available() else "cpu"
+    if actual == "cuda" and not torch_module.cuda.is_available():
+        raise RuntimeError(
+            "CUDA diarization requested but torch.cuda.is_available() is false; "
+            "set WAX_DIARIZATION_DEVICE=cpu only for an intentional CPU run"
+        )
+    return torch_module.device(actual)
+
+
+def diarize_local(audio_path: str, requested_device: str = "cuda") -> tuple[list, str | None]:
+    """Identify speakers using Sortformer and report the proven device."""
     try:
         import librosa
         import torch
-        from whisperlivekit.diarization.sortformer_backend_offline import (
+        from wax.diarization_sortformer import (
             load_model,
             init_streaming_state,
         )
     except ImportError as e:
         log(f"Error: Missing dependency for diarization: {e}")
         log("Please install librosa and nemo_toolkit[asr].")
-        return []
+        return [], None
 
-    log("  Loading diarization model (Sortformer)...")
-    report_progress("diarize", 0, detail="loading Sortformer")
     try:
-        diar_model, audio2mel = load_model()
+        target_device = resolve_diarization_device(requested_device, torch)
+    except (RuntimeError, ValueError) as e:
+        log(f"Error: Diarization device preflight failed: {e}")
+        return [], None
+
+    log(f"  Loading diarization model (Sortformer) on {target_device}...")
+    report_progress("diarize", 0, detail=f"loading Sortformer on {target_device}")
+    try:
+        diar_model, audio2mel = load_model(device=target_device)
+        actual_device = torch.device(diar_model.device)
+        if actual_device.type != target_device.type:
+            raise RuntimeError(
+                f"Sortformer landed on {actual_device}, requested {target_device}"
+            )
     except Exception as e:
         log(f"Error: Failed to load diarization model: {e}")
-        return []
+        return [], None
 
-    # Force diarization to CPU for stability on hosts where CUDA runtime is partial.
-    cpu_device = torch.device("cpu")
+    gpu_name = None
+    if actual_device.type == "cuda":
+        try:
+            gpu_name = torch.cuda.get_device_name(actual_device)
+        except Exception:
+            pass
+    device_detail = str(actual_device) + (f" ({gpu_name})" if gpu_name else "")
+    log("Diarization-Device: " + json.dumps({
+        "requested": requested_device,
+        "actual": str(actual_device),
+        "gpu": gpu_name,
+    }, ensure_ascii=False))
+    log(f"  Running diarization ({device_detail})...")
+    report_progress("diarize", 0, detail=f"running on {device_detail}")
     try:
-        diar_model = diar_model.to(cpu_device)
-        audio2mel = audio2mel.to(cpu_device)
-    except Exception:
-        pass
-
-    log("  Running diarization (cpu)...")
-    report_progress("diarize", 0, detail="running on CPU")
-    try:
-        signal, sr = librosa.load(audio_path, sr=16000)
+        signal, _ = librosa.load(audio_path, sr=16000)
 
         # Process in one-second chunks, but never retain the full feature or
         # prediction history. The old implementation accumulated every mel
@@ -445,11 +490,11 @@ def diarize_local(audio_path: str) -> list:
                 )
 
         report_progress("diarize", 100, chunks_total=total_chunks)
-        return l_speakers
+        return l_speakers, str(actual_device)
     except Exception as e:
         log(f"Error: Diarization failed: {e}")
         log("Continuing without speaker labels.")
-        return []
+        return [], None
 
 
 def transcribe_groq(audio_path: str, model: str, language: str | None) -> dict:
@@ -525,7 +570,9 @@ def format_duration(seconds: float) -> str:
 
 
 def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diarization: list = None,
-                diarization_requested: bool = False) -> str:
+                diarization_requested: bool = False,
+                diarization_device_requested: str | None = None,
+                diarization_device: str | None = None) -> str:
     """Format transcription result as markdown."""
     # Machine-readable enrichment belongs in frontmatter. Keeping it out of the
     # prose means the transcript begins with the transcript, while Obsidian and
@@ -543,6 +590,8 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
         # with the request so a week of silently undiarized transcripts is
         # readable off the note itself.
         "diarization-requested": bool(diarization_requested),
+        "diarization-device-requested": diarization_device_requested,
+        "diarization-device": diarization_device,
     }
     lines = ["---"]
     for key, value in metadata.items():
@@ -619,6 +668,13 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output raw JSON instead of markdown")
     parser.add_argument("--stdout", action="store_true", help="Print to stdout instead of writing file")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="auto", help="Device for inference (default: auto)")
+    parser.add_argument(
+        "--diarization-device",
+        choices=_DIARIZATION_DEVICES,
+        default=(os.getenv("WAX_DIARIZATION_DEVICE", "cuda").strip().lower() or "cuda"),
+        help=("Device for Sortformer diarization (default: cuda; "
+              "WAX_DIARIZATION_DEVICE may override)"),
+    )
     parser.add_argument("--progress-file", default=None, help="Write progress to this file (for remote monitoring)")
     args = parser.parse_args()
 
@@ -632,6 +688,9 @@ def main():
     # failed diarization is byte-identical to an honest single-speaker recording,
     # which is how both outages ran at 100% failure behind a green tray.
     diarization_requested = bool(args.diarization and not args.groq)
+    diarization_device_requested = (
+        args.diarization_device if diarization_requested else None
+    )
 
     if args.diarization:
         missing = missing_diarization_dependencies()
@@ -654,12 +713,16 @@ def main():
     if args.groq:
         result = transcribe_groq(audio_path, args.model, args.language)
         diarization = None
+        diarization_device = None
     else:
         result = transcribe_local(audio_path, args.model, args.language, args.device)
         if args.diarization:
-            diarization = diarize_local(audio_path)
+            diarization, diarization_device = diarize_local(
+                audio_path, args.diarization_device,
+            )
         else:
             diarization = None
+            diarization_device = None
 
     # Requested-but-empty is a FAILURE, not a quiet single-speaker result. Say so
     # on stderr in a shape the adapter greps for, and keep exit 0 so a 3h ASR run
@@ -697,10 +760,13 @@ def main():
         if diarization:
             result["diarization"] = diarization
         result["diarization_requested"] = diarization_requested
+        result["diarization_device_requested"] = diarization_device_requested
+        result["diarization_device"] = diarization_device
         output = json.dumps(result, indent=2, ensure_ascii=False)
     else:
         output = to_markdown(result, audio_path, args.timestamps, diarization,
-                             diarization_requested)
+                             diarization_requested, diarization_device_requested,
+                             diarization_device)
 
     if args.stdout:
         print(output)
@@ -717,6 +783,8 @@ def main():
             "diarized": bool(diarization),
             "diarization_requested": diarization_requested,
             "diarization_degraded": diarization_degraded,
+            "diarization_device_requested": diarization_device_requested,
+            "diarization_device": diarization_device,
         }
         # Metadata is carried in-band for the parent process. It is deliberately
         # not persisted as a sibling .meta.json artifact.
