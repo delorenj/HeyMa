@@ -48,6 +48,10 @@ from wax import frontmatter  # noqa: E402
 
 
 MAX_CONTEXT_CHARS = 24_000
+# The response is two short strings. Leaving this unset makes OpenRouter price
+# the request against the model's full 65,536-token output ceiling and reject a
+# perfectly affordable title request when the key has a lower spend limit.
+MAX_OUTPUT_TOKENS = 2_048
 
 # Provider defaults. Every one of these is overridable from title-slug.yaml's
 # env block; the defaults exist so the pass still runs from a bare shell.
@@ -303,6 +307,7 @@ the supplied transcript. Do not infer names or facts that are not present.
         timeout=timeout,
         payload={
             "model": model,
+            "max_tokens": MAX_OUTPUT_TOKENS,
             # Top-level temperature is the OpenAI-compatible spelling; Ollama's
             # options{} block and its `think` flag are not portable and are gone.
             "temperature": 0.1,
