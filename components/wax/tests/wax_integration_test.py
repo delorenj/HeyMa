@@ -157,6 +157,55 @@ class WaxIntegrationTest(unittest.TestCase):
             self.assertEqual(selected, expected)
             self.assertTrue(failed.exists())
 
+    def test_retry_requeues_a_preserved_failed_item(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            failed = inbox / "retry-me.ogg"
+            failed.write_bytes(b"failed audio remains")
+            env = {**os.environ, "WAX_ROOT": runtime_root,
+                   "PYTHONPATH": str(COMPONENT_ROOT / "src")}
+            identify = subprocess.run(
+                [
+                    "python3", "-c",
+                    "from wax import ledger; from pathlib import Path; "
+                    f"item=ledger.upsert_item(Path(r'{failed}')); "
+                    "ledger.set_item_state(item,'failed',cause='archive_failed'); print(item)"
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+            result = subprocess.run(
+                [str(REPO_ROOT / "bin" / "wax"), "retry", identify, "--json"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["state"], "pending")
+            self.assertEqual(payload["previous_cause"], "archive_failed")
+            self.assertTrue(failed.exists())
+
+            selected = subprocess.run(
+                [
+                    "python3", "-c",
+                    "from wax import worker; print(worker.next_item()[0])",
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(selected, identify)
+
     def test_failed_only_inbox_is_not_reported_as_stranded_work(self):
         with tempfile.TemporaryDirectory() as runtime_root:
             root = Path(runtime_root)

@@ -963,6 +963,8 @@ def main() -> int:
     sub.add_parser("queue", help="tray queue rows", parents=[common])
     sk = sub.add_parser("skip", help="preserve a queued item without processing it", parents=[common])
     sk.add_argument("item_id")
+    rt = sub.add_parser("retry", help="requeue a preserved failed inbox item", parents=[common])
+    rt.add_argument("item_id")
 
     ep = sub.add_parser("ep", help="enrichment passes", parents=[common]).add_subparsers(dest="sub", required=True)
     ep.add_parser("list", help="registered passes: enabled, version, outcome tally", parents=[common])
@@ -1108,6 +1110,10 @@ def main() -> int:
 
     if args.cmd == "skip":
         _emit(worker.skip_item(args.item_id), J)
+        return 0
+
+    if args.cmd == "retry":
+        _emit(worker.retry_item(args.item_id), J)
         return 0
 
     if args.cmd == "archive":

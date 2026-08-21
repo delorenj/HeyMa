@@ -143,7 +143,7 @@ stateDiagram-v2
 1. The user gave `stopped` and `ready-and-waiting` *the same predicate* ("dir empty AND pipeline not active"). Wax separates them by **intent**: `ready-and-waiting` = enabled and would claim instantly; `stopped` = deliberately disabled. Otherwise one of them is dead code.
 2. `error` gets a 5 s debounce, because the literal predicate is true for ~1 s after every single recording (file landed, not yet claimed) and would emit an error/recover pair per clip.
 
-**A poison item does not wedge the pipeline.** A failed item stays in `~/HeyMa/inbox` (so "dir non-empty AND pipeline not active" is literally true when idle), but the scheduler keeps claiming *other* pending items. `failed_count` rides on every status payload and forces YELLOW. `wax quarantine <id>` moves it to `~/HeyMa/quarantine/` (never deleted).
+**A poison item does not wedge the pipeline.** A failed item stays in `~/HeyMa/inbox` (so "dir non-empty AND pipeline not active" is literally true when idle), but the scheduler keeps claiming *other* pending items. `failed_count` rides on every status payload and forces YELLOW. After repairing the cause, `wax retry <id>` records an explicit `operator_retry` transition and requeues the preserved file from the backup-first stage; `wax skip <id>` parks ordinary queued work outside the inbox without deleting it.
 
 ---
 

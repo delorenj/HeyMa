@@ -57,6 +57,7 @@ wax status                 # both state machines, queue, pass + diarization heal
 wax rec start|stop|toggle|cancel|salvage|list
 wax items | queue | history | state <machine> [--cold]
 wax drain                  # process the inbox now, one-shot
+wax retry <item>           # requeue one preserved failed inbox item
 wax ep list|status|run <slug> <item>|run-all <item>|sweep
 wax reconcile [--rebuild]  # rebuild the ledger from durable sources
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events

@@ -480,6 +480,56 @@ def skip_item(item_id: str) -> dict[str, Any]:
         return {"item_id": item_id, "state": "skipped", "path": str(moved)}
 
 
+def retry_item(item_id: str) -> dict[str, Any]:
+    """Explicitly requeue one preserved failed inbox item.
+
+    Failed items are poison-proof by design: next_item() skips them so healthy
+    work can continue. That also means a repaired dependency cannot make an
+    item retry itself. The operator action is intentionally narrow: only a
+    failed file that still exists inside the live inbox can return to pending.
+    The ordinary worker then starts at archive again, whose content-addressed
+    upload and live verification are idempotent.
+    """
+    with _SELECTION_LOCK:
+        claim = state._active_claim()
+        if claim and claim.get("item") == item_id:
+            raise RuntimeError("the active item cannot be retried")
+        conn = ledger.connect()
+        row = conn.execute(
+            "SELECT path,state,orig_name FROM items WHERE item_id=?", (item_id,)
+        ).fetchone()
+        if not row:
+            raise RuntimeError(f"unknown queue item: {item_id}")
+        if row["state"] != "failed":
+            raise RuntimeError(f"item is not failed: {row['state']}")
+        source = Path(row["path"])
+        try:
+            source.resolve().relative_to(paths.INBOX.resolve())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("failed item is not in the inbox") from exc
+        if not source.is_file():
+            raise RuntimeError("failed audio is missing")
+        previous = conn.execute(
+            "SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
+            "ORDER BY seq DESC LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        previous_cause = previous["cause_code"] if previous else None
+        _set_state(
+            item_id,
+            "pending",
+            cause="operator_retry",
+            evidence=f"previous_cause={previous_cause or 'unknown'} path={source}",
+            subject=row["orig_name"] or source.name,
+        )
+        return {
+            "item_id": item_id,
+            "state": "pending",
+            "path": str(source),
+            "previous_cause": previous_cause,
+        }
+
+
 class Worker(threading.Thread):
     """Background drain loop. Only runs while `wax pipeline enable` is set."""
 
