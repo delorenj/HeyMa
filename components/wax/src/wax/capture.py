@@ -411,12 +411,77 @@ def cancel(rid: str) -> dict[str, Any]:
     return {"rid": rid, "discarded_to": moved}
 
 
+def quiesce() -> dict[str, Any]:
+    """Finish an active capture during an orderly session shutdown.
+
+    The encoder scope survives a waxd restart, but a graphical-session restart
+    also tears down PipeWire and its Pulse source graph.  A dedicated systemd
+    stop hook calls this while the audio graph is still available.  Being idle
+    is success so the hook is safe on every logout and reboot.
+    """
+    captures = sentinel.list_captures()
+    if not captures:
+        return {"action": "idle", "state": "ready"}
+
+    current = state.stream_state(run_preflight=False)
+    if current["state"] not in ("recording", "not-ready"):
+        raise CaptureError(
+            f"stream is {current['state']} ({current.get('cause_code')}); "
+            "refusing automatic shutdown recovery"
+        )
+    rid = str(current.get("rid") or captures[0])
+    result = stop(rid)
+    return {"action": "stopped", **result}
+
+
+def _preserve_orphan_evidence(rid: str) -> Path:
+    """Move every surviving capture artifact out of ``stream/`` intact.
+
+    Salvage publishes a remuxed copy, but the segment set is the closest thing
+    to the original recording after an uninstructed exit.  It must not be
+    removed merely because the remux succeeded: a skipped or subtly damaged
+    segment may be the only copy of irreplaceable audio.  Keep the segments,
+    concat manifest, staging partial, and lifecycle sentinels together under a
+    collision-safe evidence directory.
+    """
+    parent = paths.RECOVERED / "orphans"
+    parent.mkdir(parents=True, exist_ok=True)
+
+    segdir = paths.segdir(rid)
+    if segdir.is_dir():
+        evidence = rename.move_noclobber(segdir, parent / rid)
+    else:
+        evidence = parent / rid
+        for attempt in range(51):
+            candidate = evidence if attempt == 0 else parent / f"{rid}-{attempt}"
+            try:
+                candidate.mkdir()
+                evidence = candidate
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise CaptureError(f"could not allocate recovery directory for {rid}")
+
+    for artifact in (
+        paths.partial_path(rid),
+        paths.rec_path(rid),
+        paths.stop_path(rid),
+        paths.fin_path(rid),
+        paths.ctl_path(rid),
+    ):
+        if artifact.exists():
+            rename.move_noclobber(artifact, evidence / artifact.name)
+    return evidence
+
+
 def salvage(rid: str) -> dict[str, Any]:
     """Recover an error-partial: keep the bytes, get out of the error state.
 
     Every completed segment is independently valid, so an uninstructed exit
     usually costs only the in-flight segment. Whatever survived is joined and
-    published like any other item; nothing is ever deleted.
+    published like any other item. The original segments and all sentinels are
+    then retained under recovered/orphans/; salvage never deletes evidence.
     """
     rec = sentinel.read_json(paths.rec_path(rid)) or {}
     if sentinel.encoder_alive(rec):
@@ -428,33 +493,24 @@ def salvage(rid: str) -> dict[str, Any]:
         partial, used, skipped = None, [], sentinel.segments(rid)
 
     if partial is None:
-        dest = paths.RECOVERED / "partial" / rid
-        dest.mkdir(parents=True, exist_ok=True)
-        for sp in sentinel.segments(rid):
-            shutil.move(str(sp), str(dest / sp.name))
-        result = {"rid": rid, "salvaged": True, "to": str(dest), "published": False,
+        evidence = _preserve_orphan_evidence(rid)
+        result = {"rid": rid, "salvaged": True, "to": str(evidence), "published": False,
+                  "evidence_path": str(evidence),
                   "reason": "no valid segments", "segments_skipped": len(skipped)}
     else:
         dur = state._probe_duration(partial)
         if dur is None or dur <= MIN_VALID_DURATION_S:
-            dest = paths.RECOVERED / "partial" / f"{rid}.ogg"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            moved = rename.move_noclobber(partial, dest)
-            result = {"rid": rid, "salvaged": True, "to": str(moved), "duration_s": dur,
+            evidence = _preserve_orphan_evidence(rid)
+            result = {"rid": rid, "salvaged": True, "to": str(evidence), "duration_s": dur,
+                      "evidence_path": str(evidence),
                       "published": False, "reason": "unprobeable"}
         else:
             name = str(rec.get("target_name") or f"{rid}.ogg")
             stem, _, ext = name.rpartition(".")
             moved = rename.move_noclobber(partial, paths.INBOX / f"{stem or name}-salvaged.{ext or 'ogg'}")
+            evidence = _preserve_orphan_evidence(rid)
             result = {"rid": rid, "salvaged": True, "to": str(moved), "duration_s": dur,
                       "published": True, "segments_used": len(used),
-                      "segments_skipped": len(skipped)}
-
-    shutil.rmtree(paths.segdir(rid), ignore_errors=True)
-    paths.partial_path(rid).unlink(missing_ok=True)
-    for p in (paths.rec_path(rid), paths.stop_path(rid), paths.fin_path(rid), paths.ctl_path(rid)):
-        try:
-            p.unlink()
-        except FileNotFoundError:
-            pass
+                      "segments_skipped": len(skipped),
+                      "evidence_path": str(evidence)}
     return result

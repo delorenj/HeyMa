@@ -33,7 +33,7 @@ flowchart TB
 
   D["waxd — single owner<br/>flock ~/HeyMa/var/waxd.lock"]
   D -->|systemd-run --user --scope| FF["ffmpeg -f pulse -c:a libopus"]
-  FF --> P["~/HeyMa/stream/&lt;rid&gt;.ogg.partial<br/>+ &lt;rid&gt;.rec.json  + &lt;rid&gt;.stop  + &lt;rid&gt;.fin.json"]
+  FF --> P["~/HeyMa/stream/&lt;rid&gt;.segs/seg-NNNNN.ogg<br/>+ &lt;rid&gt;.rec.json  + &lt;rid&gt;.stop  + &lt;rid&gt;.fin.json"]
   P -->|"wait()==0 AND ffprobe&gt;0.5s<br/>THEN renameat2 RENAME_NOREPLACE"| IN["~/HeyMa/inbox/YYYYMMDD-HHMMSS-&lt;slug&gt;.ogg"]
 
   DROP["~/HeyMa/dropoff<br/>Syncthing receiveonly, 5 devices"] -->|copy2 to .staging, then renameat2| IN
@@ -109,10 +109,10 @@ stateDiagram-v2
 | State | Literal detection | Event on entry |
 |---|---|---|
 | `ready` | No `~/HeyMa/stream/*.rec.json`, no `*.ogg.partial`, no `*.stop`; preflight ok (`pactl get-default-source` non-empty **and** present in `pactl list short sources`; free bytes on `/dev/nvme0n1p2` ≥ 5 GiB — **426 G free at 88% today**; `~/HeyMa/inbox` and `~/HeyMa/stream` writable) | `bloodbank.evt.v1.audio.status.updated` |
-| `recording` | `<rid>.rec.json` **and** `<rid>.ogg.partial` exist, **no** `<rid>.stop`, and `alive(rid)` = `boot_id` in rec.json == `/proc/sys/kernel/random/boot_id` **AND** `/proc/<pid>` exists **AND** `basename(readlink /proc/<pid>/exe)=="ffmpeg"` **AND** field 22 of `/proc/<pid>/stat` == recorded starttime. While `waxd` is alive this is confirmed by `Popen.poll() is None` — the sentinel triple is the *cold* fallback. | `audio.session.started` + `status.updated` |
-| `not-ready` **(a)** | `<rid>.stop` exists **AND** `<rid>.fin.json` exists **AND** its owner passes the same alive() triple **AND** `now < fin.deadline` (default `stop_ts + 45s`). | `status.updated` (`clause="a-finalizing"`, `transient=true` if it closes <250 ms) |
+| `recording` | `<rid>.rec.json` exists, `<rid>.stop` does not, and `alive(rid)` = `boot_id` in rec.json == `/proc/sys/kernel/random/boot_id` **AND** `/proc/<pid>` exists **AND** `basename(readlink /proc/<pid>/exe)=="ffmpeg"` **AND** field 22 of `/proc/<pid>/stat` == recorded starttime. Audio accumulates as independently valid files under `<rid>.segs/`; the first segment can appear after the sentinel. | `audio.session.started` + `status.updated` |
+| `not-ready` **(a)** | `<rid>.stop` exists **AND** its owner passes the alive triple **AND** `now < stop.deadline_epoch` (default `stop_ts + 180s`). | `status.updated` (`clause="a-finalizing"`) |
 | `not-ready` **(b)** | Dir clean of rid artifacts **AND** preflight fails with a **named** cause ∈ `{no_default_source, disk_low, inbox_unwritable, stream_unwritable}`. Re-evaluated on a 10 s tick. `.health.json` is excluded from the emptiness test. | `status.updated` (`clause="b-incapable"`) |
-| `error-partial` | Any of: **(i)** `rec.json` + `.partial` + **no** `.stop` + `alive(rid)==false` (uninstructed exit — covers `kill -9`, OOM, ENOSPC, reboot, since a stale `boot_id` makes every pre-reboot claim false by construction); **(ii)** `.stop` present but the finalizer's owner is dead **or** `now > fin.deadline` (the stop path itself broke — Lens B's absorbing-`not-ready` wedge, closed); **(iii)** `rec.json` + `.stop` + **no** `.partial` + no matching inbox item (crashed between rename and unlink); **(iv)** boot finds any of the above. | `audio.session.failed` (`reason_code`, `stderr_tail` 8 KiB, `partial_bytes`, `salvaged`) |
+| `error-partial` | Any of: **(i)** `rec.json` + segment residue + **no** `.stop` + `alive(rid)==false` (uninstructed exit — covers `kill -9`, OOM, ENOSPC, reboot, and audio-graph loss); **(ii)** `.stop` present but the finalizer's owner is dead **or** `now > stop.deadline_epoch`; **(iii)** a legacy `.partial` remains; **(iv)** boot finds any of the above. | `audio.session.failed` (`reason_code`, `stderr_tail` 8 KiB, `partial_bytes`, `salvaged`) |
 | `error` | **Catch-all is `error`, never `ready`.** Unparseable/zero-length sentinel; `.partial` older than 10 s with no `rec.json`; >1 rid with a live encoder; stream dir missing/unwritable; escalation from `not-ready` (>300 s) or ≥3 `error-partial` in 10 min; salvage itself failed. **Sticky** — clears only on `wax reset`. | `audio.session.failed` (`reason_code="structural"`) |
 
 **Honest notes on the two hard states.**
@@ -121,7 +121,11 @@ stateDiagram-v2
 
 `error-partial` is *only* detectable because intent is written to disk before the fact. There is deliberately **no size-based stall detector**. A "partial hasn't grown in 30 s while the encoder is alive" heuristic is exactly the `record_0016` sin (inferring a writer's state from `stat`), and acting on it — renaming/remuxing a file a live `ffmpeg` still holds an fd to — would truncate a good recording and publish the stub as complete. Instead: a non-growing partial with a live encoder raises a **journald warning and a YELLOW tray tint only**; it never mutates a file and never leaves `recording`. The encoder's *exit* is the only trigger.
 
-Salvage on `error-partial`: rename in place to `<rid>.orphan`, `ffprobe`; if duration > 0, `ffmpeg -i <orphan> -c copy` a valid `.ogg` into inbox flagged `data.partial=true`; the orphan itself **moves** to `~/HeyMa/recovered/orphans/` (never deleted, never left in `stream/`). Ogg/Opus is chosen precisely because a truncated Ogg stream is page-structured and remuxable — a truncated `.m4a` is a brick.
+Salvage on `error-partial` probes every segment and remuxes the valid sequence
+into a new Ogg file in `inbox/`. It then moves the complete original segment
+set, concat manifest, staging partial, and lifecycle sentinels under
+`recovered/orphans/<rid>/`. Wax never deletes a skipped or damaged tail
+segment merely because the remux succeeded.
 
 **Start always works.** `wax rec start` never refuses because of residue. It takes `~/HeyMa/var/stream.lock`, mints a fresh rid, sweeps prior residue aside loudly (`session.failed` for the stranded rid), and records. A recorder that can be blocked by yesterday's crash is worse than the GUI app it replaces.
 
@@ -340,9 +344,20 @@ wax:
 
 **What gets built:** `waxd`, a single `/usr/bin/python3` process (3.13.7 — verified: `gi`, `Gtk 3.0`, `AyatanaAppIndicator3 0.1`, `evdev`, `sqlite3`, `yaml` all import with **no venv, no pip**). Shebang is literally `#!/usr/bin/python3`, **never** `#!/usr/bin/env python3` — mise's Python 3.14 is first on `PATH` and has no `gi`, which would silently break the tray. Everything else is apt: `python3-gi 3.50.0`, `python3-evdev 1.9.1`, `gir1.2-ayatanaappindicator3-0.1`, `gir1.2-gtk-3.0`.
 
-**Capture:** `ffmpeg -hide_banner -nostdin -loglevel warning -f pulse -i <explicit-source-name> -ac 1 -ar 48000 -c:a libopus -b:a 32k -f ogg ~/HeyMa/stream/<rid>.ogg.partial`. Chosen over `pw-record` because ffmpeg is the only capture tool with **binary-level proof** of graceful signal finalization (`strings /usr/bin/ffmpeg` → `Exiting normally, received signal %d.`); `pw-record`'s SIGINT path is unverifiable (`pw_loop_add_signal` is a static inline, leaves no relocation). I will not bet a 16-hour irreplaceable artifact on an unproven finalize. Stop = `SIGINT → wait(20) → SIGTERM → wait(10) → SIGKILL`, signalled **by pid from `rec.json`**, never `pkill ffmpeg`.
+**Capture:** FFmpeg reads the explicit Pulse source and writes one independently
+valid Ogg/Opus segment per minute under `<rid>.segs/`. Its stdin is a durable
+FIFO named in `rec.json`; `wax rec stop` writes `q`, waits for a clean encoder
+exit, validates every segment, and remuxes them into one inbox item. Signals are
+last-resort escalation only.
 
-The encoder is spawned into a **transient scope** (`systemd-run --user --scope --collect -- ffmpeg ...`) so it genuinely outlives `waxd`. This matters: the sibling units on this box (`audio-watcher.service`, `vocalinux-faster-whisper.service`) both run the systemd default `KillMode=control-group`, which SIGTERMs the *entire cgroup* — a `systemctl --user restart waxd` mid-recording would otherwise kill the encoder too. `waxd.service` also sets `KillMode=mixed`, `TimeoutStopSec=120`, `PrivateTmp=false` (transcribe needs the real `/tmp`; `/tmp` here is tmpfs).
+The encoder runs in a **transient scope**
+(`systemd-run --user --scope --collect -- ffmpeg ...`) and therefore outlives a
+plain `systemctl --user restart waxd`. It cannot keep reading through loss of
+the Pulse/PipeWire graph: restarting GDM removes that source even though the
+scope remains alive. `wax-capture-guard.service` orders its shutdown before
+`waxd`, D-Bus, PipeWire, and WirePlumber, and runs `wax rec quiesce` while the
+source is still available. Idle shutdowns are a no-op; an active capture is
+cleanly finalized before logout or reboot proceeds.
 
 **Hotkey — what is actually built.** A GNOME custom keybinding, and nothing else. Live values:
 
@@ -423,8 +438,9 @@ Files: `wax/hotkey.py`. evdev, name-resolved physical keyboards, virtual-device 
 Verify: chord from a fullscreen window toggles recording. **Domain-separation proof:** while Wax is recording, double-tap Ctrl and dictate into a text field — text injects, Wax's recording continues, `ffprobe` shows full span and `sox <file> -n stat` shows non-zero RMS. Then `kill -9` vocalinux mid-recording; `systemd-cgls --user | grep ffmpeg` shows Wax's encoder untouched. `evtest` on event18/14/13 confirms virtual devices are ignored.
 
 **Phase 3 — Tray.** *(~300 LOC, 0.5 day)*
-Files: `components/wax/src/wax/tray.py`, three component PNGs, the tracked `components/wax/deploy/systemd/user/waxd.service` template, and `wax-alert.service`.
-Verify: `busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems` lists a **new** item beside vocalinux's. GREEN idle → RED recording → YELLOW three ways (unplug the Yeti; `kill -9` the encoder; `wax pipeline stop` with a failed item). `kill -9` waxd mid-recording: encoder survives (transient scope), next boot reports `error-partial` and salvages.
+Files: `components/wax/src/wax/tray.py`, three component PNGs, and the tracked
+`waxd.service`, `wax-alert.service`, and `wax-capture-guard.service` templates.
+Verify: `busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems` lists a **new** item beside vocalinux's. GREEN idle → RED recording → YELLOW three ways (unplug the Yeti; `kill -9` the encoder; `wax pipeline stop` with a failed item). `kill -9` waxd mid-recording: encoder survives its transient scope. An orderly graphical-session stop invokes `wax rec quiesce` before PipeWire stops, leaving the stream ready on the next session.
 
 **Phase 4 — Ledger + both machines + directory reconciliation.** *(~700 LOC, 1.5 days)*
 Files: `components/wax/src/wax/{ledger,state,reconcile}.py`, `~/HeyMa/var/wax.db`, `state.json` mirror with `generation`/`updated_at`/`daemon_pid`/`boot_id`.

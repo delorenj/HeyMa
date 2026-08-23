@@ -989,6 +989,11 @@ def main() -> int:
     rec.add_parser("stop", parents=[common]).add_argument("rid", nargs="?")
     rec.add_parser("cancel", parents=[common]).add_argument("rid", nargs="?")
     rec.add_parser("salvage", parents=[common]).add_argument("rid", nargs="?")
+    rec.add_parser(
+        "quiesce",
+        help="stop an active capture for session shutdown; idle is success",
+        parents=[common],
+    )
     rec.add_parser("list", parents=[common])
     t = rec.add_parser("toggle", help="start if ready, stop if recording", parents=[common])
     t.add_argument("--label")
@@ -1089,6 +1094,10 @@ def main() -> int:
         if args.sub == "list":
             _emit([{"rid": r, "segments": len(sentinel.segments(r)),
                     "bytes": sentinel.segment_bytes(r)} for r in sentinel.list_captures()], J)
+            return 0
+        if args.sub == "quiesce":
+            with _Lock():
+                _emit(capture.quiesce(), J)
             return 0
         rid = args.rid or _active_rid()
         with _Lock():

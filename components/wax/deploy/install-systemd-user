@@ -4,12 +4,14 @@
 import argparse
 from pathlib import Path
 
-# Both units install together, always. waxd.service names wax-alert.service in
+# All units install together, always. waxd.service names wax-alert.service in
 # OnFailure=, and for three weeks the alert unit existed only as an untracked
 # file in ~/.config/systemd/user — so any fresh clone rendered a daemon whose
 # failure handler did not exist, and the one channel that survives a dead tray
-# was silently absent on exactly the machines that had never seen it work.
-UNITS = ("waxd.service", "wax-alert.service")
+# was silently absent on exactly the machines that had never seen it work. The
+# capture guard finishes a live recording before a graphical-session teardown
+# removes its PipeWire source graph.
+UNITS = ("waxd.service", "wax-alert.service", "wax-capture-guard.service")
 
 
 def locations():
@@ -39,6 +41,8 @@ def render_unit(name: str, component=None, repo=None) -> str:
         # percent escape after unit parsing (%% -> literal %).
         .replace("@WAX_DOCUMENTATION_URI@", documentation_uri.replace("%", "%%"))
         .replace("@WAX_EXEC_START@", systemd_quote(repo / "bin" / "waxd"))
+        .replace("@WAX_EXEC_QUIESCE@",
+                 f"{systemd_quote(repo / 'bin' / 'wax')} rec quiesce --json")
         # The quotes wrap the whole NAME=value assignment, not just the path:
         # Environment= splits on unquoted whitespace, so a repo under a path
         # with a space would otherwise arrive as two words and lose the tail.

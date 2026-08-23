@@ -119,6 +119,14 @@ class PortabilityTest(unittest.TestCase):
         self.assertIn("@WAX_DOCUMENTATION_URI@", template)
         self.assertIn("Environment=WAX_DIARIZATION_DEVICE=cuda", template)
 
+    def test_capture_guard_orders_shutdown_before_audio_graph(self):
+        template = (COMPONENT_ROOT / "deploy/systemd/user/wax-capture-guard.service").read_text()
+        self.assertIn("@WAX_EXEC_QUIESCE@", template)
+        self.assertIn("PartOf=graphical-session.target", template)
+        self.assertIn("After=graphical-session.target waxd.service dbus.service", template)
+        self.assertIn("pipewire.service wireplumber.service", template)
+        self.assertIn("TimeoutStopSec=10min", template)
+
     def test_diarization_runtime_has_a_rebuild_contract(self):
         installer = COMPONENT_ROOT / "deploy/install-diarization"
         requirements = COMPONENT_ROOT / "requirements-diarization.txt"
@@ -139,6 +147,7 @@ class PortabilityTest(unittest.TestCase):
             check=True,
         )
         self.assertIn(str(COMPONENT_ROOT.parents[1] / "bin/waxd"), result.stdout)
+        self.assertIn(str(COMPONENT_ROOT.parents[1] / "bin/wax") + '" rec quiesce', result.stdout)
         self.assertIn(str(COMPONENT_ROOT / "docs/WAX-DESIGN.md"), result.stdout)
         self.assertNotIn("@WAX_", result.stdout)
 

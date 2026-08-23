@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -17,6 +18,20 @@ REPO_ROOT = next(
 
 
 class WaxIntegrationTest(unittest.TestCase):
+    @staticmethod
+    def _write_test_ogg(path: Path, frequency: int) -> None:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i",
+                f"sine=frequency={frequency}:sample_rate=48000:duration=0.6",
+                "-ac", "1", "-c:a", "libopus", "-f", "ogg", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
     def test_default_runtime_root_is_heyma(self):
         env = os.environ.copy()
         env.pop("WAX_ROOT", None)
@@ -69,6 +84,85 @@ class WaxIntegrationTest(unittest.TestCase):
                 check=True,
             )
             self.assertIn(json.loads(result.stdout)["state"], {"ready", "not-ready"})
+
+    def test_quiesce_is_an_idempotent_noop_when_idle(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            env = {**os.environ, "WAX_ROOT": runtime_root}
+            result = subprocess.run(
+                [str(REPO_ROOT / "bin" / "wax"), "rec", "quiesce", "--json"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(json.loads(result.stdout)["action"], "idle")
+
+    def test_quiesce_cleanly_finishes_a_live_encoder(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            stream = root / "stream"
+            inbox = root / "inbox"
+            stream.mkdir()
+            inbox.mkdir()
+            rid = "20260822-133309-quiesce"
+            segdir = stream / f"{rid}.segs"
+            segdir.mkdir()
+            ctl = stream / f"{rid}.ctl"
+            os.mkfifo(ctl)
+            ctl_fd = os.open(ctl, os.O_RDWR)
+            encoder = subprocess.Popen(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
+                    "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=60",
+                    "-ac", "1", "-c:a", "libopus", "-f", "segment",
+                    "-segment_time", "0.5", "-segment_format", "ogg",
+                    "-reset_timestamps", "1", str(segdir / "seg-%05d.ogg"),
+                ],
+                stdin=ctl_fd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                proc_stat = Path(f"/proc/{encoder.pid}/stat").read_text()
+                starttime = int(proc_stat[proc_stat.rindex(")") + 2:].split()[19])
+                (stream / f"{rid}.rec.json").write_text(json.dumps({
+                    "rid": rid,
+                    "pid": encoder.pid,
+                    "starttime": starttime,
+                    "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                    "target_name": "session-shutdown.ogg",
+                }))
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    if len(list(segdir.glob("seg-*.ogg"))) >= 2:
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("test encoder did not close two segments")
+
+                env = {**os.environ, "WAX_ROOT": runtime_root}
+                result = subprocess.run(
+                    [str(REPO_ROOT / "bin" / "wax"), "rec", "quiesce", "--json"],
+                    cwd=REPO_ROOT,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                    check=True,
+                )
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["action"], "stopped")
+                self.assertGreater(payload["duration_s"], 0.5)
+                self.assertTrue(Path(payload["path"]).is_file())
+                self.assertFalse(any(stream.iterdir()))
+            finally:
+                os.close(ctl_fd)
+                if encoder.poll() is None:
+                    encoder.terminate()
+                encoder.wait(timeout=5)
 
     def test_disabled_pipeline_with_backlog_is_stopped_not_error(self):
         with tempfile.TemporaryDirectory() as runtime_root:
@@ -205,6 +299,84 @@ class WaxIntegrationTest(unittest.TestCase):
                 check=True,
             ).stdout.strip()
             self.assertEqual(selected, identify)
+
+    def test_salvage_publishes_remux_and_preserves_original_segments(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            rid = "20260822-133309-test"
+            segdir = root / "stream" / f"{rid}.segs"
+            segdir.mkdir(parents=True)
+            (root / "inbox").mkdir()
+            originals = {}
+            for number, frequency in enumerate((440, 880)):
+                segment = segdir / f"seg-{number:05d}.ogg"
+                self._write_test_ogg(segment, frequency)
+                originals[segment.name] = segment.read_bytes()
+
+            rec = root / "stream" / f"{rid}.rec.json"
+            rec.write_text(json.dumps({
+                "rid": rid,
+                "pid": 0,
+                "starttime": 0,
+                "boot_id": "dead-boot",
+                "target_name": "interrupted.ogg",
+            }))
+            env = {**os.environ, "WAX_ROOT": runtime_root}
+            result = subprocess.run(
+                [str(REPO_ROOT / "bin" / "wax"), "rec", "salvage", rid, "--json"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(result.stdout)
+
+            published = Path(payload["to"])
+            evidence = Path(payload["evidence_path"])
+            self.assertTrue(payload["published"])
+            self.assertTrue(published.is_file())
+            self.assertEqual(payload["segments_used"], 2)
+            self.assertEqual(payload["segments_skipped"], 0)
+            for name, original in originals.items():
+                self.assertEqual((evidence / name).read_bytes(), original)
+            self.assertTrue((evidence / rec.name).is_file())
+            self.assertFalse(any((root / "stream").iterdir()))
+
+    def test_salvage_preserves_unprobeable_legacy_partial(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            stream = root / "stream"
+            stream.mkdir(parents=True)
+            (root / "inbox").mkdir()
+            rid = "20260822-133309-legacy"
+            partial = stream / f"{rid}.ogg.partial"
+            original = b"irreplaceable truncated legacy audio"
+            partial.write_bytes(original)
+            rec = stream / f"{rid}.rec.json"
+            rec.write_text(json.dumps({
+                "rid": rid,
+                "pid": 0,
+                "starttime": 0,
+                "boot_id": "dead-boot",
+                "target_name": "legacy.ogg",
+            }))
+            env = {**os.environ, "WAX_ROOT": runtime_root}
+            result = subprocess.run(
+                [str(REPO_ROOT / "bin" / "wax"), "rec", "salvage", rid, "--json"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(result.stdout)
+            evidence = Path(payload["evidence_path"])
+
+            self.assertFalse(payload["published"])
+            self.assertEqual((evidence / partial.name).read_bytes(), original)
+            self.assertTrue((evidence / rec.name).is_file())
+            self.assertFalse(any(stream.iterdir()))
 
     def test_failed_only_inbox_is_not_reported_as_stranded_work(self):
         with tempfile.TemporaryDirectory() as runtime_root:

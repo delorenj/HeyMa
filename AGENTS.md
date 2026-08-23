@@ -22,7 +22,7 @@ lives beside the code. All of it is one filesystem, which is what makes
 
 | Path | What |
 |---|---|
-| `stream/` | in-flight capture: `<rid>.ogg.partial` + sentinels |
+| `stream/` | in-flight capture: `<rid>.segs/seg-NNNNN.ogg` + sentinels; a concatenated `.ogg.partial` exists only while finalizing |
 | `inbox/` | the one work queue. Plain local dir, safe to write. Recursive — items live at any depth |
 | `dropoff/` | Syncthing **receiveonly** device feed. waxd only ever COPIES out of it. Never write here |
 | `archive/` | audio parked after S3 verify |
@@ -41,6 +41,9 @@ from `stat()`. Every capture writes an intent sentinel before the first audio
 byte, so state is recomputable from disk by a cold process after a SIGKILL.
 
 - Source: `components/wax/` (`src/wax/`, `bin/{wax,waxd}`, `config/`, `deploy/`).
+- `wax-capture-guard.service` quiesces an active capture before an orderly
+  graphical-session stop removes D-Bus or PipeWire. A plain `waxd` restart does
+  not stop the encoder scope.
 - Repo-root `bin/{wax,waxd,transcribe}` are shims that resolve the component
   relative to themselves. `~/.local/bin/transcribe` points at `bin/transcribe`,
   and `waxd.service` pins `WAX_TRANSCRIBE` absolutely — PATH must never get to
@@ -55,6 +58,7 @@ byte, so state is recomputable from disk by a cold process after a SIGKILL.
 wax doctor                 # start here — end-to-end diagnosis (mise run wax:doctor)
 wax status                 # both state machines, queue, pass + diarization health
 wax rec start|stop|toggle|cancel|salvage|list
+wax rec quiesce            # idempotent session-shutdown hook; idle is success
 wax items | queue | history | state <machine> [--cold]
 wax drain                  # process the inbox now, one-shot
 wax retry <item>           # requeue one preserved failed inbox item
