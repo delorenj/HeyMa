@@ -18,7 +18,7 @@ VAULTDOCS = "/home/delorenj/d/Sandbox/audio"
 [[hooks.enter]]
 script = "'{{config_root}}/.mise/scripts/link-agentfiles.sh'"
 [[hooks.enter]]
-script = "op inject -i .env.op > .env"
+script = "'{{config_root}}/.mise/scripts/materialize-env.sh'"
 [[hooks.enter]]
 script = "sync-skills.py --scope project"
 
