@@ -10,7 +10,7 @@ without an explicit override — a dependency added by accident is exactly how
 
 Traceability: every run mints a DETERMINISTIC command_id
     uuid5(WAX_NS, "ep:<item_id>:<ep_slug>:<attempt>")
-issues `bloodbank.cmd.v1.audio.task.start`, and mirrors it as
+issues `bloodbank.cmd.audio.task.start`, and mirrors it as
 `...task.requested` carrying that same id. Because Candystore ingests events
 only, that mirror is what makes the invoking COMMAND findable at all.
 

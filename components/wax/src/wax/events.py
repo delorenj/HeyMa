@@ -10,18 +10,28 @@ Two rules, both learned from what the old pipeline got wrong:
    PubAck. "The socket accepted our bytes" is not delivery, and marking those
    rows published is how an audit trail quietly develops holes.
 
-Subjects follow the live contract in
+Wax emits the version-free grammar enforced by
 bloodbank/services/agent-hooks/core/validate.py:
-    type    = bloodbank.v1.<domain>.<entity>.<action>
-    subject = bloodbank.<evt|cmd>.v1.<domain>.<entity>.<action>
+    type    = bloodbank.<domain>.<entity>.<action>                 (4 tokens)
+    subject = bloodbank.<evt|cmd|rpy>.<domain>.<entity>.<action>   (5 tokens)
+The `v1` token is gone. Nobody ever bumped it, so it bought no versioning
+while costing a token position and forcing every consumer to bind a wildcard
+wide enough to ignore it. Wax was the last live producer still emitting the
+5-token type, and because it publishes straight to NATS via natsclient it
+never passed through bb-emit, whose guard is what caught the drift everywhere
+else. `subject_for()` now unpacks four tokens, so a leftover legacy type
+raises instead of silently producing a 6-token subject.
 Every entity used here (session, file, transcription, task, status, heartbeat)
 is already in ALLOWED_ENTITIES, so nothing here is blocked on a schema PR.
 
-NOTE on commands: Candystore subscribes to `bloodbank.evt.v1.>` ONLY, and the
-command stream is a workqueue with a short max_age. A raw command is therefore
-invisible in Candystore and gone within a day. So every command Wax issues is
-ALSO mirrored as `...task.requested` carrying the same command_id — that mirror
-is what makes "find the command that invoked this EP" answerable at all.
+NOTE on commands: Candystore subscribes to `bloodbank.evt.>` — the version-free
+wildcard, which catches legacy `evt.v1.*` and current `evt.<domain>.*` alike.
+(An `evt.v1.>` durable is exactly the bug candystore/ingest.py warns about: it
+silently matches nothing once producers drop the version.) The command stream
+is a separate workqueue with a short max_age, so a raw command is invisible in
+Candystore and gone within a day regardless. That is why every command Wax
+issues is ALSO mirrored as `...task.requested` carrying the same command_id —
+that mirror is what makes "find the command that invoked this EP" answerable.
 """
 
 import json
@@ -60,9 +70,19 @@ def _ensure() -> None:
 
 
 def subject_for(ce_type: str, kind: str) -> str:
-    vendor, version, domain, entity, action = ce_type.split(".", 4)
+    """4-token type -> 5-token subject. Unpacking is strict on purpose:
+    a leftover `bloodbank.v1.*` type raises here instead of quietly
+    producing a 6-token subject that the wide `bloodbank.evt.>` stream
+    binding would happily accept and no validator would ever see.
+    """
+    parts = ce_type.split(".")
+    if len(parts) != 4:
+        raise ValueError(
+            f"ce_type {ce_type!r} is not 4 tokens; the version token is gone"
+        )
+    vendor, domain, entity, action = parts
     marker = {"event": "evt", "command": "cmd", "reply": "rpy"}[kind]
-    return f"{vendor}.{marker}.{version}.{domain}.{entity}.{action}"
+    return f"{vendor}.{marker}.{domain}.{entity}.{action}"
 
 
 def envelope(entity: str, action: str, data: dict[str, Any], *,
@@ -70,7 +90,7 @@ def envelope(entity: str, action: str, data: dict[str, Any], *,
              causationid: Optional[str] = None,
              command_id: Optional[str] = None,
              ordering_key: Optional[str] = None) -> tuple[str, dict[str, Any]]:
-    ce_type = f"bloodbank.v1.{DOMAIN}.{entity}.{action}"
+    ce_type = f"bloodbank.{DOMAIN}.{entity}.{action}"
     subject = subject_for(ce_type, kind)
     eid = str(uuid.uuid4())
     env: dict[str, Any] = {
@@ -128,7 +148,7 @@ def emit_ep_command(item_id: str, ep_slug: str, argv: list[str], attempt: int = 
     emit("task", "start", payload, kind="command", command_id=cid, correlationid=cid)
     emit("task", "requested",
          {**payload, "command_id": cid,
-          "command_subject": "bloodbank.cmd.v1.audio.task.start",
+          "command_subject": "bloodbank.cmd.audio.task.start",
           "idempotency_key": cid, "invoked_by": "wax"},
          correlationid=cid, causationid=cid)
     return cid
