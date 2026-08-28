@@ -45,7 +45,7 @@ log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
 ICON_DIR = component.TRAY_ASSETS
 WATCHER = "org.kde.StatusNotifierWatcher"
-# WAX-DESIGN.md:250 and :347 both name `outbox_backlog>50` as the NATS-outage
+# WAX-DESIGN.md:262 and :359 both name `outbox_backlog>50` as the NATS-outage
 # alarm. The value has been computed and mirrored into state.json since day one;
 # colour_for simply never read it, so a broker outage accumulated behind a green
 # icon with nothing anywhere saying so.

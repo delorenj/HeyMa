@@ -11,7 +11,7 @@ So: verify by SIZE, every time, and refuse to claim success otherwise. Keys are
 content-addressed (YYYY-MM-DD/<sha12>-<name>) so re-archiving identical bytes is
 idempotent instead of minting mtime-derived twins.
 
-WAX-DESIGN.md:42 and :279 have promised "mc cp + ETag verify x3" and "compares
+WAX-DESIGN.md:42 and :466 have promised "mc cp + ETag verify x3" and "compares
 ETag+size rather than trusting exit 0" since the rewrite, but `grep -rni etag
 src/` returned nothing: only the size half was ever written. The ETag is now
 captured, stored in the backups row and the sidecar, and — for SINGLE-PART

@@ -53,7 +53,7 @@ flowchart TB
   D --> LED[("~/HeyMa/var/wax.db<br/>items · backups · transcripts<br/>passes · outbox · transitions")]
   LED -->|same txn| OUT["outbox drainer"]
   OUT -->|JetStream PubAck| NATS["nats://127.0.0.1:4222"]
-  NATS --> CS["Candystore 127.0.0.1:8683<br/>subscribes bloodbank.evt.v1.&gt; ONLY"]
+  NATS --> CS["Candystore 127.0.0.1:8683<br/>subscribes bloodbank.evt.&gt; ONLY"]
   D --> TRAY["AppIndicator tray<br/>RED / GREEN / YELLOW"]
   D --> SOCK["~/HeyMa/var/waxd.sock — raw status snapshot only<br/>+ ~/HeyMa/var/state.json mirror"]
 ```
@@ -108,7 +108,7 @@ stateDiagram-v2
 
 | State | Literal detection | Event on entry |
 |---|---|---|
-| `ready` | No `~/HeyMa/stream/*.rec.json`, no `*.ogg.partial`, no `*.stop`; preflight ok (`pactl get-default-source` non-empty **and** present in `pactl list short sources`; free bytes on `/dev/nvme0n1p2` ≥ 5 GiB — **426 G free at 88% today**; `~/HeyMa/inbox` and `~/HeyMa/stream` writable) | `bloodbank.evt.v1.audio.status.updated` |
+| `ready` | No `~/HeyMa/stream/*.rec.json`, no `*.ogg.partial`, no `*.stop`; preflight ok (`pactl get-default-source` non-empty **and** present in `pactl list short sources`; free bytes on `/dev/nvme0n1p2` ≥ 5 GiB — **426 G free at 88% today**; `~/HeyMa/inbox` and `~/HeyMa/stream` writable) | `bloodbank.evt.audio.status.updated` |
 | `recording` | `<rid>.rec.json` exists, `<rid>.stop` does not, and `alive(rid)` = `boot_id` in rec.json == `/proc/sys/kernel/random/boot_id` **AND** `/proc/<pid>` exists **AND** `basename(readlink /proc/<pid>/exe)=="ffmpeg"` **AND** field 22 of `/proc/<pid>/stat` == recorded starttime. Audio accumulates as independently valid files under `<rid>.segs/`; the first segment can appear after the sentinel. | `audio.session.started` + `status.updated` |
 | `not-ready` **(a)** | `<rid>.stop` exists **AND** its owner passes the alive triple **AND** `now < stop.deadline_epoch` (default `stop_ts + 180s`). | `status.updated` (`clause="a-finalizing"`) |
 | `not-ready` **(b)** | Dir clean of rid artifacts **AND** preflight fails with a **named** cause ∈ `{no_default_source, disk_low, inbox_unwritable, stream_unwritable}`. Re-evaluated on a 10 s tick. `.health.json` is excluded from the emptiness test. | `status.updated` (`clause="b-incapable"`) |
@@ -227,41 +227,53 @@ the intended contract, not a currently live control transport.
 
 All under the **already-active** `audio` domain. Every entity used — `session`, `file`, `transcription`, `task`, `status`, `heartbeat` — is **verified present** in `ALLOWED_ENTITIES` (`/home/delorenj/code/33GOD/bloodbank/services/agent-hooks/core/validate.py`), and every action is verified in `EVENT_ACTIONS`/`COMMAND_ACTIONS`. **No `validate.py` PR is on the critical path.** `recorder`, `pipeline`, `enrichment` are *not* allowlisted — using them would block shipping on a code PR for zero semantic gain.
 
+**Naming shape (corrected 2026-08-28).** The CloudEvents `type` is 4 tokens,
+`bloodbank.<domain>.<entity>.<action>`; the NATS subject inserts a kind marker as
+segment 2, `bloodbank.<evt|cmd|rpy>.<domain>.<entity>.<action>`, for 5 tokens. The
+`Subject` column below carries the 5-token subject — drop segment 2 to get the type.
+**Neither shape carries a version segment.** Schema revision lives only in
+`dataschema`/`schemaref`; a breaking payload change earns a new action or entity,
+never a `v<n>`. The rows in this table previously read `bloodbank.evt.v1.audio.*`
+and `bloodbank.cmd.v1.audio.*`. Those 20 subjects and types — plus the
+`bloodbank.evt.v1.>` and `bloodbank.cmd.v1.>` wildcards this document used
+elsewhere — no longer exist on the bus, and would now be rejected by
+`assert_subject_matches` in `core/validate.py`.
+
 | Subject | Kind | Payload (data.*) |
 |---|---|---|
-| `bloodbank.cmd.v1.audio.session.start` | command | `label`, `max_duration_s`, `device_source` |
-| `bloodbank.cmd.v1.audio.session.end` | command | `capture_id` |
-| `bloodbank.cmd.v1.audio.session.cancel` | command | `capture_id`, `reset` |
-| `bloodbank.evt.v1.audio.session.started` | event | `capture_id`, `started_at`, `device_source`, `codec`, `sample_rate_hz`, `channels`, `partial_path`, `trigger` (hotkey\|cli\|command) |
-| `bloodbank.evt.v1.audio.session.ended` | event | `capture_id`, `item_id`, `sha256`, `duration_s`, `bytes`, `inbox_path`, `canonical_name` |
-| `bloodbank.evt.v1.audio.session.failed` | event | `capture_id`, `reason_code`, `returncode`, `signal`, `stderr_tail` (8 KiB, **real text**), `partial_bytes`, `salvaged`, `salvage_path`, `from_state`, `to_state` |
-| `bloodbank.evt.v1.audio.session.canceled` | event | `capture_id`, `duration_s`, `discarded_to` |
-| `bloodbank.evt.v1.audio.status.updated` | event | `machine` (stream\|inbox), `from`, `to`, `clause`, `cause_code`, `evidence{}` (literal derivation inputs), `generation`, `pending`, `failed`, `transient` |
-| `bloodbank.evt.v1.audio.file.recorded` | event | `item_id` (=sha256[:16]), `sha256`, `bytes`, `duration_s`, `path`, `origin` (capture\|dropoff\|import\|manual), `orig_name`, `canonical_name` |
-| `bloodbank.evt.v1.audio.file.sent` | event | `item_id`, `s3_key`, `s3_etag`, `bucket`, `verified_at`, `attempt`, `sidecar_key`, `content_index_key`, `tag_written`, `stashed`, `stash_path` |
-| `bloodbank.evt.v1.audio.transcription.started` | event | `transcription_id` (**= item_id**, not `$execution.id`), `item_id`, `sha256`, `s3_key`, `audio_duration_s`, `engine`, `engine_model`, `attempt`, `output_md_path` |
-| `bloodbank.evt.v1.audio.transcription.completed` | event | `item_id`, `md_path`, `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `last_segment_end_s`, `word_count`, `segment_count`, `diarized`, `device_used`, `degraded[]`, `s3_key`, `s3_tagged` |
-| `bloodbank.evt.v1.audio.transcription.failed` | event | `item_id`, `reason_code` (`worker_nonzero`\|`duration_mismatch`\|`no_written_path`\|`empty_transcript`\|`timeout`\|`source_changed`), `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `returncode`, `stderr_tail`, `log_path`, `attempt` |
-| `bloodbank.cmd.v1.audio.task.start` | **command** | `ep_slug`, `item_id`, `md_path`, `attempt`, `pass_version`, `argv` |
-| `bloodbank.evt.v1.audio.task.requested` | **event (mirror)** | `command_id`, `command_subject`, `idempotency_key`, `ep_slug`, `item_id`, `attempt`, `pass_version`, `argv`, `invoked_by` |
-| `bloodbank.evt.v1.audio.task.started` / `.completed` / `.failed` | event | `ep_slug`, `item_id`, `attempt`, `pass_version`, `command_id`, `changed_fields[]`, `duration_s`, `reason_code`, `stderr_tail`, `log_path` |
-| `bloodbank.evt.v1.audio.heartbeat.recorded` | event | `generation`, `stream_state`, `inbox_state`, `pending`, `failed`, `outbox_backlog`, `preflight_ok`, `free_bytes`, `uptime_s` |
+| `bloodbank.cmd.audio.session.start` | command | `label`, `max_duration_s`, `device_source` |
+| `bloodbank.cmd.audio.session.end` | command | `capture_id` |
+| `bloodbank.cmd.audio.session.cancel` | command | `capture_id`, `reset` |
+| `bloodbank.evt.audio.session.started` | event | `capture_id`, `started_at`, `device_source`, `codec`, `sample_rate_hz`, `channels`, `partial_path`, `trigger` (hotkey\|cli\|command) |
+| `bloodbank.evt.audio.session.ended` | event | `capture_id`, `item_id`, `sha256`, `duration_s`, `bytes`, `inbox_path`, `canonical_name` |
+| `bloodbank.evt.audio.session.failed` | event | `capture_id`, `reason_code`, `returncode`, `signal`, `stderr_tail` (8 KiB, **real text**), `partial_bytes`, `salvaged`, `salvage_path`, `from_state`, `to_state` |
+| `bloodbank.evt.audio.session.canceled` | event | `capture_id`, `duration_s`, `discarded_to` |
+| `bloodbank.evt.audio.status.updated` | event | `machine` (stream\|inbox), `from`, `to`, `clause`, `cause_code`, `evidence{}` (literal derivation inputs), `generation`, `pending`, `failed`, `transient` |
+| `bloodbank.evt.audio.file.recorded` | event | `item_id` (=sha256[:16]), `sha256`, `bytes`, `duration_s`, `path`, `origin` (capture\|dropoff\|import\|manual), `orig_name`, `canonical_name` |
+| `bloodbank.evt.audio.file.sent` | event | `item_id`, `s3_key`, `s3_etag`, `bucket`, `verified_at`, `attempt`, `sidecar_key`, `content_index_key`, `tag_written`, `stashed`, `stash_path` |
+| `bloodbank.evt.audio.transcription.started` | event | `transcription_id` (**= item_id**, not `$execution.id`), `item_id`, `sha256`, `s3_key`, `audio_duration_s`, `engine`, `engine_model`, `attempt`, `output_md_path` |
+| `bloodbank.evt.audio.transcription.completed` | event | `item_id`, `md_path`, `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `last_segment_end_s`, `word_count`, `segment_count`, `diarized`, `device_used`, `degraded[]`, `s3_key`, `s3_tagged` |
+| `bloodbank.evt.audio.transcription.failed` | event | `item_id`, `reason_code` (`worker_nonzero`\|`duration_mismatch`\|`no_written_path`\|`empty_transcript`\|`timeout`\|`source_changed`), `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `returncode`, `stderr_tail`, `log_path`, `attempt` |
+| `bloodbank.cmd.audio.task.start` | **command** | `ep_slug`, `item_id`, `md_path`, `attempt`, `pass_version`, `argv` |
+| `bloodbank.evt.audio.task.requested` | **event (mirror)** | `command_id`, `command_subject`, `idempotency_key`, `ep_slug`, `item_id`, `attempt`, `pass_version`, `argv`, `invoked_by` |
+| `bloodbank.evt.audio.task.started` / `.completed` / `.failed` | event | `ep_slug`, `item_id`, `attempt`, `pass_version`, `command_id`, `changed_fields[]`, `duration_s`, `reason_code`, `stderr_tail`, `log_path` |
+| `bloodbank.evt.audio.heartbeat.recorded` | event | `generation`, `stream_state`, `inbox_state`, `pending`, `failed`, `outbox_backlog`, `preflight_ok`, `free_bytes`, `uptime_s` |
 
 **Correlation / causation — how you find the COMMAND that invoked an EP.**
 
-`command_id = uuid5(WAX_NS, "ep:<item_id>:<ep_slug>:<attempt>")` (deterministic). For a root-issued command, `correlationid == command_id` per §11. Wax publishes the command on `bloodbank.cmd.v1.audio.task.start` **and immediately mirrors it** as `bloodbank.evt.v1.audio.task.requested` carrying the same `command_id`, `command_subject`, `idempotency_key` and `argv`. Every subsequent `task.started/completed/failed` sets `correlationid = causationid = command_id`.
+`command_id = uuid5(WAX_NS, "ep:<item_id>:<ep_slug>:<attempt>")` (deterministic). For a root-issued command, `correlationid == command_id` per §11. Wax publishes the command on `bloodbank.cmd.audio.task.start` **and immediately mirrors it** as `bloodbank.evt.audio.task.requested` carrying the same `command_id`, `command_subject`, `idempotency_key` and `argv`. Every subsequent `task.started/completed/failed` sets `correlationid = causationid = command_id`.
 
 ```bash
 # from any EP event, causationid IS the command_id:
-curl -s 'http://127.0.0.1:8683/events?type=bloodbank.v1.audio.task.completed&limit=1' | jq -r '.events[0].causationid'
+curl -s 'http://127.0.0.1:8683/events?type=bloodbank.audio.task.completed&limit=1' | jq -r '.events[0].causationid'
 curl -s http://127.0.0.1:8683/sessions/<that-id> | jq '[.events[].type]'
-# -> ["bloodbank.v1.audio.task.requested","...task.started","...task.completed"]
+# -> ["bloodbank.audio.task.requested","...task.started","...task.completed"]
 curl -s http://127.0.0.1:8683/sessions/<that-id> | jq '.events[]|select(.type|endswith("task.requested"))|.data|{command_id,command_subject,argv}'
 ```
 
-**The mirror is not optional and here is why (verified this session, not from docs):** `curl http://127.0.0.1:8683/dapr/subscribe` returns exactly `[{"pubsubname":"bloodbank-pubsub","topic":"bloodbank.evt.v1.>","route":"/events/all"}]`. Candystore ingests **events only** — 0 command rows out of 368,482. And `BLOODBANK_COMMANDS` is a **workqueue** stream with `max_age` 1 day. So a raw command is both invisible in Candystore *and* gone in 24 h.
+**The mirror is not optional and here is why (re-measured 2026-08-28, not from docs):** `curl http://127.0.0.1:8683/dapr/subscribe` returns exactly `[{"pubsubname": "bloodbank-pubsub", "topic": "bloodbank.evt.>", "route": "/events/all"}]` — note the topic is the whole event kind, with **no version segment**; the earlier reading of this same endpoint recorded `bloodbank.evt.v1.>` and is superseded. Candystore ingests **events only**: `select kind, count(*) from events group by kind` on `candystore-postgres` returns a single row, `event | 724958`, so 0 command rows out of 724,958. (718,498 of those rows carry historical v1-shaped types from before the rename; new traffic is 4-token.) And `BLOODBANK_COMMANDS` is a **workqueue** stream with `max_age` 1 day. So a raw command is both invisible in Candystore *and* gone in 24 h.
 
-**Explicitly rejected:** adding a `bloodbank.cmd.v1.>` Dapr subscription to Candystore. Two independent reasons — `ingest.py`'s `SUBSCRIBE_MODE`/`EXPLICIT_TOPICS` is an XOR between a hardcoded 9-topic list and the wildcard (flipping it silently *stops* ingesting everything else), and pointing a consumer at a **workqueue** stream means Candystore's ack **deletes** each command. The audit viewer would destroy the audit trail. Mirror events, full stop.
+**Explicitly rejected:** adding a `bloodbank.cmd.>` Dapr subscription to Candystore. Two independent reasons — `ingest.py`'s `SUBSCRIBE_MODE`/`EXPLICIT_TOPICS` is an XOR between a hardcoded 9-topic list and the wildcard (flipping it silently *stops* ingesting everything else), and pointing a consumer at a **workqueue** stream means Candystore's ack **deletes** each command. The audit viewer would destroy the audit trail. Mirror events, full stop.
 
 **Candystore work that does not exist and must be built (Phase 8, optional-but-strongly-recommended):**
 - No `audio` summarizer in `candystore/summarize.py` → cards render the bare type string.
@@ -269,11 +281,11 @@ curl -s http://127.0.0.1:8683/sessions/<that-id> | jq '.events[]|select(.type|en
 - Events with no `actor` and no `data.project` render as `unknown/unknown` and are excluded from `/summary/by-project`. Wax sets both (`data.project="wax"`, `actor{type:"service",agent_id:"service:wax"}`).
 - The container is built from image `candystore:local` with **zero bind mounts** — editing host files and running `mise run build:ui` changes nothing. You need `docker compose -f /home/delorenj/code/33GOD/33god-platform/compose.yaml build candystore && ... up -d --force-recreate candystore`. Do **not** `docker stop` it; docker-health-monitor resurrects exited containers in 20–30 s.
 
-**Publishing:** raw NATS to `nats://127.0.0.1:4222` (verified live: NATS 2.10.29, jetstream true, no auth, no TLS). `bloodbank.delo.sh/publish` returns 404 on every path and `hookd_bridge:18790` is connection-refused — both are documented in the skill and both are **dead**. Import `subject_for(ce_type, kind)` from `core/validate.py` rather than hand-typing the 6-token subject (verified: returns `bloodbank.evt.v1.audio.session.started`). Build the **full** §11 envelope including `actor` and `causationid` — do *not* copy the live n8n envelopes, which omit both and only survive because NATS validates nothing.
+**Publishing:** raw NATS to `nats://127.0.0.1:4222` (verified live: NATS 2.10.29, jetstream true, no auth, no TLS). `bloodbank.delo.sh/publish` returns 404 on every path and `hookd_bridge:18790` is connection-refused — both are documented in the skill and both are **dead**. Import `subject_for(ce_type, kind)` from `core/validate.py` rather than hand-typing the 5-token subject (verified: returns `bloodbank.evt.audio.session.started`). Build the **full** §11 envelope including `actor` and `causationid` — do *not* copy the live n8n envelopes, which omit both and only survive because NATS validates nothing.
 
 **Outbox durability.** Every state change writes its outbox row in the same SQLite transaction as the state change. The drainer marks `published_at` **only on a JetStream PubAck**, not on `core.nats_publish.publish()` returning — that function falls through to `return None` when the peer closes mid-read, which is indistinguishable from success and would mark dropped events as delivered. Wax publishes with a reply-inbox and waits for the `$JS.ACK`; no ack → row stays unpublished → `outbox_backlog > 0` → tray YELLOW. Publishing is otherwise fail-open: a NATS outage must never break a recording.
 
-New schema files (copy `transcription.started.v1.json` as the template so the `allOf`/`$ref`/`$id`/`const` block is right) under `/home/delorenj/code/33GOD/bloodbank/schemas/bloodbank/v1/audio/`: `session.{started,ended,failed,canceled}.v1.json`, `session.{start,end,cancel}.v1.json`, `status.updated.v1.json`, `file.{recorded,sent}.v1.json`, `task.{requested,started,completed,failed}.v1.json`, `task.start.v1.json`, `heartbeat.recorded.v1.json` — **15 files**, plus §7 doc rows pairing those entities with `audio`. Gate: `mise run smoketest:schemas`.
+New schema files (copy `transcription.started.json` as the template so the `allOf`/`$ref`/`$id`/`const` block is right) under `/home/delorenj/code/33GOD/bloodbank/schemas/bloodbank/audio/`: `session.{started,ended,failed,canceled}.json`, `session.{start,end,cancel}.json`, `status.updated.json`, `file.{recorded,sent}.json`, `task.{requested,started,completed,failed}.json`, `task.start.json`, `heartbeat.recorded.json` — **15 files**, plus §7 doc rows pairing those entities with `audio`. Gate: `mise run smoketest:schemas`.
 
 Deliberate naming call: **not** `audio.file.received` — `tonnybox-server` owns that type with 650 events and different semantics (`s3://tonnybox/utterances`, `session_id`). Wax uses `file.recorded`.
 
@@ -409,7 +421,7 @@ So: **separate process, separate systemd unit, separate tray icon, separate hotk
 | Defect | Fix | Verification |
 |---|---|---|
 | **1.** `watch_audio.sh` size-settle loop breaks after two equal 2s samples → relocated `record_0016.mp3` (951 MB, 16.5 h) mid-recording; transcribed as a 16-second stub. | The relay is **deleted**. `waxd` is the encoder's parent; the file moves only after `Popen.wait()==0` **and** `ffprobe -show_entries format=duration` > 0.5 s, via `renameat2(RENAME_NOREPLACE)` on the same filesystem (`stat -c %d` = **66306** for `~/HeyMa`, `~/HeyMa/inbox`, `~/d/Transcripts` — one fs, so the rename is genuinely atomic). No size-based heuristic exists anywhere in the codebase. Foreign writers land in `~/HeyMa/dropoff` and are **copied** to `~/HeyMa/inbox/.staging/<rid>.part` then renamed in. | `grep -rn 'stat -c %s\|st_size' /home/delorenj/HeyMa/` → empty. Run `while :; do ls ~/HeyMa/inbox; sleep 0.2; done` across a full 60 s recording — the file appears **exactly once, already complete**, never at partial size. |
-| **2.** `trap 'rm -f "$LOG_FILE"' EXIT` at `bin/transcribe:219` destroys the log on **every** exit including failures. | Patch: `LOG_FILE="${TRANSCRIBE_LOG_FILE:-$(mktemp ...)}"` and install the trap **only** when the script allocated the temp itself. `waxd` passes `TRANSCRIBE_LOG_FILE=~/HeyMa/var/logs/<item_id>/transcription.<attempt>.log`, retained 30 days, tail (8 KiB) shipped in `transcription.failed.data.stderr_tail`. | Force a failure (rename the model dir). Confirm `~/HeyMa/var/logs/<item>/transcription.1.log` **survives**, and `curl 'http://127.0.0.1:8683/events?type=bloodbank.v1.audio.transcription.failed&limit=1' \| jq -r '.events[0].data.stderr_tail'` contains real whisper stderr — not the hardcoded string `transcription failed; see execution log`. |
+| **2.** `trap 'rm -f "$LOG_FILE"' EXIT` at `bin/transcribe:219` destroys the log on **every** exit including failures. | Patch: `LOG_FILE="${TRANSCRIBE_LOG_FILE:-$(mktemp ...)}"` and install the trap **only** when the script allocated the temp itself. `waxd` passes `TRANSCRIBE_LOG_FILE=~/HeyMa/var/logs/<item_id>/transcription.<attempt>.log`, retained 30 days, tail (8 KiB) shipped in `transcription.failed.data.stderr_tail`. | Force a failure (rename the model dir). Confirm `~/HeyMa/var/logs/<item>/transcription.1.log` **survives**, and `curl 'http://127.0.0.1:8683/events?type=bloodbank.audio.transcription.failed&limit=1' \| jq -r '.events[0].data.stderr_tail'` contains real whisper stderr — not the hardcoded string `transcription failed; see execution log`. |
 | **3.** No sanity check → a 16-second transcript of a 16.5-hour file emits `transcription.completed`. | Gate on **container-level durations only**: independent `ffprobe` duration vs faster-whisper's `info.duration` (`transcribe.py:224`). Fail if `ratio < 0.95` or `\|Δ\| > max(30s, 5%)`. `last_segment_end` and wpm are recorded as **telemetry, not gates** — `vad_filter=True` (`transcribe.py:197`) means the last segment ends at the last *speech*, so a 3-hour recording that goes silent at minute 25 would be falsely rejected by a coverage-ratio gate. Also re-`stat` (size+mtime+sha256) the source **after** transcription; if it changed, `reason_code=source_changed`. On failure: write `<stem>.suspect.md`, **do not** tag S3, **do not** write vault frontmatter, item stays in inbox, emit `transcription.failed`. | Synthetic, not a 16-hour GPU burn: `ffmpeg -f lavfi -i anullsrc -t 3600 sil.ogg`, concat 16 s of speech → a 1-hour file that transcribes to ~16 s of content. Assert `transcription.failed` with `reason_code=duration_mismatch`, `duration_ratio≈0.004`, inbox→`error`, tray YELLOW, no S3 tag, no `.md` in `~/d/Transcripts`. |
 | **4.** New transcripts named `clip_NNNN.md` with no date. | Always pass explicit `-o /home/delorenj/d/Transcripts/YYYYMMDD-HHMMSS-<slug>.md`. **But** `-o` bypasses transcribe.py's `while candidate.exists()` guard (`:522-539`, whose own comment says it "guarantees we NEVER overwrite"), so `waxd` writes to `<path>.part` then `link()`s O_EXCL into place; on collision it keeps **both** (`-attempt2`) and reports. Never a bare write over an existing transcript — the vault has **no git**, auto-checkpoint cron disabled 2026-07-20, and an ACTIVE weekly `rm -f` job. | `ls ~/d/Transcripts \| grep -c '^clip_[0-9]*\.md$'` stops growing; every new file matches `^[0-9]{8}-[0-9]{6}-`. Force two runs of the same item and assert both transcripts exist, neither clobbered. |
 
@@ -460,7 +472,7 @@ Verify: all four defect tests from the table above.
 Verify: `cd /home/delorenj/code/33GOD/bloodbank && mise run smoketest:schemas` passes with **no** `validate.py` edit. Record a clip → `docker logs bloodbank-event-toaster --tail 20` toasts it → `curl -s 'http://127.0.0.1:8683/events?domain=audio&limit=10' | jq '.events[0]|{actor,causationid,project:.summary.project}'` shows `actor` populated and `project=="wax"`. **Outbox proof:** `docker stop bloodbank-nats`, record, assert `select count(*) from outbox where published_at is null` > 0 and tray YELLOW; `docker start`, assert drain to 0 and every event in Candystore in order.
 
 **Phase 8 — EP framework + command mirror.** *(~400 LOC, 1 day)*
-Verify: `wax ep run transcription-enhance <item_id>` → `curl 'http://127.0.0.1:8683/events?type=bloodbank.v1.audio.task.requested&limit=5' | jq '.events[].data|{ep_slug,command_id,command_subject}'` returns the invoking command. Feed that `command_id` to `/sessions/<id>` → `[task.requested, task.started, task.completed]`. **Independence:** make `wikification` exit 1, run `mem-ops` on the same item, assert `select ep_slug,state from passes where item_id=...` shows `wikification=failed` alongside `mem-ops=completed`.
+Verify: `wax ep run transcription-enhance <item_id>` → `curl 'http://127.0.0.1:8683/events?type=bloodbank.audio.task.requested&limit=5' | jq '.events[].data|{ep_slug,command_id,command_subject}'` returns the invoking command. Feed that `command_id` to `/sessions/<id>` → `[task.requested, task.started, task.completed]`. **Independence:** make `wikification` exit 1, run `mem-ops` on the same item, assert `select ep_slug,state from passes where item_id=...` shows `wikification=failed` alongside `mem-ops=completed`.
 
 **Phase 9 — Hardening + Candystore visibility.** *(~300 LOC, 1 day)*
 Heartbeat, nightly `mc cp ~/HeyMa/var/wax.db delo/recordings/_ledger/`, log rotation, `wax reconcile --rebuild`. Candystore: audio summarizers + FilterBar chips + **rebuild the image** (`docker compose ... build candystore && up -d --force-recreate candystore` — it has no bind mounts).
