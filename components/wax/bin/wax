@@ -10,8 +10,17 @@ filesystem, so it answers correctly even after waxd has been SIGKILLed.
 import argparse
 import fcntl
 import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import Any, Optional
 
 COMPONENT_ROOT = next(
     parent for parent in Path(__file__).resolve().parents
@@ -19,7 +28,7 @@ COMPONENT_ROOT = next(
 )
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
-from wax import archive, capture, events, ledger, migrate, passes, paths, reconcile, sanity, sentinel, state, transcribe_adapter, worker  # noqa: E402
+from wax import archive, capture, component, config, events, ledger, migrate, natsclient, passes, paths, reconcile, sanity, sentinel, state, transcribe_adapter, worker  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -61,6 +70,910 @@ def _active_rid() -> str:
     return rids[0]
 
 
+# ---------------------------------------------------------------------------
+# doctor — resolved configuration plus one probe per thing that can rot
+# ---------------------------------------------------------------------------
+# Wax does not fail by crashing, it fails by degrading. A deleted Ollama model
+# and a deleted vendored diarization package each ran at 100% failure for days
+# behind a green tray, a `wax status` that printed "no errors", and a journal
+# with zero waxd lines. Every probe below exists because the thing it checks was
+# once silently wrong. The rule for this command is therefore narrow and
+# absolute: it may deliver bad news, but it may never report health it has not
+# just verified, and it may never print a resolved secret.
+
+PASS, WARN, FAIL = "pass", "warn", "fail"
+
+# Names whose VALUE is a credential. `op://…` references are exempt: publishing
+# the reference is the whole point of storing one, and redacting it would hide
+# the single most useful field when a key stops resolving.
+SECRET_NAME_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", re.IGNORECASE)
+
+MIRROR_MAX_AGE_S = 180      # waxd rewrites state.json at 1 Hz; 180 s is 180 misses
+OUTBOX_STALE_S = 600
+CMD_TIMEOUT_S = 20          # every subprocess doctor spawns; it must never hang
+HTTP_TIMEOUT_S = 15
+# NeMo's import is substantial even though the owned adapter deliberately does
+# not restore weights at import time. Keep it bounded so doctor cannot hang.
+DIARIZATION_IMPORT_TIMEOUT_S = 120
+
+
+def _repo_root() -> Path:
+    """The checkout that owns this component — the unit of "the DEPLOYED repo".
+
+    Resolved by walking up to the .git, never assumed: a second checkout on the
+    same machine is precisely the bug the transcriber probe exists to catch, and
+    a hardcoded path could not tell the two apart.
+    """
+    for parent in (COMPONENT_ROOT, *COMPONENT_ROOT.parents):
+        if (parent / ".git").exists():
+            return parent
+    return COMPONENT_ROOT
+
+
+def _run(argv: list[str], timeout: float = CMD_TIMEOUT_S) -> tuple[int, str, str]:
+    """Subprocess with a mandatory timeout; a hung probe is a broken probe."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timed out after {timeout}s"
+    except OSError as e:
+        return 127, "", str(e)
+    return r.returncode, r.stdout, r.stderr
+
+
+def waxd_pid() -> Optional[int]:
+    """PID of the live daemon, or None. Verified against /proc, never guessed."""
+    candidates: list[int] = []
+    rc, out, _ = _run(["systemctl", "--user", "show", "waxd.service",
+                       "-p", "MainPID", "--value"], timeout=10)
+    if rc == 0 and out.strip().isdigit():
+        candidates.append(int(out.strip()))
+    try:
+        # The singleton lock names the pid even when the unit is not the thing
+        # running waxd (a hand-started daemon during development).
+        candidates.append(int(Path(paths.VAR / "waxd.singleton.lock").read_text().split()[0]))
+    except (OSError, ValueError, IndexError):
+        pass
+    for pid in candidates:
+        if pid <= 0:
+            continue
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "waxd" in cmdline:
+            return pid
+    return None
+
+
+def proc_env(pid: Optional[int]) -> dict[str, str]:
+    """The daemon's OWN environment, read from /proc.
+
+    This is the only honest source for "what is Wax configured with": this CLI
+    runs in an interactive shell whose exports the user unit never sees, so
+    reporting os.environ would describe a process nobody is running.
+    """
+    if pid is None:
+        return {}
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return {}
+    out = {}
+    for entry in raw.split("\0"):
+        key, sep, value = entry.partition("=")
+        if sep:
+            out[key] = value
+    return out
+
+
+def unit_env() -> dict[str, str]:
+    """Environment= of the INSTALLED unit, asked of systemd rather than parsed.
+
+    deploy/systemd/user/waxd.service carries @PLACEHOLDER@ tokens and can drift
+    from what is actually loaded; reading the template would report a config no
+    process has.
+    """
+    rc, out, _ = _run(["systemctl", "--user", "show", "waxd.service",
+                       "-p", "Environment", "--value"], timeout=10)
+    if rc != 0:
+        return {}
+    env = {}
+    try:
+        tokens = shlex.split(out.strip())
+    except ValueError:
+        tokens = out.split()
+    for token in tokens:
+        key, sep, value = token.partition("=")
+        if sep:
+            env[key] = value
+    return env
+
+
+def yaml_env() -> dict[str, tuple[str, str]]:
+    """{VAR: (slug, value)} declared by pass definitions.
+
+    passes.run() copies os.environ and then OVERWRITES it with the yaml block,
+    so for any variable a pass declares the yaml value is the effective one —
+    whatever the unit or the shell says.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for slug, ep in sorted(passes.registry().items()):
+        for key, value in (ep.get("env") or {}).items():
+            out.setdefault(str(key), (slug, str(value)))
+    return out
+
+
+def _redact(name: str, value: Optional[str], *, is_default: bool = False) -> Optional[str]:
+    if value is None or not SECRET_NAME_RE.search(name):
+        return value
+    # A spec placeholder (<unset>, <PATH lookup: …>) is documentation, not a
+    # value; redacting it printed "<redacted: 7 chars>" for a variable nobody
+    # had set, which reads as a configured secret.
+    if is_default or value.startswith("op://") or not value:
+        return value
+    return f"<redacted: {len(value)} chars>"
+
+
+# (name, consumer, default-when-unset). Enumerated by reading every os.environ
+# call site in src/wax/*.py, bin/*, and config/passes.d/bin/*, not from memory —
+# a config report that omits a variable is worse than none, because it is the
+# omitted one that is misconfigured.
+ENV_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("WAX_ROOT", "wax/paths.py", str(Path.home() / "HeyMa")),
+    ("WAX_AUDIO_ROOT", "wax/paths.py (legacy alias for WAX_ROOT)", "<unset>"),
+    ("WAX_VAULT", "wax/paths.py", str(Path.home() / "d" / "Transcripts")),
+    ("WAX_MIN_FREE_BYTES", "wax/paths.py", str(5 * 1024 ** 3)),
+    ("WAX_SEGMENT_SECONDS", "wax/paths.py", "60"),
+    ("WAX_COMPONENT_ROOT", "wax/component.py", "<nearest pyproject.toml>"),
+    ("WAX_PASSES_DIR", "wax/passes.py", "<component>/config/passes.d"),
+    ("WAX_FRONTMATTERS", "wax/passes.py", "<venv, then PATH>"),
+    ("WAX_TRANSCRIBE", "wax/transcribe_adapter.py", "<PATH lookup: transcribe>"),
+    ("WAX_DIARIZATION", "wax/transcribe_adapter.py, wax/ledger.py", "<unset = default mode>"),
+    ("WAX_DIARIZATION_DEVICE", "scripts/transcribe.py", "cuda"),
+    ("MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION", "wax/config.py", "300MB"),
+    ("MAX_AUDIO_DURATION_FOR_TRANSCRIPTION", "wax/config.py", "3h"),
+    ("WAX_NATS_HOST", "wax/natsclient.py", "127.0.0.1"),
+    ("WAX_NATS_PORT", "wax/natsclient.py", "4222"),
+    ("WAX_LOG_LEVEL", "bin/waxd (the one handler, contract B)", "INFO"),
+    ("WAX_TITLE_API_BASE", "passes.d/bin/title-slug", "https://openrouter.ai/api/v1"),
+    ("WAX_TITLE_MODEL", "passes.d/bin/title-slug", "google/gemini-3.7-flash"),
+    ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug", "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"),
+    ("WAX_TITLE_API_KEY_OP_FALLBACK", "passes.d/bin/title-slug",
+     "op://DeLoSecrets/OpenRouter/hermes"),
+    ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug", "120"),
+    ("WAX_TITLE_API_KEY", "passes.d/bin/title-slug (direct key; prefer op://)", "<unset>"),
+    ("OPENROUTER_API_KEY", "passes.d/bin/title-slug (ambient last resort)", "<unset>"),
+    ("OP_SERVICE_ACCOUNT_TOKEN", "`op read` inside title-slug", "<unset>"),
+    ("TRANSCRIBE_DIR", "bin/transcribe", "<dirname(realpath(transcribe))/..>"),
+    ("DIARIZATION_VENV", "bin/transcribe", "<TRANSCRIBE_DIR>/.venv-diarization"),
+    ("DIARIZATION_PYTHON", "bin/transcribe", "<DIARIZATION_VENV>/bin/python"),
+    ("TRANSCRIBE_STASH_DIR", "bin/transcribe (S3-failure stash)", "~/audio/recovered"),
+    ("TRANSCRIBE_S3_ALIAS", "bin/transcribe (backup destination)", archive.ALIAS),
+    ("TRANSCRIBE_S3_BUCKET", "bin/transcribe (backup destination)", archive.BUCKET),
+)
+
+
+def config_rows(denv: dict[str, str], uenv: dict[str, str],
+                yenv: dict[str, tuple[str, str]], daemon_running: bool) -> list[dict[str, Any]]:
+    """One row per variable Wax reads, with the SOURCE that actually won."""
+    rows = []
+    for name, consumer, default in ENV_SPECS:
+        note = ""
+        if name in yenv:
+            slug, value = yenv[name]
+            source = f"pass yaml ({slug})"
+        elif name in uenv:
+            value, source = uenv[name], "systemd unit"
+        elif name in denv:
+            value, source = denv[name], "daemon env (inherited)"
+        elif name in os.environ:
+            # Deliberately NOT called "environment": a shell export is invisible
+            # to the user unit, and treating it as the answer is how a probe
+            # passes here and fails in the daemon.
+            value = os.environ[name]
+            source = "this shell only" if daemon_running else "environment"
+            note = "waxd does NOT have this" if daemon_running else ""
+        else:
+            value, source = default, "default"
+        if name in yenv and name in uenv and uenv[name] != yenv[name][1]:
+            note = f"unit sets {_redact(name, uenv[name])}; the pass yaml overrides it"
+        elif source == "systemd unit" and daemon_running and denv.get(name) != value:
+            # The unit on disk is not what the running process has. A unit edited
+            # after the daemon started reads as applied in every tool that asks
+            # systemd — and is not applied at all in the process doing the work.
+            note = ("the RUNNING daemon does NOT have this — the unit was edited "
+                    "since it started; systemctl --user restart waxd to apply")
+        rows.append({"name": name, "value": _redact(name, value, is_default=source == "default"),
+                     "source": source, "consumer": consumer, "note": note})
+    return rows
+
+
+def _probe(name: str, status: str, detail: str, fix: str = "") -> dict[str, Any]:
+    return {"probe": name, "status": status, "detail": detail, **({"fix": fix} if fix else {})}
+
+
+def _resolve_transcriber(denv: dict[str, str]) -> tuple[Optional[Path], str]:
+    """Resolve WAX_TRANSCRIBE the way transcribe_adapter does, but against the
+    DAEMON's environment rather than this shell's — the daemon is what runs it."""
+    configured = (denv.get("WAX_TRANSCRIBE") or "").strip()
+    if configured:
+        return Path(configured).expanduser(), "WAX_TRANSCRIBE"
+    found = shutil.which("transcribe")
+    return (Path(found), "PATH") if found else (None, "unresolved")
+
+
+def _op_read(reference: str) -> str:
+    """Resolve one op:// reference, or "" — the same order title-slug uses.
+
+    The value is returned so the model probe can actually call the provider, and
+    it is never rendered: doctor prints WHICH field answered, never what it said.
+    """
+    if not reference:
+        return ""
+    rc, out, _ = _run(["op", "read", reference], timeout=10)
+    return out.strip() if rc == 0 else ""
+
+
+def _get_json(url: str, *, token: str) -> tuple[Optional[Any], str]:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
+            return json.loads(response.read().decode("utf-8", "replace")), ""
+    except urllib.error.HTTPError as e:
+        # HTTPError BEFORE URLError, always: it is a subclass, and catching the
+        # parent first is the exact mistake that discarded the response body
+        # naming the deleted model for five days.
+        try:
+            body = e.read().decode("utf-8", "replace")[:200]
+        except (OSError, ValueError):
+            body = ""
+        return None, f"HTTP {e.code}: {body or e.reason}"
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def probe_all() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    add = out.append
+    repo = _repo_root()
+    pid = waxd_pid()
+    denv = proc_env(pid)
+    # No daemon means no daemon environment; fall back to this process so the
+    # probes still answer, and say so rather than pretending otherwise.
+    effective = denv or dict(os.environ)
+
+    # -- daemon ----------------------------------------------------------
+    if pid is None:
+        add(_probe("waxd running", FAIL, "no live process matched waxd",
+                   "systemctl --user start waxd"))
+    else:
+        rc, out_s, _ = _run(["systemctl", "--user", "is-active", "waxd.service"], timeout=10)
+        add(_probe("waxd running", PASS, f"pid {pid}, unit {out_s.strip() or 'unknown'}"))
+
+    try:
+        age = time.time() - paths.STATE_JSON.stat().st_mtime
+        add(_probe("state mirror fresh", PASS if age < MIRROR_MAX_AGE_S else FAIL,
+                   f"{paths.STATE_JSON} written {int(age)}s ago (limit {MIRROR_MAX_AGE_S}s)",
+                   "" if age < MIRROR_MAX_AGE_S else "systemctl --user restart waxd"))
+    except OSError as e:
+        add(_probe("state mirror fresh", FAIL, f"{paths.STATE_JSON}: {e}",
+                   "systemctl --user restart waxd"))
+
+    # -- the ledger the daemon actually holds open ------------------------
+    # Never inferred from a path. A stale ~/audio/var/wax.db sent one whole
+    # investigation to the wrong database, so the answer comes from /proc/<pid>/fd.
+    expected = paths.DB.resolve()
+    if pid is None:
+        add(_probe("ledger open by daemon", WARN,
+                   f"waxd not running; this CLI would use {expected}"))
+    else:
+        held: set[Path] = set()
+        unreadable = ""
+        try:
+            for fd in Path(f"/proc/{pid}/fd").iterdir():
+                try:
+                    target = Path(os.readlink(fd))
+                except OSError:
+                    continue
+                if target.suffix == ".db":
+                    held.add(target)
+        except OSError as e:
+            unreadable = str(e)
+        if unreadable:
+            add(_probe("ledger open by daemon", WARN, f"cannot read /proc/{pid}/fd: {unreadable}"))
+        elif held == {expected}:
+            add(_probe("ledger open by daemon", PASS, str(expected)))
+        elif held:
+            add(_probe("ledger open by daemon", FAIL,
+                       f"daemon holds {sorted(str(p) for p in held)}, CLI resolves {expected}",
+                       "align WAX_ROOT between the unit and your shell, then "
+                       "systemctl --user restart waxd"))
+        else:
+            add(_probe("ledger open by daemon", WARN,
+                       f"daemon holds no *.db fd yet; CLI resolves {expected}"))
+
+    # -- unit vs. running process -----------------------------------------
+    # `systemctl show` answers from the unit on DISK. A unit edited after the
+    # daemon started therefore reports a configuration no running code has, and
+    # every tool that asks systemd agrees with the lie.
+    if pid is not None:
+        uenv = unit_env()
+        drift = sorted(k for k, v in uenv.items() if denv.get(k) != v)
+        add(_probe("daemon env matches its unit", PASS if not drift else WARN,
+                   "the running process has every Environment= the unit declares"
+                   if not drift else
+                   f"the unit declares {', '.join(drift)} but the running daemon does not have "
+                   f"{'them' if len(drift) > 1 else 'it'}",
+                   "" if not drift else "systemctl --user restart waxd"))
+
+    # -- the transcriber, and which checkout it lives in -------------------
+    transcriber, source = _resolve_transcriber(effective)
+    if transcriber is None:
+        add(_probe("transcriber resolves", FAIL, "neither WAX_TRANSCRIBE nor PATH names one",
+                   f"systemctl --user set-environment is not enough — add "
+                   f"Environment=WAX_TRANSCRIBE={repo / 'bin' / 'transcribe'} to waxd.service"))
+    else:
+        real = transcriber.expanduser()
+        real = real.resolve() if real.exists() else real
+        if not real.is_file() or not os.access(real, os.X_OK):
+            add(_probe("transcriber resolves", FAIL, f"{source} -> {real} is not executable",
+                       f"chmod +x {real}  (or repoint WAX_TRANSCRIBE at {repo / 'bin' / 'transcribe'})"))
+        elif not real.is_relative_to(repo):
+            # The two-checkout split: ~/.local/bin/transcribe pointed at a tree
+            # 9 commits behind, so a reset in a repo nobody was editing disabled
+            # diarization in the repo everybody was.
+            add(_probe("transcriber inside deployed repo", FAIL,
+                       f"{source} -> {real} is OUTSIDE {repo}",
+                       f"set Environment=WAX_TRANSCRIBE={repo / 'bin' / 'transcribe'} in "
+                       "waxd.service and restart"))
+        else:
+            add(_probe("transcriber inside deployed repo", PASS, f"{source} -> {real}"))
+
+    # -- diarization, probed by importing what actually runs ---------------
+    mode = transcribe_adapter.diarization_mode(effective)
+    if mode == "disabled":
+        add(_probe("diarization importable", WARN,
+                   "WAX_DIARIZATION is falsy; diarization is switched OFF on purpose",
+                   "unset WAX_DIARIZATION in waxd.service to restore it"))
+    elif transcriber is None:
+        add(_probe("diarization importable", FAIL, "no transcriber to locate a venv beside"))
+    else:
+        base = transcriber.expanduser()
+        base = base.resolve() if base.exists() else base
+        # Mirrors bin/transcribe exactly: TRANSCRIBE_DIR is the resolved script's
+        # parent's parent (bin/transcribe -> <repo>), and the venv sits at that
+        # repo root — NOT beside the script.
+        transcribe_dir = Path(effective.get("TRANSCRIBE_DIR") or base.parent.parent)
+        venv = Path(effective.get("DIARIZATION_VENV") or (transcribe_dir / ".venv-diarization"))
+        python = Path(effective.get("DIARIZATION_PYTHON") or (venv / "bin" / "python"))
+        fix = f"cd {repo} && mise run wax:diarization:install"
+        if not python.is_file():
+            add(_probe("diarization importable", FAIL, f"no interpreter at {python}", fix))
+        else:
+            started = time.time()
+            wax_src = transcribe_dir / "components" / "wax" / "src"
+            import_probe = (
+                "import sys; "
+                f"sys.path.insert(0, {str(wax_src)!r}); "
+                "import librosa, nemo, wax.diarization_sortformer"
+            )
+            rc, _, err = _run(
+                [str(python), "-c", import_probe],
+                timeout=DIARIZATION_IMPORT_TIMEOUT_S,
+            )
+            took = round(time.time() - started, 1)
+            if rc == 0:
+                add(_probe("diarization importable", PASS,
+                           f"tracked wax.diarization_sortformer via {python} ({took}s)"))
+            else:
+                last = [l for l in (err or "").strip().splitlines() if l.strip()]
+                add(_probe("diarization importable", FAIL,
+                           f"{python} rc={rc}: {last[-1] if last else 'no output'}", fix))
+
+            try:
+                device_policy = transcribe_adapter.diarization_device(effective)
+            except transcribe_adapter.TranscribeError as exc:
+                add(_probe("diarization device policy", FAIL, str(exc),
+                           "set WAX_DIARIZATION_DEVICE=cuda in waxd.service and restart"))
+                device_policy = "invalid"
+            else:
+                add(_probe(
+                    "diarization device policy",
+                    PASS if device_policy == "cuda" else WARN,
+                    f"WAX_DIARIZATION_DEVICE={device_policy}"
+                    + (" (strict GPU requirement)" if device_policy == "cuda" else
+                       " (CPU use is possible; cuda is the production default)"),
+                    "set WAX_DIARIZATION_DEVICE=cuda in waxd.service and restart"
+                    if device_policy != "cuda" else "",
+                ))
+
+            if device_policy in {"cuda", "auto"}:
+                cuda_probe = (
+                    "import json, sys; "
+                    f"sys.path.insert(0, {str(wax_src)!r}); "
+                    "from wax.diarization_sortformer import cuda_smoke; "
+                    "print(json.dumps(cuda_smoke(), sort_keys=True))"
+                )
+                rc, cuda_out, cuda_err = _run(
+                    [str(python), "-c", cuda_probe],
+                    timeout=DIARIZATION_IMPORT_TIMEOUT_S,
+                )
+                if rc == 0:
+                    lines = [line for line in cuda_out.splitlines() if line.strip()]
+                    add(_probe("diarization cuda runtime", PASS,
+                               lines[-1] if lines else "CUDA smoke passed"))
+                else:
+                    last = [l for l in (cuda_err or "").strip().splitlines() if l.strip()]
+                    add(_probe(
+                        "diarization cuda runtime", FAIL,
+                        f"{python} rc={rc}: {last[-1] if last else 'no output'}",
+                        fix,
+                    ))
+            elif device_policy == "cpu":
+                add(_probe("diarization cuda runtime", WARN,
+                           "not exercised because WAX_DIARIZATION_DEVICE=cpu"))
+
+    # -- title-slug provider ----------------------------------------------
+    yenv = yaml_env()
+
+    def _title(name: str, default: str) -> str:
+        return (yenv[name][1] if name in yenv else effective.get(name) or default).strip()
+
+    api_base = _title("WAX_TITLE_API_BASE", "https://openrouter.ai/api/v1").rstrip("/")
+    model = _title("WAX_TITLE_MODEL", "google/gemini-3.7-flash")
+    primary = _title("WAX_TITLE_API_KEY_OP", "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential")
+    fallback = _title("WAX_TITLE_API_KEY_OP_FALLBACK", "op://DeLoSecrets/OpenRouter/hermes")
+    # Resolution order is title-slug's own, evaluated once per reference so the
+    # probe costs two `op read` calls at most.
+    key_source = ""
+    key = (effective.get("WAX_TITLE_API_KEY") or "").strip()
+    if key:
+        key_source = "WAX_TITLE_API_KEY (a literal key in the environment)"
+        add(_probe("title-slug api key", WARN,
+                   "resolved from a literal env value, not 1Password",
+                   f"move it into {primary} and drop WAX_TITLE_API_KEY"))
+    else:
+        key = _op_read(primary)
+        if key:
+            key_source = primary
+            add(_probe("title-slug api key", PASS, f"resolved from {primary}"))
+        else:
+            key = _op_read(fallback)
+            if key:
+                key_source = fallback
+                # Loud on purpose: this works today and dies without warning the
+                # hour its real owner rotates it, with nothing naming wax as a
+                # consumer of the key that broke.
+                add(_probe("title-slug api key", WARN,
+                           f"BORROWED: {primary} does not exist, so every run rides {fallback}. "
+                           "It breaks the moment its owner rotates the key, and nothing will say why",
+                           "mint the dedicated field: op item edit 'OpenRouter' "
+                           "'wax[password]=<key>' --vault DeLoSecrets"))
+            else:
+                add(_probe("title-slug api key", FAIL,
+                           f"neither {primary} nor {fallback} resolved"
+                           + ("" if effective.get("OP_SERVICE_ACCOUNT_TOKEN")
+                              else "; OP_SERVICE_ACCOUNT_TOKEN is absent from the daemon "
+                                   "environment, so `op read` cannot work unattended"),
+                           f"op read {primary}   # then fix whichever of vault access "
+                           "or the field itself is missing"))
+
+    if not key:
+        add(_probe("title-slug model served", FAIL,
+                   f"cannot query {api_base}/models without a key"))
+    else:
+        payload, err = _get_json(f"{api_base}/models", token=key)
+        if payload is None:
+            add(_probe("title-slug model served", FAIL, f"{api_base}/models: {err}",
+                       f"curl -H 'Authorization: Bearer $KEY' {api_base}/models"))
+        else:
+            entries = payload.get("data") if isinstance(payload, dict) else None
+            ids = {str(e.get("id")) for e in (entries or []) if isinstance(e, dict)}
+            # Same matching rule as title-slug's preflight_model(): OpenRouter
+            # serves routing suffixes (:nitro, :floor) that never appear in the
+            # catalog, so a bare-id match counts.
+            if model in ids or model.split(":", 1)[0] in ids:
+                add(_probe("title-slug model served", PASS,
+                           f"{model} present among {len(ids)} models at {api_base} "
+                           f"(key from {key_source})"))
+            else:
+                add(_probe("title-slug model served", FAIL,
+                           f"{model!r} is NOT among the {len(ids)} models served by {api_base} "
+                           f"(key from {key_source}) "
+                           "— this is the exact shape of the 2026-08-15 outage",
+                           f"set WAX_TITLE_MODEL in config/passes.d/title-slug.yaml to a model "
+                           f"{api_base} actually serves"))
+
+    # -- pass commands and the frontmatter editor --------------------------
+    broken, checked = [], 0
+    for slug, ep in sorted(passes.registry().items()):
+        if not ep.get("enabled"):
+            continue
+        checked += 1
+        argv = ep.get("command") or []
+        if not argv:
+            broken.append(f"{slug}: no command")
+            continue
+        cmd = Path(_expand_command(ep) or "").expanduser()
+        target = shutil.which(str(cmd)) if not cmd.is_absolute() else str(cmd)
+        if not target or not os.access(target, os.X_OK) or not Path(target).is_file():
+            broken.append(f"{slug}: {cmd}")
+    add(_probe("enabled pass commands", FAIL if broken else PASS,
+               "; ".join(broken) if broken else f"all {checked} enabled pass command(s) executable",
+               "chmod +x the listed file, or disable the pass in its yaml" if broken else ""))
+
+    try:
+        # passes.py reads WAX_FRONTMATTERS from os.environ, so the daemon's value
+        # is overlaid for the length of this one call rather than guessed at.
+        with _env_overlay({"WAX_FRONTMATTERS": effective.get("WAX_FRONTMATTERS", "")}):
+            add(_probe("frontmatters editor", PASS, str(passes._frontmatters_command())))
+    except passes.PassError as e:
+        add(_probe("frontmatters editor", FAIL, str(e),
+                   "set WAX_FRONTMATTERS to a working executable in waxd.service"))
+
+    # -- durability: the one true emergency --------------------------------
+    rc, _, err = _run([archive.MC, "ls", f"{archive.ALIAS}/{archive.BUCKET}"], timeout=30)
+    add(_probe("minio alias reachable", PASS if rc == 0 else FAIL,
+               f"{archive.ALIAS}/{archive.BUCKET}" if rc == 0
+               else f"{archive.MC} rc={rc}: {(err or '').strip()[:200]}",
+               "" if rc == 0 else f"mc alias set {archive.ALIAS} https://s3.delo.sh <key> <secret>"))
+
+    try:
+        usage = shutil.disk_usage(paths.AUDIO)
+        floor = paths.MIN_FREE_BYTES
+        add(_probe("free space above floor", PASS if usage.free > floor else FAIL,
+                   f"{usage.free / 1e9:.1f} GB free at {paths.AUDIO}, floor {floor / 1e9:.1f} GB",
+                   "" if usage.free > floor else
+                   "archive and remove processed audio, or raise WAX_MIN_FREE_BYTES deliberately"))
+    except OSError as e:
+        add(_probe("free space above floor", FAIL, f"{paths.AUDIO}: {e}"))
+
+    try:
+        unbacked = [
+            (row["item_id"], row["path"]) for row in ledger.connect().execute(
+                "SELECT i.item_id, i.path FROM items i "
+                "LEFT JOIN backups b ON b.item_id=i.item_id AND b.verified_at IS NOT NULL "
+                "WHERE b.item_id IS NULL")
+            if os.path.exists(row["path"])
+        ]
+        add(_probe("every live item has a verified S3 backup",
+                   PASS if not unbacked else FAIL,
+                   "all live items verified in S3" if not unbacked else
+                   f"{len(unbacked)} live item(s) with NO verified backup: "
+                   + ", ".join(Path(p).name for _, p in unbacked[:5])
+                   + (" …" if len(unbacked) > 5 else ""),
+                   "" if not unbacked else
+                   "wax archive <file>   # the audio is the irreplaceable artifact"))
+    except Exception as e:  # noqa: BLE001 - a ledger fault must still be reported
+        add(_probe("every live item has a verified S3 backup", FAIL,
+                   f"ledger unreadable: {type(e).__name__}: {e}"))
+
+    # -- bus ---------------------------------------------------------------
+    reachable = natsclient.reachable()
+    add(_probe("nats reachable", PASS if reachable else FAIL,
+               f"{natsclient.HOST}:{natsclient.PORT}",
+               "" if reachable else "start NATS; events queue in the outbox meanwhile (fail-open)"))
+    try:
+        rows = ledger.connect().execute(
+            "SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM outbox WHERE published_at IS NULL"
+        ).fetchone()
+        stale = _age_seconds(rows["oldest"]) if rows and rows["oldest"] else 0.0
+        add(_probe("outbox drained", PASS if stale <= OUTBOX_STALE_S else FAIL,
+                   f"{rows['n'] if rows else 0} unpublished row(s), oldest {int(stale)}s"
+                   if rows and rows["n"] else "outbox empty",
+                   "" if stale <= OUTBOX_STALE_S else "wax events drain"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("outbox drained", WARN, f"{type(e).__name__}: {e}"))
+
+    # -- contract-A stage health -------------------------------------------
+    # The two blocks that were unrepresentable during both outages. They are the
+    # reason this command exists, so they are reported even when everything the
+    # probes above touch is healthy.
+    try:
+        health = ledger.passes_failed()
+        add(_probe("passes.failed (contract A)", PASS if not health["failed"] else FAIL,
+                   "no enrichment pass is failing at its current version" if not health["failed"]
+                   else f"{health['failed']} item(s) failing: {', '.join(health['slugs'])}",
+                   "" if not health["failed"] else "wax ep sweep --dry-run   # then drop --dry-run"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("passes.failed (contract A)", FAIL, f"{type(e).__name__}: {e}"))
+    try:
+        diar = ledger.diarization_health()
+        add(_probe("diarization.degraded (contract A)", FAIL if diar["degraded"] else PASS,
+                   f"newest {ledger.DIARIZATION_SAMPLE} transcript(s) all undiarized"
+                   if diar["degraded"] else
+                   f"{diar['recent_undiarized']} of the newest {ledger.DIARIZATION_SAMPLE} undiarized",
+                   "" if not diar["degraded"] else
+                   "see the diarization probe above; then re-run `wax transcribe <audio>`"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("diarization.degraded (contract A)", FAIL, f"{type(e).__name__}: {e}"))
+
+    return out
+
+
+def _age_seconds(iso: str) -> float:
+    from datetime import datetime, timezone
+    try:
+        when = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - when).total_seconds())
+
+
+class _env_overlay:
+    """Temporarily apply named env values, then restore exactly.
+
+    Only for calling library code that reads os.environ itself. Module-level
+    constants (paths.*, passes.REGISTRY_DIR, natsclient.HOST) were resolved at
+    import and are NOT affected — which is why the ledger probe compares the
+    daemon's open fd against this process's resolution rather than trusting
+    either one.
+    """
+
+    def __init__(self, values: dict[str, str]):
+        self.values = {k: v for k, v in values.items() if v}
+        self.saved: dict[str, Optional[str]] = {}
+
+    def __enter__(self):
+        for key, value in self.values.items():
+            self.saved[key] = os.environ.get(key)
+            os.environ[key] = value
+        return self
+
+    def __exit__(self, *a):
+        for key, previous in self.saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+
+
+def doctor(as_json: bool, quiet: bool) -> int:
+    pid = waxd_pid()
+    denv = proc_env(pid)
+    rows = config_rows(denv, unit_env(), yaml_env(), pid is not None)
+    probes = probe_all()
+    counts = {PASS: 0, WARN: 0, FAIL: 0}
+    for probe in probes:
+        counts[probe["status"]] += 1
+    # 2 on any failure, 1 on warnings only, 0 clean — so both `if wax doctor` and
+    # `wax doctor || alert` are usable without parsing anything.
+    code = 2 if counts[FAIL] else (1 if counts[WARN] else 0)
+
+    # config.py reads os.environ at call time, so the two ceilings are resolved
+    # under the daemon's environment — otherwise `wax doctor` reports the limits
+    # of the shell that ran it, which is not a process anyone cares about.
+    with _env_overlay({k: denv.get(k, "") for k in
+                       ("MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION",
+                        "MAX_AUDIO_DURATION_FOR_TRANSCRIPTION")}):
+        limits = {"max_audio_bytes": config.max_audio_file_size_for_transcription(),
+                  "max_audio_seconds": config.max_audio_duration_for_transcription()}
+
+    if as_json:
+        print(json.dumps({
+            "ok": code == 0, "exit_code": code, "at": sentinel.utcnow(),
+            "waxd_pid": pid, "summary": counts,
+            "resolved": {"component_root": str(component.ROOT), "repo_root": str(_repo_root()),
+                         "root": str(paths.AUDIO), "ledger": str(paths.DB),
+                         "vault": str(paths.VAULT), "passes_dir": str(passes.REGISTRY_DIR),
+                         "max_audio_bytes": config.max_audio_file_size_for_transcription(),
+                         "max_audio_seconds": config.max_audio_duration_for_transcription()},
+            "config": rows, "probes": probes,
+        }, indent=2, sort_keys=True, default=str))
+        return code
+    if quiet:
+        return code
+
+    print(f"wax doctor  ·  {sentinel.utcnow()}")
+    print(f"  component  {component.ROOT}")
+    print(f"  repo       {_repo_root()}")
+    print(f"  root       {paths.AUDIO}")
+    print(f"  ledger     {paths.DB}")
+    print(f"  vault      {paths.VAULT}")
+    print(f"  passes.d   {passes.REGISTRY_DIR}")
+    print(f"  limits     {limits['max_audio_bytes']} bytes / {limits['max_audio_seconds']:.0f} s per item")
+    print()
+    print("CONFIGURATION")
+    width = max(len(r["name"]) for r in rows)
+    vwidth = min(46, max(len(str(r["value"])) for r in rows))
+    for r in rows:
+        print(f"  {r['name']:<{width}}  {str(r['value']):<{vwidth}}  {r['source']:<22}  {r['consumer']}")
+        if r["note"]:
+            print(f"  {'':<{width}}  !! {r['note']}")
+    print()
+    print("PROBES")
+    for probe in probes:
+        print(f"  {probe['status'].upper():<4}  {probe['probe']:<40}  {probe['detail']}")
+        if probe.get("fix"):
+            print(f"        {'':<40}  fix: {probe['fix']}")
+    print()
+    print(f"  {counts[PASS]} pass · {counts[WARN]} warn · {counts[FAIL]} fail  (exit {code})")
+    return code
+
+
+# ---------------------------------------------------------------------------
+# ep helpers
+# ---------------------------------------------------------------------------
+
+def ep_sweep(*, max_attempts: int, slug: Optional[str], dry_run: bool,
+             limit: int) -> dict[str, Any]:
+    """Re-drive stranded enrichment passes.
+
+    run_auto() is reached from exactly one place — worker.py, while an item is
+    being processed — so an item parked at `complete` could never have a pass
+    retried. A transient provider outage was therefore permanent, which is how
+    11 title-slug failures sat untouched for five days.
+    """
+    targets = ledger.failed_passes_for_sweep(max_attempts)
+    unknown_slug = bool(slug) and slug not in passes.registry()
+    if slug:
+        targets = [t for t in targets if t[1] == slug]
+    if limit > 0:
+        targets = targets[:limit]
+    out: dict[str, Any] = {
+        "max_attempts": max_attempts, "slug": slug, "dry_run": dry_run,
+        "candidates": len(targets),
+        "targets": [{"item_id": i, "ep_slug": s, "attempt": a} for i, s, a in targets],
+    }
+    if unknown_slug:
+        # A typo must not read as "nothing is stranded". That sentence is the
+        # failure mode this whole command exists to end.
+        out["warning"] = f"{slug!r} is not a registered pass; see `wax ep list`"
+    if dry_run or not targets:
+        return out
+    results = []
+    for item_id, ep_slug, attempt in targets:
+        try:
+            # The attempt from the ledger is already incremented (its contract),
+            # so it is handed straight through: re-using the recorded attempt
+            # would replay a spent uuid5 command_id / idempotency key.
+            results.append(passes.run(item_id, ep_slug, attempt=attempt))
+        except passes.PassError as e:
+            results.append({"item_id": item_id, "ep_slug": ep_slug, "state": "failed",
+                            "error": str(e), "reason_code": "run_error"})
+    out["results"] = results
+    out["completed"] = sum(1 for r in results if r.get("state") == "completed")
+    out["failed"] = sum(1 for r in results if r.get("state") != "completed")
+    return out
+
+
+def _expand_command(ep: dict[str, Any]) -> Optional[str]:
+    argv = ep.get("command") or []
+    if not argv:
+        return None
+    return (str(argv[0]).replace("{component_root}", str(component.ROOT))
+            .replace("{home}", str(Path.home())))
+
+
+def ep_list_rows() -> list[dict[str, Any]]:
+    """Registered passes with their enabled state, version, and outcome tally."""
+    registry = passes.registry()
+    tally: dict[tuple[str, str, int], int] = {}
+    try:
+        for row in ledger.connect().execute(
+                "SELECT ep_slug, state, version, COUNT(*) AS n FROM passes "
+                "GROUP BY ep_slug, state, version"):
+            tally[(row["ep_slug"], row["state"], int(row["version"] or 1))] = row["n"]
+    except Exception:  # noqa: BLE001 - the registry is still worth listing
+        tally = {}
+    rows = []
+    for slug, ep in sorted(registry.items()):
+        version = int(ep.get("version") or 1)
+        counted = {"completed": 0, "failed": 0, "running": 0, "stale": 0}
+        for (row_slug, row_state, row_version), n in tally.items():
+            if row_slug != slug:
+                continue
+            if row_version != version:
+                # Recorded against a definition that no longer exists. A version
+                # bump is how a fixed pass declares itself different from the one
+                # that failed, so these must not read as current failures.
+                counted["stale"] += n
+            else:
+                counted[row_state] = counted.get(row_state, 0) + n
+        rows.append({
+            "slug": slug, "enabled": bool(ep.get("enabled")), "auto": bool(ep.get("auto")),
+            "version": version, "timeout_s": ep.get("timeout_s"),
+            "requires": ep.get("requires") or [],
+            # Expanded, not the raw template: the column exists so a human can
+            # go look at the file, and `{component_root}` is not a path.
+            "command": _expand_command(ep),
+            "path": ep.get("_path"), "error": ep.get("error"),
+            **counted,
+        })
+    return rows
+
+
+def _reason_of(row: dict[str, Any], width: int = 74) -> str:
+    """A failure's reason in one cell, however the ledger happens to store it.
+
+    Three storage shapes are live at once: a `reason_code` column where the
+    ledger has migrated, a `reason_code=<code>` first line inside `detail` where
+    it has not, and — for every row written before the convention — nothing but
+    prose. The prose is still the only thing an operator can act on, so it is
+    shown rather than rendered as a blank cell: the 11 rows from the dead-model
+    outage all read "HTTP Error 404: Not Found", which is exactly the sentence
+    that should have been on a human surface for five days.
+    """
+    if row.get("reason_code"):
+        return str(row["reason_code"])
+    head = str(row.get("detail") or "").split("\n", 1)[0].strip()
+    if head.startswith("reason_code="):
+        return head[len("reason_code="):]
+    return head[:width]
+
+
+def status_unhealthy(snap: dict[str, Any]) -> bool:
+    """Whether anything in the snapshot is non-nominal — INCLUDING sub-stages.
+
+    Item state alone was the entire health model, and both week-long outages
+    lived below it: every value-producing sub-stage degrades by returning empty
+    rather than failing, so an item marched to `complete` with nothing in it.
+    The contract-A blocks are therefore first-class terms here, not decoration.
+    """
+    if (snap.get("passes") or {}).get("failed"):
+        return True
+    if (snap.get("diarization") or {}).get("degraded"):
+        return True
+    if snap.get("ledger_error") or snap.get("outbox_error") or snap.get("error"):
+        return True
+    return any((snap.get(machine) or {}).get("state") in ("error", "error-partial")
+               for machine in ("stream", "inbox"))
+
+
+def render_status(snap: dict[str, Any]) -> None:
+    """The human surface. Every line here is a fact something can go wrong in."""
+    for machine in ("stream", "inbox"):
+        m = snap.get(machine) or {}
+        head = m.get("state", "?")
+        if m.get("cause_code"):
+            head += f" ({m['cause_code']})"
+        print(f"  {machine:<12} {head}")
+        if m.get("evidence"):
+            print(f"  {'':<12}   {m['evidence']}")
+
+    queue = snap.get("queue") or {}
+    print(f"  {'queue':<12} {queue.get('total', 0)} in inbox · "
+          f"{queue.get('actionable', 0)} actionable · {queue.get('failed', 0)} failed")
+
+    # items_live is the only tally comparable to inbox/queue: `items` counts
+    # every row ever minted, including audio that now lives only in S3.
+    live = snap.get("items_live") or {}
+    items = snap.get("items") or {}
+    breakdown = " · ".join(f"{k} {v}" for k, v in sorted(live.items()) if k != "total")
+    print(f"  {'items':<12} {live.get('total', 0)} live of {items.get('total', 0)} recorded"
+          + (f"  ({breakdown})" if breakdown else ""))
+
+    # The two blocks that no human-facing surface could represent during either
+    # outage. They print whether or not they are bad, so "no news" is evidence
+    # that they were actually looked at.
+    ps = snap.get("passes") or {}
+    if ps.get("failed"):
+        print(f"  {'passes':<12} FAILING  {ps['failed']} item(s): "
+              f"{', '.join(ps.get('slugs') or [])}   -> wax ep sweep --dry-run")
+    else:
+        print(f"  {'passes':<12} ok       no enrichment pass failing at its current version")
+
+    diar = snap.get("diarization") or {}
+    if diar.get("degraded"):
+        print(f"  {'diarization':<12} DEGRADED the newest {diar.get('recent_undiarized')} "
+              "transcript(s) have no speakers   -> wax doctor")
+    else:
+        print(f"  {'diarization':<12} ok       "
+              f"{diar.get('recent_undiarized', 0)} recent transcript(s) undiarized")
+
+    backlog = snap.get("outbox_backlog")
+    if backlog is None:
+        print(f"  {'outbox':<12} ERROR {snap.get('outbox_error', 'unknown')}")
+    else:
+        print(f"  {'outbox':<12} {backlog} unpublished")
+    for key in ("ledger_error", "tray_queue_error", "error"):
+        if snap.get(key):
+            print(f"  {key:<12} {snap[key]}")
+
+
 def main() -> int:
     # --json accepted at ANY position: `wax --json state stream` and
     # `wax state stream --json` both work. Requiring it before the subcommand
@@ -76,6 +989,11 @@ def main() -> int:
     rec.add_parser("stop", parents=[common]).add_argument("rid", nargs="?")
     rec.add_parser("cancel", parents=[common]).add_argument("rid", nargs="?")
     rec.add_parser("salvage", parents=[common]).add_argument("rid", nargs="?")
+    rec.add_parser(
+        "quiesce",
+        help="stop an active capture for session shutdown; idle is success",
+        parents=[common],
+    )
     rec.add_parser("list", parents=[common])
     t = rec.add_parser("toggle", help="start if ready, stop if recording", parents=[common])
     t.add_argument("--label")
@@ -84,7 +1002,8 @@ def main() -> int:
     st.add_argument("machine", choices=["stream", "inbox", "both"], default="both", nargs="?")
     st.add_argument("--cold", action="store_true", help="(default) pure filesystem derivation")
 
-    sub.add_parser("status", help="full snapshot of both machines", parents=[common])
+    sub.add_parser("status", parents=[common],
+                   help="both machines, queue, and pass/diarization health (exit 2 if unhealthy)")
 
     pl = sub.add_parser("pipeline", parents=[common]); pl.add_argument("action", choices=["enable", "disable", "status"])
 
@@ -94,12 +1013,27 @@ def main() -> int:
     sub.add_parser("queue", help="tray queue rows", parents=[common])
     sk = sub.add_parser("skip", help="preserve a queued item without processing it", parents=[common])
     sk.add_argument("item_id")
+    rt = sub.add_parser("retry", help="requeue a preserved failed inbox item", parents=[common])
+    rt.add_argument("item_id")
 
     ep = sub.add_parser("ep", help="enrichment passes", parents=[common]).add_subparsers(dest="sub", required=True)
-    ep.add_parser("list", parents=[common])
-    epr = ep.add_parser("run", parents=[common]); epr.add_argument("slug"); epr.add_argument("item_id")
-    epa = ep.add_parser("run-all", parents=[common]); epa.add_argument("item_id")
-    eps = ep.add_parser("status", parents=[common]); eps.add_argument("item_id", nargs="?")
+    ep.add_parser("list", help="registered passes: enabled, version, outcome tally", parents=[common])
+    epr = ep.add_parser("run", help="run ONE pass for ONE transcript", parents=[common])
+    epr.add_argument("slug"); epr.add_argument("item_id")
+    # Default None so passes.run() resolves MAX(attempt)+1 itself; forcing a
+    # number re-mints an already-issued command_id on purpose (replay/debug).
+    epr.add_argument("--attempt", type=int, default=None,
+                     help="force an attempt number (default: one past the last recorded)")
+    epa = ep.add_parser("run-all", help="run every enabled pass for one item", parents=[common])
+    epa.add_argument("item_id")
+    eps = ep.add_parser("status", help="recorded pass outcomes, newest first", parents=[common])
+    eps.add_argument("item_id", nargs="?")
+    epw = ep.add_parser("sweep", help="re-drive stranded failed passes", parents=[common])
+    epw.add_argument("--max-attempts", type=int, default=3,
+                     help="skip passes already tried this many times (default 3)")
+    epw.add_argument("--slug", help="limit the sweep to one pass")
+    epw.add_argument("--dry-run", action="store_true", help="list targets, run nothing")
+    epw.add_argument("--limit", type=int, default=0, help="process at most N targets")
 
     rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
     rc.add_argument("--rebuild", action="store_true")
@@ -120,6 +1054,11 @@ def main() -> int:
 
     dr = sub.add_parser("drain", help="process inbox items now (one-shot)", parents=[common])
     dr.add_argument("-n", type=int, default=1, help="max items to process")
+
+    doc = sub.add_parser(
+        "doctor", parents=[common],
+        help="resolved config + probe every dependency (exit 2 fail, 1 warn, 0 clean)")
+    doc.add_argument("--quiet", action="store_true", help="print nothing; exit code only")
 
     args = ap.parse_args()
     J = args.json
@@ -156,6 +1095,10 @@ def main() -> int:
             _emit([{"rid": r, "segments": len(sentinel.segments(r)),
                     "bytes": sentinel.segment_bytes(r)} for r in sentinel.list_captures()], J)
             return 0
+        if args.sub == "quiesce":
+            with _Lock():
+                _emit(capture.quiesce(), J)
+            return 0
         rid = args.rid or _active_rid()
         with _Lock():
             if args.sub == "stop":
@@ -174,15 +1117,26 @@ def main() -> int:
         else:
             out = state.snapshot()
         _emit(out, J)
-        # Exit code carries severity so scripts can gate on it.
-        sev = out.get("state") if "state" in out else None
-        if sev in ("error", "error-partial"):
+        # Exit code carries severity so scripts can gate on it. `wax state`
+        # with no machine returns the two-machine snapshot, which has no
+        # top-level "state" key — so it exited 0 even with inbox in error,
+        # while `wax state inbox` on the same instant exited 2.
+        severities = ([out["state"]] if "state" in out else
+                      [(out.get(m) or {}).get("state") for m in ("stream", "inbox")])
+        if any(sev in ("error", "error-partial") for sev in severities):
             return 2
         return 0
 
     if args.cmd == "status":
-        _emit(ledger.enrich(state.snapshot()), True)
-        return 0
+        snap = ledger.enrich(state.snapshot())
+        if J:
+            _emit(snap, True)
+        else:
+            render_status(snap)
+        # Documented contract (WAX-DESIGN.md): 0 all green, 2 anything
+        # non-nominal. It returned 0 unconditionally, which is how a week of
+        # 100% pass failure and empty diarization scripted as healthy.
+        return 2 if status_unhealthy(snap) else 0
 
     if args.cmd == "history":
         rows = ledger.history(limit=args.n, machine=args.machine)
@@ -212,6 +1166,10 @@ def main() -> int:
         _emit(worker.skip_item(args.item_id), J)
         return 0
 
+    if args.cmd == "retry":
+        _emit(worker.retry_item(args.item_id), J)
+        return 0
+
     if args.cmd == "archive":
         f = Path(args.file)
         if args.audit:
@@ -226,15 +1184,67 @@ def main() -> int:
 
     if args.cmd == "ep":
         if args.sub == "list":
-            _emit([{k: v for k, v in e.items() if not k.startswith("_")}
-                   for e in sorted(passes.registry().values(), key=lambda x: x["slug"])], J)
-        elif args.sub == "run":
-            _emit(passes.run(args.item_id, args.slug), J)
-        elif args.sub == "run-all":
+            rows = ep_list_rows()
+            if J:
+                _emit(rows, True)
+            else:
+                print(f"  {'SLUG':<24} {'EN':<4}{'AUTO':<6}{'VER':<5}{'T/O':<7}"
+                      f"{'OK':<5}{'FAIL':<6}{'STALE':<7}COMMAND")
+                for r in rows:
+                    print(f"  {r['slug']:<24} {'yes' if r['enabled'] else 'no':<4}"
+                          f"{'yes' if r['auto'] else 'no':<6}{r['version']:<5}"
+                          f"{str(r['timeout_s']) + 's':<7}{r['completed']:<5}{r['failed']:<6}"
+                          f"{r['stale']:<7}{r['command'] or '-'}")
+                    if r["error"]:
+                        print(f"  {'':<24} !! {r['error']}")
+                # STALE is not a failure: it is history recorded against a pass
+                # definition that has since been versioned past.
+                print("\n  OK/FAIL count rows at the CURRENTLY registered version; "
+                      "STALE were recorded against an older one.")
+            return 0
+        if args.sub == "run":
+            _emit(passes.run(args.item_id, args.slug, attempt=args.attempt), J)
+            return 0
+        if args.sub == "run-all":
             _emit(passes.run_all(args.item_id), J)
-        elif args.sub == "status":
-            _emit(passes.status(args.item_id), J)
-        return 0
+            return 0
+        if args.sub == "status":
+            rows = passes.status(args.item_id)
+            if J:
+                _emit(rows, True)
+            else:
+                print(f"  {'ITEM':<38}{'SLUG':<22}{'STATE':<11}{'V':<3}{'ATT':<5}"
+                      f"{'UPDATED':<21}REASON")
+                for r in rows:
+                    print(f"  {r['item_id']:<38}{r['ep_slug']:<22}{r['state']:<11}"
+                          f"{r.get('version') or 1:<3}{r.get('attempt') or 1:<5}"
+                          f"{str(r.get('updated_at') or '')[:19]:<21}{_reason_of(r)}")
+            return 0
+        if args.sub == "sweep":
+            out = ep_sweep(max_attempts=args.max_attempts, slug=args.slug,
+                           dry_run=args.dry_run, limit=args.limit)
+            if J:
+                _emit(out, True)
+            else:
+                verb = "WOULD RE-RUN" if out["dry_run"] else "RE-RAN"
+                print(f"  {verb} {out['candidates']} stranded pass(es) "
+                      f"(max_attempts={out['max_attempts']}"
+                      f"{', slug=' + out['slug'] if out['slug'] else ''})")
+                for t in out["targets"]:
+                    print(f"    {t['ep_slug']:<22} {t['item_id']}  attempt {t['attempt']}")
+                for r in out.get("results", []):
+                    mark = "ok  " if r.get("state") == "completed" else "FAIL"
+                    print(f"    {mark} {r['ep_slug']:<22} {r['item_id']}  "
+                          f"{r.get('reason_code') or ''} {(r.get('error') or '').splitlines()[0][:70] if r.get('error') else ''}")
+                if out.get("warning"):
+                    print(f"    !! {out['warning']}")
+                elif not out["candidates"]:
+                    print("    nothing stranded — every failed pass is either "
+                          "disabled or past --max-attempts")
+            # A sweep that re-ran something and it failed again is not success;
+            # neither is one aimed at a pass that does not exist.
+            return 2 if (out.get("failed") or out.get("warning")) else 0
+        return 1
 
     if args.cmd == "reconcile":
         if not args.rebuild:
@@ -295,6 +1305,9 @@ def main() -> int:
         print(f"\n  manifest: {path}")
         print("  nothing was moved.")
         return 0
+
+    if args.cmd == "doctor":
+        return doctor(J, args.quiet)
 
     if args.cmd == "pipeline":
         if args.action == "enable":

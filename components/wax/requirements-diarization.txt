@@ -1,0 +1,7 @@
+# Known-good CUDA diarization runtime for Python 3.12 on the Wax host.
+# Install with `mise run wax:diarization:install`.
+faster-whisper==1.2.1
+librosa==0.11.0
+nemo-toolkit[asr]==2.7.3
+nvidia-cudnn-cu12==9.24.0.43
+torch==2.13.0

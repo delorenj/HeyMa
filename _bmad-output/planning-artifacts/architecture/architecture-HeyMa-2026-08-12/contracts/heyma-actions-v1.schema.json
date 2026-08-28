@@ -1,0 +1,502 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.heyma.local/heyma-actions-v1.schema.json",
+  "title": "HeyMa action contracts v1",
+  "oneOf": [
+    {"$ref": "#/$defs/actionDescriptor"},
+    {"$ref": "#/$defs/actionRequest"},
+    {"$ref": "#/$defs/actionResult"},
+    {"$ref": "#/$defs/operation"},
+    {"$ref": "#/$defs/maintenanceRequest"},
+    {"$ref": "#/$defs/maintenanceLease"}
+  ],
+  "$defs": {
+    "componentId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "actionId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}(?:\\.[a-z][a-z0-9-]{0,63}){2,5}$"
+    },
+    "revision": {
+      "type": "object",
+      "required": ["instance_id", "epoch", "generation"],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "epoch": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "parameter": {
+      "type": "object",
+      "required": ["name", "type", "required"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "type": {
+          "enum": [
+            "string",
+            "enum",
+            "integer",
+            "boolean",
+            "trusted-path",
+            "trusted-uri"
+          ]
+        },
+        "required": {"type": "boolean"},
+        "enum_values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "minimum": {"type": "integer"},
+        "maximum": {"type": "integer"},
+        "max_length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "allowed_roots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "allowed_schemes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["file", "https", "obsidian"]
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "enum"}}},
+          "then": {"required": ["enum_values"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "trusted-path"}}},
+          "then": {"required": ["allowed_roots"]}
+        },
+        {
+          "if": {"properties": {"type": {"const": "trusted-uri"}}},
+          "then": {"required": ["allowed_schemes"]}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "actionDescriptor": {
+      "type": "object",
+      "required": [
+        "schema",
+        "action_id",
+        "capability",
+        "label",
+        "mode",
+        "target_state",
+        "enabled",
+        "disabled_code",
+        "disabled_reason",
+        "disruptive",
+        "timeout_seconds",
+        "parameters"
+      ],
+      "properties": {
+        "schema": {"const": "heyma.action-descriptor.v1"},
+        "action_id": {"$ref": "#/$defs/actionId"},
+        "capability": {
+          "enum": [
+            "capture.control",
+            "dictation.control",
+            "queue.inspect",
+            "health.inspect",
+            "engine.select",
+            "service.restart",
+            "logs.open",
+            "output.open"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "mode": {
+          "enum": ["desired-state", "command", "opener"]
+        },
+        "target_state": {
+          "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 64},
+            {"type": "null"}
+          ]
+        },
+        "enabled": {"type": "boolean"},
+        "disabled_code": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+            {"type": "null"}
+          ]
+        },
+        "disabled_reason": {
+          "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 256},
+            {"type": "null"}
+          ]
+        },
+        "disruptive": {"type": "boolean"},
+        "timeout_seconds": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 120
+        },
+        "parameters": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/parameter"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}},
+          "then": {
+            "properties": {
+              "disabled_code": {"type": "null"},
+              "disabled_reason": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "disabled_code": {"type": "string"},
+              "disabled_reason": {"type": "string"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "actionRequest": {
+      "type": "object",
+      "required": [
+        "schema",
+        "request_id",
+        "component_id",
+        "action_id",
+        "expected_revision",
+        "arguments",
+        "requested_at"
+      ],
+      "properties": {
+        "schema": {"const": "heyma.action-request.v1"},
+        "request_id": {"type": "string", "format": "uuid"},
+        "component_id": {"$ref": "#/$defs/componentId"},
+        "action_id": {"$ref": "#/$defs/actionId"},
+        "expected_revision": {"$ref": "#/$defs/revision"},
+        "arguments": {
+          "type": "object",
+          "maxProperties": 16,
+          "additionalProperties": true
+        },
+        "requested_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "actionResult": {
+      "type": "object",
+      "required": [
+        "schema",
+        "request_id",
+        "component_id",
+        "action_id",
+        "state",
+        "code",
+        "detail",
+        "target_state",
+        "observed_revision",
+        "updated_at"
+      ],
+      "properties": {
+        "schema": {"const": "heyma.action-result.v1"},
+        "request_id": {"type": "string", "format": "uuid"},
+        "component_id": {"$ref": "#/$defs/componentId"},
+        "action_id": {"$ref": "#/$defs/actionId"},
+        "state": {
+          "enum": [
+            "accepted",
+            "completed",
+            "rejected",
+            "failed",
+            "timed_out_unknown"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "target_state": {
+          "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 64},
+            {"type": "null"}
+          ]
+        },
+        "observed_revision": {
+          "oneOf": [
+            {"$ref": "#/$defs/revision"},
+            {"type": "null"}
+          ]
+        },
+        "updated_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "operation": {
+      "type": "object",
+      "required": [
+        "schema",
+        "request_id",
+        "component_id",
+        "action_id",
+        "state",
+        "code",
+        "detail",
+        "target_state",
+        "expected_revision",
+        "observed_revision",
+        "started_at",
+        "updated_at",
+        "acknowledged"
+      ],
+      "properties": {
+        "schema": {"const": "heyma.operation.v1"},
+        "request_id": {"type": "string", "format": "uuid"},
+        "component_id": {"$ref": "#/$defs/componentId"},
+        "action_id": {"$ref": "#/$defs/actionId"},
+        "state": {
+          "enum": [
+            "accepted",
+            "completed",
+            "rejected",
+            "failed",
+            "timed_out_unknown"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+        },
+        "detail": {"type": "string", "maxLength": 1024},
+        "target_state": {
+          "oneOf": [
+            {"type": "string", "minLength": 1, "maxLength": 64},
+            {"type": "null"}
+          ]
+        },
+        "expected_revision": {"$ref": "#/$defs/revision"},
+        "observed_revision": {
+          "oneOf": [
+            {"$ref": "#/$defs/revision"},
+            {"type": "null"}
+          ]
+        },
+        "started_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "acknowledged": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "maintenanceRequest": {
+      "type": "object",
+      "required": [
+        "schema",
+        "request_id",
+        "operation",
+        "owner",
+        "reason",
+        "ttl_seconds",
+        "lease_id",
+        "token"
+      ],
+      "properties": {
+        "schema": {"const": "heyma.maintenance-request.v1"},
+        "request_id": {"type": "string", "format": "uuid"},
+        "operation": {"enum": ["acquire", "renew", "release"]},
+        "owner": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 256},
+        "ttl_seconds": {"type": "integer", "minimum": 30, "maximum": 300},
+        "lease_id": {
+          "oneOf": [
+            {"type": "string", "format": "uuid"},
+            {"type": "null"}
+          ]
+        },
+        "token": {
+          "oneOf": [
+            {"type": "string", "minLength": 32, "maxLength": 512},
+            {"type": "null"}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"operation": {"const": "acquire"}}},
+          "then": {
+            "properties": {
+              "lease_id": {"type": "null"},
+              "token": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "lease_id": {"type": "string"},
+              "token": {"type": "string"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "maintenanceLease": {
+      "type": "object",
+      "required": [
+        "schema",
+        "request_id",
+        "state",
+        "lease_id",
+        "token",
+        "owner",
+        "reason",
+        "provider_revision",
+        "issued_at",
+        "expires_at",
+        "code",
+        "detail"
+      ],
+      "properties": {
+        "schema": {"const": "heyma.maintenance-lease.v1"},
+        "request_id": {"type": "string", "format": "uuid"},
+        "state": {"enum": ["active", "released", "expired", "rejected"]},
+        "lease_id": {
+          "oneOf": [
+            {"type": "string", "format": "uuid"},
+            {"type": "null"}
+          ]
+        },
+        "token": {
+          "oneOf": [
+            {"type": "string", "minLength": 32, "maxLength": 512},
+            {"type": "null"}
+          ]
+        },
+        "owner": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 256},
+        "provider_revision": {"$ref": "#/$defs/revision"},
+        "issued_at": {
+          "oneOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "null"}
+          ]
+        },
+        "expires_at": {
+          "oneOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "null"}
+          ]
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "active"}}},
+          "then": {
+            "properties": {
+              "lease_id": {"type": "string", "format": "uuid"},
+              "token": {"type": "string", "minLength": 32, "maxLength": 512},
+              "issued_at": {"type": "string", "format": "date-time"},
+              "expires_at": {"type": "string", "format": "date-time"},
+              "code": {"const": "maintenance.active"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "rejected"}}},
+          "then": {
+            "properties": {
+              "lease_id": {"type": "null"},
+              "token": {"type": "null"},
+              "issued_at": {"type": "null"},
+              "expires_at": {"type": "null"},
+              "code": {
+                "type": "string",
+                "pattern": "^maintenance\\.rejected(?:\\.[a-z0-9_-]+)*$"
+              },
+              "detail": {"type": "string", "minLength": 1, "maxLength": 1024}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "released"}}},
+          "then": {
+            "properties": {
+              "lease_id": {"type": "string", "format": "uuid"},
+              "token": {"type": "null"},
+              "issued_at": {"type": "string", "format": "date-time"},
+              "expires_at": {"type": "string", "format": "date-time"},
+              "code": {"const": "maintenance.released"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "expired"}}},
+          "then": {
+            "properties": {
+              "lease_id": {"type": "string", "format": "uuid"},
+              "token": {"type": "null"},
+              "issued_at": {"type": "string", "format": "date-time"},
+              "expires_at": {"type": "string", "format": "date-time"},
+              "code": {"const": "maintenance.expired"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

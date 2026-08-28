@@ -1,8 +1,0 @@
-slug: frontmatter-stamp
-description: Stamp source, duration, model and word count onto the transcript.
-enabled: true
-# Passes are INDEPENDENT by contract. This field exists so the option is there
-# later, but a non-empty value is refused unless explicitly overridden.
-requires: []
-timeout_s: 60
-command: ["/home/delorenj/audio/passes.d/bin/frontmatter-stamp", "{md_path}"]

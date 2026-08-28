@@ -1,0 +1,419 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.heyma.local/heyma-control-v1.schema.json",
+  "title": "HeyMa aggregate control snapshot v1",
+  "type": "object",
+  "required": ["schema", "observed_at", "indicator", "components", "operations"],
+  "properties": {
+    "schema": {"const": "heyma.control.v1"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "indicator": {"enum": ["red", "yellow", "green"]},
+    "components": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/component"}
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "heyma-actions-v1.schema.json#/$defs/operation"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-heyma-invariants": [
+    "components are sorted lexicographically by component_id and component_id is unique",
+    "indicator is the total function defined in CONTROL-CONTRACT.md",
+    "operations have unique request_id values"
+  ],
+  "$defs": {
+    "revision": {
+      "type": "object",
+      "required": ["instance_id", "epoch", "generation"],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "epoch": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "generation": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "progress": {
+      "type": "object",
+      "required": ["current", "total", "unit", "scope"],
+      "properties": {
+        "current": {"type": "number", "minimum": 0},
+        "total": {"type": "number", "exclusiveMinimum": 0},
+        "unit": {
+          "enum": ["bytes", "seconds", "items", "segments", "steps"]
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false,
+      "x-heyma-invariants": ["current is less than or equal to total"]
+    },
+    "workload": {
+      "type": "object",
+      "required": ["id", "kind", "phase", "stage", "progress", "label"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": [
+            "capture",
+            "dictation",
+            "archive",
+            "transcription",
+            "enrichment",
+            "synthesis",
+            "service-operation"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "queued",
+            "running",
+            "finalizing",
+            "completed",
+            "failed",
+            "canceled"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "waiting",
+            "preparing",
+            "recording",
+            "stopping",
+            "finalizing",
+            "uploading",
+            "transcribing",
+            "diarizing",
+            "enriching",
+            "dictating",
+            "recognizing",
+            "injecting",
+            "synthesizing",
+            "restarting",
+            "selecting-engine",
+            "other"
+          ]
+        },
+        "progress": {
+          "oneOf": [
+            {"$ref": "#/$defs/progress"},
+            {"type": "null"}
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "attention": {
+      "type": "object",
+      "required": ["severity", "code", "message", "actionable"],
+      "properties": {
+        "severity": {"enum": ["info", "warning", "error"]},
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "actionable": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "queueItem": {
+      "type": "object",
+      "required": [
+        "item_id",
+        "label",
+        "kind",
+        "phase",
+        "stage",
+        "progress",
+        "failure_code"
+      ],
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "capture",
+            "dictation",
+            "archive",
+            "transcription",
+            "enrichment",
+            "synthesis",
+            "service-operation"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "queued",
+            "running",
+            "finalizing",
+            "completed",
+            "failed",
+            "canceled"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "waiting",
+            "preparing",
+            "recording",
+            "stopping",
+            "finalizing",
+            "uploading",
+            "transcribing",
+            "diarizing",
+            "enriching",
+            "dictating",
+            "recognizing",
+            "injecting",
+            "synthesizing",
+            "restarting",
+            "selecting-engine",
+            "other"
+          ]
+        },
+        "progress": {
+          "oneOf": [
+            {"$ref": "#/$defs/progress"},
+            {"type": "null"}
+          ]
+        },
+        "failure_code": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "queue": {
+      "type": "object",
+      "required": [
+        "pending_count",
+        "active_count",
+        "failed_count",
+        "current",
+        "preview"
+      ],
+      "properties": {
+        "pending_count": {"type": "integer", "minimum": 0},
+        "active_count": {"type": "integer", "minimum": 0},
+        "failed_count": {"type": "integer", "minimum": 0},
+        "current": {
+          "oneOf": [
+            {"$ref": "#/$defs/queueItem"},
+            {"type": "null"}
+          ]
+        },
+        "preview": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {"$ref": "#/$defs/queueItem"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "engine": {
+      "type": "object",
+      "required": [
+        "engine_id",
+        "label",
+        "required",
+        "selected",
+        "availability",
+        "health",
+        "attention"
+      ],
+      "properties": {
+        "engine_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "required": {"type": "boolean"},
+        "selected": {"type": "boolean"},
+        "availability": {"enum": ["available", "unavailable", "unknown"]},
+        "health": {"enum": ["ok", "degraded", "error", "unknown"]},
+        "attention": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/attention"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "engines": {
+      "type": "object",
+      "required": ["selected_engine_id", "engines"],
+      "properties": {
+        "selected_engine_id": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$"},
+            {"type": "null"}
+          ]
+        },
+        "engines": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/engine"}
+        }
+      },
+      "additionalProperties": false,
+      "x-heyma-invariants": [
+        "engine_id is unique",
+        "selected_engine_id is null if and only if no engine has selected=true",
+        "otherwise exactly one engine is selected and its id equals selected_engine_id"
+      ]
+    },
+    "component": {
+      "type": "object",
+      "required": [
+        "component_id",
+        "display_name",
+        "domains",
+        "required",
+        "indicator",
+        "provider_revision",
+        "observed_at",
+        "source_updated_at",
+        "presence",
+        "reachability",
+        "freshness",
+        "health",
+        "microphone",
+        "workloads",
+        "attention",
+        "capabilities",
+        "actions",
+        "queue",
+        "engines",
+        "details"
+      ],
+      "properties": {
+        "component_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "domains": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["stt.capture", "stt.dictation", "tts.synthesis"]}
+        },
+        "required": {"type": "boolean"},
+        "indicator": {"enum": ["red", "yellow", "green"]},
+        "provider_revision": {
+          "oneOf": [
+            {"$ref": "#/$defs/revision"},
+            {"type": "null"}
+          ]
+        },
+        "observed_at": {"type": "string", "format": "date-time"},
+        "source_updated_at": {
+          "oneOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "null"}
+          ]
+        },
+        "presence": {"enum": ["present", "absent", "misconfigured"]},
+        "reachability": {"enum": ["reachable", "unreachable", "unknown"]},
+        "freshness": {"enum": ["fresh", "stale", "unknown"]},
+        "health": {"enum": ["ok", "degraded", "error", "unknown"]},
+        "microphone": {"enum": ["active", "inactive", "unknown"]},
+        "workloads": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/workload"}
+        },
+        "attention": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/attention"}
+        },
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "capture.control",
+              "dictation.control",
+              "queue.inspect",
+              "health.inspect",
+              "engine.select",
+              "service.restart",
+              "logs.open",
+              "output.open"
+            ]
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "heyma-actions-v1.schema.json#/$defs/actionDescriptor"
+          }
+        },
+        "queue": {
+          "oneOf": [
+            {"$ref": "#/$defs/queue"},
+            {"type": "null"}
+          ]
+        },
+        "engines": {
+          "oneOf": [
+            {"$ref": "#/$defs/engines"},
+            {"type": "null"}
+          ]
+        },
+        "details": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false,
+      "x-heyma-invariants": [
+        "an absent component has null provider_revision and source_updated_at, unknown reachability/freshness/health/microphone, no workloads, no attention, no capabilities, no actions, null queue, null engines, and empty details",
+        "details never drives indicator, enablement, or safety policy"
+      ]
+    }
+  }
+}

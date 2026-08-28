@@ -1,0 +1,13 @@
+{
+	"node": "n8n-nodes-heyma",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Productivity", "Utility"],
+	"resources": {
+		"primaryDocumentation": [
+			{
+				"url": "https://github.com/delorenj/HeyMa/tree/main/components/n8n-nodes-heyma"
+			}
+		]
+	}
+}

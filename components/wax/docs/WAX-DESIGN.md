@@ -12,9 +12,9 @@ Name: recording is pressing ephemeral sound into a permanent record — which is
 |---|---|
 | `~/HeyMa/inbox` (Syncthing **receiveonly**, 23 files) + `~/HeyMa/ingest` (plain, 74 files) | **`~/HeyMa/inbox` is a plain local dir and the only inbox.** `~/HeyMa/ingest` is deleted. |
 | Syncthing folder `id=audio` points at `~/HeyMa/inbox` | Syncthing folder `id=audio` repointed to **`~/HeyMa/dropoff`** (still receiveonly, still staggered/365d). `waxd` **copies** out of it, never writes into it. |
-| KRecorder GUI → `~/Music/clip_NNNN.mp3` | `Ctrl+Alt+Shift+R`. KRecorder retired. `~/Music` untouched by anything. |
+| KRecorder GUI → `~/Music/clip_NNNN.mp3` | `Ctrl+\` (GNOME custom keybinding → `wax rec toggle`). KRecorder retired. `~/Music` untouched by anything. |
 | `audio-watcher.service` relays all 38 GB of `~/Music` | Disabled + **masked**. |
-| n8n `r2TUca8smk5HDNZx` localFileTrigger ×2 | Deactivated (archived, not deleted). |
+| n8n `r2TUca8smk5HDNZx` localFileTrigger ×2 | Unpublished **and** archived (not deleted) — actually done 2026-08-19. This row read "Deactivated" for six weeks while the API still reported `active: true, isArchived: false`; the workflow's own description also claimed "Inactive". It was quiet only because Wax had moved off `/home/delorenj/audio/{inbox,ingest}`, so any write to those paths would still have fired an out-of-band transcribe with no ledger row and a duplicate S3 object. **A doc row is not a deactivation.** |
 | No state, no ledger, 41 of 74 ingest files never transcribed | SQLite ledger at `~/HeyMa/var/wax.db`; the untranscribed backlog drains at concurrency 1. |
 
 **The ~97 files** (verified: 23 in inbox + 74 in ingest): `wax migrate --plan` classifies each by sha256 → has-transcript / has-S3-object / neither, then `--apply` moves them into the single inbox with `renameat2(RENAME_NOREPLACE)`. **This matters:** `/home/delorenj/HeyMa/inbox/clip_0057.mp3` (2,826,092 B) and `/home/delorenj/HeyMa/ingest/clip_0057.mp3` (9,658,988 B) are *different files with the same name*. A bare `mv` destroys one. Wax renames the loser to `clip_0057__ingest.mp3` and logs it. Nothing is deleted, ever; a byte-conservation check (`comm -23 before.sha after.sha` must be empty) gates the phase.
@@ -27,19 +27,19 @@ Also on the floor and unaccounted for by anyone: `/home/delorenj/HeyMa/Xfinity_2
 
 ```mermaid
 flowchart TB
-  HK["Ctrl+Alt+Shift+R<br/>evdev, physical kbds only"] -->|unix socket RPC| D
-  CLI["wax rec start/stop"] -->|unix socket RPC| D
-  CMD["bloodbank.cmd.v1.audio.session.start"] -->|NATS sub| D
+  HK["Ctrl+backslash — GNOME custom keybinding<br/>~/.local/bin/wax-toggle"] --> CLI
+  N8N["n8n-nodes-heyma<br/>Start / Stop Recording"] --> CLI
+  CLI["wax rec start/stop/toggle<br/>shared flock + durable sentinels"] --> FF
 
   D["waxd — single owner<br/>flock ~/HeyMa/var/waxd.lock"]
   D -->|systemd-run --user --scope| FF["ffmpeg -f pulse -c:a libopus"]
-  FF --> P["~/HeyMa/stream/&lt;rid&gt;.ogg.partial<br/>+ &lt;rid&gt;.rec.json  + &lt;rid&gt;.stop  + &lt;rid&gt;.fin.json"]
+  FF --> P["~/HeyMa/stream/&lt;rid&gt;.segs/seg-NNNNN.ogg<br/>+ &lt;rid&gt;.rec.json  + &lt;rid&gt;.stop  + &lt;rid&gt;.fin.json"]
   P -->|"wait()==0 AND ffprobe&gt;0.5s<br/>THEN renameat2 RENAME_NOREPLACE"| IN["~/HeyMa/inbox/YYYYMMDD-HHMMSS-&lt;slug&gt;.ogg"]
 
   DROP["~/HeyMa/dropoff<br/>Syncthing receiveonly, 5 devices"] -->|copy2 to .staging, then renameat2| IN
 
   IN --> ARCH["archiver — own queue,<br/>runs on file.recorded"]
-  ARCH -->|mc cp + ETag verify ×3| S3["s3://recordings/YYYY-MM-DD/&lt;sha12&gt;-name<br/>+ &lt;key&gt;.wax.json  + .by-content/&lt;sha256&gt;.json<br/>+ tag Transcription=Complete"]
+  ARCH -->|"mc cp + size/ETag verify ×3"| S3["s3://recordings/YYYY-MM-DD/&lt;sha12&gt;-name<br/>+ &lt;key&gt;.wax.json  + .by-content/&lt;sha256&gt;.json<br/>+ tag Transcription=Complete"]
   IN --> POLICY{"transcription policy:<br/>&lt;300 MB AND &lt;3 h"}
   POLICY -->|pass| TR["transcriber — concurrency 1<br/>bin/transcribe owns its own flock"]
   POLICY -->|blocked after S3 verify| SKIP["~/HeyMa/skipped/<br/>preserved, never deleted"]
@@ -53,9 +53,9 @@ flowchart TB
   D --> LED[("~/HeyMa/var/wax.db<br/>items · backups · transcripts<br/>passes · outbox · transitions")]
   LED -->|same txn| OUT["outbox drainer"]
   OUT -->|JetStream PubAck| NATS["nats://127.0.0.1:4222"]
-  NATS --> CS["Candystore 127.0.0.1:8683<br/>subscribes bloodbank.evt.v1.&gt; ONLY"]
+  NATS --> CS["Candystore 127.0.0.1:8683<br/>subscribes bloodbank.evt.&gt; ONLY"]
   D --> TRAY["AppIndicator tray<br/>RED / GREEN / YELLOW"]
-  D --> SOCK["~/HeyMa/var/waxd.sock<br/>+ ~/HeyMa/var/state.json mirror"]
+  D --> SOCK["~/HeyMa/var/waxd.sock — raw status snapshot only<br/>+ ~/HeyMa/var/state.json mirror"]
 ```
 
 Event emissions, in flow order: `session.started` → (`session.ended` | `session.failed` | `session.canceled`) → `file.recorded` → `file.sent` → `transcription.started` → (`transcription.completed` | `transcription.failed`) → `task.requested`+`task.started`→(`task.completed`|`task.failed`) per EP. Plus `status.updated` on **every** edge of both machines and `heartbeat.recorded` every 60s.
@@ -68,6 +68,20 @@ one insufficient alone: the 2026-08-11 runaway capture was 13.9 hours but only
 item to `skipped/oversize/` or `skipped/overduration/` without launching
 Whisper. The direct adapter and `bin/transcribe` repeat both checks so alternate
 entry points cannot bypass the policy.
+
+Diarization has a device contract independent of Whisper's. The deployed unit
+sets `WAX_DIARIZATION=1` and `WAX_DIARIZATION_DEVICE=cuda`: the first requires a
+speaker track, while the second makes CUDA strict rather than best-effort. An
+ASR retry with `--device cpu` therefore leaves Sortformer on CUDA. Only an
+explicit diarizer setting of `cpu` or `auto` permits CPU. The implementation is
+the tracked, side-effect-free
+`components/wax/src/wax/diarization_sortformer.py`; importing it allocates no
+model, and each run loads exactly one model on the resolved device. The pinned
+runtime manifest is `components/wax/requirements-diarization.txt`, rebuilt with
+`mise run wax:diarization:install`. Both that installer and `wax doctor` execute
+a real Sortformer streaming forward pass on CUDA—an import or green tray alone
+is not device evidence. Successful transcripts persist requested and actual
+diarization device in their frontmatter and in-band metadata.
 
 ---
 
@@ -94,11 +108,11 @@ stateDiagram-v2
 
 | State | Literal detection | Event on entry |
 |---|---|---|
-| `ready` | No `~/HeyMa/stream/*.rec.json`, no `*.ogg.partial`, no `*.stop`; preflight ok (`pactl get-default-source` non-empty **and** present in `pactl list short sources`; free bytes on `/dev/nvme0n1p2` ≥ 5 GiB — **426 G free at 88% today**; `~/HeyMa/inbox` and `~/HeyMa/stream` writable) | `bloodbank.evt.v1.audio.status.updated` |
-| `recording` | `<rid>.rec.json` **and** `<rid>.ogg.partial` exist, **no** `<rid>.stop`, and `alive(rid)` = `boot_id` in rec.json == `/proc/sys/kernel/random/boot_id` **AND** `/proc/<pid>` exists **AND** `basename(readlink /proc/<pid>/exe)=="ffmpeg"` **AND** field 22 of `/proc/<pid>/stat` == recorded starttime. While `waxd` is alive this is confirmed by `Popen.poll() is None` — the sentinel triple is the *cold* fallback. | `audio.session.started` + `status.updated` |
-| `not-ready` **(a)** | `<rid>.stop` exists **AND** `<rid>.fin.json` exists **AND** its owner passes the same alive() triple **AND** `now < fin.deadline` (default `stop_ts + 45s`). | `status.updated` (`clause="a-finalizing"`, `transient=true` if it closes <250 ms) |
+| `ready` | No `~/HeyMa/stream/*.rec.json`, no `*.ogg.partial`, no `*.stop`; preflight ok (`pactl get-default-source` non-empty **and** present in `pactl list short sources`; free bytes on `/dev/nvme0n1p2` ≥ 5 GiB — **426 G free at 88% today**; `~/HeyMa/inbox` and `~/HeyMa/stream` writable) | `bloodbank.evt.audio.status.updated` |
+| `recording` | `<rid>.rec.json` exists, `<rid>.stop` does not, and `alive(rid)` = `boot_id` in rec.json == `/proc/sys/kernel/random/boot_id` **AND** `/proc/<pid>` exists **AND** `basename(readlink /proc/<pid>/exe)=="ffmpeg"` **AND** field 22 of `/proc/<pid>/stat` == recorded starttime. Audio accumulates as independently valid files under `<rid>.segs/`; the first segment can appear after the sentinel. | `audio.session.started` + `status.updated` |
+| `not-ready` **(a)** | `<rid>.stop` exists **AND** its owner passes the alive triple **AND** `now < stop.deadline_epoch` (default `stop_ts + 180s`). | `status.updated` (`clause="a-finalizing"`) |
 | `not-ready` **(b)** | Dir clean of rid artifacts **AND** preflight fails with a **named** cause ∈ `{no_default_source, disk_low, inbox_unwritable, stream_unwritable}`. Re-evaluated on a 10 s tick. `.health.json` is excluded from the emptiness test. | `status.updated` (`clause="b-incapable"`) |
-| `error-partial` | Any of: **(i)** `rec.json` + `.partial` + **no** `.stop` + `alive(rid)==false` (uninstructed exit — covers `kill -9`, OOM, ENOSPC, reboot, since a stale `boot_id` makes every pre-reboot claim false by construction); **(ii)** `.stop` present but the finalizer's owner is dead **or** `now > fin.deadline` (the stop path itself broke — Lens B's absorbing-`not-ready` wedge, closed); **(iii)** `rec.json` + `.stop` + **no** `.partial` + no matching inbox item (crashed between rename and unlink); **(iv)** boot finds any of the above. | `audio.session.failed` (`reason_code`, `stderr_tail` 8 KiB, `partial_bytes`, `salvaged`) |
+| `error-partial` | Any of: **(i)** `rec.json` + segment residue + **no** `.stop` + `alive(rid)==false` (uninstructed exit — covers `kill -9`, OOM, ENOSPC, reboot, and audio-graph loss); **(ii)** `.stop` present but the finalizer's owner is dead **or** `now > stop.deadline_epoch`; **(iii)** a legacy `.partial` remains; **(iv)** boot finds any of the above. | `audio.session.failed` (`reason_code`, `stderr_tail` 8 KiB, `partial_bytes`, `salvaged`) |
 | `error` | **Catch-all is `error`, never `ready`.** Unparseable/zero-length sentinel; `.partial` older than 10 s with no `rec.json`; >1 rid with a live encoder; stream dir missing/unwritable; escalation from `not-ready` (>300 s) or ≥3 `error-partial` in 10 min; salvage itself failed. **Sticky** — clears only on `wax reset`. | `audio.session.failed` (`reason_code="structural"`) |
 
 **Honest notes on the two hard states.**
@@ -107,7 +121,11 @@ stateDiagram-v2
 
 `error-partial` is *only* detectable because intent is written to disk before the fact. There is deliberately **no size-based stall detector**. A "partial hasn't grown in 30 s while the encoder is alive" heuristic is exactly the `record_0016` sin (inferring a writer's state from `stat`), and acting on it — renaming/remuxing a file a live `ffmpeg` still holds an fd to — would truncate a good recording and publish the stub as complete. Instead: a non-growing partial with a live encoder raises a **journald warning and a YELLOW tray tint only**; it never mutates a file and never leaves `recording`. The encoder's *exit* is the only trigger.
 
-Salvage on `error-partial`: rename in place to `<rid>.orphan`, `ffprobe`; if duration > 0, `ffmpeg -i <orphan> -c copy` a valid `.ogg` into inbox flagged `data.partial=true`; the orphan itself **moves** to `~/HeyMa/recovered/orphans/` (never deleted, never left in `stream/`). Ogg/Opus is chosen precisely because a truncated Ogg stream is page-structured and remuxable — a truncated `.m4a` is a brick.
+Salvage on `error-partial` probes every segment and remuxes the valid sequence
+into a new Ogg file in `inbox/`. It then moves the complete original segment
+set, concat manifest, staging partial, and lifecycle sentinels under
+`recovered/orphans/<rid>/`. Wax never deletes a skipped or damaged tail
+segment merely because the remux succeeded.
 
 **Start always works.** `wax rec start` never refuses because of residue. It takes `~/HeyMa/var/stream.lock`, mints a fresh rid, sweeps prior residue aside loudly (`session.failed` for the stranded rid), and records. A recorder that can be blocked by yesterday's crash is worse than the GUI app it replaces.
 
@@ -143,7 +161,7 @@ stateDiagram-v2
 1. The user gave `stopped` and `ready-and-waiting` *the same predicate* ("dir empty AND pipeline not active"). Wax separates them by **intent**: `ready-and-waiting` = enabled and would claim instantly; `stopped` = deliberately disabled. Otherwise one of them is dead code.
 2. `error` gets a 5 s debounce, because the literal predicate is true for ~1 s after every single recording (file landed, not yet claimed) and would emit an error/recover pair per clip.
 
-**A poison item does not wedge the pipeline.** A failed item stays in `~/HeyMa/inbox` (so "dir non-empty AND pipeline not active" is literally true when idle), but the scheduler keeps claiming *other* pending items. `failed_count` rides on every status payload and forces YELLOW. `wax quarantine <id>` moves it to `~/HeyMa/quarantine/` (never deleted).
+**A poison item does not wedge the pipeline.** A failed item stays in `~/HeyMa/inbox` (so "dir non-empty AND pipeline not active" is literally true when idle), but the scheduler keeps claiming *other* pending items. `failed_count` rides on every status payload and forces YELLOW. After repairing the cause, `wax retry <id>` records an explicit `operator_retry` transition and requeues the preserved file from the backup-first stage; `wax skip <id>` parks ordinary queued work outside the inbox without deleting it.
 
 ---
 
@@ -201,43 +219,61 @@ jq . /home/delorenj/HeyMa/var/state.json
 
 ## Bloodbank events & commands
 
+**Implementation status (2026-08-21):** Wax publishes the event subjects below
+and emits EP command mirrors, but `waxd` does not subscribe to the session command
+subjects. External start/stop clients must invoke the absolute `wax` CLI; the
+private `n8n-nodes-heyma` package does exactly that. The session command rows are
+the intended contract, not a currently live control transport.
+
 All under the **already-active** `audio` domain. Every entity used — `session`, `file`, `transcription`, `task`, `status`, `heartbeat` — is **verified present** in `ALLOWED_ENTITIES` (`/home/delorenj/code/33GOD/bloodbank/services/agent-hooks/core/validate.py`), and every action is verified in `EVENT_ACTIONS`/`COMMAND_ACTIONS`. **No `validate.py` PR is on the critical path.** `recorder`, `pipeline`, `enrichment` are *not* allowlisted — using them would block shipping on a code PR for zero semantic gain.
+
+**Naming shape (corrected 2026-08-28).** The CloudEvents `type` is 4 tokens,
+`bloodbank.<domain>.<entity>.<action>`; the NATS subject inserts a kind marker as
+segment 2, `bloodbank.<evt|cmd|rpy>.<domain>.<entity>.<action>`, for 5 tokens. The
+`Subject` column below carries the 5-token subject — drop segment 2 to get the type.
+**Neither shape carries a version segment.** Schema revision lives only in
+`dataschema`/`schemaref`; a breaking payload change earns a new action or entity,
+never a `v<n>`. The rows in this table previously read `bloodbank.evt.v1.audio.*`
+and `bloodbank.cmd.v1.audio.*`. Those 20 subjects and types — plus the
+`bloodbank.evt.v1.>` and `bloodbank.cmd.v1.>` wildcards this document used
+elsewhere — no longer exist on the bus, and would now be rejected by
+`assert_subject_matches` in `core/validate.py`.
 
 | Subject | Kind | Payload (data.*) |
 |---|---|---|
-| `bloodbank.cmd.v1.audio.session.start` | command | `label`, `max_duration_s`, `device_source` |
-| `bloodbank.cmd.v1.audio.session.end` | command | `capture_id` |
-| `bloodbank.cmd.v1.audio.session.cancel` | command | `capture_id`, `reset` |
-| `bloodbank.evt.v1.audio.session.started` | event | `capture_id`, `started_at`, `device_source`, `codec`, `sample_rate_hz`, `channels`, `partial_path`, `trigger` (hotkey\|cli\|command) |
-| `bloodbank.evt.v1.audio.session.ended` | event | `capture_id`, `item_id`, `sha256`, `duration_s`, `bytes`, `inbox_path`, `canonical_name` |
-| `bloodbank.evt.v1.audio.session.failed` | event | `capture_id`, `reason_code`, `returncode`, `signal`, `stderr_tail` (8 KiB, **real text**), `partial_bytes`, `salvaged`, `salvage_path`, `from_state`, `to_state` |
-| `bloodbank.evt.v1.audio.session.canceled` | event | `capture_id`, `duration_s`, `discarded_to` |
-| `bloodbank.evt.v1.audio.status.updated` | event | `machine` (stream\|inbox), `from`, `to`, `clause`, `cause_code`, `evidence{}` (literal derivation inputs), `generation`, `pending`, `failed`, `transient` |
-| `bloodbank.evt.v1.audio.file.recorded` | event | `item_id` (=sha256[:16]), `sha256`, `bytes`, `duration_s`, `path`, `origin` (capture\|dropoff\|import\|manual), `orig_name`, `canonical_name` |
-| `bloodbank.evt.v1.audio.file.sent` | event | `item_id`, `s3_key`, `s3_etag`, `bucket`, `verified_at`, `attempt`, `sidecar_key`, `content_index_key`, `tag_written`, `stashed`, `stash_path` |
-| `bloodbank.evt.v1.audio.transcription.started` | event | `transcription_id` (**= item_id**, not `$execution.id`), `item_id`, `sha256`, `s3_key`, `audio_duration_s`, `engine`, `engine_model`, `attempt`, `output_md_path` |
-| `bloodbank.evt.v1.audio.transcription.completed` | event | `item_id`, `md_path`, `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `last_segment_end_s`, `word_count`, `segment_count`, `diarized`, `device_used`, `degraded[]`, `s3_key`, `s3_tagged` |
-| `bloodbank.evt.v1.audio.transcription.failed` | event | `item_id`, `reason_code` (`worker_nonzero`\|`duration_mismatch`\|`no_written_path`\|`empty_transcript`\|`timeout`\|`source_changed`), `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `returncode`, `stderr_tail`, `log_path`, `attempt` |
-| `bloodbank.cmd.v1.audio.task.start` | **command** | `ep_slug`, `item_id`, `md_path`, `attempt`, `pass_version`, `argv` |
-| `bloodbank.evt.v1.audio.task.requested` | **event (mirror)** | `command_id`, `command_subject`, `idempotency_key`, `ep_slug`, `item_id`, `attempt`, `pass_version`, `argv`, `invoked_by` |
-| `bloodbank.evt.v1.audio.task.started` / `.completed` / `.failed` | event | `ep_slug`, `item_id`, `attempt`, `pass_version`, `command_id`, `changed_fields[]`, `duration_s`, `reason_code`, `stderr_tail`, `log_path` |
-| `bloodbank.evt.v1.audio.heartbeat.recorded` | event | `generation`, `stream_state`, `inbox_state`, `pending`, `failed`, `outbox_backlog`, `preflight_ok`, `free_bytes`, `uptime_s` |
+| `bloodbank.cmd.audio.session.start` | command | `label`, `max_duration_s`, `device_source` |
+| `bloodbank.cmd.audio.session.end` | command | `capture_id` |
+| `bloodbank.cmd.audio.session.cancel` | command | `capture_id`, `reset` |
+| `bloodbank.evt.audio.session.started` | event | `capture_id`, `started_at`, `device_source`, `codec`, `sample_rate_hz`, `channels`, `partial_path`, `trigger` (hotkey\|cli\|command) |
+| `bloodbank.evt.audio.session.ended` | event | `capture_id`, `item_id`, `sha256`, `duration_s`, `bytes`, `inbox_path`, `canonical_name` |
+| `bloodbank.evt.audio.session.failed` | event | `capture_id`, `reason_code`, `returncode`, `signal`, `stderr_tail` (8 KiB, **real text**), `partial_bytes`, `salvaged`, `salvage_path`, `from_state`, `to_state` |
+| `bloodbank.evt.audio.session.canceled` | event | `capture_id`, `duration_s`, `discarded_to` |
+| `bloodbank.evt.audio.status.updated` | event | `machine` (stream\|inbox), `from`, `to`, `clause`, `cause_code`, `evidence{}` (literal derivation inputs), `generation`, `pending`, `failed`, `transient` |
+| `bloodbank.evt.audio.file.recorded` | event | `item_id` (=sha256[:16]), `sha256`, `bytes`, `duration_s`, `path`, `origin` (capture\|dropoff\|import\|manual), `orig_name`, `canonical_name` |
+| `bloodbank.evt.audio.file.sent` | event | `item_id`, `s3_key`, `s3_etag`, `bucket`, `verified_at`, `attempt`, `sidecar_key`, `content_index_key`, `tag_written`, `stashed`, `stash_path` |
+| `bloodbank.evt.audio.transcription.started` | event | `transcription_id` (**= item_id**, not `$execution.id`), `item_id`, `sha256`, `s3_key`, `audio_duration_s`, `engine`, `engine_model`, `attempt`, `output_md_path` |
+| `bloodbank.evt.audio.transcription.completed` | event | `item_id`, `md_path`, `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `last_segment_end_s`, `word_count`, `segment_count`, `diarized`, `device_used`, `degraded[]`, `s3_key`, `s3_tagged` |
+| `bloodbank.evt.audio.transcription.failed` | event | `item_id`, `reason_code` (`worker_nonzero`\|`duration_mismatch`\|`no_written_path`\|`empty_transcript`\|`timeout`\|`source_changed`), `audio_duration_s`, `asr_duration_s`, `duration_ratio`, `returncode`, `stderr_tail`, `log_path`, `attempt` |
+| `bloodbank.cmd.audio.task.start` | **command** | `ep_slug`, `item_id`, `md_path`, `attempt`, `pass_version`, `argv` |
+| `bloodbank.evt.audio.task.requested` | **event (mirror)** | `command_id`, `command_subject`, `idempotency_key`, `ep_slug`, `item_id`, `attempt`, `pass_version`, `argv`, `invoked_by` |
+| `bloodbank.evt.audio.task.started` / `.completed` / `.failed` | event | `ep_slug`, `item_id`, `attempt`, `pass_version`, `command_id`, `changed_fields[]`, `duration_s`, `reason_code`, `stderr_tail`, `log_path` |
+| `bloodbank.evt.audio.heartbeat.recorded` | event | `generation`, `stream_state`, `inbox_state`, `pending`, `failed`, `outbox_backlog`, `preflight_ok`, `free_bytes`, `uptime_s` |
 
 **Correlation / causation — how you find the COMMAND that invoked an EP.**
 
-`command_id = uuid5(WAX_NS, "ep:<item_id>:<ep_slug>:<attempt>")` (deterministic). For a root-issued command, `correlationid == command_id` per §11. Wax publishes the command on `bloodbank.cmd.v1.audio.task.start` **and immediately mirrors it** as `bloodbank.evt.v1.audio.task.requested` carrying the same `command_id`, `command_subject`, `idempotency_key` and `argv`. Every subsequent `task.started/completed/failed` sets `correlationid = causationid = command_id`.
+`command_id = uuid5(WAX_NS, "ep:<item_id>:<ep_slug>:<attempt>")` (deterministic). For a root-issued command, `correlationid == command_id` per §11. Wax publishes the command on `bloodbank.cmd.audio.task.start` **and immediately mirrors it** as `bloodbank.evt.audio.task.requested` carrying the same `command_id`, `command_subject`, `idempotency_key` and `argv`. Every subsequent `task.started/completed/failed` sets `correlationid = causationid = command_id`.
 
 ```bash
 # from any EP event, causationid IS the command_id:
-curl -s 'http://127.0.0.1:8683/events?type=bloodbank.v1.audio.task.completed&limit=1' | jq -r '.events[0].causationid'
+curl -s 'http://127.0.0.1:8683/events?type=bloodbank.audio.task.completed&limit=1' | jq -r '.events[0].causationid'
 curl -s http://127.0.0.1:8683/sessions/<that-id> | jq '[.events[].type]'
-# -> ["bloodbank.v1.audio.task.requested","...task.started","...task.completed"]
+# -> ["bloodbank.audio.task.requested","...task.started","...task.completed"]
 curl -s http://127.0.0.1:8683/sessions/<that-id> | jq '.events[]|select(.type|endswith("task.requested"))|.data|{command_id,command_subject,argv}'
 ```
 
-**The mirror is not optional and here is why (verified this session, not from docs):** `curl http://127.0.0.1:8683/dapr/subscribe` returns exactly `[{"pubsubname":"bloodbank-pubsub","topic":"bloodbank.evt.v1.>","route":"/events/all"}]`. Candystore ingests **events only** — 0 command rows out of 368,482. And `BLOODBANK_COMMANDS` is a **workqueue** stream with `max_age` 1 day. So a raw command is both invisible in Candystore *and* gone in 24 h.
+**The mirror is not optional and here is why (re-measured 2026-08-28, not from docs):** `curl http://127.0.0.1:8683/dapr/subscribe` returns exactly `[{"pubsubname": "bloodbank-pubsub", "topic": "bloodbank.evt.>", "route": "/events/all"}]` — note the topic is the whole event kind, with **no version segment**; the earlier reading of this same endpoint recorded `bloodbank.evt.v1.>` and is superseded. Candystore ingests **events only**: `select kind, count(*) from events group by kind` on `candystore-postgres` returns a single row, `event | 724958`, so 0 command rows out of 724,958. (718,498 of those rows carry historical v1-shaped types from before the rename; new traffic is 4-token.) And `BLOODBANK_COMMANDS` is a **workqueue** stream with `max_age` 1 day. So a raw command is both invisible in Candystore *and* gone in 24 h.
 
-**Explicitly rejected:** adding a `bloodbank.cmd.v1.>` Dapr subscription to Candystore. Two independent reasons — `ingest.py`'s `SUBSCRIBE_MODE`/`EXPLICIT_TOPICS` is an XOR between a hardcoded 9-topic list and the wildcard (flipping it silently *stops* ingesting everything else), and pointing a consumer at a **workqueue** stream means Candystore's ack **deletes** each command. The audit viewer would destroy the audit trail. Mirror events, full stop.
+**Explicitly rejected:** adding a `bloodbank.cmd.>` Dapr subscription to Candystore. Two independent reasons — `ingest.py`'s `SUBSCRIBE_MODE`/`EXPLICIT_TOPICS` is an XOR between a hardcoded 9-topic list and the wildcard (flipping it silently *stops* ingesting everything else), and pointing a consumer at a **workqueue** stream means Candystore's ack **deletes** each command. The audit viewer would destroy the audit trail. Mirror events, full stop.
 
 **Candystore work that does not exist and must be built (Phase 8, optional-but-strongly-recommended):**
 - No `audio` summarizer in `candystore/summarize.py` → cards render the bare type string.
@@ -245,11 +281,11 @@ curl -s http://127.0.0.1:8683/sessions/<that-id> | jq '.events[]|select(.type|en
 - Events with no `actor` and no `data.project` render as `unknown/unknown` and are excluded from `/summary/by-project`. Wax sets both (`data.project="wax"`, `actor{type:"service",agent_id:"service:wax"}`).
 - The container is built from image `candystore:local` with **zero bind mounts** — editing host files and running `mise run build:ui` changes nothing. You need `docker compose -f /home/delorenj/code/33GOD/33god-platform/compose.yaml build candystore && ... up -d --force-recreate candystore`. Do **not** `docker stop` it; docker-health-monitor resurrects exited containers in 20–30 s.
 
-**Publishing:** raw NATS to `nats://127.0.0.1:4222` (verified live: NATS 2.10.29, jetstream true, no auth, no TLS). `bloodbank.delo.sh/publish` returns 404 on every path and `hookd_bridge:18790` is connection-refused — both are documented in the skill and both are **dead**. Import `subject_for(ce_type, kind)` from `core/validate.py` rather than hand-typing the 6-token subject (verified: returns `bloodbank.evt.v1.audio.session.started`). Build the **full** §11 envelope including `actor` and `causationid` — do *not* copy the live n8n envelopes, which omit both and only survive because NATS validates nothing.
+**Publishing:** raw NATS to `nats://127.0.0.1:4222` (verified live: NATS 2.10.29, jetstream true, no auth, no TLS). `bloodbank.delo.sh/publish` returns 404 on every path and `hookd_bridge:18790` is connection-refused — both are documented in the skill and both are **dead**. Import `subject_for(ce_type, kind)` from `core/validate.py` rather than hand-typing the 5-token subject (verified: returns `bloodbank.evt.audio.session.started`). Build the **full** §11 envelope including `actor` and `causationid` — do *not* copy the live n8n envelopes, which omit both and only survive because NATS validates nothing.
 
 **Outbox durability.** Every state change writes its outbox row in the same SQLite transaction as the state change. The drainer marks `published_at` **only on a JetStream PubAck**, not on `core.nats_publish.publish()` returning — that function falls through to `return None` when the peer closes mid-read, which is indistinguishable from success and would mark dropped events as delivered. Wax publishes with a reply-inbox and waits for the `$JS.ACK`; no ack → row stays unpublished → `outbox_backlog > 0` → tray YELLOW. Publishing is otherwise fail-open: a NATS outage must never break a recording.
 
-New schema files (copy `transcription.started.v1.json` as the template so the `allOf`/`$ref`/`$id`/`const` block is right) under `/home/delorenj/code/33GOD/bloodbank/schemas/bloodbank/v1/audio/`: `session.{started,ended,failed,canceled}.v1.json`, `session.{start,end,cancel}.v1.json`, `status.updated.v1.json`, `file.{recorded,sent}.v1.json`, `task.{requested,started,completed,failed}.v1.json`, `task.start.v1.json`, `heartbeat.recorded.v1.json` — **15 files**, plus §7 doc rows pairing those entities with `audio`. Gate: `mise run smoketest:schemas`.
+New schema files (copy `transcription.started.json` as the template so the `allOf`/`$ref`/`$id`/`const` block is right) under `/home/delorenj/code/33GOD/bloodbank/schemas/bloodbank/audio/`: `session.{started,ended,failed,canceled}.json`, `session.{start,end,cancel}.json`, `status.updated.json`, `file.{recorded,sent}.json`, `task.{requested,started,completed,failed}.json`, `task.start.json`, `heartbeat.recorded.json` — **15 files**, plus §7 doc rows pairing those entities with `audio`. Gate: `mise run smoketest:schemas`.
 
 Deliberate naming call: **not** `audio.file.received` — `tonnybox-server` owns that type with 650 events and different semantics (`s3://tonnybox/utterances`, `session_id`). Wax uses `file.recorded`.
 
@@ -276,7 +312,7 @@ The user's three cold-start predicates become the **bootstrap inference rules**,
 | `s3://recordings/<key>.wax.json` + `.by-content/<sha256>.json` | **Durable + self-describing.** Comes back in the *same* `mc ls --recursive` that enumerates the audio, so a full reconcile is O(1) requests. Survives loss of the vault and of the ledger (`wax reconcile --rebuild`). | one LIST |
 | `mc tag set delo/recordings/<key> "Transcription=Complete&ItemId=<id>&Model=large-v3&TranscribedAt=<iso>"` | **Annotation + future ILM driver.** Exactly what the user asked for, human-visible in the console. | one PutObjectTagging, moves zero bytes |
 
-Why tags cannot be the index, plainly: S3/MinIO has **no tag-query API**, so "which audio has no transcript?" costs one `GetObjectTagging` per object — measured **23.28 s for 528 objects vs 0.166 s for a full recursive LIST** (140×, linear forever, every call crossing Cloudflare). `PutObject` **wipes the tagset**, so any re-archive silently un-tags. The bucket is un-versioned, so a lost tag write is unrecoverable. And `mc stat` intermittently returns a mapped 403 "Insufficient permissions" with root credentials that succeeds on retry (reproduced live this session: 1 failure, then 3 successes on the identical key) — which today produces a **false** "S3 FAILED" because `bin/transcribe:207` has no retry. Wax retries 3× with backoff, compares ETag+size rather than trusting exit 0, and — critically — parses the error type on the pre-upload `.by-content` HEAD so a 403 is never read as "object absent."
+Why tags cannot be the index, plainly: S3/MinIO has **no tag-query API**, so "which audio has no transcript?" costs one `GetObjectTagging` per object — measured **23.28 s for 528 objects vs 0.166 s for a full recursive LIST** (140×, linear forever, every call crossing Cloudflare). `PutObject` **wipes the tagset**, so any re-archive silently un-tags. The bucket is un-versioned, so a lost tag write is unrecoverable. And `mc stat` intermittently returns a mapped 403 "Insufficient permissions" with root credentials that succeeds on retry (reproduced live this session: 1 failure, then 3 successes on the identical key) — which today produces a **false** "S3 FAILED" because `bin/transcribe:207` has no retry. What `archive.py` actually does today (this paragraph promised ETag verification for months while `grep -rni etag src/` returned nothing — only the size half had ever been written): `ATTEMPTS = 3` uploads with `time.sleep(2 * attempt)` backoff, each verified by `verify_remote()` rather than by trusting `mc cp`'s exit 0. Size is checked **always** and is the gate; the ETag then refines it, and `verify_remote()` returns the `method` it used so the ledger row and sidecar record *how* the bytes were proven — `"verified"` with no method beside it is exactly the claim under which a 262,144 B stub stood in for a 16.5-hour recording. Methods: `size+md5` when the ETag is single-part (on this bucket that is literally the object's MD5 — verified 2026-08-19 against a 286 B sidecar's `085a44747e...`) and matches a locally computed MD5; `md5` **and `ok=False`** when it does not, i.e. same length, different bytes, which size alone would have blessed; `size+multipart-etag` when the ETag carries a `-<parts>` suffix, because md5-of-md5s over parts the server chose and never reports cannot be recomputed without guessing `mc`'s part size, and a wrong guess would fail a perfectly good backup. Multipart is the common case, not a corner: `mc` used 16 MiB parts for both audio objects measured that day, so essentially every recording verifies by size while only the small sidecars get a real MD5 check. `remote_stat()` asks `mc stat --json` first and falls back to `mc ls --json` on the **full object path with an exact basename match**, because some gateways permit PutObject/ListBucket while rejecting HeadObject and then report "Insufficient permissions" for an object that exists; the exact-key check is what stops a prefix match blessing the wrong object. There is no pre-upload `.by-content` HEAD: `_mc_json()` returns `None` for any non-zero `mc` exit, so a 403 and a genuine absence are indistinguishable *there* — safe only because `None` never means "verified", it just costs a redundant re-upload of identical bytes to an idempotent content-addressed key.
 
 Correction to the host facts you were given: **`delo` and `deloroot` are the same root credential** (`delorenj`, `MINIO_ROOT_USER`) against the same `https://s3.delo.sh`; the only difference in `~/.mc/config.json` is `s3v4` vs `S3v4`. `deloroot = privileged` is a stale belief. `delodrive` points at a dead IP (`172.19.0.9`; the container is actually `172.19.0.41`, no host ports) — do not use it.
 
@@ -320,13 +356,33 @@ wax:
 
 **What gets built:** `waxd`, a single `/usr/bin/python3` process (3.13.7 — verified: `gi`, `Gtk 3.0`, `AyatanaAppIndicator3 0.1`, `evdev`, `sqlite3`, `yaml` all import with **no venv, no pip**). Shebang is literally `#!/usr/bin/python3`, **never** `#!/usr/bin/env python3` — mise's Python 3.14 is first on `PATH` and has no `gi`, which would silently break the tray. Everything else is apt: `python3-gi 3.50.0`, `python3-evdev 1.9.1`, `gir1.2-ayatanaappindicator3-0.1`, `gir1.2-gtk-3.0`.
 
-**Capture:** `ffmpeg -hide_banner -nostdin -loglevel warning -f pulse -i <explicit-source-name> -ac 1 -ar 48000 -c:a libopus -b:a 32k -f ogg ~/HeyMa/stream/<rid>.ogg.partial`. Chosen over `pw-record` because ffmpeg is the only capture tool with **binary-level proof** of graceful signal finalization (`strings /usr/bin/ffmpeg` → `Exiting normally, received signal %d.`); `pw-record`'s SIGINT path is unverifiable (`pw_loop_add_signal` is a static inline, leaves no relocation). I will not bet a 16-hour irreplaceable artifact on an unproven finalize. Stop = `SIGINT → wait(20) → SIGTERM → wait(10) → SIGKILL`, signalled **by pid from `rec.json`**, never `pkill ffmpeg`.
+**Capture:** FFmpeg reads the explicit Pulse source and writes one independently
+valid Ogg/Opus segment per minute under `<rid>.segs/`. Its stdin is a durable
+FIFO named in `rec.json`; `wax rec stop` writes `q`, waits for a clean encoder
+exit, validates every segment, and remuxes them into one inbox item. Signals are
+last-resort escalation only.
 
-The encoder is spawned into a **transient scope** (`systemd-run --user --scope --collect -- ffmpeg ...`) so it genuinely outlives `waxd`. This matters: the sibling units on this box (`audio-watcher.service`, `vocalinux-faster-whisper.service`) both run the systemd default `KillMode=control-group`, which SIGTERMs the *entire cgroup* — a `systemctl --user restart waxd` mid-recording would otherwise kill the encoder too. `waxd.service` also sets `KillMode=mixed`, `TimeoutStopSec=120`, `PrivateTmp=false` (transcribe needs the real `/tmp`; `/tmp` here is tmpfs).
+The encoder runs in a **transient scope**
+(`systemd-run --user --scope --collect -- ffmpeg ...`) and therefore outlives a
+plain `systemctl --user restart waxd`. It cannot keep reading through loss of
+the Pulse/PipeWire graph: restarting GDM removes that source even though the
+scope remains alive. `wax-capture-guard.service` orders its shutdown before
+`waxd`, D-Bus, PipeWire, and WirePlumber, and runs `wax rec quiesce` while the
+source is still available. Idle shutdowns are a no-op; an active capture is
+cleanly finalized before logout or reboot proceeds.
 
-**Hotkey:** `Ctrl+Alt+Shift+R` = toggle, `Ctrl+Alt+Shift+X` = cancel/discard. evdev, reading `/dev/input/event*` directly — works on Wayland with **no root** because `delorenj` is in group `input` and the nodes are `crw-rw-r-- root:input`. Devices resolved **by name** at startup and re-resolved on `/dev/input` hotplug: `Keychron K4 Pro Keyboard`, `Logitech G Pro`. The three **virtual** keyboards are explicitly excluded — `ydotoold virtual device`, `gsr-ui virtual keyboard` (that's the enabled `gpu-screen-recorder` extension), `solaar-keyboard` — so injected/synthetic input can never start or stop a recording. 750 ms debounce; a second press while `STOPPING` is a logged no-op. If zero physical keyboards resolve, `waxd` enters `stream=error` and notifies, rather than silently running without a hotkey.
+**Hotkey — what is actually built.** A GNOME custom keybinding, and nothing else. Live values:
 
-Optional secondary: a GNOME `custom2` binding on `<Super><Alt>r` pointing at the bare path `/home/delorenj/.local/bin/wax-toggle` (g_shell_parse_argv — no shell, no pipes). Both converge on the same socket RPC, so no race. Verified: `custom-keybindings` currently holds exactly `custom0` (Paste Image) and `custom1` (1Pass) — **rewrite the list including both or you clobber them**.
+```
+/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom3/
+  name    = 'Wax record toggle'
+  binding = '<Control>backslash'
+  command = '/home/delorenj/.local/bin/wax-toggle'
+```
+
+`wax-toggle` is a 60-line `/usr/bin/python3` wrapper that runs `wax --json rec toggle` and raises a `notify-send` for **every** outcome including refusals — a hotkey that silently does nothing is how you end up believing you recorded a meeting. It is a bare absolute path with no shell metacharacters because GNOME parses the command with `g_shell_parse_argv`, which does not run a shell. There is no separate cancel/discard chord; `wax rec cancel` is CLI-only. `custom-keybindings` currently holds `custom0`–`custom4` — **rewrite the list including all of them or you clobber the others.**
+
+> **Unbuilt (Phase 2 candidate, not a description of the system).** The original design specified an evdev hotkey subsystem in `wax/hotkey.py`: `Ctrl+Alt+Shift+R`/`Ctrl+Alt+Shift+X`, `/dev/input/event*` read directly (no root — `delorenj` is in group `input`), physical keyboards resolved by name with the virtual ones (`ydotoold virtual device`, `gsr-ui virtual keyboard`, `solaar-keyboard`) excluded so injected input can never start a recording, 750 ms debounce, and `stream=error` if zero physical keyboards resolve. **None of it was ever written** — there is no `hotkey.py` and no `evdev` import anywhere in `src/wax/`. It buys two things the GNOME binding cannot: rejection of synthetic input, and a chord that survives the desktop session's keybinding daemon. Neither has bitten yet, so it stays a candidate.
 
 **Tray — read this before you plan around it.** GNOME 49 on Wayland. The AppIndicator/SNI substrate is **NOT WORKING RIGHT NOW**, contrary to what you were told:
 
@@ -344,9 +400,9 @@ Consequences baked into the design:
 - Tray registration failure sets `tray.registered=false` and fires `notify-send` — it **never** blocks recording and **never** puts the stream machine in `error`. A daemon that refuses to record because its icon didn't load is worse than no icon. (The candidate design had exactly this bug: sticky `error` on tray failure, reported only via the tray that just failed.)
 - YELLOW alone is not the failure channel. `waxd.service` gets `OnFailure=wax-alert.service` (a `notify-send` + `ntfy` one-liner), so a crash-looping daemon is visible even with no icon.
 
-Icon mapping (precedence, evaluated on every generation bump): `stream==recording` → **RED** (you must always be able to see you are recording, even if the pipeline is on fire); elif `stream ∈ {not-ready, error-partial, error}` OR `inbox ∈ {error, stopped}` OR `failed>0` OR `outbox_backlog>50` OR last S3 archive failed → **YELLOW**; else **GREEN**. Tooltip carries both state strings + `cause_code`. The exact PNG assets live in `components/wax/assets/tray/` and are resolved from the component root, never from a manually installed user icon theme. All GTK mutation from worker threads goes through `GLib.idle_add`.
+Icon mapping (precedence, evaluated on every generation bump): `stream==recording` → **RED** (you must always be able to see you are recording, even if the pipeline is on fire); elif `stream ∈ {not-ready, error-partial, error}` OR `inbox ∈ {error, stopped}` OR `failed>0` OR `passes.failed>0` OR `diarization.degraded` OR `outbox_backlog > OUTBOX_BACKLOG_ALARM` (=50) OR last S3 archive failed → **YELLOW**; else **GREEN**. The `passes`/`diarization` terms are load-bearing, not decoration: `failed` tallies ITEM states and the worker marks an item `complete` ~215 ms after recording a pass failure, so before they existed a sub-stage at 100% failure was *structurally unrepresentable* here and the icon stayed green for five days. Tooltip carries both state strings + `cause_code`. The exact PNG assets live in `components/wax/assets/tray/` and are resolved from the component root, never from a manually installed user icon theme. All GTK mutation from worker threads goes through `GLib.idle_add`.
 
-Pattern (not package) copied from `/home/delorenj/.local/share/vocalinux-install/src/vocalinux/ui/tray_indicator.py`: the `AppIndicator3` → `AyatanaAppIndicator3` import fallback (:17-26), `Indicator.new_with_path()` + `set_icon_theme_path` + `set_status(ACTIVE)` (:194-201), the `StatusNotifierWatcher` preflight probe over `Gio.DBusProxy` (:245-270), `set_icon_full(name, tooltip)` (:408-435). And `keyboard_backends/evdev_backend.py` for the hotkey loop.
+Pattern (not package) copied from `/home/delorenj/.local/share/vocalinux-install/src/vocalinux/ui/tray_indicator.py`: the `AppIndicator3` → `AyatanaAppIndicator3` import fallback (:17-26), `Indicator.new_with_path()` + `set_icon_theme_path` + `set_status(ACTIVE)` (:194-201), the `StatusNotifierWatcher` preflight probe over `Gio.DBusProxy` (:245-270), `set_icon_full(name, tooltip)` (:408-435). (Its `keyboard_backends/evdev_backend.py` was to be the model for the hotkey loop — moot, since that loop was never built; see above.)
 
 ### Why not just extend vocalinux
 
@@ -365,7 +421,7 @@ So: **separate process, separate systemd unit, separate tray icon, separate hotk
 | Defect | Fix | Verification |
 |---|---|---|
 | **1.** `watch_audio.sh` size-settle loop breaks after two equal 2s samples → relocated `record_0016.mp3` (951 MB, 16.5 h) mid-recording; transcribed as a 16-second stub. | The relay is **deleted**. `waxd` is the encoder's parent; the file moves only after `Popen.wait()==0` **and** `ffprobe -show_entries format=duration` > 0.5 s, via `renameat2(RENAME_NOREPLACE)` on the same filesystem (`stat -c %d` = **66306** for `~/HeyMa`, `~/HeyMa/inbox`, `~/d/Transcripts` — one fs, so the rename is genuinely atomic). No size-based heuristic exists anywhere in the codebase. Foreign writers land in `~/HeyMa/dropoff` and are **copied** to `~/HeyMa/inbox/.staging/<rid>.part` then renamed in. | `grep -rn 'stat -c %s\|st_size' /home/delorenj/HeyMa/` → empty. Run `while :; do ls ~/HeyMa/inbox; sleep 0.2; done` across a full 60 s recording — the file appears **exactly once, already complete**, never at partial size. |
-| **2.** `trap 'rm -f "$LOG_FILE"' EXIT` at `bin/transcribe:219` destroys the log on **every** exit including failures. | Patch: `LOG_FILE="${TRANSCRIBE_LOG_FILE:-$(mktemp ...)}"` and install the trap **only** when the script allocated the temp itself. `waxd` passes `TRANSCRIBE_LOG_FILE=~/HeyMa/var/logs/<item_id>/transcription.<attempt>.log`, retained 30 days, tail (8 KiB) shipped in `transcription.failed.data.stderr_tail`. | Force a failure (rename the model dir). Confirm `~/HeyMa/var/logs/<item>/transcription.1.log` **survives**, and `curl 'http://127.0.0.1:8683/events?type=bloodbank.v1.audio.transcription.failed&limit=1' \| jq -r '.events[0].data.stderr_tail'` contains real whisper stderr — not the hardcoded string `transcription failed; see execution log`. |
+| **2.** `trap 'rm -f "$LOG_FILE"' EXIT` at `bin/transcribe:219` destroys the log on **every** exit including failures. | Patch: `LOG_FILE="${TRANSCRIBE_LOG_FILE:-$(mktemp ...)}"` and install the trap **only** when the script allocated the temp itself. `waxd` passes `TRANSCRIBE_LOG_FILE=~/HeyMa/var/logs/<item_id>/transcription.<attempt>.log`, retained 30 days, tail (8 KiB) shipped in `transcription.failed.data.stderr_tail`. | Force a failure (rename the model dir). Confirm `~/HeyMa/var/logs/<item>/transcription.1.log` **survives**, and `curl 'http://127.0.0.1:8683/events?type=bloodbank.audio.transcription.failed&limit=1' \| jq -r '.events[0].data.stderr_tail'` contains real whisper stderr — not the hardcoded string `transcription failed; see execution log`. |
 | **3.** No sanity check → a 16-second transcript of a 16.5-hour file emits `transcription.completed`. | Gate on **container-level durations only**: independent `ffprobe` duration vs faster-whisper's `info.duration` (`transcribe.py:224`). Fail if `ratio < 0.95` or `\|Δ\| > max(30s, 5%)`. `last_segment_end` and wpm are recorded as **telemetry, not gates** — `vad_filter=True` (`transcribe.py:197`) means the last segment ends at the last *speech*, so a 3-hour recording that goes silent at minute 25 would be falsely rejected by a coverage-ratio gate. Also re-`stat` (size+mtime+sha256) the source **after** transcription; if it changed, `reason_code=source_changed`. On failure: write `<stem>.suspect.md`, **do not** tag S3, **do not** write vault frontmatter, item stays in inbox, emit `transcription.failed`. | Synthetic, not a 16-hour GPU burn: `ffmpeg -f lavfi -i anullsrc -t 3600 sil.ogg`, concat 16 s of speech → a 1-hour file that transcribes to ~16 s of content. Assert `transcription.failed` with `reason_code=duration_mismatch`, `duration_ratio≈0.004`, inbox→`error`, tray YELLOW, no S3 tag, no `.md` in `~/d/Transcripts`. |
 | **4.** New transcripts named `clip_NNNN.md` with no date. | Always pass explicit `-o /home/delorenj/d/Transcripts/YYYYMMDD-HHMMSS-<slug>.md`. **But** `-o` bypasses transcribe.py's `while candidate.exists()` guard (`:522-539`, whose own comment says it "guarantees we NEVER overwrite"), so `waxd` writes to `<path>.part` then `link()`s O_EXCL into place; on collision it keeps **both** (`-attempt2`) and reports. Never a bare write over an existing transcript — the vault has **no git**, auto-checkpoint cron disabled 2026-07-20, and an ACTIVE weekly `rm -f` job. | `ls ~/d/Transcripts \| grep -c '^clip_[0-9]*\.md$'` stops growing; every new file matches `^[0-9]{8}-[0-9]{6}-`. Force two runs of the same item and assert both transcripts exist, neither clobbered. |
 
@@ -373,7 +429,7 @@ So: **separate process, separate systemd unit, separate tray icon, separate hotk
 
 ## Build plan
 
-Working hotkey recording lands in **Phase 2**.
+Working hotkey recording lands in **Phase 2** — and in the end it landed as a GNOME custom keybinding calling `wax rec toggle`, not as the evdev reader below. Phase 2 as written is **unbuilt**.
 
 **Phase 0 — Stop the bleeding. Nothing is built until this is done.** *(~1 h)*
 - `gnome-extensions enable ubuntu-appindicators@ubuntu.com`; verify `busctl --user list | grep StatusNotifier` returns a match. **The tray substrate is off right now.**
@@ -388,13 +444,15 @@ Working hotkey recording lands in **Phase 2**.
 Files: stable shims `bin/{wax,waxd}`, component launchers `components/wax/bin/{wax,waxd}`, and package `components/wax/src/wax/`. Runtime remains `~/HeyMa/{stream,var,archive,quarantine}`. Sentinel protocol (fork → write self pid/starttime/boot_id → fsync file **and** parent dir → exec), `renameat2` via ctypes, `wax rec start|stop|cancel`, `wax status --json`, `wax state stream --cold --json`, singleton `flock ~/HeyMa/var/waxd.lock`.
 Verify: `wax rec start` → exactly one `*.ogg.partial` in `~/HeyMa/stream`, `~/HeyMa/inbox` unchanged; `wax rec stop` → dated `.ogg` in inbox, `ffprobe` duration within 0.5 s of wall clock. **Cold fixtures:** hand-build each state in a temp dir and assert `wax state stream --cold` from a process that has never run — including `kill -9` the encoder (→`error-partial`), edit `boot_id` (→`error-partial`), touch `.stop` then kill the finalizer (→`error-partial` after deadline, **not** a permanent `not-ready`), bare `.partial` >10 s with no `rec.json` (→`error`).
 
-**Phase 2 — Hotkey. ⇐ You can stop using KRecorder here.** *(~250 LOC, 0.5 day)*
+**Phase 2 — Hotkey. NOT BUILT.** *(~250 LOC, 0.5 day)*
 Files: `wax/hotkey.py`. evdev, name-resolved physical keyboards, virtual-device exclusion, debounce.
+**Superseded in practice** by dconf `custom3` (`<Control>backslash` → `~/.local/bin/wax-toggle` → `wax rec toggle`), which shipped instead and is what the hotkey does today. The verification below has never been run.
 Verify: chord from a fullscreen window toggles recording. **Domain-separation proof:** while Wax is recording, double-tap Ctrl and dictate into a text field — text injects, Wax's recording continues, `ffprobe` shows full span and `sox <file> -n stat` shows non-zero RMS. Then `kill -9` vocalinux mid-recording; `systemd-cgls --user | grep ffmpeg` shows Wax's encoder untouched. `evtest` on event18/14/13 confirms virtual devices are ignored.
 
 **Phase 3 — Tray.** *(~300 LOC, 0.5 day)*
-Files: `components/wax/src/wax/tray.py`, three component PNGs, the tracked `components/wax/deploy/systemd/user/waxd.service` template, and `wax-alert.service`.
-Verify: `busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems` lists a **new** item beside vocalinux's. GREEN idle → RED recording → YELLOW three ways (unplug the Yeti; `kill -9` the encoder; `wax pipeline stop` with a failed item). `kill -9` waxd mid-recording: encoder survives (transient scope), next boot reports `error-partial` and salvages.
+Files: `components/wax/src/wax/tray.py`, three component PNGs, and the tracked
+`waxd.service`, `wax-alert.service`, and `wax-capture-guard.service` templates.
+Verify: `busctl --user get-property org.kde.StatusNotifierWatcher /StatusNotifierWatcher org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems` lists a **new** item beside vocalinux's. GREEN idle → RED recording → YELLOW three ways (unplug the Yeti; `kill -9` the encoder; `wax pipeline stop` with a failed item). `kill -9` waxd mid-recording: encoder survives its transient scope. An orderly graphical-session stop invokes `wax rec quiesce` before PipeWire stops, leaving the stream ready on the next session.
 
 **Phase 4 — Ledger + both machines + directory reconciliation.** *(~700 LOC, 1.5 days)*
 Files: `components/wax/src/wax/{ledger,state,reconcile}.py`, `~/HeyMa/var/wax.db`, `state.json` mirror with `generation`/`updated_at`/`daemon_pid`/`boot_id`.
@@ -414,7 +472,7 @@ Verify: all four defect tests from the table above.
 Verify: `cd /home/delorenj/code/33GOD/bloodbank && mise run smoketest:schemas` passes with **no** `validate.py` edit. Record a clip → `docker logs bloodbank-event-toaster --tail 20` toasts it → `curl -s 'http://127.0.0.1:8683/events?domain=audio&limit=10' | jq '.events[0]|{actor,causationid,project:.summary.project}'` shows `actor` populated and `project=="wax"`. **Outbox proof:** `docker stop bloodbank-nats`, record, assert `select count(*) from outbox where published_at is null` > 0 and tray YELLOW; `docker start`, assert drain to 0 and every event in Candystore in order.
 
 **Phase 8 — EP framework + command mirror.** *(~400 LOC, 1 day)*
-Verify: `wax ep run transcription-enhance <item_id>` → `curl 'http://127.0.0.1:8683/events?type=bloodbank.v1.audio.task.requested&limit=5' | jq '.events[].data|{ep_slug,command_id,command_subject}'` returns the invoking command. Feed that `command_id` to `/sessions/<id>` → `[task.requested, task.started, task.completed]`. **Independence:** make `wikification` exit 1, run `mem-ops` on the same item, assert `select ep_slug,state from passes where item_id=...` shows `wikification=failed` alongside `mem-ops=completed`.
+Verify: `wax ep run transcription-enhance <item_id>` → `curl 'http://127.0.0.1:8683/events?type=bloodbank.audio.task.requested&limit=5' | jq '.events[].data|{ep_slug,command_id,command_subject}'` returns the invoking command. Feed that `command_id` to `/sessions/<id>` → `[task.requested, task.started, task.completed]`. **Independence:** make `wikification` exit 1, run `mem-ops` on the same item, assert `select ep_slug,state from passes where item_id=...` shows `wikification=failed` alongside `mem-ops=completed`.
 
 **Phase 9 — Hardening + Candystore visibility.** *(~300 LOC, 1 day)*
 Heartbeat, nightly `mc cp ~/HeyMa/var/wax.db delo/recordings/_ledger/`, log rotation, `wax reconcile --rebuild`. Candystore: audio summarizers + FilterBar chips + **rebuild the image** (`docker compose ... build candystore && up -d --force-recreate candystore` — it has no bind mounts).

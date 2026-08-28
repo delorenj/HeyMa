@@ -1,60 +1,126 @@
 # AGENTS.md
 
-Project home for the audio transcription workflow.
+HeyMa is the **Wax** audio pipeline: record → archive → transcribe → enrich.
+One daemon owns all of it. n8n may invoke Wax through the private
+`n8n-nodes-heyma` control adapter, but it never watches files, archives,
+transcribes, or enriches. There is no Fireflies, no `watch_audio.sh`, no
+`./ingest`, and no second checkout — if a doc assigns pipeline stages to any of
+those, it is stale, and `~/audio/*` is a retired runtime root that nothing reads.
+
+> ## Something looks wrong? Load the `heyma-pipeline-doctor` skill FIRST.
+> `.agents/skills/heyma-pipeline-doctor/` — or run `mise run wax:doctor`.
+> Do not start by reading code. Two week-long outages (a deleted Ollama model, a
+> deleted vendored `whisperlivekit/`) both ran at 100% failure behind a green
+> tray and a `wax status` that printed no errors, because every sub-stage
+> degrades by returning empty instead of failing. **Green is not evidence.**
+
+## Layout
+
+`WAX_ROOT` (default `~/HeyMa`, i.e. this repo) is the runtime root, so state
+lives beside the code. All of it is one filesystem, which is what makes
+`renameat2` between `stream/` and `inbox/` atomic.
+
+| Path | What |
+|---|---|
+| `stream/` | in-flight capture: `<rid>.segs/seg-NNNNN.ogg` + sentinels; a concatenated `.ogg.partial` exists only while finalizing |
+| `inbox/` | the one work queue. Plain local dir, safe to write. Recursive — items live at any depth |
+| `dropoff/` | Syncthing **receiveonly** device feed. waxd only ever COPIES out of it. Never write here |
+| `archive/` | audio parked after S3 verify |
+| `skipped/`, `quarantine/`, `recovered/` | preserved, never processed / never deleted |
+| `var/wax.db` | SQLite ledger: `items · backups · transcripts · passes · outbox · transitions` |
+| `var/{state.json,waxd.sock,waxd.lock}` | live mirror, raw status socket, singleton lock |
+| `~/d/Transcripts/` | where transcripts land (`WAX_VAULT`); really `~/code/DeLoDocs/Transcripts` |
+| `components/n8n-nodes-heyma/` | private self-hosted n8n adapter; invokes the absolute Wax CLI and owns no pipeline state |
+
+## waxd — the single owner
+
+`waxd.service` (systemd **user** unit, `enabled`+`active`) holds
+`flock var/waxd.lock` and is the parent of the encoder and every worker, so
+transitions come from `Popen.wait()` and `renameat2()`'s return value, never
+from `stat()`. Every capture writes an intent sentinel before the first audio
+byte, so state is recomputable from disk by a cold process after a SIGKILL.
+
+- Source: `components/wax/` (`src/wax/`, `bin/{wax,waxd}`, `config/`, `deploy/`).
+- `wax-capture-guard.service` quiesces an active capture before an orderly
+  graphical-session stop removes D-Bus or PipeWire. A plain `waxd` restart does
+  not stop the encoder scope.
+- Repo-root `bin/{wax,waxd,transcribe}` are shims that resolve the component
+  relative to themselves. `~/.local/bin/transcribe` points at `bin/transcribe`,
+  and `waxd.service` pins `WAX_TRANSCRIBE` absolutely — PATH must never get to
+  decide which code runs.
+- Record hotkey: **`Ctrl+\`** — a GNOME custom keybinding (`custom3`) calling
+  `~/.local/bin/wax-toggle` → `wax rec toggle`. The evdev design in
+  WAX-DESIGN.md was never built.
+
+## The `wax` CLI
+
+```
+wax doctor                 # start here — end-to-end diagnosis (mise run wax:doctor)
+wax status                 # both state machines, queue, pass + diarization health
+wax rec start|stop|toggle|cancel|salvage|list
+wax rec quiesce            # idempotent session-shutdown hook; idle is success
+wax items | queue | history | state <machine> [--cold]
+wax drain                  # process the inbox now, one-shot
+wax retry <item>           # requeue one preserved failed inbox item
+wax ep list|status|run <slug> <item>|run-all <item>|sweep
+wax reconcile [--rebuild]  # rebuild the ledger from durable sources
+wax archive | transcribe | migrate | skip | pipeline enable|disable | events
+```
+
+mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:test`, `wax:logs`.
+
+Diarization is required and GPU-strict by default:
+`WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`. Its device is independent
+of Whisper's, so an ASR CPU retry must not move Sortformer off CUDA. The owned
+adapter is `components/wax/src/wax/diarization_sortformer.py`; rebuild a deleted
+or damaged runtime with `mise run wax:diarization:install`. `wax doctor` proves
+the path with a real Sortformer CUDA forward pass, not an import-only check.
+
+## S3: backup-first, never-delete
+
+The audio is the irreplaceable artifact. `archive.py` uploads **before**
+transcription to `s3://recordings/YYYY-MM-DD/<sha12>-<name>` (mc alias `delo`
+= s3.delo.sh), then verifies — never trusting `mc cp`'s exit 0 — with 3
+attempts and backoff. Size always gates; a single-part ETag is additionally
+compared against a local MD5, and `verify_remote()` records *which* method
+proved it, because "verified" with no method is how a 262 KB stub once passed
+for a 16.5-hour recording. Keys are content-addressed from a real sha256, so
+re-archiving identical bytes is idempotent. **The source is never deleted**,
+S3 success or not.
+
+Recovery: `mc ls delo/recordings/`, `recovered/` (S3-failure stash),
+`dropoff/.stversions/` (Syncthing 365d staggered).
+
+## Enrichment passes
+
+Registry: **`components/wax/config/passes.d/*.yaml`** — resolved from the
+component root via `component.PASSES`, never from cwd or a runtime dir.
+Passes are INDEPENDENT: one failing never gates another, and failure is
+recorded per-slug with a `reason_code` in both the ledger and the note's
+`wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
+`title-slug` (hosted OpenAI-compatible endpoint; key from `op://`, never a
+file). `wax ep sweep` retries the ones whose latest attempt failed.
+
+To add one, use the `create-enrichment-pass` skill; see
+`components/wax/docs/ENRICHMENT-PASSES.md`.
+
+## Docs & tests
+
+- Design of record: **`components/wax/docs/WAX-DESIGN.md`** (the only copy).
+- `cd components/wax && python3 -m pytest tests` — works with no PYTHONPATH
+  incantation, or `mise run wax:test`.
 
 ## Skills (Skillex)
 
-- `./.agents/skills/` is the canonical folder for project-scoped skills.
-- `~/.agents/skills/` is the canonical folder for global skills.
-- Create and maintain skill source in the appropriate canonical folder; do not
-  author canonical skills under `.codex/skills/`.
-- For skills specific to this repository, initialize them under
-  `./.agents/skills/`. Use the global folder only when global scope is intended.
+`.agents/skills/` is a **generated projection** — symlinks into this machine's
+skillex checkout and pack cache, rebuilt by `mise run skills:sync` and gitignored
+because every entry is an absolute `/home/<user>/…` path. Never author there; the
+next sync deletes it.
 
-## Overview
+Canonical skill source lives in the registry at `~/code/skillex/all-skills/<name>/`
+(git: `delorenj/skillex`). To add one here: write it there, append
+`{"name": …, "source": "file://…"}` to `.agents/skills.json`, then
+`mise run skills:sync`. `.agents/skills.json` is machine-local, so the skill's
+durable home is the skillex repo — commit and push it there.
 
-Recordings are transcribed locally with **faster-whisper** (NOT Fireflies anymore —
-Fireflies was retired; ignore older docs that mention it / minio public URLs /
-`~/d/Inbox`). An n8n workflow watches for new audio files and runs the transcribe
-CLI, which archives the source to S3 and writes a markdown transcript.
-
-## Ingest paths (two, both watched by the same n8n workflow)
-
-- `./inbox` — a **Syncthing `receiveonly`** folder for **cross-device drop-off**
-  (phone/mac/etc. sync recordings here). Versioning is **enabled** (staggered,
-  365d) so a sync deletion is recoverable from `.stversions`.
-- `./ingest` — a plain **non-synced** local dir. `~/.local/bin/watch_audio.sh`
-  relays finished krecorder recordings from `~/Music` to here.
-
-> ⚠️ Do NOT point local writers (watch_audio.sh, scripts) at `./inbox`. It is
-> receive-only; files added locally to a receive-only Syncthing folder are treated
-> as divergent and get **reverted/deleted** on any reconcile or folder-marker reset.
-> That destroyed a recording on 2026-06-29. Local recordings go to `./ingest`.
-
-## Pipeline (n8n workflow "Inbox → Local Transcribe (Whisper)", id `Yw0WvYW1yAU1QG49`)
-
-1. **Watch Inbox** / **Watch Ingest (local)** — `localFileTrigger` on each dir (`add`).
-2. **Call Parse File for Audio** (subworkflow `Bxgua92kxXkycFB4`) — ensures audio-only,
-   yields `sourcePath`.
-3. **Run Transcribe** — `~/.local/bin/transcribe "$sourcePath" --archive-s3`.
-4. **ntfy Notification** — pings `ntfy.delo.sh/transcripts`.
-
-## `transcribe` script — `~/.local/bin/transcribe` → `code/HeyMa/bin/transcribe`
-
-Runs `scripts/transcribe.py` (faster-whisper + diarization) out of
-`code/33GOD/HeyMa`. With `--archive-s3` the **backup-first, never-delete** policy:
-
-1. **Archive the source to S3 FIRST**, before transcription, to
-   `s3://recordings/YYYY-MM-DD/HHMMSS-<file>` (alias `delo` = s3.delo.sh) and
-   **verify** with `mc stat`. The audio is the irreplaceable artifact.
-2. If S3 fails: keep the source AND stash a copy in `$TRANSCRIBE_STASH_DIR`
-   (`~/audio/recovered`, non-synced). Transcription still proceeds.
-3. **The source is NEVER deleted.**
-4. Transcribe → write markdown to `~/d/Notes/Transcripts/`.
-
-## Recovery / where things live
-
-- Source audio archive: `mc ls delo/recordings/` (== `delodrive/recordings`, same minio).
-- Transcripts: `~/d/Notes/Transcripts/*.md`.
-- Local safety stash (S3-failure fallback): `~/audio/recovered/`.
-- Syncthing version history for inbox deletions: `~/audio/inbox/.stversions/`.
+This repo's own troubleshooting skill is `heyma-pipeline-doctor`.

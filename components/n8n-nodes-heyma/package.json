@@ -1,0 +1,63 @@
+{
+	"name": "n8n-nodes-heyma",
+	"version": "0.1.1",
+	"description": "n8n nodes for controlling the HeyMa Wax audio pipeline",
+	"license": "UNLICENSED",
+	"homepage": "https://github.com/delorenj/HeyMa/tree/main/components/n8n-nodes-heyma#readme",
+	"keywords": [
+		"n8n-community-node-package",
+		"n8n",
+		"heyma",
+		"wax",
+		"audio",
+		"recording"
+	],
+	"author": {
+		"name": "Jarad DeLorenzo",
+		"email": "jaradd@gmail.com"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/delorenj/HeyMa.git",
+		"directory": "components/n8n-nodes-heyma"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"build": "n8n-node build",
+		"build:watch": "tsc --watch",
+		"dev": "n8n-node dev",
+		"lint": "n8n-node lint",
+		"lint:fix": "n8n-node lint --fix",
+		"test": "npm run build && node --test tests/*.test.cjs",
+		"pack:check": "npm pack --dry-run",
+		"release": "n8n-node release",
+		"prepublishOnly": "n8n-node prerelease"
+	},
+	"files": [
+		"dist"
+	],
+	"n8n": {
+		"n8nNodesApiVersion": 1,
+		"strict": false,
+		"credentials": [],
+		"nodes": [
+			"dist/nodes/HeyMa/HeyMa.node.js"
+		]
+	},
+	"devDependencies": {
+		"@n8n/node-cli": "0.44.4",
+		"@types/node": "22.20.1",
+		"eslint": "9.39.4",
+		"n8n-workflow": "2.35.3",
+		"prettier": "3.8.3",
+		"typescript": "5.9.3"
+	},
+	"peerDependencies": {
+		"n8n-workflow": "*"
+	}
+}

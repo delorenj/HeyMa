@@ -1,31 +1,53 @@
 installation:
-  version: 6.10.1-next.20
+  version: 6.11.1-next.25
   installDate: 2026-02-05T16:08:41.384Z
-  lastUpdated: 2026-07-25T19:09:56.024Z
+  lastUpdated: 2026-08-19T12:59:08.091Z
+  installShims: true
 modules:
   - name: core
-    version: 6.10.1-next.20
+    version: 6.11.1-next.25
     installDate: 2026-02-05T16:08:40.961Z
-    lastUpdated: 2026-07-25T19:09:56.022Z
+    lastUpdated: 2026-08-19T12:59:08.088Z
     source: built-in
     npmPackage: null
     repoUrl: null
+  - name: bmm
+    version: 6.11.1-next.25
+    installDate: 2026-08-15T17:02:04.055Z
+    lastUpdated: 2026-08-19T12:59:08.088Z
+    source: built-in
+    npmPackage: null
+    repoUrl: null
+  - name: bmb
+    version: main
+    installDate: 2026-08-15T17:02:04.065Z
+    lastUpdated: 2026-08-19T12:59:08.089Z
+    source: external
+    npmPackage: bmad-builder
+    repoUrl: https://github.com/bmad-code-org/bmad-builder
+    channel: next
+    sha: 38df19573f493c5025c7efce331debe8498832c1
+  - name: cis
+    version: main
+    installDate: 2026-08-15T17:02:04.070Z
+    lastUpdated: 2026-08-19T12:59:08.090Z
+    source: external
+    npmPackage: bmad-creative-intelligence-suite
+    repoUrl: https://github.com/bmad-code-org/bmad-module-creative-intelligence-suite
+    channel: next
+    sha: 0e4ff9233a792db1a1cd00f22a482f338168cdc3
   - name: bmp
     version: null
     installDate: 2026-04-26T21:11:40.318Z
-    lastUpdated: 2026-07-25T19:09:56.024Z
+    lastUpdated: 2026-08-19T12:59:08.091Z
     source: unknown
     npmPackage: null
     repoUrl: null
     channel: next
 ides:
-  - antigravity
   - claude-code
   - codex
-  - github-copilot
-  - auggie
   - gemini
-  - kimi-code
-  - mistral-vibe
-  - openclaw
+  - github-copilot
   - opencode
+  - kimi-code

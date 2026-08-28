@@ -1,0 +1,19 @@
+[Unit]
+Description=Wax capture guard (finish recording before audio-session teardown)
+Documentation=@WAX_DOCUMENTATION_URI@
+PartOf=graphical-session.target
+# Stop ordering is the reverse of start ordering: this makes ExecStop finish
+# the recording before waxd, D-Bus, or the PipeWire/WirePlumber graph go away.
+After=graphical-session.target waxd.service dbus.service pipewire.service wireplumber.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/true
+RemainAfterExit=yes
+ExecStop=@WAX_EXEC_QUIESCE@
+# A many-hour capture may contain thousands of independently validated Ogg
+# segments. Keep the stop hook alive long enough to remux without truncation.
+TimeoutStopSec=10min
+
+[Install]
+WantedBy=graphical-session.target

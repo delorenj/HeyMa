@@ -14,3 +14,10 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# Without this every invocation needed PYTHONPATH=src prefixed by hand, so the
+# 43-test suite was in practice never run — which is how a deleted Ollama model
+# and a deleted whisperlivekit tree both shipped green for a week.
+pythonpath = ["src"]
+testpaths = ["tests"]

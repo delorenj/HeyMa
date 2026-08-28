@@ -1,0 +1,26 @@
+<!DOCTYPE patchbay>
+<patchbay name="record-video" version="0.9.5">
+ <items>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
+   <input node="PortAudio-1" port="PortAudio:in_9"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
+   <input node="PortAudio-1" port="PortAudio:in_8"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
+   <input node="Scarlett 4i4 4th Gen Pro" port="Scarlett 4i4 4th Gen:playback_AUX0"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FR"/>
+   <input node="Scarlett 4i4 4th Gen Pro" port="Scarlett 4i4 4th Gen:playback_AUX1"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FR"/>
+   <input node="PortAudio-2" port="PortAudio:in_5"/>
+  </item>
+ </items>
+</patchbay>
+

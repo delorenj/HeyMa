@@ -1,7 +1,27 @@
 #!/usr/bin/python3
-"""wax.ep.v1 title/summary producer backed by the local Ollama service.
+"""wax.ep.v1 title/summary producer backed by a hosted OpenAI-compatible endpoint.
 
-The pass is deliberately side-effect free: it reads one transcript and emits a
+Local inference is retired for this pass. `qwen3.6:latest` was deleted from the
+Ollama host on 2026-08-15 and every run 404'd for the next five days without one
+human-visible symptom, so the provider is now pure configuration: base URL, model
+id, and 1Password key path arrive as contract-C env injected from
+title-slug.yaml. OpenRouter, Pokee (https://api.pokee.ai/v1), and even a local
+Ollama all serve POST /chat/completions, so this stays a single code path and
+switching providers is a three-value edit in the YAML, never a code change.
+
+Context window is NOT a reason to pick one: transcript_context() truncates to
+MAX_CONTEXT_CHARS (24,000 chars, ~6k tokens) before anything leaves this process,
+so a 10M-token window buys exactly nothing here. Choose on titling quality and
+price.
+
+Failure is loud on purpose. The old code caught urllib.error.URLError, which
+silently swallows its HTTPError subclass, and rendered it as the bare string
+"HTTP Error 404: Not Found" — discarding the response body that named the
+deleted model. That one lossy line is why the outage lasted five days. Every
+failure path here now emits `reason_code=<code>` as the FIRST line of stderr
+(contract D), followed by the provider's own words.
+
+The pass is otherwise side-effect free: it reads one transcript and emits a
 declarative result on stdout. Wax owns frontmatter writes, collision-safe
 renames, ledger updates, and S3 linkage.
 """
@@ -9,12 +29,13 @@ renames, ledger updates, and S3 linkage.
 import json
 import os
 import re
+import subprocess
 import sys
 import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 COMPONENT_ROOT = next(
@@ -27,6 +48,27 @@ from wax import frontmatter  # noqa: E402
 
 
 MAX_CONTEXT_CHARS = 24_000
+# The response is two short strings. Leaving this unset makes OpenRouter price
+# the request against the model's full 65,536-token output ceiling and reject a
+# perfectly affordable title request when the key has a lower spend limit.
+MAX_OUTPUT_TOKENS = 2_048
+
+# Provider defaults. Every one of these is overridable from title-slug.yaml's
+# env block; the defaults exist so the pass still runs from a bare shell.
+DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
+DEFAULT_MODEL = "google/gemini-3.7-flash"
+DEFAULT_API_KEY_OP = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
+DEFAULT_API_KEY_OP_FALLBACK = "op://DeLoSecrets/OpenRouter/hermes"
+DEFAULT_REQUEST_TIMEOUT_S = 120.0
+
+# Preflight is a cheap catalog lookup; it must never be the reason a run is slow.
+PREFLIGHT_TIMEOUT_S = 10.0
+# `op read` is a local IPC round-trip to an already-authenticated agent. If it
+# has not answered in 5s something is wrong with op, not with the network.
+OP_READ_TIMEOUT_S = 5.0
+
+# strict json_schema requires "additionalProperties": false AND every property
+# named in "required" — both already true below, so this schema is usable as-is.
 RESULT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -37,9 +79,26 @@ RESULT_SCHEMA = {
     "additionalProperties": False,
 }
 
+# Non-fatal observations. They are held back rather than printed as they happen
+# so that on failure `reason_code=` is genuinely the first line of stderr.
+_NOTES: list[str] = []
+
 
 class TitlePassError(RuntimeError):
-    pass
+    """A pass failure carrying the contract-D classification for the runner."""
+
+    def __init__(self, message: str, *, reason_code: str = "run_error") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
+def note(message: str) -> None:
+    _NOTES.append(message)
+
+
+def _flush_notes() -> None:
+    for message in _NOTES:
+        print(message, file=sys.stderr)
 
 
 def slugify(value: str, max_length: int = 80) -> str:
@@ -47,7 +106,8 @@ def slugify(value: str, max_length: int = 80) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_value.lower()).strip("-")
     slug = slug[:max_length].rstrip("-")
     if not slug:
-        raise TitlePassError("the generated title cannot be converted to a filename slug")
+        raise TitlePassError("the generated title cannot be converted to a filename slug",
+                             reason_code="provider_bad_response")
     return slug
 
 
@@ -60,8 +120,170 @@ def transcript_context(body: str) -> str:
     return text[:16_000] + "\n\n[... middle omitted ...]\n\n" + text[-8_000:]
 
 
-def ollama_enrichment(body: str, *, model: str, endpoint: str,
-                      existing_title: str = "", existing_summary: str = "") -> dict[str, str]:
+def _op_read(reference: str) -> str:
+    """Resolve one op:// reference, or "" if it does not exist.
+
+    VERIFIED 2026-08-19: OP_SERVICE_ACCOUNT_TOKEN is present in waxd's environ,
+    so `op read` succeeds unattended under `systemd-run --user`.
+    """
+    if not reference:
+        return ""
+    try:
+        proc = subprocess.run(["op", "read", reference], capture_output=True,
+                              text=True, timeout=OP_READ_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        note(f"note: `op read {reference}` unavailable ({exc})")
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def resolve_api_key(*, primary_ref: str, fallback_ref: str) -> str:
+    """First non-empty of: direct env, primary op://, fallback op://, ambient.
+
+    No branch of this ever writes a key to disk, and nothing but the op://
+    reference is allowed into a tracked file.
+    """
+    direct = os.environ.get("WAX_TITLE_API_KEY", "").strip()
+    if direct:
+        return direct
+
+    key = _op_read(primary_ref)
+    if key:
+        return key
+
+    key = _op_read(fallback_ref)
+    if key:
+        # Riding another consumer's key. It works today and dies the hour that
+        # consumer rotates, with no signal that wax was ever involved — so say
+        # it on every single run until the dedicated field is minted.
+        note(f"WARNING: no secret at {primary_ref}; borrowing {fallback_ref}. "
+             "Mint the dedicated field — this key breaks silently when its real "
+             "owner rotates it.")
+        return key
+
+    # Ambient env does not exist under systemd (user units get no login shell),
+    # so this only ever helps an interactive run.
+    ambient = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if ambient:
+        note("WARNING: falling back to ambient $OPENROUTER_API_KEY; waxd will "
+             "not have it.")
+        return ambient
+
+    raise TitlePassError(
+        f"no API key: WAX_TITLE_API_KEY is unset and neither {primary_ref} nor "
+        f"{fallback_ref} resolved",
+        reason_code="no_api_key")
+
+
+def _http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> TitlePassError:
+    """Turn an HTTP error into the most specific reason_code its body supports."""
+    try:
+        body = exc.read().decode("utf-8", "replace").strip()
+    except (OSError, ValueError):
+        # A drained or already-closed error body is still a real HTTP failure;
+        # losing the body must never turn into losing the whole diagnosis.
+        body = ""
+    detail = f"HTTP {exc.code} from {url}: {body[:300] or exc.reason}"
+    lowered = body.lower()
+    if exc.code in (400, 404) and (model.lower() in lowered or "not a valid model" in lowered):
+        return TitlePassError(f"{detail} -- model {model!r} is not served here",
+                              reason_code="missing_model")
+    return TitlePassError(detail, reason_code="provider_http_error")
+
+
+def _api_request(url: str, *, key: str, model: str, timeout: float,
+                 payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """One OpenAI-compatible call. GET when payload is None, else POST."""
+    data = json.dumps(payload).encode() if payload is not None else None
+    headers = {"Authorization": f"Bearer {key}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if "openrouter.ai" in url:
+        # OpenRouter attributes spend and rate limits to these. Without them
+        # wax's usage is indistinguishable from every other holder of the key.
+        headers["HTTP-Referer"] = "https://delo.sh/wax"
+        headers["X-Title"] = "wax title-slug"
+    request = urllib.request.Request(
+        url, data=data, headers=headers, method="POST" if data is not None else "GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        # MUST be caught before URLError: HTTPError subclasses it, and catching
+        # the parent first is precisely what discarded the body naming the model.
+        raise _http_failure(exc, url=url, model=model) from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise TitlePassError(f"{url} did not answer within {timeout:g}s",
+                                 reason_code="timeout") from exc
+        raise TitlePassError(f"cannot reach {url}: {exc.reason}",
+                             reason_code="provider_unreachable") from exc
+    except TimeoutError as exc:
+        raise TitlePassError(f"{url} did not answer within {timeout:g}s",
+                             reason_code="timeout") from exc
+    except OSError as exc:
+        raise TitlePassError(f"cannot reach {url}: {exc}",
+                             reason_code="provider_unreachable") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise TitlePassError(f"{url} returned a non-JSON body: {exc}",
+                             reason_code="provider_bad_response") from exc
+
+
+def preflight_model(*, api_base: str, model: str, api_key: str) -> None:
+    """Confirm the model exists before shipping 24k chars at it.
+
+    A deleted model is the failure that started all of this, and catching it on
+    a 10s catalog GET costs nothing. Nothing is cached: the whole point is to
+    observe the provider's state on this run.
+    """
+    url = f"{api_base}/models"
+    try:
+        payload = _api_request(url, key=api_key, model=model, timeout=PREFLIGHT_TIMEOUT_S)
+    except TitlePassError as exc:
+        if exc.reason_code == "missing_model":
+            raise
+        # Not every OpenAI-compatible provider exposes /models, and an unreadable
+        # catalog is not evidence the model is gone. Never block on it.
+        note(f"note: model preflight skipped ({exc})")
+        return
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    ids = {str(entry.get("id")) for entry in (entries or []) if isinstance(entry, dict)}
+    if not ids:
+        note(f"note: {url} listed no models; preflight skipped")
+        return
+    # OpenRouter honours routing suffixes (:nitro, :floor, :online) that never
+    # appear in the catalog, so a bare-id match still counts. Preflight must
+    # never veto a model the provider would happily have served.
+    if model in ids or model.split(":", 1)[0] in ids:
+        return
+    raise TitlePassError(
+        f"model {model!r} is not among the {len(ids)} models served by {url}",
+        reason_code="missing_model")
+
+
+def _parse_json_content(content: str) -> dict[str, Any]:
+    text = (content or "").strip()
+    if text.startswith("```"):
+        # strict json_schema should make fences impossible, but a provider that
+        # silently downgrades to a plain completion still emits usable JSON.
+        text = re.sub(r"^```[A-Za-z0-9]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise TitlePassError(f"model returned non-JSON content: {text[:300]!r}",
+                             reason_code="provider_bad_response") from exc
+    if not isinstance(result, dict):
+        raise TitlePassError("model returned a non-object result",
+                             reason_code="provider_bad_response")
+    return result
+
+
+def hosted_enrichment(body: str, *, model: str, api_base: str, api_key: str,
+                      timeout: float, existing_title: str = "",
+                      existing_summary: str = "") -> dict[str, str]:
     prompt = """Create durable metadata for this private audio transcript.
 
 Return a specific title and a factual summary. The title must be 4-10 words,
@@ -75,38 +297,59 @@ the supplied transcript. Do not infer names or facts that are not present.
     if existing_summary:
         prompt += f"\nPreserve this existing summary exactly: {existing_summary}\n"
     prompt += "\nTRANSCRIPT:\n" + transcript_context(body)
-    request_body = json.dumps({
-        "model": model,
-        "stream": False,
-        "think": False,
-        "format": RESULT_SCHEMA,
-        "options": {"temperature": 0.1},
-        "messages": [
-            {"role": "system", "content": "Return only the requested JSON object."},
-            {"role": "user", "content": prompt},
-        ],
-    }).encode()
-    request = urllib.request.Request(
-        endpoint.rstrip("/") + "/api/chat",
-        data=request_body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+
+    preflight_model(api_base=api_base, model=model, api_key=api_key)
+
+    payload = _api_request(
+        f"{api_base}/chat/completions",
+        key=api_key,
+        model=model,
+        timeout=timeout,
+        payload={
+            "model": model,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            # Top-level temperature is the OpenAI-compatible spelling; Ollama's
+            # options{} block and its `think` flag are not portable and are gone.
+            "temperature": 0.1,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "transcript_metadata",
+                    "strict": True,
+                    "schema": RESULT_SCHEMA,
+                },
+            },
+            "messages": [
+                {"role": "system", "content": "Return only the requested JSON object."},
+                {"role": "user", "content": prompt},
+            ],
+        },
     )
-    timeout = float(os.environ.get("WAX_TITLE_REQUEST_TIMEOUT_S", "540"))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read())
-        content = payload.get("message", {}).get("content", "")
-        result = json.loads(content)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise TitlePassError(f"local title model failed: {exc}") from exc
-    if not isinstance(result, dict):
-        raise TitlePassError("local title model returned a non-object result")
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        # Providers signal quota and moderation stops in the envelope, not with a
+        # status code, so surface the envelope rather than an AttributeError.
+        raise TitlePassError(
+            f"no message content in provider response: {json.dumps(payload)[:300]}",
+            reason_code="provider_bad_response") from exc
+    result = _parse_json_content(content)
     title = str(result.get("title") or "").strip()
     summary = str(result.get("summary") or "").strip()
     if not title or not summary:
-        raise TitlePassError("local title model returned an empty title or summary")
+        raise TitlePassError(f"{model} returned an empty title or summary",
+                             reason_code="provider_bad_response")
     return {"title": title, "summary": summary}
+
+
+def _request_timeout() -> float:
+    raw = os.environ.get("WAX_TITLE_REQUEST_TIMEOUT_S", "").strip()
+    try:
+        return float(raw) if raw else DEFAULT_REQUEST_TIMEOUT_S
+    except ValueError:
+        note(f"note: WAX_TITLE_REQUEST_TIMEOUT_S={raw!r} is not a number; "
+             f"using {DEFAULT_REQUEST_TIMEOUT_S:g}s")
+        return DEFAULT_REQUEST_TIMEOUT_S
 
 
 def build_result(md: Path) -> dict[str, Any]:
@@ -119,10 +362,19 @@ def build_result(md: Path) -> dict[str, Any]:
     if existing_title and existing_summary:
         enriched = {"title": existing_title, "summary": existing_summary}
     else:
-        enriched = ollama_enrichment(
+        api_base = os.environ.get("WAX_TITLE_API_BASE", DEFAULT_API_BASE).strip().rstrip("/")
+        model = os.environ.get("WAX_TITLE_MODEL", DEFAULT_MODEL).strip()
+        api_key = resolve_api_key(
+            primary_ref=os.environ.get("WAX_TITLE_API_KEY_OP", DEFAULT_API_KEY_OP).strip(),
+            fallback_ref=os.environ.get("WAX_TITLE_API_KEY_OP_FALLBACK",
+                                        DEFAULT_API_KEY_OP_FALLBACK).strip(),
+        )
+        enriched = hosted_enrichment(
             body,
-            model=os.environ.get("WAX_TITLE_MODEL", "qwen3.6:latest"),
-            endpoint=os.environ.get("WAX_OLLAMA_URL", "http://127.0.0.1:11434"),
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+            timeout=_request_timeout(),
             existing_title=existing_title,
             existing_summary=existing_summary,
         )
@@ -142,19 +394,29 @@ def build_result(md: Path) -> dict[str, Any]:
     }
 
 
+def _fail(reason_code: str, detail: str) -> int:
+    # Contract D: the runner classifies from the FIRST stderr line, so it goes
+    # out ahead of the buffered notes. Keep the whole stream short — the runner
+    # only retains the tail of stderr.
+    print(f"reason_code={reason_code}", file=sys.stderr)
+    print(detail, file=sys.stderr)
+    _flush_notes()
+    return 1
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("usage: title-slug TRANSCRIPT.md [ITEM_ID]", file=sys.stderr)
         return 2
     md = Path(sys.argv[1]).expanduser().resolve()
     if not md.is_file():
-        print(f"not a transcript file: {md}", file=sys.stderr)
-        return 2
+        return _fail("run_error", f"not a transcript file: {md}")
     try:
-        print(json.dumps(build_result(md), ensure_ascii=False))
+        result = build_result(md)
     except TitlePassError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+        return _fail(exc.reason_code, str(exc))
+    print(json.dumps(result, ensure_ascii=False))
+    _flush_notes()
     return 0
 
 

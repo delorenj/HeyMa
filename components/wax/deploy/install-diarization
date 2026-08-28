@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Create or repair Wax's dedicated, reproducible CUDA diarization environment.
+
+set -euo pipefail
+
+COMPONENT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$COMPONENT/../.." && pwd)"
+VENV="${DIARIZATION_VENV:-$REPO/.venv-diarization}"
+PYTHON="$VENV/bin/python"
+REQUIREMENTS="$COMPONENT/requirements-diarization.txt"
+
+if [[ ! -x "$PYTHON" ]]; then
+  # A capacity cleanup may leave a half-removed venv directory. Preserve any
+  # surviving files while recreating the interpreter layout, then let uv repair
+  # the pinned packages below.
+  uv venv --python 3.12 --allow-existing "$VENV"
+fi
+
+uv pip install --python "$PYTHON" -r "$REQUIREMENTS"
+
+WAX_SRC="$COMPONENT/src" "$PYTHON" - <<'PY'
+import os
+import sys
+
+sys.path.insert(0, os.environ["WAX_SRC"])
+from wax.diarization_sortformer import cuda_smoke
+
+result = cuda_smoke()
+print(f"CUDA diarization ready: {result}")
+PY
