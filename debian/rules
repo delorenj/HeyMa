@@ -1,0 +1,61 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_install:
+	# Install the Wax runtime tree under /opt/wax so the repo-root shims can
+	# resolve the component launcher relative to themselves.
+	install -d debian/wax/opt/wax
+	cp -a bin debian/wax/opt/wax/
+	install -d debian/wax/opt/wax/components
+	cp -a components/wax debian/wax/opt/wax/components/
+	install -m 644 AGENTS.md debian/wax/opt/wax/
+	# Drop build/cache artifacts that bloat the package.
+	find debian/wax/opt/wax -type d \( \
+		-name __pycache__ -o \
+		-name .pytest_cache -o \
+		-name .benchmarks -o \
+		-name build \
+	\) -prune -exec rm -rf {} + 2>/dev/null || true
+
+	# Command shims from /usr/bin -> /opt/wax/bin (handled by debian/wax.links)
+
+	# Render systemd user units for the packaged install paths.
+	install -d debian/wax/usr/lib/systemd/user
+	python3 debian/render-units.py \
+		components/wax/deploy/systemd/user/waxd.service \
+		debian/wax/usr/lib/systemd/user/waxd.service
+	cp components/wax/deploy/systemd/user/wax-alert.service \
+		debian/wax/usr/lib/systemd/user/wax-alert.service
+	python3 debian/render-units.py \
+		components/wax/deploy/systemd/user/wax-capture-guard.service \
+		debian/wax/usr/lib/systemd/user/wax-capture-guard.service
+
+	# Desktop entry so the daemon can be started from the app grid.
+	install -d debian/wax/usr/share/applications
+	install -m 644 debian/wax.desktop \
+		debian/wax/usr/share/applications/wax.desktop
+
+	# Application icon (green tray icon resized to 256x256).
+	install -d debian/wax/usr/share/pixmaps
+	convert components/wax/assets/tray/wax-tray-icon-green.png \
+		-resize 256x256 \
+		debian/wax/usr/share/pixmaps/wax.png
+
+override_dh_auto_build:
+	# Nothing to compile.
+
+override_dh_auto_test:
+	# Tests require a full diarization runtime; skip during package build.
+
+override_dh_installsystemd:
+	# No system units.
+	dh_installsystemd --no-enable
+
+override_dh_installsystemduser:
+	# Install the user units but do not enable them; the daemon is started on
+	# demand from the app icon or via `systemctl --user start waxd`.
+	dh_installsystemduser --no-enable

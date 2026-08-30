@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Wax
+Comment=HeyMa audio recorder and transcription tray
+Exec=/usr/bin/waxd
+Icon=/usr/share/pixmaps/wax.png
+Terminal=false
+Type=Application
+Categories=Audio;AudioVideo;Utility;
+Keywords=audio;record;transcribe;stt;
+StartupNotify=true

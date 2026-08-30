@@ -1,0 +1,3 @@
+/opt/wax/bin/wax /usr/bin/wax
+/opt/wax/bin/waxd /usr/bin/waxd
+/opt/wax/bin/transcribe /usr/bin/wax-transcribe

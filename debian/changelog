@@ -1,0 +1,21 @@
+wax (0.1.1) unstable; urgency=medium
+
+  * Rebuild so the shipped WAX-DESIGN.md matches source. The installed copy
+    under /opt/wax still tabulated all 20 audio subjects as
+    bloodbank.evt.v1.* / bloodbank.cmd.v1.* and asserted that Candystore
+    subscribes bloodbank.evt.v1.> — the live durable filters bloodbank.evt.>,
+    with no version segment. Source was corrected on 2026-08-28; the deployed
+    copy was not, so anyone reading the spec on the box that runs Wax was
+    reading the retired grammar. Docs-only in effect: the sole code delta is
+    two comment line references in archive.py and tray.py that moved with the
+    doc edit.
+
+ -- Jarad DeLorenzo <jarad@automaticai.io>  Sun, 30 Aug 2026 00:00:00 +0000
+
+wax (0.1.0) unstable; urgency=medium
+
+  * Initial Debian package for the Wax audio pipeline.
+  * Ship wax/waxd CLI shims, tray assets, systemd user units, and a
+    .desktop entry so the daemon can be started from the app grid.
+
+ -- Jarad DeLorenzo <jarad@automaticai.io>  Mon, 24 Aug 2026 00:00:00 +0000
