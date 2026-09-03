@@ -226,10 +226,12 @@ def clear_stage_failure(slug: str | None = None) -> None:
 
 class Tray:
     def __init__(self, on_toggle=None, on_quit=None, on_open=None,
-                 on_skip=None, on_clear_completed=None, on_open_transcript=None):
+                 on_skip=None, on_clear_completed=None, on_open_transcript=None,
+                 on_retry_item=None, on_retry_passes=None):
         self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
         self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
         self.on_open_transcript = on_open_transcript
+        self.on_retry_item, self.on_retry_passes = on_retry_item, on_retry_passes
         self.indicator = None
         self.registered = False
         self._colour = None
@@ -414,8 +416,19 @@ class Tray:
                 # detail (contract D), so naming the pass makes the hover the
                 # first step of the diagnosis instead of a dead end.
                 tooltip = f"failed pass: {_slug_list(_failing_slugs(item), 4)}\n{tooltip}"
+            if item.get("state") in ("failed", "suspect"):
+                tooltip = f"Click to retry this item.\n{tooltip}"
+            elif _has_stage_failure(item):
+                tooltip = f"Click to retry the failed pass.\n{tooltip}"
             row.set_tooltip_text(tooltip)
-            if item.get("state") == "complete" and item.get("md_path"):
+            if (not item.get("active") and
+                    item.get("state") in ("failed", "suspect") and self.on_retry_item):
+                row.connect("activate", self._retry_item, item["item_id"])
+            elif not item.get("active") and _has_stage_failure(item) and self.on_retry_passes:
+                row.connect(
+                    "activate", self._retry_passes, item["item_id"], tuple(_failing_slugs(item)),
+                )
+            elif item.get("state") == "complete" and item.get("md_path"):
                 row.connect(
                     "activate",
                     lambda _widget, path=item["md_path"]: self.on_open_transcript
@@ -433,6 +446,18 @@ class Tray:
             clear.connect("activate", lambda *_: self.on_clear_completed and self.on_clear_completed())
             menu.append(clear)
         menu.show_all()
+
+    def _retry_item(self, row, item_id: str) -> None:
+        """Disable a clicked failure immediately, then hand it to the daemon."""
+        row.set_sensitive(False)
+        if self.on_retry_item:
+            self.on_retry_item(item_id)
+
+    def _retry_passes(self, row, item_id: str, slugs: tuple[str, ...]) -> None:
+        """Retry only the failed passes represented by this completed row."""
+        row.set_sensitive(False)
+        if self.on_retry_passes:
+            self.on_retry_passes(item_id, slugs)
 
     def _animate_queue(self) -> bool:
         """Animate only the active row; no menu rebuild and no ledger polling."""

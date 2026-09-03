@@ -481,7 +481,7 @@ def skip_item(item_id: str) -> dict[str, Any]:
 
 
 def retry_item(item_id: str) -> dict[str, Any]:
-    """Explicitly requeue one preserved failed inbox item.
+    """Explicitly requeue one preserved failed or suspect inbox item.
 
     Failed items are poison-proof by design: next_item() skips them so healthy
     work can continue. That also means a repaired dependency cannot make an
@@ -500,8 +500,8 @@ def retry_item(item_id: str) -> dict[str, Any]:
         ).fetchone()
         if not row:
             raise RuntimeError(f"unknown queue item: {item_id}")
-        if row["state"] != "failed":
-            raise RuntimeError(f"item is not failed: {row['state']}")
+        if row["state"] not in ("failed", "suspect"):
+            raise RuntimeError(f"item is not failed or suspect: {row['state']}")
         source = Path(row["path"])
         try:
             source.resolve().relative_to(paths.INBOX.resolve())
@@ -528,6 +528,67 @@ def retry_item(item_id: str) -> dict[str, Any]:
             "path": str(source),
             "previous_cause": previous_cause,
         }
+
+
+def retry_failed_passes(item_id: str, slugs: tuple[str, ...]) -> dict[str, Any]:
+    """Retry the named failed enrichment passes for one completed item.
+
+    Tray rows can aggregate more than one independent pass failure. A click
+    retries exactly those passes, never every enabled pass and never failures
+    belonging to other recordings.
+    """
+    requested = tuple(dict.fromkeys(str(slug) for slug in slugs if slug))
+    if not requested:
+        raise RuntimeError("no failed passes were selected")
+
+    conn = ledger.connect()
+    item = conn.execute(
+        "SELECT orig_name FROM items WHERE item_id=?", (item_id,)
+    ).fetchone()
+    if not item:
+        raise RuntimeError(f"unknown queue item: {item_id}")
+    placeholders = ",".join("?" for _ in requested)
+    failed = {
+        row["ep_slug"] for row in conn.execute(
+            f"SELECT ep_slug FROM passes WHERE item_id=? AND state='failed' "
+            f"AND ep_slug IN ({placeholders})",
+            (item_id, *requested),
+        ).fetchall()
+    }
+    not_failed = [slug for slug in requested if slug not in failed]
+    if not_failed:
+        raise RuntimeError(f"pass is no longer failed: {', '.join(not_failed)}")
+
+    results: list[dict[str, Any]] = []
+    for slug in requested:
+        try:
+            results.append(passes.run(item_id, slug))
+        except passes.PassError as exc:
+            results.append({
+                "item_id": item_id,
+                "ep_slug": slug,
+                "state": "failed",
+                "error": str(exc),
+                "reason_code": "run_error",
+            })
+
+    name = item["orig_name"] or item_id
+    failures = _log_enrichment(item_id, name, results)
+    _announce_done(name, results)
+    out: dict[str, Any] = {
+        "item_id": item_id,
+        "retried": len(results),
+        "completed": len(results) - len(failures),
+        "failed": len(failures),
+        "results": results,
+    }
+    # A successful title/slug retry can rename the note, so refresh the archive
+    # projection just as the ordinary worker does after automatic passes.
+    if any(result.get("state") == "completed" for result in results):
+        linked = _link_archive(item_id)
+        if linked is not None:
+            out["archive_link"] = linked
+    return out
 
 
 class Worker(threading.Thread):

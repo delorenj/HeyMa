@@ -38,6 +38,38 @@ class WorkerEnrichmentTest(unittest.TestCase):
             self.assertEqual(result["parked"], str(parked))
             self.assertEqual(set_state.call_args_list[-1].args[:2], ("item-id", "complete"))
 
+    def test_retry_failed_passes_runs_only_the_requested_failed_passes(self):
+        connection = MagicMock()
+        item_result = MagicMock()
+        item_result.fetchone.return_value = {"orig_name": "recording.ogg"}
+        passes_result = MagicMock()
+        passes_result.fetchall.return_value = [
+            {"ep_slug": "title-slug"},
+            {"ep_slug": "wikification"},
+        ]
+        connection.execute.side_effect = [item_result, passes_result]
+        results = [
+            {"item_id": "item-id", "ep_slug": "title-slug", "state": "completed"},
+            {"item_id": "item-id", "ep_slug": "wikification", "state": "completed"},
+        ]
+
+        with patch.object(worker.ledger, "connect", return_value=connection), \
+                patch.object(worker.passes, "run", side_effect=results) as run, \
+                patch.object(worker, "_log_enrichment", return_value=[]), \
+                patch.object(worker, "_announce_done"), \
+                patch.object(worker, "_link_archive", return_value=None):
+            result = worker.retry_failed_passes(
+                "item-id", ("title-slug", "title-slug", "wikification")
+            )
+
+        self.assertEqual(
+            [call.args for call in run.call_args_list],
+            [("item-id", "title-slug"), ("item-id", "wikification")],
+        )
+        self.assertEqual(result["retried"], 2)
+        self.assertEqual(result["completed"], 2)
+        self.assertEqual(result["failed"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 COMPONENT_ROOT = next(
@@ -26,6 +26,51 @@ def import_tray_without_desktop_dependencies():
     with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}):
         sys.modules.pop("wax.tray", None)
         return importlib.import_module("wax.tray")
+
+
+class FakeMenu:
+    def __init__(self):
+        self.children = []
+
+    def append(self, child):
+        self.children.append(child)
+
+    def get_children(self):
+        return list(self.children)
+
+    def remove(self, child):
+        self.children.remove(child)
+
+    def show_all(self):
+        pass
+
+
+class FakeMenuItem:
+    def __init__(self, label=""):
+        self.label = label
+        self.sensitive = True
+        self.tooltip = ""
+        self.signals = {}
+
+    def set_label(self, label):
+        self.label = label
+
+    def set_sensitive(self, sensitive):
+        self.sensitive = sensitive
+
+    def set_tooltip_text(self, tooltip):
+        self.tooltip = tooltip
+
+    def connect(self, signal, callback, *args):
+        self.signals[signal] = (callback, args)
+
+    def activate(self):
+        callback, args = self.signals["activate"]
+        callback(self, *args)
+
+
+class FakeSeparatorMenuItem(FakeMenuItem):
+    pass
 
 
 class TrayIconTest(unittest.TestCase):
@@ -114,6 +159,63 @@ class TrayIconTest(unittest.TestCase):
     def test_obsidian_uri_uses_absolute_transcript_path(self):
         uri = self.tray.obsidian_uri("/home/me/My Vault/a note.md")
         self.assertEqual(uri, "obsidian://open?path=/home/me/My%20Vault/a%20note.md")
+
+    def render_queue(self, items):
+        subject = self.tray.Tray.__new__(self.tray.Tray)
+        subject.queue_menu = FakeMenu()
+        subject.item_queue = FakeMenuItem()
+        subject._queue_items = items
+        subject._queue_rows = {}
+        subject._spinner_frame = 0
+        subject.on_retry_item = MagicMock()
+        subject.on_retry_passes = MagicMock()
+        subject.on_open_transcript = MagicMock()
+        subject.on_clear_completed = MagicMock()
+        fake_gtk = types.SimpleNamespace(
+            MenuItem=FakeMenuItem,
+            SeparatorMenuItem=FakeSeparatorMenuItem,
+        )
+        with patch.object(self.tray, "Gtk", fake_gtk):
+            subject._render_queue()
+        return subject
+
+    def test_clicking_failed_item_invokes_item_retry_and_disables_row(self):
+        subject = self.render_queue([{
+            "item_id": "failed-item",
+            "orig_name": "failed.ogg",
+            "state": "failed",
+            "active": False,
+            "error": {"cause_code": "archive_failed"},
+        }])
+
+        row = subject._queue_rows["failed-item"]
+        self.assertIn("Click to retry this item.", row.tooltip)
+        row.activate()
+
+        self.assertFalse(row.sensitive)
+        subject.on_retry_item.assert_called_once_with("failed-item")
+        subject.on_retry_passes.assert_not_called()
+
+    def test_clicking_failed_pass_retries_only_that_rows_passes(self):
+        subject = self.render_queue([{
+            "item_id": "completed-item",
+            "orig_name": "recording.ogg",
+            "state": "complete",
+            "active": False,
+            "md_path": "/vault/recording.md",
+            "passes_failed": 2,
+            "passes_failed_slugs": ["title-slug", "wikification"],
+        }])
+
+        row = subject._queue_rows["completed-item"]
+        self.assertIn("Click to retry the failed pass.", row.tooltip)
+        row.activate()
+
+        self.assertFalse(row.sensitive)
+        subject.on_retry_passes.assert_called_once_with(
+            "completed-item", ("title-slug", "wikification")
+        )
+        subject.on_open_transcript.assert_not_called()
 
 
 if __name__ == "__main__":

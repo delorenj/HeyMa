@@ -1,3 +1,11 @@
+wax (0.1.2) unstable; urgency=medium
+
+  * Make tray failure rows actionable. Clicking a failed or suspect inbox item
+    requeues it, while clicking a completed item with failed enrichment reruns
+    only the failed passes shown on that row.
+
+ -- Jarad DeLorenzo <jarad@automaticai.io>  Thu, 03 Sep 2026 13:23:20 -0400
+
 wax (0.1.1) unstable; urgency=medium
 
   * Rebuild so the shipped WAX-DESIGN.md matches source. The installed copy

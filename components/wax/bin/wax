@@ -1013,7 +1013,9 @@ def main() -> int:
     sub.add_parser("queue", help="tray queue rows", parents=[common])
     sk = sub.add_parser("skip", help="preserve a queued item without processing it", parents=[common])
     sk.add_argument("item_id")
-    rt = sub.add_parser("retry", help="requeue a preserved failed inbox item", parents=[common])
+    rt = sub.add_parser(
+        "retry", help="requeue a preserved failed or suspect inbox item", parents=[common]
+    )
     rt.add_argument("item_id")
 
     ep = sub.add_parser("ep", help="enrichment passes", parents=[common]).add_subparsers(dest="sub", required=True)

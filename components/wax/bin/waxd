@@ -114,6 +114,8 @@ class Daemon:
             on_skip=self.skip_item,
             on_clear_completed=self.clear_completed,
             on_open_transcript=self.open_transcript,
+            on_retry_item=self.retry_item,
+            on_retry_passes=self.retry_passes,
         )
         self._serve_socket()
         # Drains the inbox in its own thread so a long transcription can never
@@ -331,6 +333,22 @@ class Daemon:
                 tray_mod._notify("Wax: item skipped", Path(result["path"]).name)
             except Exception as e:  # noqa: BLE001 - operator feedback, daemon stays alive
                 tray_mod._notify("Wax: could not skip item", str(e))
+        threading.Thread(target=act, daemon=True).start()
+
+    def retry_item(self, item_id: str) -> None:
+        def act():
+            try:
+                worker_mod.retry_item(item_id)
+            except Exception as e:  # noqa: BLE001 - operator feedback, daemon stays alive
+                tray_mod._notify("Wax: could not retry item", str(e))
+        threading.Thread(target=act, daemon=True).start()
+
+    def retry_passes(self, item_id: str, slugs: tuple[str, ...]) -> None:
+        def act():
+            try:
+                worker_mod.retry_failed_passes(item_id, slugs)
+            except Exception as e:  # noqa: BLE001 - operator feedback, daemon stays alive
+                tray_mod._notify("Wax: could not retry pass", str(e))
         threading.Thread(target=act, daemon=True).start()
 
     def clear_completed(self) -> None:
