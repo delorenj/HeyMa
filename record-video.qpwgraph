@@ -2,16 +2,8 @@
 <patchbay name="record-video" version="0.9.5">
  <items>
   <item node-type="pipewire" port-type="pipewire-audio">
-   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
-   <input node="PortAudio-1" port="PortAudio:in_9"/>
-  </item>
-  <item node-type="pipewire" port-type="pipewire-audio">
-   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
-   <input node="PortAudio-1" port="PortAudio:in_8"/>
-  </item>
-  <item node-type="pipewire" port-type="pipewire-audio">
-   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
-   <input node="Scarlett 4i4 4th Gen Pro" port="Scarlett 4i4 4th Gen:playback_AUX0"/>
+   <output node="Yeti Stereo Microphone Analog Stereo" port="Yeti Stereo Microphone:capture_FL"/>
+   <input node="Chromium input" port="Chromium input:input_FL"/>
   </item>
   <item node-type="pipewire" port-type="pipewire-audio">
    <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FR"/>
@@ -21,6 +13,45 @@
    <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FR"/>
    <input node="PortAudio-2" port="PortAudio:in_5"/>
   </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
+   <input node="Scarlett 4i4 4th Gen Pro" port="Scarlett 4i4 4th Gen:playback_AUX0"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Google Chrome" port="Google Chrome:output_FL"/>
+   <input node="Chromium input" port="Chromium input:input_FL"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Google Chrome" port="Google Chrome:output_FL"/>
+   <input node="Scarlett 4i4 4th Gen Analog Surround 2.1" port="Scarlett 4i4 4th Gen:playback_FL"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Yeti Stereo Microphone Analog Stereo" port="Yeti Stereo Microphone:capture_FR"/>
+   <input node="Chromium input" port="Chromium input:input_FR"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Google Chrome" port="Google Chrome:output_FR"/>
+   <input node="Chromium input" port="Chromium input:input_FR"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
+   <input node="PortAudio-1" port="PortAudio:in_8"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="PulseAudio Volume Control-7" port="PulseAudio Volume Control:monitor_FL"/>
+   <input node="PortAudio-1" port="PortAudio:in_9"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Google Chrome" port="Google Chrome:output_FR"/>
+   <input node="Scarlett 4i4 4th Gen Analog Surround 2.1" port="Scarlett 4i4 4th Gen:playback_FR"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Chromium" port="Chromium:output_FL"/>
+   <input node="Google Chrome input" port="Google Chrome input:input_FL"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Chromium" port="Chromium:output_FR"/>
+   <input node="Google Chrome input" port="Google Chrome input:input_FR"/>
+  </item>
  </items>
 </patchbay>
-

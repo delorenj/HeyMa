@@ -51,7 +51,7 @@ def _ffmpeg_argv(source: str, out: Path, rid: str, *, channels: int, rate: int, 
         "systemd-run", "--user", "--scope", "--collect", "--quiet",
         "--unit", f"wax-{rid}",
         "--",
-        "ffmpeg", "-hide_banner", "-loglevel", "warning",
+        "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostats",
         # Flush every packet to disk instead of filling a ~32 KiB AVIO buffer
         # first. Measured: without this a SIGKILLed capture leaves a 0-byte
         # file — the buffer dies with the process. The audio is the
@@ -60,6 +60,7 @@ def _ffmpeg_argv(source: str, out: Path, rid: str, *, channels: int, rate: int, 
         # therefore always salvageable.
         "-flush_packets", "1",
         "-f", "pulse", "-i", source,
+        "-af", "silencedetect=noise=-50dB:d=5",
         "-ac", str(channels), "-ar", str(rate),
         "-c:a", "libopus", "-b:a", bitrate,
         # Segment muxer: each closed segment carries its own trailer and is

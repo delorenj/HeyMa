@@ -100,8 +100,22 @@ def stream_state(*, run_preflight: bool = True) -> dict[str, Any]:
                       partial_bytes=sentinel.segment_bytes(rid),
                   segments=len(sentinel.segments(rid)))
 
-        # A stop was requested: we are finalizing (clause a) unless the
-        # finalizer itself died or blew its deadline.
+        # A completed finalizer may have exited normally after recording its
+        # outcome. Adjudicate that durable evidence before checking its owner.
+        fin = sentinel.read_json(paths.fin_path(rid))
+        if fin is not None:
+            if fin.get("ok") is True:
+                continue
+            reason = str(fin.get("reason") or "finalize_failed")
+            return _s("error-partial", rid=rid, rec=rec,
+                      cause_code=reason,
+                      evidence=f"fin.json records failed finalization: {reason}",
+                      fin=fin,
+                      partial_bytes=sentinel.segment_bytes(rid),
+                      segments=len(sentinel.segments(rid)))
+
+        # A stop was requested and no outcome was recorded: we are finalizing
+        # (clause a) unless the finalizer itself died or blew its deadline.
         if not sentinel.finalizer_alive(stop):
             return _s("error-partial", rid=rid, rec=rec,
                       cause_code="finalizer_died",

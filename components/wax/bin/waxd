@@ -107,6 +107,8 @@ class Daemon:
         # window. They must be separate — see _condition.
         self._conditions: dict[str, tuple[Optional[str], float, float]] = {}
         self.snapshot: dict = {}
+        self._silence_monitor_rid: Optional[str] = None
+        self._silence_monitor_file = None
         self.tray = tray_mod.Tray(
             on_toggle=self.toggle,
             on_quit=self.quit,
@@ -159,6 +161,38 @@ class Daemon:
         self._conditions[key] = (detail, first_at if repeat else now, now)
         log.log(level, "%s: %s%s", key, detail,
                 f" (still, {int(now - first_at)}s)" if repeat else "")
+
+    def _check_silence(self, snap: dict) -> None:
+        recording = snap.get("stream", {}).get("state") == "recording"
+        if not recording:
+            if self._silence_monitor_file:
+                self._silence_monitor_file.close()
+                self._silence_monitor_file = None
+            self._silence_monitor_rid = None
+            return
+
+        rid = snap.get("stream", {}).get("rid")
+        if rid and rid != self._silence_monitor_rid:
+            if self._silence_monitor_file:
+                self._silence_monitor_file.close()
+            self._silence_monitor_rid = rid
+            log_path = paths.LOGS / rid / "encoder.log"
+            if log_path.exists():
+                try:
+                    self._silence_monitor_file = open(log_path, "r", errors="replace")
+                    self._silence_monitor_file.seek(0, os.SEEK_END)
+                except OSError:
+                    self._silence_monitor_file = None
+            else:
+                self._silence_monitor_file = None
+
+        if self._silence_monitor_file:
+            try:
+                for line in self._silence_monitor_file.readlines():
+                    if "silence_start" in line:
+                        subprocess.Popen(["play", "-q", "-n", "synth", "0.1", "sine", "880", "pad", "0", "0.1", "repeat", "3", "vol", "0.5"])
+            except OSError:
+                pass
 
     def _tick(self) -> bool:
         try:
@@ -237,6 +271,7 @@ class Daemon:
         except Exception as e:  # noqa: BLE001 - queue UI must not affect recording
             snap["tray_queue_error"] = str(e)
             self._condition("tray_menu_error", f"{type(e).__name__}: {e}")
+        self._check_silence(snap)
         self._mirror(snap, colour)
         return True
 

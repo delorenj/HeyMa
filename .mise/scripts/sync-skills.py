@@ -187,6 +187,41 @@ def lexical_symlink_target(link):
     return Path(os.path.normpath(str(lexical)))
 
 
+def assert_nonrecursive_skill_link(destination, source):
+    """Reject a link that would point from inside a skill back to that skill.
+
+    A repository may legitimately be the source of a globally distributed
+    skill.  When fanout runs inside that same repository, however, projecting
+    ``<repo>/.claude/skills/<name> -> <repo>`` creates an unbounded filesystem
+    cycle for every symlink-following walker.  Compare the lexical destination
+    against the resolved source so the check also catches a catalog alias that
+    points at the repository root.
+
+    The one safe equality is an existing real directory in the shared managed
+    projection.  That directory is already in its final location and the
+    caller preserves it instead of creating a symlink.
+    """
+    destination = Path(destination).absolute()
+    source = Path(source).resolve(strict=True)
+    if destination == source and is_real_directory(destination):
+        return
+    try:
+        destination.relative_to(source)
+    except ValueError:
+        return
+    raise ValueError(
+        "Refusing recursive skill symlink: destination "
+        f"{destination} is inside its resolved source {source}"
+    )
+
+
+def assert_nonrecursive_skill_topology(active_cli_dirs, skill_sources):
+    """Validate every proposed source/destination pair before any mutation."""
+    for _cli_dir, expected_cli in active_cli_dirs:
+        for name, source in skill_sources.items():
+            assert_nonrecursive_skill_link(expected_cli / validate_skill_name(name), source)
+
+
 def preflight_cli_dirs(
     cli_dirs_base,
     skill_names,
@@ -284,6 +319,8 @@ def preflight_cli_dirs(
             if cli_dir.exists() and cli_dir.resolve(strict=True) != expected_cli:
                 raise ValueError(f"CLI skills directory escapes its parent: {cli_dir}")
         add_target(cli_dir, expected_cli)
+    if skill_sources is not None:
+        assert_nonrecursive_skill_topology(active, skill_sources)
     return active
 
 
@@ -1539,7 +1576,12 @@ def fanout_to_cli(
     """
     skill_names = [validate_skill_name(name) for name in skills_map]
     if active_cli_dirs is None:
-        active_cli_dirs = preflight_cli_dirs(cli_dirs_base, skill_names, scope)
+        active_cli_dirs = preflight_cli_dirs(
+            cli_dirs_base,
+            skill_names,
+            scope,
+            skill_sources=skills_map,
+        )
     if skill_names and not active_cli_dirs:
         # A sync that resolves skills but has nowhere to put them has FAILED.
         # Reporting success here is how a topology change silently unprojects
@@ -1564,6 +1606,7 @@ def fanout_to_cli(
             symlink_target = real_cli_dir / name
             if symlink_target.parent != real_cli_dir:
                 raise ValueError(f"Skill destination escapes CLI directory: {symlink_target}")
+            assert_nonrecursive_skill_link(symlink_target, actual_path)
 
             # A project-local source may already be the exact destination in
             # the shared `.agents/skills` projection. Preserve that real
@@ -1591,6 +1634,7 @@ def fanout_to_cli(
                     symlink_target.unlink()
 
             revalidate_cli_dir(cli_dirs_base, cli_dir, expected_cli)
+            assert_nonrecursive_skill_link(symlink_target, actual_path)
             os.symlink(actual_path, symlink_target)
             linked_total += 1
             print(f"→ {symlink_target} -> {actual_path}")

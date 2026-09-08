@@ -19,9 +19,10 @@ What this script owns is the transactional projection into the project:
     one unsafe or tampered pack produces ZERO mutation
   * `.agents/skills.json` is rewritten atomically, preserving its mode
 
-Backwards compatibility: a project that declares no `bmad` pack still gets the
-pinned BMAD pack expanded into `skills[]`, exactly as before. Declaring
-`{"name": "bmad", ...}` in `packs[]` takes over and the pin is not consulted.
+Only packs a project DECLARES in `packs[]` are provisioned. Nothing is pinned
+implicitly -- in particular BMAD is not a pack: `bmad-method install` writes
+bmad-* skills into `.agents/skills` itself, versioned per project by
+`_bmad/_config/manifest.yaml`.
 """
 
 from __future__ import annotations
@@ -40,11 +41,12 @@ from typing import Callable
 SKILLS_SCHEMA = "https://raw.githubusercontent.com/delorenj/skillex/main/skills.schema.json"
 SKILLS_REGISTRY = "https://github.com/delorenj/skillex.git"
 
-# The BMAD pack pinned when a project declares none. Sealed from this side so
-# the pinned release is verified byte-for-byte even though its `pack.toml`
-# predates `[policy] sealed`.
-BMAD_PACK_NAME = "bmad"
-BMAD_PACK_VERSION = "6.10.1-next.31"
+# BMAD is NOT a pack. `bmad-method install` writes bmad-* skills into
+# .agents/skills itself, per project, versioned by _bmad/_config/manifest.yaml.
+# This script used to pin a frozen `packs/bmad/<version>` in the registry and
+# project a second copy of the same skills; when the registry dropped that pack
+# the pin took every `pjangler project create` down with it on any machine
+# without a warm cache. Only packs a project DECLARES are provisioned now.
 
 
 def load_engine():
@@ -68,36 +70,11 @@ engine = load_engine()
 
 
 def pack_root_override(name: str) -> Path | None:
-    """Developer/test pin for one pack root, e.g. `PJ_PACK_ROOT_HERMES_BASE`.
-
-    `PJ_BMAD_PACK_ROOT` predates the generic form and stays a first-class alias
-    for the `bmad` pack.
-    """
+    """Developer/test pin for one pack root, e.g. `PJ_PACK_ROOT_HERMES_BASE`."""
     generic = os.environ.get(f"PJ_PACK_ROOT_{re.sub(r'[^A-Z0-9]', '_', name.upper())}", "").strip()
     if generic:
         return Path(generic).expanduser().absolute()
-    if name == BMAD_PACK_NAME:
-        legacy = os.environ.get("PJ_BMAD_PACK_ROOT", "").strip()
-        if legacy:
-            return Path(legacy).expanduser().absolute()
     return None
-
-
-def implicit_bmad_entry() -> dict:
-    """The implicit BMAD pin, expressed as an ordinary `packs[]` entry.
-
-    It deliberately carries NO `source`: like every declared pack it must walk
-    the one resolution ladder in `resolve_pack_root()` -- env override first,
-    then the contract-ordered registry checkouts. Pinning a hardcoded root here
-    would give the same pack name two resolutions in one process, so adding
-    `packs:[{"name":"bmad",...}]` to a manifest would silently MOVE the pack.
-    """
-    return {
-        "name": BMAD_PACK_NAME,
-        "version": BMAD_PACK_VERSION,
-        "sealed": True,
-        "optional": False,
-    }
 
 
 def apply_root_override(entry: dict) -> dict:
@@ -150,24 +127,11 @@ def resolve_declared_packs(manifest: dict, base_dir: Path):
             # Later packs override earlier ones (contract section 5).
             declared_members[name] = path
 
+    # Nothing is pinned implicitly any more. The empty pair is kept so every
+    # caller keeps one shape and the manifest writer still evicts leftovers
+    # from when something WAS pinned here.
     implicit_members: dict[str, Path] = {}
     implicit_packs: list[dict] = []
-    if not any(entry["name"] == BMAD_PACK_NAME for entry in entries):
-        # Same call shape as a declared pack above, so the pin cannot resolve
-        # anywhere a declared `bmad` entry would not.
-        pinned = engine.normalize_pack_entry(apply_root_override(implicit_bmad_entry()))
-        pinned["sealed"] = True
-        for name, path in engine.resolve_pack(
-            pinned,
-            cache_dir,
-            base_dir,
-            default_registry,
-            registry_roots,
-            managed_roots,
-            on_resolved=implicit_packs.append,
-        ):
-            implicit_members[name] = path
-
     return declared_members, implicit_members, declared_packs, implicit_packs
 
 

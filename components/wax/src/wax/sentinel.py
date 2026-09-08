@@ -12,7 +12,7 @@ Two writes bracket every capture:
                    classifiable as instructed vs uninstructed. Its absence next
                    to a dead encoder is the definition of `error-partial`.
 
-<rid>.fin.json records the outcome and is advisory only.
+<rid>.fin.json records the durable finalization outcome.
 """
 
 import json
