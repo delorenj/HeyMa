@@ -24,7 +24,22 @@ env:
   WAX_TITLE_API_BASE: https://openrouter.ai/api/v1
   WAX_TITLE_MODEL: google/gemini-3.7-flash
   # References only. A literal key in this file would be a committed credential.
-  WAX_TITLE_API_KEY_OP: "op://DeLoSecrets/OpenRouter Management API Key - AutomaticAI/credential"
-  WAX_TITLE_API_KEY_OP_FALLBACK: "op://DeLoSecrets/OpenRouter/Management Keys/Main"
+  #
+  # These MUST be inference keys. An OpenRouter *management* / *provisioning*
+  # key mints and lists other keys; it cannot call /chat/completions, and the
+  # only thing it says when you try is `401 {"message":"User not found."}` —
+  # which reads like a broken account, not a wrong key class. That is exactly
+  # what 692d945 shipped. Check any candidate first:
+  #   curl -sH "Authorization: Bearer $(op read <ref>)" \
+  #        https://openrouter.ai/api/v1/key | jq .data.is_provisioning_key
+  # false = usable here. true = wrong key, no matter how right the name looks.
+  #
+  # Referenced by item UUID, not title: the vault holds TWO items named
+  # "OpenRouter API Key - HeyMa", so a title reference is ambiguous and `op
+  # read` fails on it. The UUID is stable across renames and duplicates.
+  # primary  = OpenRouter API Key - HeyMa (created 2026-08-21, 1/day)
+  # fallback = OpenRouter API Key - HeyMa (created 2026-08-20, 5/day)
+  WAX_TITLE_API_KEY_OP: op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential
+  WAX_TITLE_API_KEY_OP_FALLBACK: op://DeLoSecrets/ojyycpd5ti5rc2s3i7rrycdnjm/credential
   WAX_TITLE_REQUEST_TIMEOUT_S: "120"
 command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]

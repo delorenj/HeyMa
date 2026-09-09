@@ -58,7 +58,7 @@ MAX_OUTPUT_TOKENS = 2_048
 DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "google/gemini-3.7-flash"
 DEFAULT_API_KEY_OP = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
-DEFAULT_API_KEY_OP_FALLBACK = "op://DeLoSecrets/OpenRouter/hermes"
+DEFAULT_API_KEY_OP_FALLBACK = "op://DeLoSecrets/ojyycpd5ti5rc2s3i7rrycdnjm/credential"
 DEFAULT_REQUEST_TIMEOUT_S = 120.0
 
 # Preflight is a cheap catalog lookup; it must never be the reason a run is slow.
@@ -82,6 +82,12 @@ RESULT_SCHEMA = {
 # Non-fatal observations. They are held back rather than printed as they happen
 # so that on failure `reason_code=` is genuinely the first line of stderr.
 _NOTES: list[str] = []
+
+# Which reference actually produced the key on this run. A 401 is always a
+# statement about one specific credential, so the failure must name it: the
+# whole cost of the 2026-09-08 outage was a message that said "User not found"
+# and never said *whose* key was not found.
+_KEY_SOURCE = "unresolved"
 
 
 class TitlePassError(RuntimeError):
@@ -145,28 +151,34 @@ def resolve_api_key(*, primary_ref: str, fallback_ref: str) -> str:
     No branch of this ever writes a key to disk, and nothing but the op://
     reference is allowed into a tracked file.
     """
+    global _KEY_SOURCE
+
     direct = os.environ.get("WAX_TITLE_API_KEY", "").strip()
     if direct:
+        _KEY_SOURCE = "$WAX_TITLE_API_KEY"
         return direct
 
     key = _op_read(primary_ref)
     if key:
+        _KEY_SOURCE = primary_ref
         return key
 
     key = _op_read(fallback_ref)
     if key:
-        # Riding another consumer's key. It works today and dies the hour that
-        # consumer rotates, with no signal that wax was ever involved — so say
-        # it on every single run until the dedicated field is minted.
-        note(f"WARNING: no secret at {primary_ref}; borrowing {fallback_ref}. "
-             "Mint the dedicated field — this key breaks silently when its real "
-             "owner rotates it.")
+        _KEY_SOURCE = fallback_ref
+        # The primary reference did not resolve. That is a vault problem that
+        # will outlive this run, and running on the spare hides it — so say it
+        # on every single run until the primary is readable again.
+        note(f"WARNING: no secret at {primary_ref}; falling back to "
+             f"{fallback_ref}. Repair the primary reference — a spare key is "
+             "one rotation away from being no key at all.")
         return key
 
     # Ambient env does not exist under systemd (user units get no login shell),
     # so this only ever helps an interactive run.
     ambient = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if ambient:
+        _KEY_SOURCE = "$OPENROUTER_API_KEY"
         note("WARNING: falling back to ambient $OPENROUTER_API_KEY; waxd will "
              "not have it.")
         return ambient
@@ -190,7 +202,25 @@ def _http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> Title
     if exc.code in (400, 404) and (model.lower() in lowered or "not a valid model" in lowered):
         return TitlePassError(f"{detail} -- model {model!r} is not served here",
                               reason_code="missing_model")
+    if exc.code in (401, 403):
+        # OpenRouter answers a *management/provisioning* key with the same
+        # `401 User not found.` it gives a revoked one, so the body alone cannot
+        # tell "wrong key class" from "dead account". Name the source and the
+        # one-line test instead of making the next person rediscover it.
+        return TitlePassError(
+            f"{detail} -- key from {_KEY_SOURCE} was rejected; confirm it is an "
+            f"inference key, not a management/provisioning key: "
+            f"GET {api_base_of(url)}/key returns is_provisioning_key=false",
+            reason_code="provider_auth_rejected")
     return TitlePassError(detail, reason_code="provider_http_error")
+
+
+def api_base_of(url: str) -> str:
+    """The /v1 base a request URL was built from, for use in operator hints."""
+    for suffix in ("/chat/completions", "/models"):
+        if url.endswith(suffix):
+            return url[: -len(suffix)]
+    return url.rsplit("/", 1)[0]
 
 
 def _api_request(url: str, *, key: str, model: str, timeout: float,
