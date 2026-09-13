@@ -39,7 +39,7 @@ run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh' '{{config_root}}'"
 [tasks."skills:sync"]
 description = "Sync skills from manifest to local CLI dirs"
 depends = ["skills:provision:packs"]
-run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project --root '{{config_root}}'"
+run = "python3 '{{config_root}}/.mise/scripts/sync-skills.py' --scope project"
 
 [tasks."skills:provision:packs"]
 description = "Provision every Skillex pack declared in .agents/skills.json"
