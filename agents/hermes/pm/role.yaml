@@ -49,11 +49,15 @@ ticket_provider:
   board_url: ""
   workspace: ""
   project: ""     # Plane project uuid (set by 42-ticket-provider.sh)
-  # Optional normalized-state name overrides for non-standard boards.
-  in_review: ""   # e.g. "In Review"
-  completed: ""   # e.g. "Done"
-  cancelled: ""   # e.g. "Cancelled"
-
+  # Normalized-state -> Plane lane names. REQUIRED, not optional: the
+  # adapter refuses to guess when a Plane state group holds more than one
+  # lane, so every band must be named or the transition fails.
+  backlog:   "Backlog"
+  unstarted: "Todo"
+  started:   "In Progress"
+  in_review: "E2E Testing & QA"
+  completed: "Done"
+  cancelled: "Cancelled"
 # Board-reconciliation knobs for the heartbeat sentinel pass.
 reconcile:
   enabled: false             # heartbeat runs the autonomous board-reconciliation pass ONLY when true; default off = checkpoint-only
