@@ -1,8 +1,7 @@
 {
   "project_name": "HeyMa",
   "project_description": "33GOD TTS/STT Audio Pipeline",
-  "project_slug": "transcription-queue",
-  "repo_path": "/home/delorenj/HeyMa",
+  "repo_path": "/home/delorenj/code/HeyMa",
   "ticket_provider": {
     "type": "plane",
     "workspace": "33god",
@@ -15,5 +14,6 @@
       "role": "pm",
       "role_dir": "agents/hermes/pm"
     }
-  }
+  },
+  "project_id": "transcription-queue"
 }

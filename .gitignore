@@ -21,7 +21,6 @@
 
 # Machine-local/generated agent projections
 /.agents/skills.json
-/.agents/skills/
 /.github/agents/
 /_bmad/render/
 
@@ -29,3 +28,6 @@
 /components/n8n-nodes-heyma/dist/
 /components/wax/build/
 /components/wax/src/*.egg-info/
+
+# Canonical agent config lives in .agents; generated skill projections stay local.
+/.agents/skills
