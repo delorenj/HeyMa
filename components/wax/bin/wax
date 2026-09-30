@@ -1014,9 +1014,19 @@ def main() -> int:
     sk = sub.add_parser("skip", help="preserve a queued item without processing it", parents=[common])
     sk.add_argument("item_id")
     rt = sub.add_parser(
-        "retry", help="requeue a preserved failed or suspect inbox item", parents=[common]
+        "retry", help="requeue preserved failed or suspect inbox items", parents=[common]
     )
-    rt.add_argument("item_id")
+    rt.add_argument(
+        "item_id",
+        nargs="?",
+        default=None,
+        help="item to retry (default: all failed or suspect inbox items)",
+    )
+    rt.add_argument(
+        "--all",
+        action="store_true",
+        help="retry all failed or suspect items in inbox",
+    )
 
     ep = sub.add_parser("ep", help="enrichment passes", parents=[common]).add_subparsers(dest="sub", required=True)
     ep.add_parser("list", help="registered passes: enabled, version, outcome tally", parents=[common])
@@ -1169,7 +1179,23 @@ def main() -> int:
         return 0
 
     if args.cmd == "retry":
-        _emit(worker.retry_item(args.item_id), J)
+        if args.item_id and not args.all:
+            res = worker.retry_item(args.item_id)
+            if J:
+                _emit(res, J)
+            else:
+                cause = f" (was {res['previous_cause']})" if res.get("previous_cause") else ""
+                print(f"requeued {res['item_id']}{cause}: {res['path']}")
+            return 0
+        items = worker.retry_failed_items()
+        if J:
+            print(json.dumps(items, indent=2, sort_keys=True, default=str))
+        else:
+            if not items:
+                print("no failed or suspect items in inbox")
+            for r in items:
+                cause = f" (was {r['previous_cause']})" if r.get("previous_cause") else ""
+                print(f"requeued {r['item_id']}{cause}: {r['path']}")
         return 0
 
     if args.cmd == "archive":
@@ -1327,7 +1353,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (capture.CaptureError, archive.ArchiveError, passes.PassError,
-            transcribe_adapter.TranscribeError, SystemExit) as e:
+            transcribe_adapter.TranscribeError, RuntimeError, SystemExit) as e:
         if isinstance(e, SystemExit):
             raise
         print(f"error: {e}", file=sys.stderr)

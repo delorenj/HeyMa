@@ -302,6 +302,81 @@ class WaxIntegrationTest(unittest.TestCase):
                 ).stdout.strip()
                 self.assertEqual(selected, identify)
 
+    def test_retry_all_requeues_all_preserved_failed_items(self):
+        with tempfile.TemporaryDirectory() as runtime_root:
+            root = Path(runtime_root)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            failed1 = inbox / "retry-1.ogg"
+            failed1.write_bytes(b"failed audio 1")
+            failed2 = inbox / "retry-2.ogg"
+            failed2.write_bytes(b"failed audio 2")
+            missing = inbox / "missing.ogg"
+            missing.write_bytes(b"temp missing audio")
+            env = {**os.environ, "WAX_ROOT": runtime_root,
+                   "PYTHONPATH": str(COMPONENT_ROOT / "src")}
+            ids = subprocess.run(
+                [
+                    "python3", "-c",
+                    "from wax import ledger; from pathlib import Path; "
+                    f"i1 = ledger.upsert_item(Path(r'{failed1}')); "
+                    f"ledger.set_item_state(i1, 'failed', cause='archive_failed'); "
+                    f"i2 = ledger.upsert_item(Path(r'{failed2}')); "
+                    f"ledger.set_item_state(i2, 'suspect', cause='transcribe_failed'); "
+                    f"i3 = ledger.upsert_item(Path(r'{missing}')); "
+                    f"ledger.set_item_state(i3, 'failed', cause='archive_failed'); "
+                    "print(f'{i1},{i2},{i3}')"
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip().split(",")
+            missing.unlink()
+
+            result = subprocess.run(
+                [str(REPO_ROOT / "bin" / "wax"), "retry", "--json"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(result.stdout)
+            requeued_ids = [p["item_id"] for p in payload]
+            self.assertEqual(len(payload), 2)
+            self.assertIn(ids[0], requeued_ids)
+            self.assertIn(ids[1], requeued_ids)
+            self.assertNotIn(ids[2], requeued_ids)
+            for p in payload:
+                self.assertEqual(p["state"], "pending")
+
+            check_missing = subprocess.run(
+                [
+                    "python3", "-c",
+                    f"from wax import ledger; "
+                    f"row = ledger.connect().execute('SELECT state FROM items WHERE item_id=?', ('{ids[2]}',)).fetchone(); "
+                    "print(row['state'])"
+                ],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(check_missing, "failed")
+
+            empty_result = subprocess.run(
+                [str(REPO_ROOT / "bin" / "wax"), "retry"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertIn("no failed or suspect items in inbox", empty_result.stdout)
+
     def test_salvage_publishes_remux_and_preserves_original_segments(self):
         with tempfile.TemporaryDirectory() as runtime_root:
             root = Path(runtime_root)

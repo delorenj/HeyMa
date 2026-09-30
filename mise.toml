@@ -47,6 +47,11 @@ run = "'{{config_root}}/bin/wax' status"
 description = "Retry enrichment passes whose latest attempt failed"
 run = "'{{config_root}}/bin/wax' ep sweep"
 
+[tasks."wax:retry"]
+description = "Retry failed or suspect items in the inbox"
+alias = "retry"
+run = "'{{config_root}}/bin/wax' retry"
+
 [tasks."wax:test"]
 description = "Run the Wax test suite"
 dir = "{{config_root}}/components/wax"

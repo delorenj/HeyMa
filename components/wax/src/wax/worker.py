@@ -530,6 +530,36 @@ def retry_item(item_id: str) -> dict[str, Any]:
         }
 
 
+def retry_failed_items() -> list[dict[str, Any]]:
+    """Explicitly requeue all preserved failed or suspect items in the inbox.
+
+    Returns the list of requeued items. Items missing from disk, outside the inbox,
+    or currently claimed are skipped.
+    """
+    conn = ledger.connect()
+    rows = conn.execute(
+        "SELECT item_id, path FROM items WHERE state IN ('failed', 'suspect') ORDER BY updated_at"
+    ).fetchall()
+    requeued = []
+    for row in rows:
+        item_id = row["item_id"]
+        source = Path(row["path"])
+        try:
+            source.resolve().relative_to(paths.INBOX.resolve())
+        except (OSError, ValueError):
+            continue
+        if not source.is_file():
+            continue
+        claim = state._active_claim()
+        if claim and claim.get("item") == item_id:
+            continue
+        try:
+            requeued.append(retry_item(item_id))
+        except RuntimeError:
+            continue
+    return requeued
+
+
 def retry_failed_passes(item_id: str, slugs: tuple[str, ...]) -> dict[str, Any]:
     """Retry the named failed enrichment passes for one completed item.
 
