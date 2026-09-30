@@ -4,9 +4,10 @@
 [env]
 _.path = [".mise/scripts", "agents/hermes/pm", "agents/hermes/pm/hermes"]
 _.file = [".env"]
+_.source = ".mise/scripts/codex-env.sh"
 # Auto-activate a Python venv when one exists at ./.venv.
 # `create = false` means mise will not create one on its own.
-CODEX_HOME = { value = ".codex", path = true }
+CODEX_HOME = "{{config_root}}/.codex"
 VAULTDOCS = "/home/delorenj/d/Sandbox/audio"
 
 # This block will handle the linking of
@@ -32,6 +33,18 @@ run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh' '{{config_root}}'"
 description = "Reconcile this project's selected skills"
 tools = { "npm:@delorenj/skillex" = { version = "0.1.1", allow_low_downloads = true }, node = "24" }
 run = "skillex sync --scope project --project '{{config_root}}'"
+
+[tasks."codex:sync"]
+description = "Regenerate the isolated AutomaticAI Codex provider and model catalog"
+run = "python3 -B '{{config_root}}/.mise/scripts/codex-gateway.py'"
+
+[tasks."codex:check"]
+description = "Check the isolated AutomaticAI Codex projection for drift"
+run = "python3 -B '{{config_root}}/.mise/scripts/codex-gateway.py' --check"
+
+[tasks."codex:test"]
+description = "Test Codex launch ownership without contacting a provider"
+run = "python3 -B -m unittest discover -s '{{config_root}}/tests' -p test_codex_gateway.py"
 
 # Wax entry points. `bin/wax` is the stable shim that resolves the component
 # launcher relative to itself, so these never name a checkout path.
