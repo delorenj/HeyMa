@@ -36,7 +36,10 @@ from typing import Any, Optional
 
 import yaml
 
-from . import archive, component, events, frontmatter, ledger, rename, sentinel
+import tempfile
+from functools import wraps
+
+from . import archive, component, events, frontmatter, ledger, operations, paths, rename, sentinel
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
@@ -90,9 +93,73 @@ def registry() -> dict[str, dict[str, Any]]:
     return out
 
 
+def serialized(function):
+    @wraps(function)
+    def call(item_id, *args, **kwargs):
+        with operations.item_lock(item_id):
+            return function(item_id, *args, **kwargs)
+    return call
+
+
+def ordered(reg):
+    selected = {slug: ep for slug, ep in reg.items() if ep.get("enabled")}
+    visiting, visited, output = set(), set(), []
+
+    def visit(slug):
+        if slug in visited:
+            return
+        if slug in visiting:
+            raise PassError(f"cyclic pass dependency: {slug}")
+        visiting.add(slug)
+        ep = selected[slug]
+        for field in ("requires", "after"):
+            dependencies = ep.get(field) or []
+            if not isinstance(dependencies, list) or any(not isinstance(d, str) for d in dependencies):
+                raise PassError(f"invalid {field} for {slug}")
+            for dependency in dependencies:
+                if dependency not in selected:
+                    raise PassError(f"missing enabled dependency {dependency} for {slug}")
+                visit(dependency)
+        condition = ep.get("skip_when")
+        if condition and (not isinstance(condition, dict) or set(condition) != {"field", "equals"}
+                          or not isinstance(condition["field"], str)):
+            raise PassError(f"invalid skip condition for {slug}")
+        visiting.remove(slug)
+        visited.add(slug)
+        output.append(slug)
+
+    for slug in sorted(selected):
+        visit(slug)
+    return output
+
+
+def ensure_plan(item_id):
+    conn = ledger.connect()
+    row = conn.execute("SELECT definitions FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+    reg = registry()
+    order = ordered(reg)
+    definitions = {slug: reg[slug] for slug in order if reg[slug].get("auto")}
+    if row:
+        receipt = conn.execute("SELECT 1 FROM completions WHERE item_id=?", (item_id,)).fetchone()
+        if receipt:
+            return json.loads(row["definitions"])
+        if json.loads(row["definitions"]) == definitions:
+            return definitions
+    for slug, ep in definitions.items():
+        if any(dependency not in definitions for dependency in ep.get("requires") or []):
+            raise PassError(f"automatic pass {slug} requires a manual pass")
+    encoded = json.dumps(definitions, sort_keys=True, default=str)
+    import hashlib
+    plan_id = hashlib.sha256(encoded.encode()).hexdigest()
+    conn.execute("INSERT INTO processing_plans(item_id,plan_id,definitions,created_at) VALUES(?,?,?,?) "
+                 "ON CONFLICT(item_id) DO UPDATE SET plan_id=excluded.plan_id,definitions=excluded.definitions",
+                 (item_id, plan_id, encoded, sentinel.utcnow()))
+    return definitions
+
+
 def _record(item_id: str, slug: str, state: str, *, version: int = 1, attempt: int = 1,
-            command_id: Optional[str] = None, detail: str = "",
-            reason_code: Optional[str] = None) -> None:
+             command_id: Optional[str] = None, detail: str = "",
+             reason_code: Optional[str] = None, result=None, definition=None) -> None:
     conn = ledger.connect()
     columns = ["item_id", "ep_slug", "version", "state", "attempt", "command_id", "updated_at", "detail"]
     values: list[Any] = [item_id, slug, version, state, attempt, command_id, sentinel.utcnow(), detail[:500]]
@@ -104,6 +171,9 @@ def _record(item_id: str, slug: str, state: str, *, version: int = 1, attempt: i
         values.append(reason_code)
     elif reason_code:
         values[columns.index("detail")] = f"reason_code={reason_code}\n{detail}"[:500]
+    columns.extend(["result", "definition_id"])
+    values.extend([json.dumps(result or {}, ensure_ascii=False, default=str),
+                   operations.definition_id(definition) if definition else None])
     updates = ", ".join(f"{c}=excluded.{c}" for c in columns[2:])
     conn.execute(
         f"INSERT INTO passes({','.join(columns)}) VALUES({','.join('?' * len(columns))}) "
@@ -291,6 +361,8 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
     if forbidden:
         raise PassError(f"pass attempted to overwrite provenance/frontmatter ownership: {forbidden}")
     existing, _ = frontmatter.read(md)
+    if raw_updates.get("classification") not in (None, "monolog", "meeting", "other"):
+        raise PassError("invalid classification")
     allowed_clobbers = {str(key) for key in (ep.get("clobber") or [])}
     effective_updates = {
         key: value for key, value in raw_updates.items()
@@ -323,35 +395,60 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
         updates["source-s3-key"] = primary["s3_key"]
         updates["source-s3-uri"] = f"s3://{primary['bucket']}/{primary['s3_key']}"
 
-    # The base schema is stamped by _apply_base_schema before the pass runs, so
-    # this stays a pure write of what THIS pass produced.
-    _apply_frontmatter(md, updates)
-
     transcript = result.get("transcript") or {}
     if not isinstance(transcript, dict):
         raise PassError("enrichment result transcript must be an object")
     requested_slug = transcript.get("slug")
     existing_slug = existing.get("title-slug")
-    if (existing_slug and requested_slug and existing_slug != requested_slug
-            and "title-slug" not in allowed_clobbers):
+    if existing_slug and requested_slug and existing_slug != requested_slug and "title-slug" not in allowed_clobbers:
         requested_slug = existing_slug
-    current = _rename_transcript(md, item_id, requested_slug) if requested_slug else md
-
-    # No archive.link_transcript here any more. Linking used to be gated on this
-    # pass returning a slug, so when title-slug 404'd the sidecar projection and
-    # the S3 tags went with it — the audio<->transcript half of the archive
-    # design switched off by an LLM outage. worker.process() now links on the
-    # evidence that matters (a transcript row for a backed-up item), after the
-    # passes run, so a rename here is still picked up.
+    if requested_slug:
+        requested_slug = _normalise_slug(requested_slug)
+    original = md.read_bytes()
+    _, body = frontmatter.split(original.decode("utf-8"))
+    replacement = result.get("body_replace")
+    if replacement is not None:
+        import hashlib
+        if ep.get("body_mutation") != "compare-and-replace":
+            raise PassError("pass is not authorized to replace the transcript body")
+        if not isinstance(replacement, dict) or set(replacement) != {"sha256", "text"}:
+            raise PassError("invalid body replacement intent")
+        if not isinstance(replacement["text"], str) or len(replacement["text"].encode()) > 16 * 1024 * 1024:
+            raise PassError("body replacement exceeds policy")
+        if hashlib.sha256(body.encode()).hexdigest() != replacement["sha256"]:
+            raise PassError("transcript body changed; preserving human edits")
+    fd, name = tempfile.mkstemp(prefix=".wax-ep-", suffix=".md", dir=md.parent)
+    staging = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(original)
+        _apply_frontmatter(staging, updates)
+        if replacement is not None:
+            staged_fm, _ = frontmatter.read(staging)
+            staging.write_text(frontmatter.render(staged_fm, replacement["text"]), encoding="utf-8")
+        if md.read_bytes() != original:
+            raise PassError("document changed during pass application; preserving human edits")
+        os.chmod(staging, md.stat().st_mode)
+        with staging.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(staging, md)
+        current = _rename_transcript(md, item_id, requested_slug) if requested_slug else md
+    finally:
+        staging.unlink(missing_ok=True)
+    if replacement is not None:
+        ledger.connect().execute("UPDATE transcripts SET diarized=1 WHERE item_id=?", (item_id,))
 
     changed = [f"frontmatter.{key}" for key in effective_updates]
+    if replacement is not None:
+        changed.append("transcript.body")
     if current != md:
         changed.append("transcript.filename")
     return current, changed
 
 
+@serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
-        allow_requires: bool = False) -> dict[str, Any]:
+         allow_requires: bool = False, definition=None) -> dict[str, Any]:
     """Run one pass against one item. Independent of every other pass.
 
     `attempt` defaults to one past the highest attempt already recorded for
@@ -359,21 +456,42 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     run` — cannot mint a command_id that has already been issued.
     """
     reg = registry()
-    ep = reg.get(slug)
+    ordered(reg)
+    ep = definition or reg.get(slug)
     if ep is None:
         raise PassError(f"unknown pass {slug!r}; known: {sorted(reg)}")
     if not ep.get("enabled"):
         raise PassError(f"pass {slug!r} is disabled in {ep.get('_path')}")
-    if ep.get("requires") and not allow_requires:
-        raise PassError(
-            f"pass {slug!r} declares requires={ep['requires']}, but passes are "
-            "independent by contract; pass allow_requires=True to override")
+    for dependency in ep.get("requires") or []:
+        row = ledger.connect().execute(
+            "SELECT state,version FROM passes WHERE item_id=? AND ep_slug=?", (item_id, dependency)
+        ).fetchone()
+        if not row or row["state"] not in ("completed", "skipped") or row["version"] != reg[dependency]["version"]:
+            _record(item_id, slug, "failed", version=int(ep["version"]),
+                    reason_code="dependency_failed", definition=ep)
+            return {"item_id": item_id, "ep_slug": slug, "state": "failed", "reason_code": "dependency_failed"}
 
     attempt = _next_attempt(item_id, slug) if attempt is None else int(attempt)
 
     md = md_for(item_id)
     if md is None:
         raise PassError(f"no transcript recorded for item {item_id}")
+
+    skip_reason = None
+    if ep.get("kind") == "diarization" and os.environ.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
+        skip_reason = "explicitly_disabled"
+    condition = ep.get("skip_when")
+    if condition:
+        fm, _ = frontmatter.read(md)
+        if fm.get(condition["field"]) == condition["equals"]:
+            skip_reason = "condition_matched"
+    if skip_reason:
+        _record(item_id, slug, "skipped", version=int(ep["version"]), attempt=attempt,
+                reason_code=skip_reason, result={"skip_reason": skip_reason}, definition=ep)
+        frontmatter.merge(md, {frontmatter.WAX_KEY: {"passes": {slug: {
+            "state": "skipped", "version": int(ep["version"]), "reason_code": skip_reason,
+        }}}})
+        return {"item_id": item_id, "ep_slug": slug, "state": "skipped", "reason_code": skip_reason}
 
     argv = [_expand(a, item_id=item_id, md=md) for a in (ep.get("command") or [])]
     if not argv:
@@ -384,7 +502,7 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         pass_env[str(key)] = _expand(value, item_id=item_id, md=md)
 
     cid = events.emit_ep_command(item_id, slug, argv, attempt)
-    _record(item_id, slug, "running", version=version, attempt=attempt, command_id=cid)
+    _record(item_id, slug, "running", version=version, attempt=attempt, command_id=cid, definition=ep)
     events.emit("task", "started",
                 {"ep_slug": slug, "item_id": item_id, "attempt": attempt,
                  "pass_version": version, "command_id": cid, "argv": argv},
@@ -395,6 +513,7 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     current_md = md
     changed_fields: list[str] = []
     reason_code: Optional[str] = None
+    pass_result = {}
     try:
         r = subprocess.run(argv, capture_output=True, text=True,
                            env=pass_env, timeout=float(ep.get("timeout_s") or DEFAULT_TIMEOUT_S))
@@ -409,9 +528,12 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         if ok:
             reason_code = None
             try:
-                current_md, changed_fields = _apply_result(
-                    item_id, md, ep, _parse_result(r.stdout or ""),
-                )
+                pass_result = _parse_result(r.stdout or "")
+                current_md, changed_fields = _apply_result(item_id, md, ep, pass_result)
+                effective, _ = frontmatter.read(current_md)
+                pass_result = {**pass_result, "effective_metadata": {
+                    key: effective.get(key) for key in (pass_result.get("frontmatter") or {})
+                }}
             except (archive.ArchiveError, PassError, OSError) as exc:
                 ok, reason_code = False, "result_apply_failed"
                 err = str(exc)[-800:]
@@ -424,11 +546,16 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
 
     took = round(time.time() - started, 2)
     state = "completed" if ok else "failed"
+    if ok and pass_result.get("state") == "skipped":
+        state = "skipped"
+        reason_code = pass_result.get("reason_code") or "skipped"
+    
     # Exit code alone only ever separated "the process ran" from "it did not";
     # a code the pass reported about itself always wins over that guess.
-    failure = None if ok else (reason_code or ("nonzero_exit" if rc is not None else "run_error"))
+    failure = reason_code if state == "skipped" else (None if ok else (reason_code or ("nonzero_exit" if rc is not None else "run_error")))
     _record(item_id, slug, state, version=version, attempt=attempt,
-            command_id=cid, detail=err if not ok else "", reason_code=failure)
+            command_id=cid, detail=err if not ok else "", reason_code=failure,
+            result=pass_result, definition=ep)
     events.emit("task", state,
                 {"ep_slug": slug, "item_id": item_id, "attempt": attempt,
                  "pass_version": version, "command_id": cid, "duration_s": took,
@@ -468,12 +595,13 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
             **({"error": err, "reason_code": failure} if not ok else {})}
 
 
+@serialized
 def run_all(item_id: str) -> list[dict[str, Any]]:
     """Run every enabled pass. One failing pass never stops the others."""
     out = []
-    for slug, ep in sorted(registry().items()):
-        if not ep.get("enabled"):
-            continue
+    reg = registry()
+    for slug in ordered(reg):
+        ep = reg[slug]
         try:
             out.append(run(item_id, slug))
         except PassError as e:
@@ -487,38 +615,29 @@ def run_all(item_id: str) -> list[dict[str, Any]]:
     return out
 
 
+@serialized
 def run_auto(item_id: str) -> list[dict[str, Any]]:
-    """Run enabled auto passes once per version; failures never stop siblings."""
-    previous = {
-        row["ep_slug"]: dict(row)
-        for row in ledger.connect().execute(
-            "SELECT * FROM passes WHERE item_id=?", (item_id,),
-        ).fetchall()
-    }
-    out: list[dict[str, Any]] = []
-    for slug, ep in sorted(registry().items()):
-        if not ep.get("enabled") or not ep.get("auto"):
-            continue
+    definitions = ensure_plan(item_id)
+    previous = {row["ep_slug"]: dict(row) for row in ledger.connect().execute(
+        "SELECT * FROM passes WHERE item_id=?", (item_id,)).fetchall()}
+    out = []
+    for slug in ordered(definitions):
+        ep = definitions[slug]
         version = int(ep.get("version") or 1)
         prior = previous.get(slug)
-        if prior and prior["state"] == "completed" and int(prior.get("version") or 1) >= version:
-            out.append({
-                "item_id": item_id, "ep_slug": slug, "version": version,
-                "state": "completed", "skipped": "already completed at this version",
-            })
+        if (prior and prior["state"] in ("completed", "skipped") and prior["version"] == version
+                and prior.get("definition_id") in (None, operations.definition_id(ep))):
+            out.append({"item_id": item_id, "ep_slug": slug, "version": version,
+                        "state": prior["state"], "skipped": "already completed at this version"})
             continue
         attempt = int(prior["attempt"] or 0) + 1 if prior else 1
         try:
-            out.append(run(item_id, slug, attempt=attempt))
+            out.append(run(item_id, slug, attempt=attempt, definition=ep))
         except PassError as exc:
             _record(item_id, slug, "failed", version=version, attempt=attempt,
-                    detail=str(exc), reason_code="run_error")
-            log.warning("%s run_error for %s (attempt %d): %s",
-                        slug, item_id, attempt, _first_line(str(exc)))
-            out.append({
-                "item_id": item_id, "ep_slug": slug, "version": version,
-                "state": "failed", "error": str(exc), "reason_code": "run_error",
-            })
+                    detail=str(exc), reason_code="run_error", definition=ep)
+            out.append({"item_id": item_id, "ep_slug": slug, "version": version,
+                        "state": "failed", "error": str(exc), "reason_code": "run_error"})
     return out
 
 

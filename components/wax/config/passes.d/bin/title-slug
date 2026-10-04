@@ -55,10 +55,10 @@ MAX_OUTPUT_TOKENS = 2_048
 
 # Provider defaults. Every one of these is overridable from title-slug.yaml's
 # env block; the defaults exist so the pass still runs from a bare shell.
-DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "google/gemini-3.7-flash"
-DEFAULT_API_KEY_OP = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
-DEFAULT_API_KEY_OP_FALLBACK = "op://DeLoSecrets/ojyycpd5ti5rc2s3i7rrycdnjm/credential"
+DEFAULT_API_BASE = "https://api.automaticai.io/v1"
+DEFAULT_MODEL = "automaticai/openrouter/google/gemini-3.7-flash"
+DEFAULT_API_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
+DEFAULT_API_KEY_OP_FALLBACK = ""
 DEFAULT_REQUEST_TIMEOUT_S = 120.0
 
 # Preflight is a cheap catalog lookup; it must never be the reason a run is slow.
@@ -163,30 +163,9 @@ def resolve_api_key(*, primary_ref: str, fallback_ref: str) -> str:
         _KEY_SOURCE = primary_ref
         return key
 
-    key = _op_read(fallback_ref)
-    if key:
-        _KEY_SOURCE = fallback_ref
-        # The primary reference did not resolve. That is a vault problem that
-        # will outlive this run, and running on the spare hides it — so say it
-        # on every single run until the primary is readable again.
-        note(f"WARNING: no secret at {primary_ref}; falling back to "
-             f"{fallback_ref}. Repair the primary reference — a spare key is "
-             "one rotation away from being no key at all.")
-        return key
+    raise TitlePassError(f"dedicated gateway credential did not resolve: {primary_ref}", reason_code="no_api_key")
 
-    # Ambient env does not exist under systemd (user units get no login shell),
-    # so this only ever helps an interactive run.
-    ambient = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if ambient:
-        _KEY_SOURCE = "$OPENROUTER_API_KEY"
-        note("WARNING: falling back to ambient $OPENROUTER_API_KEY; waxd will "
-             "not have it.")
-        return ambient
 
-    raise TitlePassError(
-        f"no API key: WAX_TITLE_API_KEY is unset and neither {primary_ref} nor "
-        f"{fallback_ref} resolved",
-        reason_code="no_api_key")
 
 
 def _http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> TitlePassError:
@@ -227,7 +206,7 @@ def _api_request(url: str, *, key: str, model: str, timeout: float,
                  payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """One OpenAI-compatible call. GET when payload is None, else POST."""
     data = json.dumps(payload).encode() if payload is not None else None
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": "HeyMa-Wax/1.0"}
     if data is not None:
         headers["Content-Type"] = "application/json"
     if "openrouter.ai" in url:
@@ -295,11 +274,20 @@ def preflight_model(*, api_base: str, model: str, api_key: str) -> None:
 
 def _parse_json_content(content: str) -> dict[str, Any]:
     text = (content or "").strip()
-    if text.startswith("```"):
-        # strict json_schema should make fences impossible, but a provider that
-        # silently downgrades to a plain completion still emits usable JSON.
+    # Find JSON block if it's wrapped in fences, even with conversational prefix
+    match = re.search(r"```(?:json)?\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+    elif text.startswith("```"):
         text = re.sub(r"^```[A-Za-z0-9]*\n?", "", text)
         text = re.sub(r"\n?```$", "", text).strip()
+    else:
+        # Fallback: if no fences, try to extract first { to last }
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end+1]
+    
     try:
         result = json.loads(text)
     except json.JSONDecodeError as exc:
