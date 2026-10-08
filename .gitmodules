@@ -1,0 +1,3 @@
+[submodule "components/heyma-obsidian"]
+	path = components/heyma-obsidian
+	url = git@github.com:delorenj/heyma-obsidian.git
