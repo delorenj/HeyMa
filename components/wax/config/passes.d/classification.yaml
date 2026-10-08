@@ -1,14 +1,13 @@
-slug: title-slug
-version: 3
-description: Grounded title and summary, with a date-prefixed transcript filename.
+slug: classification
+version: 1
+description: Grounded document classification as monolog, meeting or other.
 enabled: true
 auto: true
 requires: []
 timeout_s: 180
-frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
 env:
   WAX_TITLE_API_BASE: https://api.automaticai.io/v1
   WAX_TITLE_MODEL: automaticai/openrouter/google/gemini-3.7-flash
   WAX_TITLE_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
   WAX_TITLE_REQUEST_TIMEOUT_S: "120"
-command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]
+command: ["{component_root}/config/passes.d/bin/classification", "{md_path}", "{item_id}"]

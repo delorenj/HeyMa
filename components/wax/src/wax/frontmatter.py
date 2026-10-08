@@ -51,7 +51,7 @@ def render(fm: dict[str, Any], body: str) -> str:
     if not fm:
         return body
     dumped = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True, default_flow_style=False).rstrip()
-    return f"{DELIM}\n{dumped}\n{DELIM}\n{body.lstrip(chr(10))}"
+    return f"{DELIM}\n{dumped}\n{DELIM}\n{body}"
 
 
 def read(path: Path) -> tuple[dict[str, Any], str]:

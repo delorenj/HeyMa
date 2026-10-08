@@ -28,7 +28,7 @@ COMPONENT_ROOT = next(
 )
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
-from wax import archive, capture, component, config, events, ledger, migrate, natsclient, passes, paths, reconcile, sanity, sentinel, state, transcribe_adapter, worker  # noqa: E402
+from wax import archive, capture, component, config, events, finalize, ledger, migrate, natsclient, passes, paths, reconcile, sanity, sentinel, state, transcribe_adapter, worker  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -834,6 +834,11 @@ def ep_sweep(*, max_attempts: int, slug: Optional[str], dry_run: bool,
         except passes.PassError as e:
             results.append({"item_id": item_id, "ep_slug": ep_slug, "state": "failed",
                             "error": str(e), "reason_code": "run_error"})
+    for item_id in dict.fromkeys(item for item, _, _ in targets):
+        plan = ledger.connect().execute("SELECT 1 FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+        if plan:
+            passes.run_auto(item_id)
+    out["completions"] = {item_id: finalize.finalize(item_id) for item_id, _, _ in targets}
     out["results"] = results
     out["completed"] = sum(1 for r in results if r.get("state") == "completed")
     out["failed"] = sum(1 for r in results if r.get("state") != "completed")
@@ -1010,7 +1015,7 @@ def main() -> int:
     h = sub.add_parser("history", help="append-only transition log", parents=[common])
     h.add_argument("-n", type=int, default=20); h.add_argument("--machine", choices=["stream", "inbox", "item"])
     sub.add_parser("items", help="ledger item states", parents=[common])
-    sub.add_parser("queue", help="tray queue rows", parents=[common])
+    sub.add_parser("queue", help="tray queue rows", parents=[common]).add_argument("--clear-completed", action="store_true")
     sk = sub.add_parser("skip", help="preserve a queued item without processing it", parents=[common])
     sk.add_argument("item_id")
     rt = sub.add_parser(
@@ -1029,6 +1034,9 @@ def main() -> int:
     )
 
     ep = sub.add_parser("ep", help="enrichment passes", parents=[common]).add_subparsers(dest="sub", required=True)
+    selected = ep.add_parser("run-selected", parents=[common])
+    selected.add_argument("item_id")
+    selected.add_argument("slugs", nargs="+")
     ep.add_parser("list", help="registered passes: enabled, version, outcome tally", parents=[common])
     epr = ep.add_parser("run", help="run ONE pass for ONE transcript", parents=[common])
     epr.add_argument("slug"); epr.add_argument("item_id")
@@ -1166,6 +1174,8 @@ def main() -> int:
         return 0
 
     if args.cmd == "queue":
+        if args.clear_completed:
+            ledger.clear_tray_completed()
         active = (state.inbox_state() or {}).get("active_item")
         rows = ledger.tray_items(active)
         active_row = next((row for row in rows if row.get("active")), None)
@@ -1211,6 +1221,9 @@ def main() -> int:
         return 0
 
     if args.cmd == "ep":
+        if args.sub == "run-selected":
+            _emit(worker.retry_failed_passes(args.item_id, tuple(args.slugs)), J)
+            return 0
         if args.sub == "list":
             rows = ep_list_rows()
             if J:
@@ -1231,10 +1244,12 @@ def main() -> int:
                       "STALE were recorded against an older one.")
             return 0
         if args.sub == "run":
-            _emit(passes.run(args.item_id, args.slug, attempt=args.attempt), J)
+            result = passes.run(args.item_id, args.slug, attempt=args.attempt)
+            result["completion"] = finalize.finalize(args.item_id)
+            _emit(result, J)
             return 0
         if args.sub == "run-all":
-            _emit(passes.run_all(args.item_id), J)
+            _emit({"results": passes.run_all(args.item_id), "completion": finalize.finalize(args.item_id)}, J)
             return 0
         if args.sub == "status":
             rows = passes.status(args.item_id)

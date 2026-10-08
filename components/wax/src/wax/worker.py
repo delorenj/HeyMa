@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import (archive, config, desktop, ledger, passes, paths, procutil, rename, sanity,
+from . import (archive, config, desktop, dropoff, finalize, ledger, passes, paths, procutil, rename, sanity,
                sentinel, state, transcribe_adapter)
 
 # Contract B: name only, handler configured exactly once in bin/waxd. Before
@@ -193,7 +193,7 @@ def _log_enrichment(item_id: str, name: str, results: list[dict[str, Any]]) -> l
     for five days while every run failed behind a green tray and a `wax status`
     that printed "no errors".
     """
-    failed = [entry for entry in results if entry.get("state") != "completed"]
+    failed = [entry for entry in results if entry.get("state") not in ("completed", "skipped")]
     for entry in failed:
         # Every field here is one passes.run() actually returns. `attempt` is
         # not in that return shape, and a permanent "attempt ?" is noise wearing
@@ -217,7 +217,7 @@ def _announce_done(name: str, results: list[dict[str, Any]]) -> None:
     provider that breaks, is fixed, and breaks again is not silent the second
     time.
     """
-    failed = [entry for entry in results if entry.get("state") != "completed"]
+    failed = [entry for entry in results if entry.get("state") not in ("completed", "skipped")]
     for entry in results:
         # A skip entry ("already completed at this version") means the pass did
         # not run at all, so it is evidence of nothing about the provider. Only
@@ -280,6 +280,7 @@ def park_duplicate(item_id: str, path: Path) -> dict[str, Any]:
     return {"item_id": item_id, "parked_duplicate": str(moved)}
 
 
+@passes.serialized
 def process(item_id: str, path: Path) -> dict[str, Any]:
     """Archive, then transcribe, then park the audio. Never deletes anything."""
     result: dict[str, Any] = {"item_id": item_id, "path": str(path)}
@@ -424,15 +425,17 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
     moved = rename.move_noclobber(path, dest_dir / path.name)
     ledger.connect().execute("UPDATE items SET path=?, updated_at=? WHERE item_id=?",
                              (str(moved), sentinel.utcnow(), item_id))
-    _set_state(item_id, "complete", cause="parked",
-               evidence=str(moved).replace(str(paths.AUDIO), "~/HeyMa"), subject=path.name)
     result["parked"] = str(moved)
-    # The item is over. Only now can a chime be right about it.
+    result["completion"] = finalize.finalize(item_id)
+    if not result["completion"].get("finalized"):
+        _set_state(item_id, "enrichment_pending", cause="completion_withheld",
+                   evidence=str(result["completion"]), subject=path.name)
     _announce_done(path.name, result["enrichment"])
     return result
 
 
 def run_once() -> Optional[dict[str, Any]]:
+    dropoff.copy_received()
     # Selection and operator skip share a short lock. The expensive work runs
     # outside it; the durable claim closes the race before the lock is released.
     with _SELECTION_LOCK:
@@ -560,6 +563,7 @@ def retry_failed_items() -> list[dict[str, Any]]:
     return requeued
 
 
+@passes.serialized
 def retry_failed_passes(item_id: str, slugs: tuple[str, ...]) -> dict[str, Any]:
     """Retry the named failed enrichment passes for one completed item.
 
@@ -618,6 +622,10 @@ def retry_failed_passes(item_id: str, slugs: tuple[str, ...]) -> dict[str, Any]:
         linked = _link_archive(item_id)
         if linked is not None:
             out["archive_link"] = linked
+    plan = conn.execute("SELECT 1 FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+    if plan:
+        out["remaining"] = passes.run_auto(item_id)
+        out["completion"] = finalize.finalize(item_id)
     return out
 
 

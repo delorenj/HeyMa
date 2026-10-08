@@ -1,0 +1,24 @@
+#!/usr/bin/python3
+import argparse
+import subprocess
+from pathlib import Path
+
+MODEL = "automaticai/openrouter/google/gemini-3.7-flash"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args()
+    tooling = Path.home() / "docker/stacks/ai/newapi/ops/gateway-tokens.py"
+    if not tooling.is_file():
+        raise RuntimeError("gateway token tooling is unavailable")
+    command = ["python3", str(tooling), "mint", "heyma-wax-inference", "--models", MODEL, "--days", "-1"]
+    if not args.apply:
+        command.append("--dry-run")
+    subprocess.run(command, check=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

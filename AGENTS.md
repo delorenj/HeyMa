@@ -32,6 +32,13 @@ lives beside the code. All of it is one filesystem, which is what makes
 | `~/d/Transcripts/` | where transcripts land (`WAX_VAULT`); really `~/code/DeLoDocs/Transcripts` |
 | `components/n8n-nodes-heyma/` | private self-hosted n8n adapter; invokes the absolute Wax CLI and owns no pipeline state |
 
+Syncthing folder ID `audio`, displayed as **Transcription Inbox**, receives into
+`dropoff/` on big-chungus. Spokes must be send-only and share it only with the
+hub. The metadata-only `syncthing-audio-policy.service` accepts flat, uniquely
+named recordings once and saves permanent filename exclusions, so hub deletions
+cannot be downloaded again. It never writes audio or owns pipeline stages.
+Configuration and verification: `components/syncthing-audio/README.md`.
+
 ## waxd — the single owner
 
 `waxd.service` (systemd **user** unit, `enabled`+`active`) holds
@@ -67,7 +74,7 @@ wax reconcile [--rebuild]  # rebuild the ledger from durable sources
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 
-mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:test`, `wax:logs`.
+mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:retry`, `wax:test`, `wax:logs`.
 
 Diarization is required and GPU-strict by default:
 `WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`. Its device is independent

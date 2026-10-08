@@ -1,0 +1,15 @@
+#!/usr/bin/python3
+import json
+import sys
+from pathlib import Path
+
+component = next(parent for parent in Path(__file__).resolve().parents if (parent / "pyproject.toml").is_file())
+sys.path.insert(0, str(component / "src"))
+from wax.diarization_pass import main
+
+try:
+    print(json.dumps(main(Path(sys.argv[1]), sys.argv[2]), ensure_ascii=False))
+except (OSError, RuntimeError, ValueError) as exc:
+    print("reason_code=diarization_failed", file=sys.stderr)
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)

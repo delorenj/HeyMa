@@ -1,0 +1,14 @@
+[Unit]
+Description=Permanent exclusions for the receive-only Syncthing audio feed
+After=syncthing.service
+Wants=syncthing.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/HeyMa/components/syncthing-audio/guard.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=default.target

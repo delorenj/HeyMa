@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+launcher=$(readlink -f "$0")
+repo_root=$(dirname "$(dirname "$launcher")")
+exec /usr/bin/python3 "$repo_root/components/remote-audio/ssh_audio.py" "$@"

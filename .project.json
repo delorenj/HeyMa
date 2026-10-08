@@ -1,7 +1,7 @@
 {
   "project_name": "HeyMa",
   "project_description": "33GOD TTS/STT Audio Pipeline",
-  "repo_path": "/home/delorenj/code/HeyMa",
+  "repo_path": "/home/delorenj/HeyMa",
   "ticket_provider": {
     "type": "plane",
     "workspace": "33god",

@@ -66,7 +66,21 @@ CREATE INDEX IF NOT EXISTS outbox_unpublished ON outbox(published_at, id);
 
 
 def _ensure() -> None:
-    ledger.connect().executescript(OUTBOX_SCHEMA)
+    conn = ledger.connect()
+    for statement in OUTBOX_SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(outbox)")}
+    if "suppressed_reason" not in columns:
+        try:
+            conn.execute("ALTER TABLE outbox ADD COLUMN suppressed_reason TEXT")
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+    conn.execute("UPDATE outbox SET suppressed_reason='legacy_premature_completion' "
+                 "WHERE published_at IS NULL AND suppressed_reason IS NULL "
+                 "AND subject='bloodbank.evt.audio.transcription.completed' "
+                 "AND COALESCE(json_extract(envelope,'$.data.finalized'),0)!=1")
 
 
 def subject_for(ce_type: str, kind: str) -> str:
@@ -89,10 +103,10 @@ def envelope(entity: str, action: str, data: dict[str, Any], *,
              kind: str = "event", correlationid: Optional[str] = None,
              causationid: Optional[str] = None,
              command_id: Optional[str] = None,
-             ordering_key: Optional[str] = None) -> tuple[str, dict[str, Any]]:
+              ordering_key: Optional[str] = None, event_id: Optional[str] = None) -> tuple[str, dict[str, Any]]:
     ce_type = f"bloodbank.{DOMAIN}.{entity}.{action}"
     subject = subject_for(ce_type, kind)
-    eid = str(uuid.uuid4())
+    eid = event_id or str(uuid.uuid4())
     env: dict[str, Any] = {
         "specversion": "1.0",
         "id": eid,
@@ -101,6 +115,10 @@ def envelope(entity: str, action: str, data: dict[str, Any], *,
         "subject": subject,
         "time": sentinel.utcnow(),
         "correlationid": correlationid or eid,
+        "causationid": causationid,
+        "datacontenttype": "application/json",
+        "schemaref": f"{ce_type}.v1",
+        "dataschema": f"https://33god.dev/schemas/bloodbank/{DOMAIN}/{entity}.{action}.json",
         "producer": PRODUCER,
         "service": SERVICE,
         "domain": DOMAIN,
@@ -159,7 +177,7 @@ def emit_ep_command(item_id: str, ep_slug: str, argv: list[str], attempt: int = 
 def backlog() -> int:
     _ensure()
     return ledger.connect().execute(
-        "SELECT COUNT(*) AS n FROM outbox WHERE published_at IS NULL").fetchone()["n"]
+        "SELECT COUNT(*) AS n FROM outbox WHERE published_at IS NULL AND suppressed_reason IS NULL").fetchone()["n"]
 
 
 def drain(limit: int = 50) -> dict[str, Any]:
@@ -167,7 +185,7 @@ def drain(limit: int = 50) -> dict[str, Any]:
     _ensure()
     conn = ledger.connect()
     rows = conn.execute(
-        "SELECT id, subject, envelope FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT ?",
+        "SELECT id, subject, envelope FROM outbox WHERE published_at IS NULL AND suppressed_reason IS NULL ORDER BY id LIMIT ?",
         (limit,),
     ).fetchall()
     if not rows:

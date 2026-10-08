@@ -1,0 +1,9 @@
+slug: clipboard-copy
+version: 1
+description: Copy the transcript text to the clipboard and play a sound.
+enabled: true
+auto: true
+requires: []
+clobber: []
+timeout_s: 30
+command: ["{component_root}/config/passes.d/bin/clipboard-copy", "{md_path}"]

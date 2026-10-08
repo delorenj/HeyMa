@@ -675,6 +675,7 @@ def main():
         help=("Device for Sortformer diarization (default: cuda; "
               "WAX_DIARIZATION_DEVICE may override)"),
     )
+    parser.add_argument("--asr-output", help="Persist timed ASR independently of diarization")
     parser.add_argument("--progress-file", default=None, help="Write progress to this file (for remote monitoring)")
     args = parser.parse_args()
 
@@ -712,17 +713,30 @@ def main():
 
     if args.groq:
         result = transcribe_groq(audio_path, args.model, args.language)
-        diarization = None
-        diarization_device = None
     else:
         result = transcribe_local(audio_path, args.model, args.language, args.device)
-        if args.diarization:
-            diarization, diarization_device = diarize_local(
-                audio_path, args.diarization_device,
-            )
-        else:
-            diarization = None
-            diarization_device = None
+    if args.asr_output:
+        import hashlib
+        import tempfile
+        artifact = Path(args.asr_output)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        with open(audio_path, "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        asr = {"version": 1, "source_sha256": digest.hexdigest(), "result": result,
+               "timestamps": args.timestamps}
+        with tempfile.NamedTemporaryFile(mode="w", dir=artifact.parent, delete=False) as handle:
+            json.dump(asr, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = handle.name
+        os.replace(temporary, artifact)
+    if args.diarization and not args.groq:
+        diarization, diarization_device = diarize_local(audio_path, args.diarization_device)
+    else:
+        diarization = None
+        diarization_device = None
 
     # Requested-but-empty is a FAILURE, not a quiet single-speaker result. Say so
     # on stderr in a shape the adapter greps for, and keep exit 0 so a 3h ASR run

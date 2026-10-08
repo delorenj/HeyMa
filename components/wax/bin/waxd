@@ -29,12 +29,9 @@ COMPONENT_ROOT = next(
 )
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
-import gi  # noqa: E402
+import signal
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import GLib  # noqa: E402
-
-from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, transcribe_adapter, worker as worker_mod  # noqa: E402
+from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, tray_process, transcribe_adapter, worker as worker_mod
 
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
@@ -109,24 +106,24 @@ class Daemon:
         self.snapshot: dict = {}
         self._silence_monitor_rid: Optional[str] = None
         self._silence_monitor_file = None
-        self.tray = tray_mod.Tray(
-            on_toggle=self.toggle,
-            on_quit=self.quit,
-            on_open=self.open_inbox,
-            on_skip=self.skip_item,
-            on_clear_completed=self.clear_completed,
-            on_open_transcript=self.open_transcript,
-            on_retry_item=self.retry_item,
-            on_retry_passes=self.retry_passes,
-        )
+        self.tray = tray_process.TrayProcess()
+        self.stopped = threading.Event()
         self._serve_socket()
         # Drains the inbox in its own thread so a long transcription can never
         # stall the tray or make status unpollable.
         self.worker = worker_mod.Worker()
         self.worker.start()
-        GLib.timeout_add(POLL_MS, self._tick)
-        GLib.timeout_add(10000, self._drain)
+        threading.Thread(target=self._drain_loop, daemon=True, name="wax-outbox").start()
         self._tick()
+
+    def _drain_loop(self):
+        while not self.stopped.is_set():
+            self._drain()
+            self.stopped.wait(10)
+
+    def run(self):
+        while not self.stopped.wait(1):
+            self._tick()
 
     # -- status ----------------------------------------------------------
     def _condition(self, key: str, detail: Optional[str], *,
@@ -265,12 +262,8 @@ class Daemon:
             snap["tray_queue_error"] = str(e)
             self._condition("tray_queue_error", f"{type(e).__name__}: {e}")
         colour, tip = tray_mod.colour_for(snap)
-        self.tray.set(colour, tip, recording=(snap.get("stream", {}).get("state") == "recording"))
-        try:
-            self.tray.set_queue(queue_items)
-        except Exception as e:  # noqa: BLE001 - queue UI must not affect recording
-            snap["tray_queue_error"] = str(e)
-            self._condition("tray_menu_error", f"{type(e).__name__}: {e}")
+        snap["tray_items"] = queue_items
+        self.tray.poll()
         self._check_silence(snap)
         self._mirror(snap, colour)
         return True
@@ -291,7 +284,7 @@ class Daemon:
         """Degraded-mode mirror: readable even if the socket is wedged."""
         payload = dict(snap)
         payload["daemon"] = {"pid": os.getpid()}
-        payload["tray"] = {"colour": colour, "registered": self.tray.registered}
+        payload["tray"] = {"colour": colour, "available": self.tray.available, "reason": self.tray.reason}
         try:
             payload["outbox_backlog"] = events_mod.backlog()
         except Exception as e:  # noqa: BLE001
@@ -389,8 +382,7 @@ class Daemon:
     def clear_completed(self) -> None:
         try:
             ledger.clear_tray_completed()
-            inbox = self.snapshot.get("inbox") or {}
-            self.tray.set_queue(ledger.tray_items(inbox.get("active_item"), inbox.get("active_stage")))
+            self._tick()
         except Exception as e:  # noqa: BLE001
             tray_mod._notify("Wax: could not clear completed", str(e))
 
@@ -405,16 +397,11 @@ class Daemon:
         except Exception:  # noqa: BLE001
             pass
         paths.SOCK.unlink(missing_ok=True)
-        Gtk_main_quit()
-
-
-def Gtk_main_quit():
-    from gi.repository import Gtk
-    Gtk.main_quit()
+        self.stopped.set()
+        self.tray.stop()
 
 
 def main() -> int:
-    from gi.repository import Gtk
     # Before ANY wax module can log. Everything below this line is now capable
     # of reaching the journal; nothing above it was.
     _configure_logging()
@@ -433,11 +420,13 @@ def main() -> int:
         # Not fatal here — the worker raises per item — but it is the single
         # most useful thing to know at boot, so it must not wait for an item.
         log.error("transcriber unresolvable: %s (run `wax doctor`)", e)
-    Daemon()
+    daemon = Daemon()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: daemon.quit())
     try:
-        Gtk.main()
-    except KeyboardInterrupt:
-        pass
+        daemon.run()
+    finally:
+        daemon.quit()
     log.info("waxd %d exiting", os.getpid())
     return 0
 

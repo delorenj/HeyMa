@@ -91,7 +91,7 @@ class Nats:
     # -- publish ---------------------------------------------------------
     def publish_ack(self, subject: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Publish and WAIT for the JetStream PubAck. Raises if none arrives."""
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode()
         inbox = f"_INBOX.wax.{os.urandom(8).hex()}"
         self._sid += 1
         sid = self._sid

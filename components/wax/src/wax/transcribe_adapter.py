@@ -225,15 +225,10 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     env = transcribe_env(logfile)
 
     mode = diarization_mode(env)
-    requested = list(extra or [])
-    if "--diarization" not in requested and "--no-diarization" not in requested:
-        if mode == "disabled":
-            requested.append("--no-diarization")
-        elif mode == "required":
-            # Ask for it by name rather than relying on bin/transcribe's
-            # venv-present auto-enable, so transcribe.py runs its dependency
-            # preflight and says what is missing instead of quietly skipping.
-            requested.append("--diarization")
+    asr_path = logdir / "asr.json"
+    requested = [arg for arg in list(extra or []) if arg not in ("--diarization", "--no-diarization")]
+    requested.extend(["--no-diarization", "--asr-output", str(asr_path)])
+    started = __import__("time").monotonic()
     cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
     desktop.ding("start")
     try:
@@ -258,7 +253,7 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     # state stays "transcribed" while the speaker track has in fact been empty
     # since 2026-08-12. Name the condition once, here, and carry it to both the
     # journal and the note so a human surface can finally represent it.
-    diar_requested = bool(meta.get("diarization_requested")) or mode == "required"
+    diar_requested = bool(meta.get("diarization_requested"))
     if "diarization_degraded" in meta:
         diar_degraded = bool(meta["diarization_degraded"])
     else:
@@ -363,10 +358,17 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
              verdict["duration_ratio"], meta.get("word_count"), int(bool(meta.get("diarized"))),
              meta.get("model"), sentinel.utcnow()),
         )
+        import hashlib
+        _, body = frontmatter.read(final)
+        ledger.connect().execute(
+            "UPDATE transcripts SET asr_path=?,body_sha256=?,processing_seconds=?,diarized=?,engine_model=? WHERE item_id=?",
+            (str(asr_path), hashlib.sha256(body.encode()).hexdigest(),
+             __import__("time").monotonic() - started, int(bool(meta.get("diarized"))),
+             meta.get("model"), item_id),
+        )
         ledger.set_item_state(item_id, "transcribed", cause="gate_passed",
                               evidence=f"ratio={verdict['duration_ratio']} -> {final.name}")
 
-    desktop.ding("complete")
     return {
         "item_id": item_id,
         "md_path": str(final),

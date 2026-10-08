@@ -1,0 +1,15 @@
+slug: diarization
+version: 1
+description: CUDA Sortformer speaker turns using durable timed ASR without repeating Whisper.
+enabled: true
+auto: true
+kind: diarization
+requires: []
+after: [classification]
+skip_when:
+  field: classification
+  equals: monolog
+body_mutation: compare-and-replace
+clobber: [diarized, diarization-requested, diarization-device-requested, diarization-device]
+timeout_s: 86400
+command: ["{component_root}/config/passes.d/bin/diarization", "{md_path}", "{item_id}"]

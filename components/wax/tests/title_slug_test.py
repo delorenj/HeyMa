@@ -23,7 +23,7 @@ class TitleSlugPassTest(unittest.TestCase):
             md = Path(directory) / "recording.md"
             original = "---\nlanguage: en\n---\n# Transcript\nDiscussing modular enrichment passes.\n"
             md.write_text(original)
-            with patch.object(
+            with patch.object(TITLE_SLUG, "resolve_api_key", return_value="test-key"), patch.object(
                 TITLE_SLUG,
                 "hosted_enrichment",
                 return_value={

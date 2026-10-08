@@ -1,8 +1,7 @@
 [Unit]
 Description=Wax recorder daemon (tray + state mirror)
 Documentation=@WAX_DOCUMENTATION_URI@
-PartOf=graphical-session.target
-After=graphical-session.target pipewire.service
+After=pipewire.service
 OnFailure=wax-alert.service
 
 [Service]
@@ -27,4 +26,4 @@ Environment=WAX_DIARIZATION_DEVICE=cuda
 Environment=@WAX_TRANSCRIBE_ENV@
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

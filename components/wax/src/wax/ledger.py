@@ -144,6 +144,26 @@ def connect() -> sqlite3.Connection:
                 # additive migration after our PRAGMA read.
                 if "duplicate column" not in str(exc).lower():
                     raise
+        additions = {
+            "passes": {"reason_code": "TEXT", "result": "TEXT", "definition_id": "TEXT"},
+            "transcripts": {"asr_path": "TEXT", "body_sha256": "TEXT", "processing_seconds": "REAL"},
+        }
+        for table, fields in additions.items():
+            known = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, kind in fields.items():
+                if name not in known:
+                    try:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column" not in str(exc).lower():
+                            raise
+        conn.execute("CREATE TABLE IF NOT EXISTS processing_plans ("
+                     "item_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, definitions TEXT NOT NULL, "
+                     "created_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS completions ("
+                     "item_id TEXT NOT NULL, plan_id TEXT NOT NULL, event_id TEXT NOT NULL, "
+                     "outbox_id INTEGER NOT NULL, artifact_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, "
+                     "PRIMARY KEY(item_id,plan_id))")
         _local.conn = conn
     return conn
 
@@ -348,7 +368,6 @@ def _emit_safe(entity: str, action: str, data: dict[str, Any], **kw: Any) -> Non
 _ITEM_EVENTS = {
     "pending": ("file", "recorded"),
     "archived": ("file", "sent"),
-    "transcribed": ("transcription", "completed"),
     "complete": ("file", "closed"),
     "suspect": ("transcription", "failed"),
     "failed": ("transcription", "failed"),
@@ -499,9 +518,11 @@ def diarization_health() -> dict[str, Any]:
     if os.environ.get("WAX_DIARIZATION", "").lower() in _DIARIZATION_OFF:
         return {"degraded": False, "recent_undiarized": 0}
     rows = connect().execute(
-        "SELECT diarized FROM transcripts ORDER BY created_at DESC LIMIT ?",
-        (DIARIZATION_SAMPLE,),
+        "SELECT t.item_id,t.diarized,p.state AS pass_state FROM transcripts t "
+        "LEFT JOIN passes p ON p.item_id=t.item_id AND p.ep_slug='diarization' "
+        "ORDER BY t.created_at DESC LIMIT ?", (DIARIZATION_SAMPLE,),
     ).fetchall()
+    rows = [row for row in rows if row["pass_state"] != "skipped"]
     # NULL counts as undiarized: it means no diarization evidence was recorded,
     # which is the same operational fact as a 0. (Only 4 such rows exist, all
     # from 2026-07-25 before transcribe_adapter started writing the column, and
@@ -570,7 +591,7 @@ def tray_items(active_item: Optional[str] = None,
         gate_params,
     ).fetchall()
     completed = conn.execute(
-        select + "WHERE i.state='complete' AND i.updated_at>? AND t.md_path IS NOT NULL "
+        select + "WHERE i.state IN ('complete','enrichment_pending') AND i.updated_at>? AND t.md_path IS NOT NULL "
         "ORDER BY i.updated_at DESC",
         (*gate_params, completed_after),
     ).fetchall()
@@ -591,7 +612,7 @@ def tray_items(active_item: Optional[str] = None,
         # Old ledgers can contain resumable states whose audio was parked in a
         # previous runtime root. They are audit history, not actionable queue
         # rows, and must not expose a Skip action that can never succeed.
-        if item["state"] != "complete" and Path(item["path"]).parent != paths.INBOX:
+        if item["state"] not in ("complete", "enrichment_pending") and Path(item["path"]).parent != paths.INBOX:
             continue
         if item["state"] in ("failed", "suspect"):
             reason = conn.execute(

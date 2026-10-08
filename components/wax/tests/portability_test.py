@@ -110,7 +110,7 @@ class PortabilityTest(unittest.TestCase):
                     patch.object(transcribe_adapter.ledger, "set_item_state"), \
                     patch.object(transcribe_adapter.desktop, "ding") as ding:
                 transcribe_adapter.transcribe(audio, item_id="item")
-            self.assertEqual([call.args[0] for call in ding.call_args_list], ["start", "complete"])
+            self.assertEqual([call.args[0] for call in ding.call_args_list], ["start"])
 
     def test_systemd_template_is_relocation_safe(self):
         template = (COMPONENT_ROOT / "deploy/systemd/user/waxd.service").read_text()

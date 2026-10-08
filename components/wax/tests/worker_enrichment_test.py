@@ -29,6 +29,7 @@ class WorkerEnrichmentTest(unittest.TestCase):
                     patch.object(worker.passes, "run_auto", return_value=enrichment) as run_auto, \
                     patch.object(worker.rename, "move_noclobber", return_value=parked), \
                     patch.object(worker.ledger, "connect", return_value=connection), \
+                    patch.object(worker.finalize, "finalize", return_value={"finalized": False}), \
                     patch.object(worker.ledger, "set_item_state") as set_state:
                 result = worker.process("item-id", audio)
 
@@ -36,7 +37,7 @@ class WorkerEnrichmentTest(unittest.TestCase):
             self.assertIn("enrich", claims)
             self.assertEqual(result["enrichment"], enrichment)
             self.assertEqual(result["parked"], str(parked))
-            self.assertEqual(set_state.call_args_list[-1].args[:2], ("item-id", "complete"))
+            self.assertEqual(set_state.call_args_list[-1].args[:2], ("item-id", "enrichment_pending"))
 
     def test_retry_failed_passes_runs_only_the_requested_failed_passes(self):
         connection = MagicMock()
@@ -47,7 +48,9 @@ class WorkerEnrichmentTest(unittest.TestCase):
             {"ep_slug": "title-slug"},
             {"ep_slug": "wikification"},
         ]
-        connection.execute.side_effect = [item_result, passes_result]
+        plan_result = MagicMock()
+        plan_result.fetchone.return_value = None
+        connection.execute.side_effect = [item_result, passes_result, plan_result]
         results = [
             {"item_id": "item-id", "ep_slug": "title-slug", "state": "completed"},
             {"item_id": "item-id", "ep_slug": "wikification", "state": "completed"},

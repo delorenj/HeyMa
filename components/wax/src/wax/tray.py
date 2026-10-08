@@ -22,24 +22,28 @@ Two hard rules, both learned the expensive way:
    session. `registered` is now verified against the watcher instead of assumed.
 """
 
+from __future__ import annotations
+
 import gc
 import logging
 from pathlib import Path
 from urllib.parse import quote
 
-import gi
+def _load_gtk():
+    global gi, AppIndicator, GLib, Gio, Gtk
+    import gi
+    gi.require_version("Gtk", "3.0")
+    try:
+        gi.require_version("AyatanaAppIndicator3", "0.1")
+        from gi.repository import AyatanaAppIndicator3 as AppIndicator
+    except (ValueError, ImportError):
+        gi.require_version("AppIndicator3", "0.1")
+        from gi.repository import AppIndicator3 as AppIndicator
+    from gi.repository import GLib, Gio, Gtk
 
-gi.require_version("Gtk", "3.0")
-try:
-    gi.require_version("AyatanaAppIndicator3", "0.1")
-    from gi.repository import AyatanaAppIndicator3 as AppIndicator
-except (ValueError, ImportError):  # pragma: no cover - fallback for older stacks
-    gi.require_version("AppIndicator3", "0.1")
-    from gi.repository import AppIndicator3 as AppIndicator
+GLib = Gio = Gtk = AppIndicator = None
 
-from gi.repository import GLib, Gio, Gtk  # noqa: E402
-
-from . import component, desktop  # noqa: E402
+from . import component, desktop
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
@@ -228,6 +232,7 @@ class Tray:
     def __init__(self, on_toggle=None, on_quit=None, on_open=None,
                  on_skip=None, on_clear_completed=None, on_open_transcript=None,
                  on_retry_item=None, on_retry_passes=None):
+        _load_gtk()
         self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
         self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
         self.on_open_transcript = on_open_transcript
