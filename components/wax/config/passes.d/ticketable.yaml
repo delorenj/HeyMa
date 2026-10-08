@@ -1,0 +1,18 @@
+slug: ticketable
+version: 1
+description: Ticketable work from the transcript, one ticket per deliverable, filed under the note's project-ids.
+enabled: false
+auto: false
+# title-slug: tickets record the FINAL transcript filename.
+# project-extraction: tickets may only name the note's project-ids.
+requires: [title-slug, project-extraction]
+clobber: []
+emits: [intake.detected]
+timeout_s: 600
+env:
+  WAX_TICKETS_API_BASE: https://api.automaticai.io/v1
+  WAX_TICKETS_MODEL: automaticai/openrouter/google/gemini-3.7-flash
+  WAX_TICKETS_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
+  # Up to three 240K-char windows per transcript: 3 x 180s stays under timeout_s.
+  WAX_TICKETS_REQUEST_TIMEOUT_S: "180"
+command: ["{component_root}/config/passes.d/bin/ticketable", "{md_path}", "{item_id}"]

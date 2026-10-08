@@ -106,8 +106,9 @@ CREATE TABLE IF NOT EXISTS transcripts (
     created_at     TEXT NOT NULL
 );
 
--- One row per (item, enrichment pass). Passes are INDEPENDENT: no pass may
--- gate another, so failure of one must never block the rest.
+-- One row per (item, enrichment pass). Passes are INDEPENDENT except through an
+-- explicit registry `requires:` (state failed, reason_code dependency_failed);
+-- a failure never blocks a pass that does not require it.
 CREATE TABLE IF NOT EXISTS passes (
     item_id    TEXT NOT NULL,
     ep_slug    TEXT NOT NULL,
@@ -164,6 +165,15 @@ def connect() -> sqlite3.Connection:
                      "item_id TEXT NOT NULL, plan_id TEXT NOT NULL, event_id TEXT NOT NULL, "
                      "outbox_id INTEGER NOT NULL, artifact_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, "
                      "PRIMARY KEY(item_id,plan_id))")
+        # Receipt for every event a pass DECLARED and finalize() enqueued. event_id
+        # is a uuid5 over (item, slug, type, key) -- independent of plan and
+        # attempt -- so this primary key is what stops a re-plan, a re-run or a
+        # backfill from publishing the same ticket twice. outbox_id is NULL only
+        # transiently; the row is written in the same transaction as its outbox row.
+        conn.execute("CREATE TABLE IF NOT EXISTS pass_events ("
+                     "event_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, ep_slug TEXT NOT NULL, "
+                     "command_id TEXT, type TEXT NOT NULL, outbox_id INTEGER, created_at TEXT NOT NULL)")
+        conn.execute("CREATE INDEX IF NOT EXISTS pass_events_item ON pass_events(item_id)")
         _local.conn = conn
     return conn
 
@@ -559,9 +569,15 @@ def failed_passes_for_sweep(max_attempts: int) -> list[tuple[str, str, int]]:
     if not slugs:
         return []
     placeholders = ",".join("?" for _ in slugs)
+    # `dependency_failed` is exempt from the attempt bound: the pass itself never
+    # ran, so there is no provider to stop hammering, and the gate is lifted by
+    # a DIFFERENT pass succeeding. Now that a gated pass records real attempts, a
+    # bounded row would age out together with its exhausted dependency and leave
+    # an item that nothing -- not even this sweep -- would ever re-drive.
     rows = connect().execute(
         "SELECT p.item_id, p.ep_slug, p.attempt FROM passes p JOIN transcripts t USING(item_id) "
-        f"WHERE p.state='failed' AND p.ep_slug IN ({placeholders}) AND p.attempt < ? "
+        f"WHERE p.state='failed' AND p.ep_slug IN ({placeholders}) "
+        "AND (p.attempt < ? OR p.reason_code='dependency_failed') "
         "ORDER BY p.updated_at",
         (*slugs, max_attempts),
     ).fetchall()

@@ -1,0 +1,17 @@
+slug: project-extraction
+version: 1
+description: The pjangler projects a transcript talks about, decided by Jev over the project registry.
+enabled: false
+auto: false
+requires: []
+clobber: []
+timeout_s: 120
+env:
+  # Jev is called at OpenRouter directly: the AutomaticAI gateway has no
+  # decisions route. HeyMa's own inference key, $1/day cap.
+  WAX_JEV_URL: https://openrouter.ai/api/alpha/decisions
+  WAX_JEV_MODEL: typesafe/jev-1.13
+  WAX_JEV_API_KEY_OP: op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential
+  WAX_PROJECT_MIN_P: "0.6"
+  WAX_PROJECT_MIN_P_LONG: "0.75"
+command: ["{component_root}/config/passes.d/bin/project-extraction", "{md_path}", "{item_id}"]

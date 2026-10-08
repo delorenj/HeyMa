@@ -1,0 +1,217 @@
+#!/usr/bin/python3
+"""wax.ep.v1 project extraction: which pjangler projects a document talks about.
+
+Candidates are every project in the pjangler registry. The decision is
+TypeSafe's Jev (typesafe/jev-1.13), asked ONE `noul` question per project in a
+single request. Measured 2026-10-08 over 25 calls: one request with 35
+questions costs ~$0.0003 for a 5K-char transcript and answers in 0.3-0.7s;
+accepting P >= 0.6 gave precision 0.94 and recall 0.94; a mortgage phone call
+scored at most 0.05 on every project. Jev's single-label `choice` is a
+softmax, so it can only ever name one project and is not used here.
+
+Long documents saturate: one stray word pushed an unrelated project to 0.73
+in a 60K-char transcript. Above 30K chars the threshold is therefore 0.75.
+Jev caps state plus questions at ~32K tokens, so up to 80K chars go in one
+call and anything longer is judged in overlapping 60K windows, keeping each
+project's best window. Answers jitter by about +-0.06 between identical
+requests; the probabilities are kept as evidence for that reason.
+
+An existing non-empty `project-ids` (a human's or an earlier run's) is
+returned unchanged and no decision is requested. A registry or Jev failure
+exits nonzero with a reason code. An empty list is only ever written when the
+decision succeeded and accepted nothing.
+
+The pass reads one document and prints one declarative result; Wax applies it.
+It never prints document text or provider bodies.
+"""
+
+import os
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+
+COMPONENT_ROOT = next(
+    parent for parent in Path(__file__).resolve().parents
+    if (parent / "pyproject.toml").is_file()
+)
+sys.path.insert(0, str(COMPONENT_ROOT / "src"))
+
+from wax import frontmatter, jev, pjregistry, provider  # noqa: E402
+
+
+SINGLE_CALL_MAX_CHARS = 80_000
+WINDOW_CHARS = 60_000
+WINDOW_OVERLAP = 2_000
+SHORT_DOCUMENT_CHARS = 30_000
+DEFAULT_MIN_P = 0.6
+DEFAULT_MIN_P_LONG = 0.75
+MAX_PROJECTS = 8
+# Candidates below this are noise; above it they show a near miss in evidence.
+EVIDENCE_MIN_P = 0.2
+DEFAULT_KEY_OP = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
+KEY_ENV = "WAX_JEV_API_KEY"
+
+# Deliberately free of examples: examples taken from real transcripts leaked
+# into the measured scores for exactly the projects they named.
+NAME_NOTE = ("The transcript comes from speech recognition, which mangles names, so match by sound "
+             "as well as spelling. A common word that merely resembles a name is not a mention.")
+
+
+def question(project: dict[str, Any]) -> dict[str, Any]:
+    """The measured base wording; strict "real subject" wording lost brief mentions."""
+    name, pid = project["name"], project["project_id"]
+    aka = f" Also known as: {', '.join(project['aliases'])}." if project["aliases"] else ""
+    about = f" Description: {project['about']}" if project["about"] else ""
+    return jev.noul(
+        f"Does the speaker in `transcript` talk about, work on, or explicitly refer to the project "
+        f"\"{name}\" (project id: {pid})?{aka}{about} {NAME_NOTE}",
+        true=f"The transcript discusses or refers to {name} ({pid}), possibly misspelled or misheard.",
+        false=f"{name} ({pid}) is not discussed or referred to.",
+    )
+
+
+def existing_ids(fm: dict[str, Any]) -> Optional[list[str]]:
+    """The note's own `project-ids`, None when absent or empty.
+
+    Anything else that is not a list of canonical ids is refused rather than
+    "repaired": a hand-written value is a human decision the pass cannot read.
+    """
+    value = fm.get("project-ids")
+    if value is None or value == "" or value == []:
+        return None
+    if (not isinstance(value, list) or not value
+            or any(not isinstance(v, str) or not pjregistry.ID_RE.match(v) for v in value)
+            or len(set(value)) != len(value)):
+        raise provider.ProviderError(
+            "existing project-ids is not a list of distinct canonical pjangler ids; preserving it",
+            "invalid_project_ids")
+    return value
+
+
+def preserved(fm: dict[str, Any], ids: list[str]) -> dict[str, Any]:
+    """Reuse the note's ids; fill index-aligned names only if they are missing."""
+    updates: dict[str, Any] = {"project-ids": ids}
+    evidence: dict[str, Any] = {"source": "existing"}
+    if fm.get("projects") in (None, "", []):
+        try:
+            known = {c["project_id"]: c for c in pjregistry.candidates(pjregistry.fetch_registry(attempts=2))}
+        except pjregistry.RegistryError as exc:
+            # Names are a convenience; the ids are what was asked for.
+            provider.note(f"note: project names not resolved ({exc.reason_code}): {exc}")
+            evidence["registry"] = "unavailable"
+        else:
+            updates["projects"] = [known[i]["name"] if i in known else i for i in ids]
+            evidence["registry"] = "ok"
+            unknown = [i for i in ids if i not in known]
+            if unknown:
+                evidence["unknown"] = unknown
+    return {"wax_ep_version": 1, "frontmatter": updates, "evidence": evidence}
+
+
+def decide_windows(text: str, questions: dict[str, Any], *, key: str, model: str,
+                   url: str) -> tuple[dict[str, float], list[jev.Decision]]:
+    """Each project's best probability over the document's windows."""
+    pending = (provider.windows(text, WINDOW_CHARS, WINDOW_OVERLAP)
+               if len(text) > SINGLE_CALL_MAX_CHARS else [text])
+    best: dict[str, float] = {}
+    decisions: list[jev.Decision] = []
+    for window in pending:
+        try:
+            batch = [jev.decide({"transcript": window}, questions, key=key, model=model, url=url)]
+        except provider.ProviderError as exc:
+            if exc.reason_code != "jev_too_large":
+                raise
+            # The question set grows with the registry, so the budget left for
+            # text shrinks over time. Halve once; never shrink without limit.
+            provider.note(f"note: a {len(window)}-char window exceeded Jev's token budget; halving it")
+            batch = []
+            for part in provider.windows(window, len(window) // 2 + WINDOW_OVERLAP, WINDOW_OVERLAP):
+                try:
+                    batch.append(jev.decide({"transcript": part}, questions, key=key, model=model, url=url))
+                except provider.ProviderError as again:
+                    if again.reason_code == "jev_too_large":
+                        raise provider.ProviderError(
+                            f"a {len(part)}-char window still exceeds Jev's token budget after halving "
+                            f"({len(questions)} questions)", "jev_too_large") from None
+                    raise
+        for decision in batch:
+            decisions.append(decision)
+            for pid in questions:
+                best[pid] = max(best.get(pid, 0.0), decision.noul(pid))
+    return best, decisions
+
+
+def build_result(md: Path) -> dict[str, Any]:
+    fm, body = frontmatter.read(md)
+    text = provider.document_text(body)
+    if not text:
+        raise provider.ProviderError(f"document has no body: {md.name}", "empty_document")
+    ids = existing_ids(fm)
+    if ids is not None:
+        return preserved(fm, ids)
+
+    projects = pjregistry.candidates(pjregistry.fetch_registry())
+    if not projects:
+        raise pjregistry.RegistryError("registry_invalid", "the registry lists no candidate projects")
+    hints = pjregistry.load_aliases()
+    if hints is None:
+        where = os.environ.get("WAX_PROJECT_ALIASES") or pjregistry.ALIASES_FILE
+        provider.note(f"note: {where} is missing; deciding on registry text alone")
+    hinted = [pjregistry.hinted(project, hints) for project in projects]
+    questions = {project["project_id"]: question(project) for project in hinted}
+    names = {project["project_id"]: project["name"] for project in hinted}
+
+    key = provider.resolve_key(env_var=KEY_ENV,
+                               op_ref=os.environ.get("WAX_JEV_API_KEY_OP", DEFAULT_KEY_OP).strip())
+    best, decisions = decide_windows(
+        text, questions, key=key,
+        model=os.environ.get("WAX_JEV_MODEL", "").strip() or jev.DEFAULT_MODEL,
+        url=os.environ.get("WAX_JEV_URL", "").strip() or jev.DEFAULT_URL)
+
+    if len(text) <= SHORT_DOCUMENT_CHARS:
+        threshold = provider.env_number("WAX_PROJECT_MIN_P", DEFAULT_MIN_P, minimum=0.01, maximum=1.0)
+    else:
+        threshold = provider.env_number("WAX_PROJECT_MIN_P_LONG", DEFAULT_MIN_P_LONG,
+                                        minimum=0.01, maximum=1.0)
+    ranked = sorted(best.items(), key=lambda item: (-item[1], item[0]))
+    accepted = [pid for pid, p in ranked if p >= threshold][:MAX_PROJECTS]
+    return {
+        "wax_ep_version": 1,
+        "frontmatter": {
+            "project-ids": accepted,
+            "projects": [names[pid] for pid in accepted],
+        },
+        "evidence": {
+            "model": ", ".join(sorted({d.model for d in decisions})),
+            "cost": round(sum(d.cost for d in decisions), 8),
+            "windows": len(decisions),
+            "threshold": threshold,
+            "candidates": len(questions),
+            "probabilities": {pid: p for pid, p in ranked if p >= EVIDENCE_MIN_P},
+            "request_ids": [d.request_id for d in decisions if d.request_id],
+            "aliases": "ok" if hints is not None else "missing",
+        },
+    }
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if not args:
+        print("usage: project-extraction DOCUMENT.md [ITEM_ID]", file=sys.stderr)
+        return 2
+    md = Path(args[0]).expanduser().resolve()
+    if not md.is_file():
+        return provider.fail("run_error", f"not a document file: {md}")
+    try:
+        result = build_result(md)
+    except (provider.ProviderError, pjregistry.RegistryError) as exc:
+        return provider.fail(exc.reason_code, str(exc))
+    except OSError as exc:
+        return provider.fail("run_error", f"{type(exc).__name__}: {exc}")
+    provider.emit_result(result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

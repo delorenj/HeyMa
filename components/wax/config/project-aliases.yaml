@@ -1,0 +1,93 @@
+# Wax-side hints for the pjangler registry, read by the project-extraction and
+# ticketable passes (wax.pjregistry.load_aliases).
+#
+# Why this exists: the registry has no alias field, many descriptions are
+# empty, ids such as px, bb or tonnybox say nothing about the project, and
+# speech recognition mangles names. Measured 2026-10-08: "the AutomaticAI LLM
+# gateway / new API" scored 0.06-0.08 for client-portal under the bare registry
+# wording, far below the 0.6 accept threshold.
+#
+# Keys are pjangler project ids. `aliases` are spoken or written forms a
+# speaker actually uses; `about` is one grounded line for a project whose
+# registry description is empty or opaque (it is appended to the registry
+# description, never replaces it). The repo directory name is added
+# automatically when it differs from the id and name.
+#
+# Keep aliases SPECIFIC. A generic word ("infra", "docker", "the vault")
+# saturates P(true) on long transcripts, where any stray mention reads as a
+# reference to the project. Upstream these into the pjangler manifests when
+# they grow an aliases field; until then this file is the source.
+projects:
+  transcription-queue:
+    aliases: [HeyMa, Hey Ma, HEMA, Wax]
+    about: The Wax audio pipeline that records, archives and transcribes voice memos and meetings, then runs enrichment passes over the transcripts (titles, classification, project and ticket extraction).
+  heyma-obsidian:
+    aliases: [HeyMa Obsidian plugin]
+    about: The Obsidian plugin only, not the HeyMa pipeline itself.
+  tonnybox:
+    aliases: [Tonny, Tonny Box, Hey Tonny]
+    about: Raspberry Pi Zero voice-capture satellite with a "Hey Tonny" wake word that streams household audio to the HeyMa server.
+  client-portal:
+    aliases: [AutomaticAI LLM gateway, AutomaticAI gateway, new API gateway, AutomaticAI client portal, AutomaticAI website, api.automaticai.io]
+    about: Its LLM gateway at api.automaticai.io routes models and issues consumer tokens for agents.
+  delodocs:
+    aliases: [DeLoDocs, DLO docs, Delo docs, docs vault]
+    about: The Obsidian vault of personal notes and wiki pages.
+  tower-of-dumb-things:
+    aliases: [Tower of Lost Things, Pile of Dumb Things]
+    about: Mobile portrait game for ages 3 to 5 in which a climber scales a tower of junk and plays a tiny game on each floor.
+  bb:
+    aliases: [blood bank]
+  px:
+    aliases: [px CLI]
+  pjangler:
+    aliases: [P. Jangler, PJ Angler, Project Jangler, pj CLI]
+    about: Also owns the project registry that lists every project and its ticket board.
+  gruvato:
+    aliases: [Groovato]
+  greeninbetween:
+    aliases: [Green in Between]
+  33god:
+    aliases: [33 God, thirty-three god]
+    about: Platform monorepo for the event-driven, agentic development pipeline.
+  james-brennan:
+    aliases: [Jim Brennan, IPM Home Services, FieldOpsLine]
+    about: AutomaticAI client engagement with James Brennan of IPM Home Services, whose phone line closes out field jobs.
+  delonet:
+    aliases: [DeLoNET Company]
+    about: Not the DeLoNET home network or homelab itself.
+  codegraph-voyage:
+    aliases: [CodeGraph Voyage]
+    about: Semantic code-search sidecar for CodeGraph that uses Voyage AI embeddings.
+  deckard:
+    about: Elgato Stream Deck controller that shows zellij tabs and agent activity on its keys.
+  docker:
+    aliases: [DeLoContainers]
+    about: The homelab Docker Compose stacks repository (AI, media, proxy and utility services).
+  holocene:
+    about: 33GOD control-plane dashboard for live fleet, tooling and pipeline health.
+  infra:
+    about: Homelab and workstation infrastructure work such as machine setup, desktop, GPU and networking fixes.
+  intelliforia-mobile:
+    about: Flutter mobile app that wraps the IntelliForia EMR overlay for Android and iOS.
+  keepy-money:
+    about: Self-hosted household-finance dashboard over Tiller data (safe-to-spend, runway, zombie subscriptions, cashflow).
+  legofirst:
+    aliases: [FIRST LEGO League, LEGO League team kit]
+    about: Open-source kit for starting a FIRST LEGO League school team (signup site, flyer and outreach emails).
+  momo:
+    about: Human-driven project-manager orchestrator that works a project's ticket board.
+  skillex:
+    aliases: [Skill X]
+    about: Node CLI and registry that defines agent skills once and syncs them to agent CLIs.
+  srvls:
+    about: Background-task inventory CLI that lists cron, systemd, docker and pm2 jobs in one table.
+  ssbnk:
+    aliases: [ScreenShot Bank]
+    about: Self-hosted screenshot ingestion and sharing service.
+  vinyl:
+    about: Local live dictation for Ubuntu that types speech into the focused window.
+  voxxy:
+    about: Text-to-speech service that unifies local TTS engines and ElevenLabs behind HTTP and MCP.
+  slowburns:
+    about: Turns a plain message into a Civil War field dispatch rendered as a Ken Burns-style documentary.

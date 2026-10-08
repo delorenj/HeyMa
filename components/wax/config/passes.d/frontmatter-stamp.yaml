@@ -3,8 +3,10 @@ version: 1
 description: Stamp source, duration, model and word count onto the transcript.
 enabled: true
 auto: true
-# Passes are INDEPENDENT by contract. This field exists so the option is there
-# later, but a non-empty value is refused unless explicitly overridden.
+# `requires` is honoured: a non-empty list orders this pass after those passes
+# AND blocks it (reason_code dependency_failed) until each is completed or
+# skipped at its current registry version. `after` only orders. This pass
+# consumes nothing from its siblings, so it requires nothing.
 requires: []
 timeout_s: 60
 command: ["{component_root}/config/passes.d/bin/frontmatter-stamp", "{md_path}"]

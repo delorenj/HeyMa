@@ -92,6 +92,18 @@ MIRROR_MAX_AGE_S = 180      # waxd rewrites state.json at 1 Hz; 180 s is 180 mis
 OUTBOX_STALE_S = 600
 CMD_TIMEOUT_S = 20          # every subprocess doctor spawns; it must never hang
 HTTP_TIMEOUT_S = 15
+PJ_TIMEOUT_S = 5
+# pjangler's registry binds loopback only and has no auth; `localhost` can
+# resolve to ::1 first, where it is not listening.
+PJ_REGISTRY_DEFAULT = "http://127.0.0.1:8764"
+# HeyMa's own OpenRouter inference key. The Jev decisions API has no gateway
+# route (every candidate path 404s), so this is the documented exception to
+# routing LLM traffic through api.automaticai.io.
+JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
+JEV_KEY_URL = "https://openrouter.ai/api/v1/key"
+# HeyMa's frozen canonical pjangler id (.project.json `project_id`); the repo
+# was called transcription-queue before it was HeyMa and the id never changed.
+HEYMA_PROJECT_ID = "transcription-queue"
 # NeMo's import is substantial even though the owned adapter deliberately does
 # not restore weights at import time. Keep it bounded so doctor cannot hang.
 DIARIZATION_IMPORT_TIMEOUT_S = 120
@@ -244,6 +256,24 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug", "120"),
     ("WAX_TITLE_API_KEY", "passes.d/bin/title-slug (direct key; prefer op://)", "<unset>"),
     ("OPENROUTER_API_KEY", "passes.d/bin/title-slug (ambient last resort)", "<unset>"),
+    ("WAX_JEV_URL", "passes.d/bin/project-extraction (Jev decisions endpoint)",
+     "https://openrouter.ai/api/alpha/decisions"),
+    ("WAX_JEV_MODEL", "passes.d/bin/project-extraction", "typesafe/jev-1.13"),
+    ("WAX_JEV_API_KEY_OP", "passes.d/bin/project-extraction (OpenRouter INFERENCE key, never a management key)",
+     JEV_KEY_OP_DEFAULT),
+    ("WAX_JEV_API_KEY", "passes.d/bin/project-extraction (direct key; prefer op://)", "<unset>"),
+    ("WAX_PROJECT_MIN_P", "passes.d/bin/project-extraction (noul threshold)", "0.6"),
+    ("WAX_PROJECT_MIN_P_LONG", "passes.d/bin/project-extraction (threshold for transcripts > 30K chars)", "0.75"),
+    ("PJ_PROJECT_REGISTRY", "wax/pjregistry.py, bin/wax doctor (wins over PJ_REGISTRY_URL, as in `pj`)",
+     "<unset>"),
+    ("PJ_REGISTRY_URL", "wax/pjregistry.py, bin/wax doctor", PJ_REGISTRY_DEFAULT),
+    ("WAX_PROJECT_ALIASES", "wax/pjregistry.py", "<component>/config/project-aliases.yaml"),
+    ("WAX_TICKETS_API_BASE", "passes.d/bin/ticketable", "https://api.automaticai.io/v1"),
+    ("WAX_TICKETS_MODEL", "passes.d/bin/ticketable", "automaticai/openrouter/google/gemini-3.7-flash"),
+    ("WAX_TICKETS_API_KEY_OP", "passes.d/bin/ticketable",
+     "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"),
+    ("WAX_TICKETS_API_KEY", "passes.d/bin/ticketable (direct key; prefer op://)", "<unset>"),
+    ("WAX_TICKETS_REQUEST_TIMEOUT_S", "passes.d/bin/ticketable", "180"),
     ("OP_SERVICE_ACCOUNT_TOKEN", "`op read` inside title-slug", "<unset>"),
     ("TRANSCRIBE_DIR", "bin/transcribe", "<dirname(realpath(transcribe))/..>"),
     ("DIARIZATION_VENV", "bin/transcribe", "<TRANSCRIBE_DIR>/.venv-diarization"),
@@ -331,6 +361,147 @@ def _get_json(url: str, *, token: str) -> tuple[Optional[Any], str]:
         return None, f"HTTP {e.code}: {body or e.reason}"
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
         return None, f"{type(e).__name__}: {e}"
+
+
+def _get_json_direct(url: str, *, timeout: float = PJ_TIMEOUT_S) -> tuple[Optional[Any], str]:
+    """GET a loopback JSON endpoint with the environment's proxies IGNORED.
+
+    A shell exporting http_proxy would otherwise send 127.0.0.1 through it and
+    report the registry down while it is answering locally.
+    """
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(urllib.request.Request(url, headers={"Accept": "application/json"}),
+                         timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8", "replace")), ""
+    except urllib.error.HTTPError as e:
+        return None, f"HTTP {e.code}"
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _heyma_project_id(repo: Path) -> str:
+    try:
+        return str(json.loads((repo / ".project.json").read_text()).get("project_id") or HEYMA_PROJECT_ID)
+    except (OSError, ValueError, AttributeError):
+        return HEYMA_PROJECT_ID
+
+
+def probe_project_extraction(add, *, repo: Path, effective: dict[str, str],
+                             yenv: dict[str, tuple[str, str]]) -> None:
+    """Probes for what project-extraction and ticketable cannot work without.
+
+    Both fail by returning nothing (an unreachable registry gives an empty
+    candidate list, a dead Jev key gives no answers), which is exactly the shape
+    of every earlier silent outage -- so each dependency gets its own probe.
+    Severity follows whether the pass is actually enabled: a registry that is
+    down while nothing uses it is news, not an emergency.
+    """
+    ep = passes.registry().get("project-extraction")
+    enabled = bool(ep and ep.get("enabled"))
+    bad = FAIL if enabled else WARN
+    unused = "" if enabled else " (project-extraction is not enabled)"
+
+    def setting(name: str, default: str) -> str:
+        pass_env = (ep or {}).get("env") or {}
+        value = pass_env[name] if name in pass_env else (yenv[name][1] if name in yenv
+                                                         else effective.get(name) or default)
+        return str(value).strip() or default
+
+    # -- pjangler registry ----------------------------------------------------
+    # Same precedence as pjangler's own client and wax.pjregistry.registry_url().
+    base = (setting("PJ_PROJECT_REGISTRY", "") or setting("PJ_REGISTRY_URL", PJ_REGISTRY_DEFAULT)).rstrip("/")
+    project_id = _heyma_project_id(repo)
+    fix = ("curl -X POST -H content-type:application/json "
+           f"-d '{json.dumps({'manifest_path': str(repo / '.project.json')}, separators=(',', ':'))}' "
+           f"{base}/v1/index")
+    health = err = None
+    if not base.lower().startswith(("http://", "https://")):
+        # `pj` treats a non-HTTP value as a YAML fixture path; Wax cannot read one.
+        add(_probe("pjangler registry", bad, f"registry location {base!r} is not an HTTP URL{unused}",
+                   "unset PJ_PROJECT_REGISTRY / PJ_REGISTRY_URL in waxd.service"))
+    else:
+        health, err = _get_json_direct(f"{base}/health")
+    if health is None and err is not None:
+        add(_probe("pjangler registry", bad, f"{base}/health: {err}{unused}",
+                   "systemctl --user start pjangler-project-registry.service"))
+    elif health is not None:
+        snapshot, err = _get_json_direct(f"{base}/v1/registry")
+        known = snapshot.get("projects") if isinstance(snapshot, dict) else None
+        if not isinstance(known, dict):
+            add(_probe("pjangler registry", bad, f"{base}/v1/registry: {err or 'no projects object'}{unused}",
+                       "systemctl --user restart pjangler-project-registry.service"))
+        elif project_id not in known:
+            add(_probe("pjangler registry", bad,
+                       f"{base} is up with {len(known)} project(s) but {project_id!r} (HeyMa) is NOT "
+                       f"registered, so tickets for this repo cannot be attributed{unused}", fix))
+        else:
+            status = ((snapshot.get("__registry_status") or {}).get(project_id) or {}).get("status")
+            if status not in (None, "ok"):
+                add(_probe("pjangler registry", bad,
+                           f"{project_id!r} is registered but its index status is {status!r}{unused}", fix))
+            else:
+                add(_probe("pjangler registry", PASS, f"{base}: {len(known)} project(s), {project_id!r} present"))
+
+    # -- Jev inference key ----------------------------------------------------
+    if not enabled:
+        return
+    # Resolution order is the pass's own (wax.provider.resolve_key): a literal
+    # $WAX_JEV_API_KEY wins over the op:// reference.
+    reference = setting("WAX_JEV_API_KEY_OP", JEV_KEY_OP_DEFAULT)
+    literal = setting("WAX_JEV_API_KEY", "")
+    where = "WAX_JEV_API_KEY (a literal key in the environment)" if literal else reference
+    key = literal or _op_read(reference)
+    if not key:
+        add(_probe("jev api key", FAIL, f"{reference} did not resolve",
+                   f"op read {reference}   # then fix vault access or the field itself"))
+        return
+    payload, err = _get_json(JEV_KEY_URL, token=key)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        add(_probe("jev api key", FAIL, f"{JEV_KEY_URL}: {err or 'no data object'}",
+                   "a 401 'User not found' means a dead key OR a management key; "
+                   "check is_provisioning_key before suspecting the account"))
+    elif data.get("is_provisioning_key") is not False:
+        # OpenRouter answers inference with 401 "User not found" for these, which
+        # reads like a closed account and sends the search to the wrong place.
+        add(_probe("jev api key", FAIL,
+                   f"{where} is a provisioning (management) key; it cannot do inference",
+                   "mint a per-consumer inference key and point WAX_JEV_API_KEY_OP at it"))
+    elif data.get("limit_remaining") is not None and not data["limit_remaining"] > 0:
+        add(_probe("jev api key", FAIL,
+                   f"{where} has no budget left (limit_remaining={data['limit_remaining']})",
+                   "wait for the daily reset or raise the key's limit in OpenRouter"))
+    else:
+        remaining = data.get("limit_remaining")
+        detail = f"{where}: inference key, " + ("no spend cap" if remaining is None
+                                                 else f"limit_remaining={remaining}")
+        if literal:
+            add(_probe("jev api key", WARN, detail + "; a literal key, not 1Password",
+                       f"move it into {reference} and drop WAX_JEV_API_KEY"))
+        else:
+            add(_probe("jev api key", PASS, detail))
+
+
+def pending_pass_event_report() -> list[tuple[str, str, int]]:
+    """(item_id, slug, count) for completed passes whose declared events were never enqueued.
+
+    Only FINALIZED items are examined: for an unfinalized one the events are
+    simply not due yet and finalize() will enqueue them with the completion.
+    """
+    conn = ledger.connect()
+    emitted = {row["event_id"] for row in conn.execute("SELECT event_id FROM pass_events")}
+    out = []
+    for row in conn.execute(
+            "SELECT p.item_id, p.ep_slug, p.result FROM passes p "
+            "WHERE p.state='completed' AND p.result LIKE '%\"events\"%' "
+            "AND p.item_id IN (SELECT item_id FROM completions) ORDER BY p.item_id, p.ep_slug"):
+        missing = sum(1 for event in finalize.declared_events(row["result"])
+                      if finalize.pass_event_id(row["item_id"], row["ep_slug"],
+                                                event["type"], event["key"]) not in emitted)
+        if missing:
+            out.append((row["item_id"], row["ep_slug"], missing))
+    return out
 
 
 def probe_all() -> list[dict[str, Any]]:
@@ -585,6 +756,9 @@ def probe_all() -> list[dict[str, Any]]:
                            f"set WAX_TITLE_MODEL in config/passes.d/title-slug.yaml to a model "
                            f"{api_base} actually serves"))
 
+    # -- project-extraction dependencies ------------------------------------
+    probe_project_extraction(add, repo=repo, effective=effective, yenv=yenv)
+
     # -- pass commands and the frontmatter editor --------------------------
     broken, checked = [], 0
     for slug, ep in sorted(passes.registry().items()):
@@ -678,6 +852,19 @@ def probe_all() -> list[dict[str, Any]]:
                    "" if not health["failed"] else "wax ep sweep --dry-run   # then drop --dry-run"))
     except Exception as e:  # noqa: BLE001
         add(_probe("passes.failed (contract A)", FAIL, f"{type(e).__name__}: {e}"))
+    try:
+        awaiting = pending_pass_event_report()
+        if not awaiting:
+            add(_probe("pass events enqueued", PASS,
+                       "every event declared by a completed pass on a finalized item is in the outbox"))
+        else:
+            item_id, slug, _ = awaiting[0]
+            add(_probe("pass events enqueued", WARN,
+                       f"{sum(n for _, _, n in awaiting)} declared event(s) on {len(awaiting)} "
+                       f"finalized pass run(s) never reached the outbox, e.g. {slug} on {item_id}",
+                       f"wax ep run {slug} {item_id}   # finalize() enqueues them"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("pass events enqueued", WARN, f"{type(e).__name__}: {e}"))
     try:
         diar = ledger.diarization_health()
         add(_probe("diarization.degraded (contract A)", FAIL if diar["degraded"] else PASS,

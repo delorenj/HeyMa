@@ -1,12 +1,26 @@
 """Enrichment Passes: independent, individually tracked, individually traceable.
 
-Independence is the whole design constraint. A pass NEVER gates another pass:
-if `wikification` fails, `mem-ops` still runs on the same item, and the failure
-is recorded against that one slug rather than stalling the item. There is a
-`requires:` field in the registry so the option exists later, but every shipped
-pass declares `requires: []` and the runner refuses to honour a non-empty one
-without an explicit override — a dependency added by accident is exactly how
-"independent passes" quietly becomes a pipeline again.
+Independence is the whole design constraint. A pass never fails because a
+SIBLING failed: if `wikification` fails, `mem-ops` still runs on the same item,
+and the failure is recorded against that one slug rather than stalling the item.
+
+The one deliberate coupling is the registry's `requires:` list, and it is
+honoured unconditionally. ordered() sorts a pass after everything it requires;
+run() additionally refuses to execute it until each requirement is `completed`
+or `skipped` AT THE LIVE REGISTRY VERSION, and records `dependency_failed`
+(ledger row + `wax.passes.<slug>` note entry saying what it is waiting on)
+otherwise. Declare `requires` only where a pass consumes another's output — the
+dependent really cannot run without it. `after:` only orders: it is a sequencing
+preference with no gate, and a failed `after` target never stops its dependent.
+Both fields must name ENABLED passes; an `auto` pass may only `require` other
+`auto` passes (ensure_plan), because a plan holds nothing else.
+
+Events are a HOST effect, so a pass only declares them: a result may carry an
+`events` list (validated by _validated_events against the registry's `emits`
+allowlist, before any mutation) and finalize.py publishes them after
+`transcription.completed`. A pass cannot emit "after completed" itself — it runs
+before completion exists — and an event published from inside a pass that later
+fails would announce work that never happened.
 
 Traceability: every run mints a DETERMINISTIC command_id
     uuid5(WAX_NS, "ep:<item_id>:<ep_slug>:<attempt>")
@@ -63,6 +77,15 @@ _PROTECTED_FRONTMATTER = {
     "source-sha256",
     "vault-id",
 }
+
+
+# Pass-declared events (result key `events`). Limits are enforced on the way IN,
+# in _apply_result, so a violation fails that one pass with result_apply_failed
+# before anything touches the note — finalize() never has to defend against them.
+_EVENT_TYPE = re.compile(r"^[a-z][a-z_]*\.[a-z][a-z_]*$")
+_EVENT_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
+MAX_EVENTS_PER_RESULT = 50
+MAX_EVENT_DATA_BYTES = 32 * 1024
 
 
 class PassError(RuntimeError):
@@ -350,10 +373,72 @@ def _rename_transcript(md: Path, item_id: str, slug: str) -> Path:
     return final
 
 
+def _validated_events(ep: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate a result's optional `events` list; return it, or raise PassError.
+
+    Events are published later by finalize() under a content-keyed id, so the
+    only moment a malformed one can be refused cheaply — and cost the pass
+    nothing but its own state — is here. The registry `emits` allowlist is
+    checked lazily, per result, so a typo in one pass's YAML fails that pass's
+    runs rather than raising out of ordered() and taking down every item.
+
+    Messages carry indexes and shapes, never `data` content: a transcript-derived
+    description does not belong in a ledger `detail` or a journal line.
+    """
+    slug = ep.get("slug") or "?"
+    emits = ep.get("emits")
+    if emits is not None and (not isinstance(emits, list)
+                              or any(not isinstance(t, str) or not _EVENT_TYPE.match(t) for t in emits)):
+        raise PassError(f"invalid emits for {slug}: expected a list of '<entity>.<action>' strings")
+    declared = result.get("events")
+    if declared is None:
+        return []
+    if not isinstance(declared, list):
+        raise PassError("enrichment result events must be a list")
+    if not declared:
+        return []
+    if len(declared) > MAX_EVENTS_PER_RESULT:
+        raise PassError(f"enrichment result declares {len(declared)} events; limit is {MAX_EVENTS_PER_RESULT}")
+    if not emits:
+        raise PassError(f"pass {slug} returned events but its registry entry declares no emits")
+    seen: set[str] = set()
+    for index, event in enumerate(declared):
+        where = f"events[{index}]"
+        if not isinstance(event, dict):
+            raise PassError(f"{where} must be an object")
+        if set(event) != {"type", "key", "data"}:
+            raise PassError(f"{where} must have exactly the keys type, key, data")
+        event_type, key, data = event["type"], event["key"], event["data"]
+        if not isinstance(event_type, str) or not _EVENT_TYPE.match(event_type):
+            raise PassError(f"{where}.type must match <entity>.<action> in lowercase")
+        if event_type not in emits:
+            raise PassError(f"{where}.type {event_type} is not declared in {slug} emits")
+        if not isinstance(key, str) or not _EVENT_KEY.match(key):
+            raise PassError(f"{where}.key must match {_EVENT_KEY.pattern}")
+        if key in seen:
+            raise PassError(f"{where}.key duplicates an earlier event key")
+        seen.add(key)
+        if not isinstance(data, dict):
+            raise PassError(f"{where}.data must be an object")
+        if "project" in data:
+            raise PassError(f"{where}.data must not contain 'project': the envelope owns it")
+        try:
+            encoded = json.dumps(data, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError, RecursionError):
+            raise PassError(f"{where}.data is not JSON-serializable") from None
+        if len(encoded.encode("utf-8")) > MAX_EVENT_DATA_BYTES:
+            raise PassError(f"{where}.data exceeds {MAX_EVENT_DATA_BYTES} bytes")
+    return declared
+
+
 def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, Any]) -> tuple[Path, list[str]]:
     """Apply a pass's declarative mutations and return the current note path."""
     if not result:
         return md, []
+    # First, before the note, the ledger or the filesystem is touched: a rejected
+    # event list must leave the pass's other proposals unapplied too, or the
+    # recorded `failed` would sit next to a half-enriched note.
+    _validated_events(ep, result)
     raw_updates = result.get("frontmatter") or {}
     if not isinstance(raw_updates, dict):
         raise PassError("enrichment result frontmatter must be an object")
@@ -446,10 +531,43 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
     return current, changed
 
 
+def _waiting_on(dependency: str, row, wanted) -> str:
+    """Why a `requires` entry is unmet, in the shape an operator can act on."""
+    if not row:
+        return f"waiting on {dependency} (missing)"
+    seen = f"{row['state']}@v{row['version']}"
+    if row["state"] in ("completed", "skipped") and wanted is not None:
+        # Satisfied except for the version: a bumped dependency invalidates
+        # every dependent's earlier run, and "completed@v1" alone reads as fine.
+        seen += f", need v{wanted}"
+    return f"waiting on {dependency} ({seen})"
+
+
+def _write_pass_note(md: Path, item_id: str, slug: str, entry: dict[str, Any]) -> None:
+    """Replace `wax.passes.<slug>` in the note WHOLESALE.
+
+    frontmatter.merge deep-merges, which is wrong for a history entry: a pass
+    that failed with `reason_code`/`detail` and later completed kept both keys,
+    so its note said "completed" next to "dependency_failed: waiting on …".
+    """
+    fm, body = frontmatter.read(md)
+    fm[frontmatter.ITEM_KEY] = item_id
+    block = fm.get(frontmatter.WAX_KEY)
+    if not isinstance(block, dict):
+        block = fm[frontmatter.WAX_KEY] = {}
+    history = block.get("passes")
+    if not isinstance(history, dict):
+        history = block["passes"] = {}
+    history[slug] = entry
+    tmp = md.with_suffix(md.suffix + ".tmp")
+    tmp.write_text(frontmatter.render(fm, body))
+    os.replace(tmp, md)
+
+
 @serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
-         allow_requires: bool = False, definition=None) -> dict[str, Any]:
-    """Run one pass against one item. Independent of every other pass.
+         definition=None) -> dict[str, Any]:
+    """Run one pass against one item. Independent of its siblings, gated only by `requires`.
 
     `attempt` defaults to one past the highest attempt already recorded for
     (item_id, slug) so that a caller which does not track attempts — `wax ep
@@ -462,16 +580,35 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         raise PassError(f"unknown pass {slug!r}; known: {sorted(reg)}")
     if not ep.get("enabled"):
         raise PassError(f"pass {slug!r} is disabled in {ep.get('_path')}")
+    attempt = _next_attempt(item_id, slug) if attempt is None else int(attempt)
     for dependency in ep.get("requires") or []:
         row = ledger.connect().execute(
             "SELECT state,version FROM passes WHERE item_id=? AND ep_slug=?", (item_id, dependency)
         ).fetchone()
-        if not row or row["state"] not in ("completed", "skipped") or row["version"] != reg[dependency]["version"]:
-            _record(item_id, slug, "failed", version=int(ep["version"]),
-                    reason_code="dependency_failed", definition=ep)
-            return {"item_id": item_id, "ep_slug": slug, "state": "failed", "reason_code": "dependency_failed"}
-
-    attempt = _next_attempt(item_id, slug) if attempt is None else int(attempt)
+        wanted = (reg.get(dependency) or {}).get("version")
+        if row and row["state"] in ("completed", "skipped") and row["version"] == wanted:
+            continue
+        # A gate that fires is a real attempt. It used to be recorded as attempt 1
+        # every time, which reset the counter that bounds the sweep AND let the
+        # dependent's next real run reuse a command_id already spent. It still
+        # emits no task events (no command was issued) but must say, in the note
+        # where people look, why this pass has not produced anything.
+        version = int(ep.get("version") or 1)
+        detail = _waiting_on(dependency, row, wanted)
+        _record(item_id, slug, "failed", version=version, attempt=attempt,
+                detail=detail, reason_code="dependency_failed", definition=ep)
+        md = md_for(item_id)
+        if md is not None:
+            try:
+                _write_pass_note(md, item_id, slug, {
+                    "state": "failed", "at": sentinel.utcnow(), "version": version,
+                    "attempt": attempt, "reason_code": "dependency_failed", "detail": detail,
+                })
+            except OSError:
+                pass
+        log.warning("%s dependency_failed for %s (attempt %d): %s", slug, item_id, attempt, detail)
+        return {"item_id": item_id, "ep_slug": slug, "version": version, "state": "failed",
+                "attempt": attempt, "reason_code": "dependency_failed", "error": detail}
 
     md = md_for(item_id)
     if md is None:
@@ -574,11 +711,12 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     if not ok:
         note_entry["reason_code"] = failure
         note_entry["detail"] = err[:300]
+    elif state == "skipped":
+        # A pass-reported skip (no_project, ...) is the answer to "why are there
+        # no tickets", and the ledger is not where anyone looks for it.
+        note_entry["reason_code"] = failure
     try:
-        frontmatter.merge(current_md, {
-            frontmatter.ITEM_KEY: item_id,
-            frontmatter.WAX_KEY: {"passes": {slug: note_entry}},
-        })
+        _write_pass_note(current_md, item_id, slug, note_entry)
     except OSError:
         pass
 

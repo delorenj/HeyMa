@@ -102,11 +102,23 @@ Recovery: `mc ls delo/recordings/`, `recovered/` (S3-failure stash),
 
 Registry: **`components/wax/config/passes.d/*.yaml`** — resolved from the
 component root via `component.PASSES`, never from cwd or a runtime dir.
-Passes are INDEPENDENT: one failing never gates another, and failure is
-recorded per-slug with a `reason_code` in both the ledger and the note's
+A failing pass never stops a sibling, except through `requires:` (ordering +
+gating; `after:` only orders): a dependent waits with `dependency_failed`. Failure
+is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
-`title-slug` (hosted OpenAI-compatible endpoint; key from `op://`, never a
-file). `wax ep sweep` retries the ones whose latest attempt failed.
+`classification`, `diarization`, `clipboard-copy`, `title-slug` (hosted
+OpenAI-compatible endpoint; key from `op://`, never a file), `project-extraction`
+(pjangler project ids via TypeSafe Jev) and `ticketable` (tasks per project).
+`wax ep sweep` retries the ones whose latest attempt failed.
+
+`transcription.completed` waits for every planned pass. A pass can declare
+`events` in its result (its YAML must list them in `emits`); `finalize()`
+publishes them after the completion, so `ticketable` becomes one
+`bloodbank.audio.intake.detected` per ticket, relayed to ntfy `audio`. Jev is the
+one deliberate bypass of the AutomaticAI gateway (it has no decisions route):
+`project-extraction` calls OpenRouter directly with HeyMa's own inference key
+(`op://`, never a management key). `wax doctor` probes the registry, that key,
+and unpublished pass events.
 
 To add one, use the `create-enrichment-pass` skill; see
 `components/wax/docs/ENRICHMENT-PASSES.md`.
