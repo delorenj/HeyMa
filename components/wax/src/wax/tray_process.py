@@ -2,8 +2,48 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from . import component, paths
+
+SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_CURRENT_DESKTOP",
+                "XDG_SESSION_TYPE", "DBUS_SESSION_BUS_ADDRESS")
+
+
+def session_env() -> dict:
+    """Display variables of the graphical session as it is NOW.
+
+    waxd's own environment is frozen at exec. When the session starts waxd in
+    the same breath as the compositor (an autologin, a GDM restart), the user
+    manager has not imported DISPLAY/WAYLAND_DISPLAY yet, and gating on
+    os.environ alone left the tray at "no display" for the daemon's whole life
+    without a word in the journal (2026-10-09: 10 h with no icon). The session
+    publishes them into the manager's environment, so ask the manager on every
+    attempt; fall back to a Wayland socket in this user's runtime dir. (Not
+    /tmp/.X11-unix: it is shared with the greeter, and a wrong DISPLAY pinned
+    into os.environ would never be re-read.)
+    """
+    env = {}
+    try:
+        out = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True,
+                             text=True, timeout=2, check=True).stdout
+        for line in out.splitlines():
+            key, sep, value = line.partition("=")
+            if sep and value and key in SESSION_KEYS:
+                env[key] = value
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not (env.get("WAYLAND_DISPLAY") or env.get("DISPLAY")):
+        runtime = os.environ.get("XDG_RUNTIME_DIR")
+        sockets = sorted(p.name for p in Path(runtime).glob("wayland-*")
+                         if not p.name.endswith(".lock")) if runtime else []
+        if sockets:
+            env["WAYLAND_DISPLAY"] = sockets[0]
+    return env
+
+
+def _has_display() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 class TrayProcess:
@@ -24,7 +64,12 @@ class TrayProcess:
             self.next_attempt = time.monotonic() + 10
         if time.monotonic() < self.next_attempt:
             return
-        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        if not _has_display():
+            # Into os.environ, not just the child's env: xdg-open and the
+            # silence alarm are waxd children that need the display too.
+            for key, value in session_env().items():
+                os.environ.setdefault(key, value)
+        if not _has_display():
             self.reason = "no display"
             self.next_attempt = time.monotonic() + 10
             return

@@ -218,5 +218,58 @@ class TrayIconTest(unittest.TestCase):
         subject.on_open_transcript.assert_not_called()
 
 
+class TrayProcessDisplayTest(unittest.TestCase):
+    """waxd started by an autologin before the compositor published its display
+    must still get a tray once the session catches up (2026-10-09)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = importlib.import_module("wax.tray_process")
+
+    def setUp(self):
+        env = patch.dict("os.environ", {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        import os
+        for key in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
+            os.environ.pop(key, None)
+
+    def test_late_display_spawns_tray_on_retry(self):
+        import os
+        subject = self.mod.TrayProcess()
+        with patch.object(self.mod, "session_env", return_value={}), \
+                patch.object(self.mod.subprocess, "Popen") as popen:
+            subject.poll()
+        self.assertEqual(subject.reason, "no display")
+        popen.assert_not_called()
+
+        subject.next_attempt = 0
+        with patch.object(self.mod, "session_env", return_value={"WAYLAND_DISPLAY": "wayland-0"}), \
+                patch.object(self.mod.subprocess, "Popen") as popen:
+            subject.poll()
+        self.assertEqual(subject.reason, "starting")
+        self.assertEqual(popen.call_args.kwargs["env"]["WAYLAND_DISPLAY"], "wayland-0")
+        self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-0")
+
+    def test_session_env_reads_the_user_manager(self):
+        out = "PATH=/usr/bin\nDISPLAY=:0\nWAYLAND_DISPLAY=wayland-0\nXAUTHORITY=/run/user/1000/x\n"
+        with patch.object(self.mod.subprocess, "run",
+                          return_value=MagicMock(stdout=out)):
+            env = self.mod.session_env()
+        self.assertEqual(env, {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0",
+                               "XAUTHORITY": "/run/user/1000/x"})
+
+    def test_session_env_falls_back_to_runtime_wayland_socket(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as runtime:
+            for name in ("wayland-1", "wayland-1.lock"):
+                Path(runtime, name).touch()
+            os.environ["XDG_RUNTIME_DIR"] = runtime
+            with patch.object(self.mod.subprocess, "run", side_effect=OSError("no systemctl")):
+                env = self.mod.session_env()
+        self.assertEqual(env, {"WAYLAND_DISPLAY": "wayland-1"})
+
+
 if __name__ == "__main__":
     unittest.main()

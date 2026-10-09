@@ -264,6 +264,11 @@ class Daemon:
         colour, tip = tray_mod.colour_for(snap)
         snap["tray_items"] = queue_items
         self.tray.poll()
+        # The spawner only records why it has no tray; without this the
+        # journal never said "no display" while the icon was missing for 10 h.
+        # "starting" is the one-tick gap before the child reports alive.
+        self._condition("tray_unavailable", None if self.tray.available or self.tray.reason == "starting"
+                        else self.tray.reason)
         self._check_silence(snap)
         self._mirror(snap, colour)
         return True

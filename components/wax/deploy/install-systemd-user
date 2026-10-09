@@ -2,6 +2,7 @@
 """Render Wax's user units for the repository's actual installation location."""
 
 import argparse
+import subprocess
 from pathlib import Path
 
 # All units install together, always. waxd.service names wax-alert.service in
@@ -70,6 +71,15 @@ def main():
         target = target_dir / name
         target.write_text(rendered)
         print(target)
+    if args.dry_run:
+        return
+    # Writing the file never moves its enablement: waxd's template switched to
+    # WantedBy=default.target while the July symlink kept it in
+    # graphical-session.target.wants, starting it in the same instant as the
+    # compositor. reenable re-derives the links from the [Install] just written.
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    installable = [name for name in UNITS if "[Install]" in render_unit(name)]
+    subprocess.run(["systemctl", "--user", "reenable", *installable], check=False)
 
 
 if __name__ == "__main__":
