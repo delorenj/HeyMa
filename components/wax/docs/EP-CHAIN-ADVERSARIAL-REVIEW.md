@@ -354,6 +354,73 @@ explicitly.
 6. Does any delegation target get a human triage checkpoint? If not, is
    false-positive leakage accepted or corrected? (R10)
 
+## Resolutions — 2026-10-13
+
+The author reviewed the findings and ruled on the vision questions; the runtime
+findings were implemented the same day. What was decided, and what shipped:
+
+**The rulings**
+
+1. **Delegation is not a terminal EP action (V3, resolved).** Delegating a
+   transcript is firing a task command whose prompt is the transcript. There
+   are exactly two delegation lanes, chosen per target: a **ticket on the
+   agent's board** (durable — doubles as the dead-letter queue, but pull-based:
+   the agent must go get it) and a **task command** (`bloodbank.cmd.*` via the
+   fleet gateway — explicit attention, the car-talking-to-an-agent case). The
+   command lane is the default for voice-driven delegation; the ticket lane is
+   for work that can wait. `ticketable` (intake.detected → PM triage) remains
+   the ticket-lane implementation.
+2. **Intent-by-bucket was rubber-ducking (V1, discarded).** No S3-folder
+   encoding of project/agent destination or ticket-vs-conversation is to be
+   built. If explicit intent routing is ever needed, it will be a primed
+   frontmatter meaning field, decided at capture by the producer.
+3. **The `dialog?` diamond does not belong (V2, resolved).** It was an
+   experiment; the ledger shows the mechanism worked (17 monolog skips, 27
+   completions, no misclassification evidence either way) but the asymmetry
+   argument stands: diarization answers speaker-count definitively, so gating
+   it on the text classifier was inverted. The gate is removed.
+
+**What shipped** (HeyMa `main`, plus bloodbank `be03ec7` for the schema)
+
+- **R1 — barrier split + dead-letter + scheduled sweep.** Pass events publish
+  via `finalize.publish_pass_events()` as soon as the producing pass's
+  `requires` subgraph completes; `transcription.completed` stays plan-gated.
+  A pass failing its final attempt (bound 3) emits
+  `bloodbank.audio.task.exhausted` once per (item, slug, version), receipted
+  in `passes.exhausted_at`. The waxd worker sweeps on a timer
+  (`WAX_SWEEP_INTERVAL_S`, default 900s), sharing `worker.sweep_failed_passes()`
+  with `wax ep sweep`.
+- **R2 — schema-enforced emission.** `emits` data is validated against
+  `~/code/33GOD/bloodbank/schemas/bloodbank/audio/<type>.json` at result-apply
+  time (relaxed for runner-stamped fields) and again fully stamped at emission
+  time (violations drop with a `pass_events_dropped` count). Missing schema =
+  fail closed. `wax doctor` has a `pass event schemas` probe.
+- **R3 — declarative `when:` language.** Registry clauses
+  `{field, equals|not_equals|in|not_in|exists|absent|empty|not_empty|length|min_length|max_length}`,
+  all runner-evaluated; first unmet clause skips with `condition_unmet` + the
+  failing clause in detail. `skip_when` remains as the legacy alias.
+- **R5 — per-pass quarantine.** `ordered()` never raises on definition content;
+  malformed/cyclic/missing-dependency passes are quarantined (with cascade to
+  dependents), shown in `wax ep list` and a doctor FAIL, and lifted live on
+  fix. `run_all` reports quarantined passes without burning retry attempts.
+- **V2 — diarization gate removed.** No more `skip_when: classification ==
+  monolog`; the env kill-switch (`explicitly_disabled`) is the only skip left.
+
+**Deferred, deliberately:** R6 (`requires` state qualifiers — convergence
+semantics documented instead), R7 (version-cascade cost model), R8 (pass-level
+parallelism — needs a latency budget decision), R9 (re-plan migration tooling —
+`wax ep run` backfill remains the mechanism), R10 (correction events — PM
+triage is the checkpoint for the ticket lane; the command lane will need its
+own answer when built), V4 (Holocene document-first items — the command-lane
+delegation work will define the shape), V5 (per-project failure granularity
+inside one pass — reason_code taxonomy carries it for now).
+
+**Tests:** 208 pass, including 16 new in `tests/passes_chain_test.py` covering
+every operator, quarantine cascade/lift, exhaustion dedup/rearm, schema
+fail-closed, and early publication with dedup against finalize.
+
+---
+
 ## Appendix — evidence index
 
 | Claim | Evidence |

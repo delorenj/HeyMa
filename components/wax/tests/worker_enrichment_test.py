@@ -58,6 +58,7 @@ class WorkerEnrichmentTest(unittest.TestCase):
 
         with patch.object(worker.ledger, "connect", return_value=connection), \
                 patch.object(worker.passes, "run", side_effect=results) as run, \
+                patch.object(worker.finalize, "publish_pass_events", return_value={"pass_events": 0}), \
                 patch.object(worker, "_log_enrichment", return_value=[]), \
                 patch.object(worker, "_announce_done"), \
                 patch.object(worker, "_link_archive", return_value=None):

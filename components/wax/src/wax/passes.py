@@ -3,6 +3,8 @@
 Independence is the whole design constraint. A pass never fails because a
 SIBLING failed: if `wikification` fails, `mem-ops` still runs on the same item,
 and the failure is recorded against that one slug rather than stalling the item.
+A malformed definition is equally contained: quarantined() disables exactly the
+offending pass (and anything gated on it), never the whole registry.
 
 The one deliberate coupling is the registry's `requires:` list, and it is
 honoured unconditionally. ordered() sorts a pass after everything it requires;
@@ -13,14 +15,26 @@ otherwise. Declare `requires` only where a pass consumes another's output — th
 dependent really cannot run without it. `after:` only orders: it is a sequencing
 preference with no gate, and a failed `after` target never stops its dependent.
 Both fields must name ENABLED passes; an `auto` pass may only `require` other
-`auto` passes (ensure_plan), because a plan holds nothing else.
+`auto` passes, because a plan holds nothing else. Either violation quarantines
+the pass instead of raising the fleet down.
+
+Conditions are declarative and runner-evaluated. `when:` is a list of clauses
+({field, <operator>}) checked against the note's frontmatter at run time; the
+first unmet clause skips the pass with reason_code condition_unmet and says
+which clause failed. `skip_when: {field, equals}` is the legacy skip-polarity
+form of the same idea. Routing logic belongs in these fields — where `wax ep
+list` and `wax doctor` can see it — not inside pass executables; a pass-reported
+skip is reserved for conditions only discoverable at runtime.
+
+Exhaustion is announced, not silent: a pass that fails its final permitted
+attempt emits bloodbank.audio.task.exhausted exactly once per (item, slug,
+version) — the pipeline's dead-letter signal.
 
 Events are a HOST effect, so a pass only declares them: a result may carry an
 `events` list (validated by _validated_events against the registry's `emits`
-allowlist, before any mutation) and finalize.py publishes them after
-`transcription.completed`. A pass cannot emit "after completed" itself — it runs
-before completion exists — and an event published from inside a pass that later
-fails would announce work that never happened.
+allowlist AND the Bloodbank schema tree, before any mutation) and finalize.py
+publishes them once the pass's own `requires` subgraph completes — a slow
+sibling must not hold ready events hostage to the whole plan.
 
 Traceability: every run mints a DETERMINISTIC command_id
     uuid5(WAX_NS, "ep:<item_id>:<ep_slug>:<attempt>")
@@ -65,6 +79,29 @@ RESULT_VERSION = 1
 # which is how a week of 404s was recorded as an indistinguishable
 # "nonzero_exit". Passes that predate the convention simply omit the line.
 _REASON_LINE = re.compile(r"^reason_code=([a-z_]+)$")
+
+# --- declarative run conditions (`when:`) -----------------------------------
+# One clause is {field: <frontmatter key>, <operator>: <operand>}; every clause
+# must hold for the pass to run. The runner evaluates them against the note's
+# frontmatter at run time, so the routing table lives in the registry — where
+# `wax ep list` and doctor can see it — instead of inside pass executables.
+_CONDITION_OPS = {
+    "equals", "not_equals", "in", "not_in",
+    "exists", "absent", "empty", "not_empty",
+    "length", "min_length", "max_length",
+}
+_FLAG_OPS = {"exists", "absent", "empty", "not_empty"}
+_SIZE_OPS = {"length", "min_length", "max_length"}
+
+# The sweep bound lives here so the CLI, the worker's scheduled sweep and the
+# exhaustion dead-letter all agree on what "final attempt" means.
+DEFAULT_MAX_ATTEMPTS = 3
+
+# Fields the runner stamps onto every pass event's data at emission time. A
+# pass cannot know them, so the result-time schema check relaxes `required`
+# for exactly these (and nothing else); the emission-time check in
+# finalize.py validates the fully stamped payload.
+RUNNER_STAMPED_EVENT_DATA = {"item_id", "transcription_id", "transcript", "transcript_uri", "project"}
 _PROTECTED_FRONTMATTER = {
     frontmatter.ITEM_KEY,
     frontmatter.WAX_KEY,
@@ -124,31 +161,171 @@ def serialized(function):
     return call
 
 
+def _when_error(when: Any) -> Optional[str]:
+    """Why a `when:` block is invalid, or None. Structure only — no values."""
+    if when is None:
+        return None
+    if not isinstance(when, list) or not when:
+        return "invalid when: expected a non-empty list of clauses"
+    for clause in when:
+        if not isinstance(clause, dict):
+            return "invalid when: each clause must be an object"
+        if not isinstance(clause.get("field"), str):
+            return "invalid when clause: missing string field"
+        ops = set(clause) - {"field"}
+        if len(ops) != 1 or next(iter(ops)) not in _CONDITION_OPS:
+            return f"invalid when clause: exactly one operator from {sorted(_CONDITION_OPS)}"
+        op = next(iter(ops))
+        operand = clause[op]
+        if op in ("in", "not_in") and not isinstance(operand, list):
+            return f"invalid when clause: {op} expects a list"
+        if op in _SIZE_OPS and (not isinstance(operand, int) or isinstance(operand, bool)):
+            return f"invalid when clause: {op} expects an integer"
+        if op in _FLAG_OPS and operand is not True:
+            return f"invalid when clause: {op} takes no operand (write `{op}: true`)"
+    return None
+
+
+def _clause_failure(clause: dict[str, Any], fm: dict[str, Any]) -> Optional[str]:
+    """None when the clause holds, else a human-readable reason it did not."""
+    field = clause["field"]
+    value = fm.get(field)
+    op = next(key for key in clause if key != "field")
+    operand = clause[op]
+    if op == "equals":
+        ok = value == operand
+    elif op == "not_equals":
+        ok = value != operand
+    elif op == "in":
+        ok = value in operand
+    elif op == "not_in":
+        ok = value not in operand
+    elif op == "exists":
+        ok = value is not None
+    elif op == "absent":
+        ok = value is None
+    elif op == "empty":
+        # Mirrors _apply_result's no-clobber semantics: 0 and False are real
+        # values, not emptiness.
+        ok = value is None or value == "" or value == [] or value == {}
+    elif op == "not_empty":
+        ok = not (value is None or value == "" or value == [] or value == {})
+    else:
+        size = len(value) if isinstance(value, (list, tuple, dict, str)) else 0
+        if op == "length":
+            ok = size == operand
+        elif op == "min_length":
+            ok = size >= operand
+        else:
+            ok = size <= operand
+    return None if ok else f"{field} {op} {operand if op not in _FLAG_OPS else ''} (got {value!r})".replace("  ", " ")
+
+
+def quarantined(reg: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """{slug: reason} for enabled passes that must not run.
+
+    One bad definition used to raise out of ordered() and take the whole EP
+    stage down for every item. Now the offending pass — plus anything gated on
+    it, which could never run cleanly — is quarantined, and the rest of the
+    fleet keeps working. Quarantine is recomputed from the live registry on
+    every call, so fixing the YAML lifts it with no restart.
+    """
+    reasons: dict[str, str] = {}
+    for slug, ep in reg.items():
+        if not ep.get("enabled"):
+            continue
+        for field in ("requires", "after"):
+            deps = ep.get(field) or []
+            if not isinstance(deps, list) or any(not isinstance(d, str) for d in deps):
+                reasons.setdefault(slug, f"invalid {field}: expected a list of pass slugs")
+        condition = ep.get("skip_when")
+        if condition is not None and (not isinstance(condition, dict)
+                                      or set(condition) != {"field", "equals"}
+                                      or not isinstance(condition.get("field"), str)):
+            reasons.setdefault(slug, "invalid skip_when: expected exactly {field, equals}")
+        err = _when_error(ep.get("when"))
+        if err:
+            reasons.setdefault(slug, err)
+
+    def dependency_problems() -> None:
+        for slug, ep in reg.items():
+            if not ep.get("enabled") or slug in reasons:
+                continue
+            for field in ("requires", "after"):
+                deps = ep.get(field) or []
+                if not isinstance(deps, list) or any(not isinstance(d, str) for d in deps):
+                    continue  # the shape error already quarantined this pass
+                for dep in deps:
+                    target = reg.get(dep)
+                    why = None
+                    if target is None:
+                        why = f"unknown dependency {dep!r}"
+                    elif not target.get("enabled"):
+                        why = f"dependency {dep!r} is disabled"
+                    elif dep in reasons:
+                        why = f"dependency {dep!r} is quarantined"
+                    if why:
+                        reasons[slug] = why
+                        break
+                if slug in reasons:
+                    break
+
+    def cycles() -> None:
+        selected = {s: e for s, e in reg.items() if e.get("enabled") and s not in reasons}
+        color: dict[str, int] = {}
+
+        def visit(slug: str, path: list[str]) -> None:
+            color[slug] = 1
+            for field in ("requires", "after"):
+                for dep in selected[slug].get(field) or []:
+                    if dep not in selected:
+                        continue
+                    if color.get(dep) == 1 and dep in path:
+                        for member in path[path.index(dep):]:
+                            reasons.setdefault(member, "cyclic pass dependency")
+                    elif color.get(dep) is None:
+                        visit(dep, path + [dep])
+            color[slug] = 2
+
+        for slug in sorted(selected):
+            if color.get(slug) is None:
+                visit(slug, [slug])
+
+    while True:
+        before = len(reasons)
+        dependency_problems()
+        cycles()
+        # An auto pass may only require auto passes: a plan holds nothing else.
+        for slug, ep in reg.items():
+            if not ep.get("enabled") or not ep.get("auto") or slug in reasons:
+                continue
+            for dep in ep.get("requires") or []:
+                target = reg.get(dep)
+                if isinstance(target, dict) and target.get("enabled") and not target.get("auto"):
+                    reasons.setdefault(slug, f"automatic pass requires manual pass {dep!r}")
+        if len(reasons) == before:
+            return reasons
+
+
 def ordered(reg):
-    selected = {slug: ep for slug, ep in reg.items() if ep.get("enabled")}
-    visiting, visited, output = set(), set(), []
+    """Enabled, non-quarantined passes in dependency order.
+
+    Never raises on definition content: malformed passes are quarantined (and
+    reported by quarantined(), `wax ep list` and doctor) instead of taking the
+    whole registry down with them.
+    """
+    bad = quarantined(reg)
+    selected = {slug: ep for slug, ep in reg.items() if ep.get("enabled") and slug not in bad}
+    visited, output = set(), []
 
     def visit(slug):
         if slug in visited:
             return
-        if slug in visiting:
-            raise PassError(f"cyclic pass dependency: {slug}")
-        visiting.add(slug)
-        ep = selected[slug]
-        for field in ("requires", "after"):
-            dependencies = ep.get(field) or []
-            if not isinstance(dependencies, list) or any(not isinstance(d, str) for d in dependencies):
-                raise PassError(f"invalid {field} for {slug}")
-            for dependency in dependencies:
-                if dependency not in selected:
-                    raise PassError(f"missing enabled dependency {dependency} for {slug}")
-                visit(dependency)
-        condition = ep.get("skip_when")
-        if condition and (not isinstance(condition, dict) or set(condition) != {"field", "equals"}
-                          or not isinstance(condition["field"], str)):
-            raise PassError(f"invalid skip condition for {slug}")
-        visiting.remove(slug)
         visited.add(slug)
+        for field in ("requires", "after"):
+            for dependency in selected[slug].get(field) or []:
+                if dependency in selected:
+                    visit(dependency)
         output.append(slug)
 
     for slug in sorted(selected):
@@ -198,6 +375,12 @@ def _record(item_id: str, slug: str, state: str, *, version: int = 1, attempt: i
     values.extend([json.dumps(result or {}, ensure_ascii=False, default=str),
                    operations.definition_id(definition) if definition else None])
     updates = ", ".join(f"{c}=excluded.{c}" for c in columns[2:])
+    if "exhausted_at" in {row["name"] for row in conn.execute("PRAGMA table_info(passes)")}:
+        # A version bump is a NEW definition with a fresh retry budget, so the
+        # dead-letter receipt from the old definition must not suppress the
+        # new one's. Same reason sweep stops counting stale-version failures.
+        updates += (", exhausted_at=CASE WHEN passes.version != excluded.version "
+                    "THEN NULL ELSE passes.exhausted_at END")
     conn.execute(
         f"INSERT INTO passes({','.join(columns)}) VALUES({','.join('?' * len(columns))}) "
         f"ON CONFLICT(item_id,ep_slug) DO UPDATE SET {updates}",
@@ -214,6 +397,64 @@ def _next_attempt(item_id: str, slug: str) -> int:
         (item_id, slug),
     ).fetchone()
     return int((row["attempt"] if row else None) or 0) + 1
+
+
+def _emit_exhausted(item_id: str, slug: str, *, version: int, attempt: int,
+                    reason_code: Optional[str], detail: str,
+                    command_id: Optional[str]) -> bool:
+    """Fire bloodbank.audio.task.exhausted once per (item, slug, version).
+
+    The dead-letter signal: the sweep bound is spent, nothing will re-drive
+    this pass automatically, and finalize() keeps withholding the item's
+    completion. The exhausted_at receipt is the dedup; _record clears it when
+    the registry version changes, so a bumped definition announces afresh on
+    its next exhaustion. (The attempt counter is lifetime-per-pair — it is the
+    command_id entropy and can never reset.) dependency_failed never exhausts:
+    the pass never ran, and its gate lifts when a DIFFERENT pass succeeds.
+    """
+    conn = ledger.connect()
+    if "exhausted_at" not in {row["name"] for row in conn.execute("PRAGMA table_info(passes)")}:
+        return False
+    row = conn.execute("SELECT exhausted_at FROM passes WHERE item_id=? AND ep_slug=?",
+                       (item_id, slug)).fetchone()
+    if not row or row["exhausted_at"]:
+        return False
+    conn.execute("UPDATE passes SET exhausted_at=? WHERE item_id=? AND ep_slug=?",
+                 (sentinel.utcnow(), item_id, slug))
+    head = (detail or "").strip().splitlines()
+    events.emit("task", "exhausted",
+                {"item_id": item_id, "ep_slug": slug, "attempt": attempt, "version": version,
+                 "reason_code": reason_code,
+                 "detail": (head[0][:300] if head else None)},
+                correlationid=command_id or item_id, ordering_key=item_id)
+    log.warning("%s EXHAUSTED for %s after %d attempt(s) (v%d): %s",
+                slug, item_id, attempt, version, reason_code)
+    return True
+
+
+def sweep_exhaustions(max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> list[dict[str, Any]]:
+    """Dead-letter every failed pass at/past the attempt bound that never said so.
+
+    Covers rows that exhausted before the run()-time hook existed or under a
+    different bound. Emission is idempotent via the exhausted_at receipt.
+    """
+    conn = ledger.connect()
+    if "exhausted_at" not in {row["name"] for row in conn.execute("PRAGMA table_info(passes)")}:
+        return []
+    rows = conn.execute(
+        "SELECT item_id, ep_slug, version, attempt, reason_code, detail, command_id "
+        "FROM passes WHERE state='failed' AND attempt>=? AND exhausted_at IS NULL "
+        "AND COALESCE(reason_code,'') != 'dependency_failed'",
+        (max_attempts,)).fetchall()
+    fired = []
+    for row in rows:
+        if _emit_exhausted(row["item_id"], row["ep_slug"],
+                           version=int(row["version"] or 1), attempt=int(row["attempt"] or 0),
+                           reason_code=row["reason_code"], detail=row["detail"] or "",
+                           command_id=row["command_id"]):
+            fired.append({"item_id": row["item_id"], "ep_slug": row["ep_slug"],
+                          "attempt": int(row["attempt"] or 0)})
+    return fired
 
 
 def _split_reason(stderr: str) -> tuple[Optional[str], str]:
@@ -373,6 +614,49 @@ def _rename_transcript(md: Path, item_id: str, slug: str) -> Path:
     return final
 
 
+def _event_data_schema(event_type: str) -> dict[str, Any]:
+    """The `data` subschema for a pass-declared event type, from the Bloodbank tree.
+
+    Wax publishes straight to NATS and never passes through bb-emit's guard, so
+    THIS is the schema enforcement point. Fail-closed is deliberate: the
+    platform rule is schema-first, and a pass emitting an unschemed type is a
+    contract bug that must fail loudly here rather than drift silently in
+    Candystore.
+    """
+    root = Path(os.environ.get("WAX_BLOODBANK_SCHEMAS")
+                or (Path.home() / "code" / "33GOD" / "bloodbank" / "schemas"))
+    path = root / "bloodbank" / events.DOMAIN / f"{event_type}.json"
+    if not path.is_file():
+        raise PassError(f"no Bloodbank schema for {event_type!r} at {path}; "
+                        f"author schemas/bloodbank/{events.DOMAIN}/{event_type}.json first (schema-first)")
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PassError(f"unreadable Bloodbank schema {path}: {exc}") from exc
+    data = (doc.get("properties") or {}).get("data")
+    if not isinstance(data, dict) or data.get("type") != "object":
+        raise PassError(f"Bloodbank schema {path} has no object `data` subschema")
+    return data
+
+
+def validate_event_data(event_type: str, data: dict[str, Any], *, relaxed: bool) -> None:
+    """jsonschema-check event data against the Bloodbank tree; PassError on violation.
+
+    relaxed=True drops the runner-stamped fields from `required` — used at
+    result-apply time, before the runner has stamped them. finalize.py re-checks
+    the fully stamped payload with relaxed=False at emission time.
+    """
+    schema = _event_data_schema(event_type)
+    if relaxed:
+        schema = {**schema, "required": [r for r in schema.get("required", [])
+                                         if r not in RUNNER_STAMPED_EVENT_DATA]}
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import best_match
+    error = best_match(Draft202012Validator(schema).iter_errors(data))
+    if error is not None:
+        raise PassError(f"event data violates the {event_type} schema: {error.message}")
+
+
 def _validated_events(ep: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate a result's optional `events` list; return it, or raise PassError.
 
@@ -428,6 +712,12 @@ def _validated_events(ep: dict[str, Any], result: dict[str, Any]) -> list[dict[s
             raise PassError(f"{where}.data is not JSON-serializable") from None
         if len(encoded.encode("utf-8")) > MAX_EVENT_DATA_BYTES:
             raise PassError(f"{where}.data exceeds {MAX_EVENT_DATA_BYTES} bytes")
+        # Shape is not the contract — the Bloodbank schema is. A violation fails
+        # this pass with result_apply_failed before the note or ledger moves.
+        try:
+            validate_event_data(event_type, data, relaxed=True)
+        except PassError as exc:
+            raise PassError(f"{where}.data: {exc}") from None
     return declared
 
 
@@ -574,7 +864,9 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     run` — cannot mint a command_id that has already been issued.
     """
     reg = registry()
-    ordered(reg)
+    bad = quarantined(reg)
+    if slug in bad:
+        raise PassError(f"pass {slug!r} is quarantined: {bad[slug]}")
     ep = definition or reg.get(slug)
     if ep is None:
         raise PassError(f"unknown pass {slug!r}; known: {sorted(reg)}")
@@ -615,20 +907,33 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         raise PassError(f"no transcript recorded for item {item_id}")
 
     skip_reason = None
+    skip_detail = ""
     if ep.get("kind") == "diarization" and os.environ.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
         skip_reason = "explicitly_disabled"
     condition = ep.get("skip_when")
-    if condition:
+    when = ep.get("when")
+    if not skip_reason and (condition or when):
         fm, _ = frontmatter.read(md)
-        if fm.get(condition["field"]) == condition["equals"]:
+        if condition and fm.get(condition["field"]) == condition["equals"]:
             skip_reason = "condition_matched"
+        elif when:
+            for clause in when:
+                failure = _clause_failure(clause, fm)
+                if failure:
+                    skip_reason = "condition_unmet"
+                    skip_detail = failure
+                    break
     if skip_reason:
         _record(item_id, slug, "skipped", version=int(ep["version"]), attempt=attempt,
-                reason_code=skip_reason, result={"skip_reason": skip_reason}, definition=ep)
+                reason_code=skip_reason, detail=skip_detail,
+                result={"skip_reason": skip_reason, **({"detail": skip_detail} if skip_detail else {})},
+                definition=ep)
         frontmatter.merge(md, {frontmatter.WAX_KEY: {"passes": {slug: {
             "state": "skipped", "version": int(ep["version"]), "reason_code": skip_reason,
+            **({"detail": skip_detail} if skip_detail else {}),
         }}}})
-        return {"item_id": item_id, "ep_slug": slug, "state": "skipped", "reason_code": skip_reason}
+        return {"item_id": item_id, "ep_slug": slug, "state": "skipped", "reason_code": skip_reason,
+                **({"detail": skip_detail} if skip_detail else {})}
 
     argv = [_expand(a, item_id=item_id, md=md) for a in (ep.get("command") or [])]
     if not argv:
@@ -693,6 +998,12 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     _record(item_id, slug, state, version=version, attempt=attempt,
             command_id=cid, detail=err if not ok else "", reason_code=failure,
             result=pass_result, definition=ep)
+    if state == "failed" and attempt >= DEFAULT_MAX_ATTEMPTS:
+        # The final permitted attempt just failed: this is the dead-letter
+        # moment. Without an event here the item sits enrichment_pending
+        # forever, invisible to everything that isn't watching the tray.
+        _emit_exhausted(item_id, slug, version=version, attempt=attempt,
+                        reason_code=failure, detail=err, command_id=cid)
     events.emit("task", state,
                 {"ep_slug": slug, "item_id": item_id, "attempt": attempt,
                  "pass_version": version, "command_id": cid, "duration_s": took,
@@ -735,9 +1046,19 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
 
 @serialized
 def run_all(item_id: str) -> list[dict[str, Any]]:
-    """Run every enabled pass. One failing pass never stops the others."""
+    """Run every enabled pass. One failing pass never stops the others.
+
+    Quarantined passes are REPORTED (state `quarantined`, with the reason) but
+    not run and not given a ledger row: nothing ran, so there is nothing to
+    retry — and a row would make the sweep burn attempts on a config error.
+    """
     out = []
     reg = registry()
+    for slug, why in sorted(quarantined(reg).items()):
+        if reg[slug].get("enabled"):
+            log.warning("%s quarantined for %s: %s", slug, item_id, why)
+            out.append({"item_id": item_id, "ep_slug": slug, "state": "quarantined",
+                        "error": why, "reason_code": "quarantined"})
     for slug in ordered(reg):
         ep = reg[slug]
         try:

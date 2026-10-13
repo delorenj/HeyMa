@@ -6,25 +6,40 @@ new or edited YAML and a new executable take effect with no restart; the Python
 runner (`src/wax/passes.py`, `finalize.py`) is imported once into `waxd` and
 needs `systemctl --user restart waxd`. Write YAML atomically and check
 `wax ep list` afterwards: a YAML parse error silently disables that pass, and a
-malformed `requires`, `after` or `skip_when` makes `passes.ordered()` raise for
-every item.
+malformed `requires`, `after`, `skip_when` or `when` gets that pass — and only
+it, plus anything gated on it — **quarantined** (`!! QUARANTINED: <reason>` in
+`wax ep list`, a `pass registry quarantine` FAIL in `wax doctor`). The rest of
+the fleet keeps running; fixing the YAML lifts the quarantine live.
 
 New recordings follow this order:
 
 1. upload and verify the immutable, content-addressed audio object;
 2. transcribe and publish the initial Markdown note;
 3. run every enabled pass with `auto: true`, in dependency order;
-4. refresh the audio-to-transcript link, re-verify the audio object and park
+4. **publish what is ready**: a completed pass's declared events are enqueued
+   as soon as the pass's own `requires` subgraph is `completed`/`skipped` —
+   the rest of the plan does not gate them (a wedged sibling with a 24h
+   timeout must not withhold tickets that are done). Correlation anchors to
+   the completion event id once one exists, to the pass's command id until
+   then;
+5. refresh the audio-to-transcript link, re-verify the audio object and park
    the local source;
-5. **finalize**: once every planned pass is `completed` or `skipped` at its
-   current version, write the one `transcription.completed` event and then
-   publish the events the passes declared (see Finalization).
+6. **finalize**: once every planned pass is `completed` or `skipped` at its
+   current version, write the one `transcription.completed` event (the
+   plan-gated summary fact) and enqueue any pass events still pending — a
+   dedup no-op for events step 4 already published.
 
-A failed pass is recorded but does not stop its siblings or step 4. It does
-withhold step 5: the item becomes `enrichment_pending` until the pass is
-retried (`wax ep sweep`, `wax ep run`, or the tray). Automatic runs skip a pass
-already completed at the same `version` and the same definition; increasing
-`version` causes the new definition to run once.
+A failed pass is recorded but does not stop its siblings or step 5. It does
+withhold step 6: the item becomes `enrichment_pending` until the pass is
+retried. Retries are no longer manual-only: the worker sweeps on a timer
+(`WAX_SWEEP_INTERVAL_S`, default 900s) with the same attempt bound as
+`wax ep sweep` (default 3, `dependency_failed` exempt). A pass that fails its
+final permitted attempt emits **`bloodbank.audio.task.exhausted`** — the
+dead-letter signal — exactly once per (item, slug, version); the receipt lives
+in `passes.exhausted_at`, and a registry version bump clears it so a fixed
+definition announces afresh. Automatic runs skip a pass already completed at
+the same `version` and the same definition; increasing `version` causes the
+new definition to run once.
 
 ## Registry contract
 
@@ -50,9 +65,10 @@ command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item
 | `version` | Integer, default 1. Bump it whenever behaviour or output semantics change and existing items should rerun. |
 | `enabled` | Available to `wax ep run` and, with `auto`, to the flow. Default false. |
 | `auto` | Part of the post-transcription flow (and so of the item's stored plan). Default false. |
-| `requires` | Other **enabled** passes this one consumes. Orders the pass after them AND gates it: `run()` will not execute it until each is `completed` or `skipped` at the live registry version; otherwise it records `dependency_failed` (ledger row, a real attempt, and a `wax.passes.<slug>` note entry saying `waiting on <dep> (<state>@v<n>)`). An `auto` pass may only require other `auto` passes. |
+| `requires` | Other **enabled** passes this one consumes. Orders the pass after them AND gates it: `run()` will not execute it until each is `completed` or `skipped` at the live registry version; otherwise it records `dependency_failed` (ledger row, a real attempt, and a `wax.passes.<slug>` note entry saying `waiting on <dep> (<state>@v<n>)`). An `auto` pass may only require other `auto` passes. A requirement that is missing, disabled, quarantined or manual-when-auto **quarantines the dependent**, loudly, instead of raising the whole registry down. |
 | `after` | Ordering only. No gate: a failed `after` target never stops its dependent. It must still name an enabled pass, and (unlike `requires`) is not checked against the plan, so pointing it at a non-`auto` pass makes `run_auto` raise. |
-| `skip_when` | `{field, equals}` matched against the note's frontmatter at run time; a match records `skipped` / `condition_matched` and runs nothing. |
+| `when` | List of clauses `{field: <frontmatter key>, <operator>: <operand>}`; ALL must hold for the pass to run, checked against the note's frontmatter at run time. First unmet clause records `skipped` / `condition_unmet` with the failing clause in `detail` (ledger AND note). Operators: `equals`, `not_equals`, `in`, `not_in`, `exists`, `absent`, `empty`, `not_empty` (flag ops: write `true`), `length`, `min_length`, `max_length` (list/string size; missing field = 0). This is where routing lives — declarative, visible in `wax ep list`, dry-runnable — and it covers the multi-way branches `skip_when` cannot. A malformed clause quarantines the pass. |
+| `skip_when` | Legacy single-clause skip-polarity form: `{field, equals}` matched against the note's frontmatter at run time; a match records `skipped` / `condition_matched` and runs nothing. Prefer `when` for anything new. |
 | `kind` | `diarization` also skips (`explicitly_disabled`) when `WAX_DIARIZATION` is `0/false/no/off`. |
 | `body_mutation` | `compare-and-replace` authorizes the `body_replace` result intent; absent means a returned `body_replace` fails the pass. |
 | `clobber` | Frontmatter keys the pass may overwrite when non-empty. Default none. |
@@ -63,8 +79,10 @@ command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item
 | `command` | argv. Placeholders: `{component_root}`, `{home}`, `{item_id}`, `{md_path}`. |
 
 Ordering is a depth-first walk over `requires` and `after` together; passes with
-no dependency between them run alphabetically by slug. Cycles and dependencies
-that are missing or disabled raise `PassError`.
+no dependency between them run alphabetically by slug. Cycles, missing/disabled
+dependencies, malformed fields and auto-requires-manual all quarantine the
+offending pass (and its dependents) rather than raising — `ordered()` never
+raises on definition content.
 
 The runner holds a per-item lock while the child runs, so a command must not
 shell out to a `wax` command that needs the same item. Each run mints a
@@ -122,19 +140,39 @@ leaves the note byte-identical. Each event is exactly `{type, key, data}`:
   result. It is the identity of the event: choose one that is a function of the
   event's content, not of a counter or the run.
 - `data` is a JSON object, at most 32 KiB encoded, with no `project` key (the
-  envelope owns `project`, always `wax`).
+  envelope owns `project`, always `wax`) — and it must satisfy the Bloodbank
+  schema at `$WAX_BLOODBANK_SCHEMAS/bloodbank/audio/<type>.json` (default
+  `~/code/33GOD/bloodbank/schemas`). Wax publishes straight to NATS and bypasses
+  bb-emit's guard, so the runner IS the schema enforcement point: a violation
+  fails the pass with `result_apply_failed` before the note or ledger moves, and
+  a type with no schema file fails the same way — schema-first is fail-closed.
+  At result time the check relaxes `required` for the fields the runner stamps
+  at emission (`item_id`, `transcription_id`, `transcript`, `transcript_uri`,
+  `project`); finalize re-validates the fully stamped payload and drops a
+  violation with a warning and a `pass_events_dropped` count. `wax doctor`'s
+  `pass event schemas` probe pre-flights every enabled pass's `emits`.
 
-A pass cannot publish anything itself. It runs before `transcription.completed`
-exists, and an event announced from a pass that then fails would describe work
-that never happened. Events are stored with the pass result in the ledger and
-published by `finalize()`. Events on a skipped or failed result are never
-published.
+A pass cannot publish anything itself. Events are stored with the pass result in
+the ledger and published by `finalize.publish_pass_events()` once the pass's own
+`requires` subgraph completes (see Finalization) — no longer held hostage to the
+whole plan. Events on a skipped or failed result are never published.
 
 ## Finalization
 
-`finalize(item)` (`src/wax/finalize.py`) runs after the audio is parked, from
-`wax ep run|run-all|sweep|retry` and from the tray's retry. It is serialized per
-item and idempotent.
+Two publication gates now exist, deliberately separate:
+
+- **`finalize.publish_pass_events(item)`** — the subgraph gate. Every completed
+  pass whose transitive `requires` are all `completed`/`skipped` at the wanted
+  version gets its declared events enqueued NOW. Called by the worker right
+  after `run_auto`, by `wax ep run|run-all|sweep`, and by the tray's retry —
+  before, and independent of, plan completion. Correlation: the completion
+  event id once one exists, the pass's command id until then (both findable in
+  Candystore via `?correlationid=`).
+- **`finalize(item)`** — the plan gate. Serialized per item and idempotent;
+  runs after the audio is parked, from `wax ep run|run-all|sweep|retry`, from
+  the tray's retry, and from the worker.
+
+finalize() itself:
 
 1. **Gate.** Every planned pass must be `completed` or `skipped` at the plan's
    version and definition. Otherwise nothing is written (`passes_incomplete`,
@@ -144,9 +182,12 @@ item and idempotent.
    limit) and every pass result (minus `body_replace` and `events`). Its id is
    `uuid5(WAX_NS, "completion:<item>:<plan_id>")`; the `completions` primary key
    makes it at-most-once per plan.
-3. **Pass events, after it.** Every `completed` pass whose result lists events
-   is published, ordered by plan order, then slug, then the pass's own list
-   order. Each becomes a `bloodbank.audio.<entity>.<action>` envelope:
+3. **Pass events.** Every `completed` pass whose result lists events and has
+   not already been published by the subgraph gate is enqueued, ordered by plan
+   order, then slug, then the pass's own list order. (Events the early path
+   already published are a dedup no-op here; events published early precede the
+   completion in the outbox, correlated on the pass's command id.) Each becomes
+   a `bloodbank.audio.<entity>.<action>` envelope:
    - id `uuid5(WAX_NS, "ep-event:<item>:<slug>:<type>:<key>")`, independent of
      plan and attempt, so a re-plan, a re-run or a backfill never duplicates;
      the `pass_events` table (`event_id` primary key) records what was enqueued
@@ -176,11 +217,25 @@ the `wax ep run` that fixes it.
 ## Retries
 
 `wax ep sweep` re-runs every enabled pass whose latest attempt `failed` with
-`attempt < --max-attempts`, then `run_auto` for each such item (which reruns
-everything not completed, in dependency order, ignoring the bound), then
-`finalize`. `dependency_failed` rows are exempt from the bound: the pass never
-ran, and the gate lifts when a different pass succeeds, so they must stay
-sweepable even after their dependency has used up its attempts.
+`attempt < --max-attempts` (default 3), then `run_auto` for each such item
+(which reruns everything not completed, in dependency order, ignoring the
+bound), then `publish_pass_events` and `finalize`. `dependency_failed` rows are
+exempt from the bound: the pass never ran, and the gate lifts when a DIFFERENT
+pass succeeds, so they must stay sweepable even after their dependency has used
+up its attempts.
+
+The sweep is also **scheduled**: the waxd worker runs it every
+`WAX_SWEEP_INTERVAL_S` (default 900s) whenever the pipeline is enabled, so a
+transient provider outage self-heals instead of waiting for a human to type
+anything. Both paths share `worker.sweep_failed_passes()`.
+
+A pass that fails at the attempt bound is **exhausted**: the runner stamps
+`passes.exhausted_at` and emits one `bloodbank.audio.task.exhausted` event
+(schema: `bloodbank/schemas/bloodbank/audio/task.exhausted.json`) naming the
+item, slug, attempt, version and final reason. It fires at most once per
+(item, slug, version) — a version bump clears the receipt — and never for
+`dependency_failed`. This is the pipeline's dead-letter signal; ntfy-router
+routes it like any other non-muted event.
 
 ## Audio-to-transcript identity
 

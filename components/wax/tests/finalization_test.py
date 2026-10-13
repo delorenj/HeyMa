@@ -141,12 +141,18 @@ class FinalizationTest(unittest.TestCase):
         reg = copy.deepcopy(self.definitions)
         reg["title"]["after"] = ["unknown-future"]
         self.assertEqual(passes.ordered(reg), ["unknown-future", "title"])
+        # ordered() no longer raises on cycles or missing deps: the offenders are
+        # quarantined out of the order, loudly, and the fleet keeps moving.
         reg["unknown-future"]["requires"] = ["title"]
-        with self.assertRaisesRegex(passes.PassError, "cyclic"):
-            passes.ordered(reg)
+        self.assertEqual(passes.quarantined(reg),
+                         {"title": "cyclic pass dependency",
+                          "unknown-future": "cyclic pass dependency"})
+        self.assertEqual(passes.ordered(reg), [])
         reg["unknown-future"]["requires"] = ["missing"]
-        with self.assertRaisesRegex(passes.PassError, "missing"):
-            passes.ordered(reg)
+        self.assertEqual(passes.quarantined(reg),
+                         {"unknown-future": "unknown dependency 'missing'",
+                          "title": "dependency 'unknown-future' is quarantined"})
+        self.assertEqual(passes.ordered(reg), [])
 
 
 if __name__ == "__main__":

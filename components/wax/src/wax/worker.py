@@ -46,6 +46,11 @@ from . import (archive, config, desktop, dropoff, finalize, ledger, passes, path
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
 POLL_S = 5.0
+# The scheduled sweep interval. `wax ep sweep` used to be the ONLY re-drive for
+# a failed pass, and it was manual — a dead provider meant items parked in
+# enrichment_pending until somebody happened to type it. The worker now sweeps
+# on a timer so transient failure is transient by default.
+SWEEP_INTERVAL_S = float(os.environ.get("WAX_SWEEP_INTERVAL_S", "900"))
 _SELECTION_LOCK = threading.Lock()
 
 
@@ -404,6 +409,17 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
     result["enrichment"] = passes.run_auto(item_id)
     _log_enrichment(item_id, path.name, result["enrichment"])
 
+    # ---- 3b. publish what is ready ------------------------------------
+    # Pass events wait only for their own requires-subgraph, not the whole
+    # plan: a wedged sibling must not withhold events that are done.
+    try:
+        published = finalize.publish_pass_events(item_id)
+        if published.get("pass_events"):
+            result["pass_events"] = published
+    except Exception as exc:  # noqa: BLE001 - publication must not strand the item
+        log.warning("pass event publication failed for %s: %s: %s",
+                    item_id, type(exc).__name__, exc)
+
     # ---- 4. link the archived audio to its transcript ------------------
     # Deliberately AFTER the passes (so a rename is picked up) and deliberately
     # NOT conditional on any of them having succeeded.
@@ -625,7 +641,60 @@ def retry_failed_passes(item_id: str, slugs: tuple[str, ...]) -> dict[str, Any]:
     plan = conn.execute("SELECT 1 FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
     if plan:
         out["remaining"] = passes.run_auto(item_id)
+    # Retried passes may hold events: publish whatever its subgraph allows,
+    # whether or not the rest of the plan is done.
+    out["pass_events"] = finalize.publish_pass_events(item_id)
+    if plan:
         out["completion"] = finalize.finalize(item_id)
+    return out
+
+
+def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
+                        slug: Optional[str] = None, limit: int = 0) -> dict[str, Any]:
+    """Re-drive stranded enrichment passes, dead-letter the exhausted, finalize.
+
+    Shared by the worker's scheduled sweep and `wax ep sweep` (which keeps the
+    dry-run/unknown-slug presentation layer). Emits the exhaustion dead-letters
+    FIRST so a pass at its bound announces even when nothing will re-run it.
+    """
+    fired = passes.sweep_exhaustions(max_attempts)
+    targets = ledger.failed_passes_for_sweep(max_attempts)
+    if slug:
+        targets = [t for t in targets if t[1] == slug]
+    if limit > 0:
+        targets = targets[:limit]
+    out: dict[str, Any] = {
+        "max_attempts": max_attempts, "slug": slug,
+        "exhausted": fired,
+        "candidates": len(targets),
+        "targets": [{"item_id": i, "ep_slug": s, "attempt": a} for i, s, a in targets],
+    }
+    if not targets:
+        return out
+    results = []
+    for item_id, ep_slug, attempt in targets:
+        try:
+            # The attempt from the ledger is already incremented (its contract),
+            # so it is handed straight through: re-using the recorded attempt
+            # would replay a spent uuid5 command_id / idempotency key.
+            results.append(passes.run(item_id, ep_slug, attempt=attempt))
+        except passes.PassError as e:
+            results.append({"item_id": item_id, "ep_slug": ep_slug, "state": "failed",
+                            "error": str(e), "reason_code": "run_error"})
+    publications: dict[str, Any] = {}
+    completions: dict[str, Any] = {}
+    for item_id in dict.fromkeys(item for item, _, _ in targets):
+        plan = ledger.connect().execute(
+            "SELECT 1 FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+        if plan:
+            passes.run_auto(item_id)
+        publications[item_id] = finalize.publish_pass_events(item_id)
+        completions[item_id] = finalize.finalize(item_id)
+    out["publications"] = publications
+    out["completions"] = completions
+    out["results"] = results
+    out["completed"] = sum(1 for r in results if r.get("state") == "completed")
+    out["failed"] = sum(1 for r in results if r.get("state") != "completed")
     return out
 
 
@@ -635,6 +704,9 @@ class Worker(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True, name="wax-worker")
         self._stop = threading.Event()
+        # 0.0, not now: the first tick sweeps, because a failure that stranded
+        # while waxd was down is exactly the failure the sweep exists for.
+        self._last_sweep = 0.0
 
     def stop(self) -> None:
         self._stop.set()
@@ -643,6 +715,13 @@ class Worker(threading.Thread):
         while not self._stop.is_set():
             try:
                 if state.pipeline_enabled():
+                    now = time.monotonic()
+                    if now - self._last_sweep >= SWEEP_INTERVAL_S:
+                        self._last_sweep = now
+                        swept = sweep_failed_passes()
+                        if swept.get("candidates") or swept.get("exhausted"):
+                            log.info("scheduled sweep: %s candidate(s), %d exhaustion notice(s)",
+                                     swept["candidates"], len(swept.get("exhausted") or []))
                     if run_once() is None:
                         self._stop.wait(POLL_S)
                     continue

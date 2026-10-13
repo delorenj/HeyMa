@@ -465,9 +465,13 @@ class OrderingTest(PassEventsCase):
 
     def test_an_unorderable_plan_falls_back_to_alphabetical_instead_of_raising(self):
         plan = {"b": {"enabled": True, "after": ["ghost"]}, "a": {"enabled": True}}
-        with self.assertRaises(passes.PassError):
-            passes.ordered(plan)
-        self.assertEqual(finalize._plan_order(plan), ["a", "b"])
+        # ordered() no longer raises: the pass pointing at a ghost is quarantined
+        # (loudly, via quarantined()/doctor) and drops out of the order, while
+        # the healthy pass keeps its place. _plan_order's try/except stays as a
+        # second line of defense.
+        self.assertEqual(passes.quarantined(plan), {"b": "unknown dependency 'ghost'"})
+        self.assertEqual(passes.ordered(plan), ["a"])
+        self.assertEqual(finalize._plan_order(plan), ["a"])
 
 
 class DependencyGateTest(PassEventsCase):
@@ -541,8 +545,11 @@ class DependencyGateTest(PassEventsCase):
         self.set_failing("renamer", False)
         out = cli.ep_sweep(max_attempts=3, slug=None, dry_run=False, limit=0)
         self.assertEqual(out["candidates"], 1)
+        # With subgraph-gated publication the intake event lands via the
+        # publication pass the moment the emitter's subgraph converges; the
+        # completion follows and its own enqueue is a dedup no-op.
+        self.assertEqual(out["publications"][self.item]["pass_events"], 1)
         self.assertTrue(out["completions"][self.item]["finalized"])
-        self.assertEqual(out["completions"][self.item]["pass_events"], 1)
         self.assertEqual(self.pass_row("renamer")["state"], "completed")
         self.assertEqual(self.pass_row("emitter")["state"], "completed")
         self.assertEqual(len(self.outbox(INTAKE)), 1)

@@ -146,7 +146,8 @@ def connect() -> sqlite3.Connection:
                 if "duplicate column" not in str(exc).lower():
                     raise
         additions = {
-            "passes": {"reason_code": "TEXT", "result": "TEXT", "definition_id": "TEXT"},
+            "passes": {"reason_code": "TEXT", "result": "TEXT", "definition_id": "TEXT",
+                       "exhausted_at": "TEXT"},
             "transcripts": {"asr_path": "TEXT", "body_sha256": "TEXT", "processing_seconds": "REAL"},
         }
         for table, fields in additions.items():

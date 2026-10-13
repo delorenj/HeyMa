@@ -876,6 +876,40 @@ def probe_all() -> list[dict[str, Any]]:
     except Exception as e:  # noqa: BLE001
         add(_probe("diarization.degraded (contract A)", FAIL, f"{type(e).__name__}: {e}"))
 
+    # -- registry quarantine --------------------------------------------------
+    # A bad pass definition disables ITSELF, never the fleet — but a quarantine
+    # still means a pass is not running, so it is loud here.
+    try:
+        bad = passes.quarantined(passes.registry())
+        add(_probe("pass registry quarantine", PASS if not bad else FAIL,
+                   "every enabled pass definition is valid" if not bad else
+                   "; ".join(f"{slug}: {why}" for slug, why in sorted(bad.items()))[:200],
+                   "" if not bad else "fix the YAML in config/passes.d; the quarantine lifts live"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("pass registry quarantine", WARN, f"{type(e).__name__}: {e}"))
+
+    # -- pass event schemas ---------------------------------------------------
+    # Wax publishes straight to NATS, bypassing bb-emit's guard, so the schema
+    # check lives in the runner — and it fails CLOSED on a missing schema. This
+    # probe is the pre-flight for that: every enabled pass's emits must resolve
+    # to a real schema file before a transcript is the thing that finds out.
+    try:
+        missing = []
+        for slug, ep in sorted(passes.registry().items()):
+            if not ep.get("enabled"):
+                continue
+            for event_type in ep.get("emits") or []:
+                try:
+                    passes._event_data_schema(event_type)
+                except passes.PassError as exc:
+                    missing.append(f"{slug}({event_type}): {exc}")
+        add(_probe("pass event schemas", PASS if not missing else FAIL,
+                   "every enabled pass's emits resolve to a Bloodbank schema" if not missing
+                   else "; ".join(missing)[:200],
+                   "" if not missing else "author the schema under bloodbank/schemas/bloodbank/audio/ first"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("pass event schemas", WARN, f"{type(e).__name__}: {e}"))
+
     return out
 
 
@@ -992,7 +1026,9 @@ def ep_sweep(*, max_attempts: int, slug: Optional[str], dry_run: bool,
     run_auto() is reached from exactly one place — worker.py, while an item is
     being processed — so an item parked at `complete` could never have a pass
     retried. A transient provider outage was therefore permanent, which is how
-    11 title-slug failures sat untouched for five days.
+    11 title-slug failures sat untouched for five days. The worker now also
+    sweeps on a timer (SWEEP_INTERVAL_S); this CLI is the on-demand version and
+    the dry-run preview. The work itself lives in worker.sweep_failed_passes.
     """
     targets = ledger.failed_passes_for_sweep(max_attempts)
     unknown_slug = bool(slug) and slug not in passes.registry()
@@ -1000,35 +1036,24 @@ def ep_sweep(*, max_attempts: int, slug: Optional[str], dry_run: bool,
         targets = [t for t in targets if t[1] == slug]
     if limit > 0:
         targets = targets[:limit]
-    out: dict[str, Any] = {
-        "max_attempts": max_attempts, "slug": slug, "dry_run": dry_run,
-        "candidates": len(targets),
-        "targets": [{"item_id": i, "ep_slug": s, "attempt": a} for i, s, a in targets],
-    }
-    if unknown_slug:
-        # A typo must not read as "nothing is stranded". That sentence is the
-        # failure mode this whole command exists to end.
-        out["warning"] = f"{slug!r} is not a registered pass; see `wax ep list`"
     if dry_run or not targets:
+        out: dict[str, Any] = {
+            "max_attempts": max_attempts, "slug": slug, "dry_run": dry_run,
+            "candidates": len(targets),
+            "targets": [{"item_id": i, "ep_slug": s, "attempt": a} for i, s, a in targets],
+        }
+        if unknown_slug:
+            # A typo must not read as "nothing is stranded". That sentence is the
+            # failure mode this whole command exists to end.
+            out["warning"] = f"{slug!r} is not a registered pass; see `wax ep list`"
+        if not dry_run:
+            # Nothing to re-drive, but the dead-letter scan still applies.
+            out["exhausted"] = passes.sweep_exhaustions(max_attempts)
         return out
-    results = []
-    for item_id, ep_slug, attempt in targets:
-        try:
-            # The attempt from the ledger is already incremented (its contract),
-            # so it is handed straight through: re-using the recorded attempt
-            # would replay a spent uuid5 command_id / idempotency key.
-            results.append(passes.run(item_id, ep_slug, attempt=attempt))
-        except passes.PassError as e:
-            results.append({"item_id": item_id, "ep_slug": ep_slug, "state": "failed",
-                            "error": str(e), "reason_code": "run_error"})
-    for item_id in dict.fromkeys(item for item, _, _ in targets):
-        plan = ledger.connect().execute("SELECT 1 FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
-        if plan:
-            passes.run_auto(item_id)
-    out["completions"] = {item_id: finalize.finalize(item_id) for item_id, _, _ in targets}
-    out["results"] = results
-    out["completed"] = sum(1 for r in results if r.get("state") == "completed")
-    out["failed"] = sum(1 for r in results if r.get("state") != "completed")
+    out = worker.sweep_failed_passes(max_attempts=max_attempts, slug=slug, limit=limit)
+    out["dry_run"] = False
+    if unknown_slug:
+        out["warning"] = f"{slug!r} is not a registered pass; see `wax ep list`"
     return out
 
 
@@ -1052,6 +1077,7 @@ def ep_list_rows() -> list[dict[str, Any]]:
     except Exception:  # noqa: BLE001 - the registry is still worth listing
         tally = {}
     rows = []
+    bad = passes.quarantined(registry)
     for slug, ep in sorted(registry.items()):
         version = int(ep.get("version") or 1)
         counted = {"completed": 0, "failed": 0, "running": 0, "stale": 0}
@@ -1073,6 +1099,7 @@ def ep_list_rows() -> list[dict[str, Any]]:
             # go look at the file, and `{component_root}` is not a path.
             "command": _expand_command(ep),
             "path": ep.get("_path"), "error": ep.get("error"),
+            "quarantined": bad.get(slug),
             **counted,
         })
     return rows
@@ -1425,6 +1452,8 @@ def main() -> int:
                           f"{r['stale']:<7}{r['command'] or '-'}")
                     if r["error"]:
                         print(f"  {'':<24} !! {r['error']}")
+                    if r.get("quarantined"):
+                        print(f"  {'':<24} !! QUARANTINED: {r['quarantined']}")
                 # STALE is not a failure: it is history recorded against a pass
                 # definition that has since been versioned past.
                 print("\n  OK/FAIL count rows at the CURRENTLY registered version; "
@@ -1432,11 +1461,14 @@ def main() -> int:
             return 0
         if args.sub == "run":
             result = passes.run(args.item_id, args.slug, attempt=args.attempt)
+            result["pass_events"] = finalize.publish_pass_events(args.item_id)
             result["completion"] = finalize.finalize(args.item_id)
             _emit(result, J)
             return 0
         if args.sub == "run-all":
-            _emit({"results": passes.run_all(args.item_id), "completion": finalize.finalize(args.item_id)}, J)
+            _emit({"results": passes.run_all(args.item_id),
+                   "pass_events": finalize.publish_pass_events(args.item_id),
+                   "completion": finalize.finalize(args.item_id)}, J)
             return 0
         if args.sub == "status":
             rows = passes.status(args.item_id)

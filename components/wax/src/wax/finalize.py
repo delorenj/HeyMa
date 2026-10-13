@@ -90,9 +90,14 @@ def _build_pass_events(pending, item_id, md, completion_id):
 
     Runs BEFORE any transaction and never raises: this is reached from the path
     that parks audio, and an exception here would strand an item whose audio has
-    already left the inbox. A pass event that cannot be built or fits no
-    envelope is dropped with a warning and counted, never allowed to cost the
-    transcript its completion. Returns (rows, dropped).
+    already left the inbox. A pass event that cannot be built, fails schema
+    validation, or fits no envelope is dropped with a warning and counted, never
+    allowed to cost the transcript its completion. Returns (rows, dropped).
+
+    `completion_id` is the correlation anchor when a completion exists. An event
+    published ahead of it (the subgraph-gated early path) correlates to the
+    producing pass's command id instead, so Candystore can still join it to the
+    pass's task.* trail.
     """
     rows, dropped = [], 0
     for slug, event_id, event, command_id in pending:
@@ -103,9 +108,13 @@ def _build_pass_events(pending, item_id, md, completion_id):
             # `transcript` is the basename as it exists NOW, after title-slug's rename.
             data = {**event["data"], "item_id": item_id, "transcription_id": item_id,
                     "transcript": md.name, "transcript_uri": md.resolve().as_uri()}
+            # The pass-side check ran relaxed (runner fields absent); the emitted
+            # payload is checked in full. Drift drops the event, loudly.
+            passes.validate_event_data(event["type"], data, relaxed=False)
+            correlation = completion_id or command_id or event_id
             subject, envelope = events.envelope(
                 entity, action, data, event_id=event_id,
-                correlationid=completion_id, causationid=completion_id,
+                correlationid=correlation, causationid=correlation,
                 ordering_key=f"transcription:{item_id}")
             encoded = json.dumps(envelope, ensure_ascii=False, sort_keys=True)
             if len(encoded.encode()) > MAX_ENVELOPE_BYTES:
@@ -147,6 +156,84 @@ def _enqueue_pass_events(conn, item_id, rows):
                      (event_id, item_id, slug, command_id, event_type, cursor.lastrowid, sentinel.utcnow()))
         inserted += 1
     return inserted
+
+
+def _subgraph_satisfied(conn, item_id, slug, definitions, states):
+    """Every transitive `requires` of `slug` is completed/skipped at the wanted version.
+
+    The early-publication gate: a pass's events are ready the moment the passes
+    it actually consumes are done — the rest of the plan is not its business.
+    """
+    seen, stack = set(), list((definitions.get(slug) or {}).get("requires") or [])
+    while stack:
+        dep = stack.pop()
+        if dep in seen:
+            continue
+        seen.add(dep)
+        definition = definitions.get(dep)
+        if definition is None:
+            # A requires naming a pass outside the plan (a backfilled pass
+            # depending on a newer sibling): judge it against the live registry.
+            definition = passes.registry().get(dep)
+        wanted = int((definition or {}).get("version") or 1)
+        row = states.get(dep)
+        if not row or row["state"] not in ("completed", "skipped") or int(row["version"] or 1) != wanted:
+            return False
+        stack.extend((definition or {}).get("requires") or [])
+    return True
+
+
+def publish_pass_events(item_id):
+    """Enqueue a completed pass's declared events as soon as ITS subgraph is done.
+
+    The completion-barrier split: pass events used to wait for the WHOLE plan,
+    so one wedged sibling (diarization carries a 24h timeout) withheld tickets
+    that were ready hours earlier. Events now publish when the producing pass's
+    own `requires` subgraph completes; `transcription.completed` stays
+    plan-gated as the summary fact. The pass_events primary key makes the
+    finalize()-time enqueue of the same event a no-op, and correlation anchors
+    to the completion id once one exists, the pass's command id until then.
+    """
+    with operations.item_lock(item_id):
+        conn = ledger.connect()
+        events._ensure()
+        plan = conn.execute("SELECT * FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+        if plan:
+            definitions = json.loads(plan["definitions"])
+        else:
+            reg = passes.registry()
+            definitions = {slug: ep for slug, ep in reg.items()
+                           if ep.get("enabled") and ep.get("auto")}
+        pending = pending_pass_events(conn, item_id, definitions)
+        if not pending:
+            return {"pass_events": 0}
+        states = {row["ep_slug"]: dict(row) for row in conn.execute(
+            "SELECT ep_slug, state, version FROM passes WHERE item_id=?", (item_id,)).fetchall()}
+        ready = [entry for entry in pending
+                 if _subgraph_satisfied(conn, item_id, entry[0], definitions, states)]
+        if not ready:
+            return {"pass_events": 0, "pass_events_pending": len(pending)}
+        transcript = conn.execute("SELECT md_path FROM transcripts WHERE item_id=?", (item_id,)).fetchone()
+        md = Path(transcript["md_path"]) if transcript else None
+        if md is None or not md.is_file():
+            return {"pass_events": 0, "pass_events_reason": "missing_transcript",
+                    "pass_events_pending": len(ready)}
+        prior = conn.execute("SELECT event_id FROM completions WHERE item_id=? "
+                             "ORDER BY created_at DESC LIMIT 1", (item_id,)).fetchone()
+        rows, dropped = _build_pass_events(ready, item_id, md, prior["event_id"] if prior else None)
+        inserted = 0
+        if rows:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                inserted = _enqueue_pass_events(conn, item_id, rows)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        withheld = len(pending) - len(ready)
+        return {"pass_events": inserted,
+                **({"pass_events_pending": withheld} if withheld else {}),
+                **({"pass_events_dropped": dropped} if dropped else {})}
 
 
 def _backfill_pass_events(conn, item_id, plan, prior):

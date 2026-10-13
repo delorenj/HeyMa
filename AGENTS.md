@@ -109,11 +109,17 @@ is recorded per-slug with a `reason_code` in both the ledger and the note's
 `classification`, `diarization`, `clipboard-copy`, `title-slug` (hosted
 OpenAI-compatible endpoint; key from `op://`, never a file), `project-extraction`
 (pjangler project ids via TypeSafe Jev) and `ticketable` (tasks per project).
-`wax ep sweep` retries the ones whose latest attempt failed.
+`wax ep sweep` retries the ones whose latest attempt failed; the waxd worker also
+sweeps on a timer (`WAX_SWEEP_INTERVAL_S`, default 900s), and a pass that
+exhausts its attempts emits `bloodbank.audio.task.exhausted` (the dead-letter
+signal) instead of failing silently.
 
 `transcription.completed` waits for every planned pass. A pass can declare
-`events` in its result (its YAML must list them in `emits`); `finalize()`
-publishes them after the completion, so `ticketable` becomes one
+`events` in its result (its YAML must list them in `emits`, and the data must
+satisfy the Bloodbank schema — the runner validates, fail-closed); a completed
+pass's events publish as soon as its own `requires` subgraph completes
+(`finalize.publish_pass_events()`), not behind slow siblings, while the
+completion stays plan-gated as the summary fact. `ticketable` becomes one
 `bloodbank.audio.intake.detected` per ticket, relayed to ntfy `audio`. Jev is the
 one deliberate bypass of the AutomaticAI gateway (it has no decisions route):
 `project-extraction` calls OpenRouter directly with HeyMa's own inference key
