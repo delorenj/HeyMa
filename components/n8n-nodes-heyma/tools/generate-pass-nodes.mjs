@@ -90,11 +90,17 @@ function main() {
 
 	const wanted = new Map();
 	for (const row of rows) {
-		const fileName = `wax-pass-${row.slug}.node.ts`;
-		// n8n lint convention: a node lives in a directory named after it.
-		const nodeDir = join(pkgRoot, 'nodes', `wax-pass-${row.slug}`);
+		const className = `WaxPass${pascal(row.slug)}`;
+		// n8n's PackageDirectoryLoader derives the class to instantiate from
+		// the file BASENAME (segment before the first dot of the manifest
+		// entry) and evaluates `new (require(path).<name>)()`. That name must
+		// be a valid identifier, so the directory and file are the PascalCase
+		// class name — description.name keeps the kebab slug, which is the
+		// identity workflows store, so existing exports stay stable.
+		const fileName = `${className}.node.ts`;
+		const nodeDir = join(pkgRoot, 'nodes', className);
 		mkdirSync(nodeDir, { recursive: true });
-		wanted.set(row.slug, `wax-pass-${row.slug}`);
+		wanted.set(row.slug, className);
 		const target = join(nodeDir, fileName);
 		const body = render(row);
 		let unchanged = false;
@@ -104,10 +110,15 @@ function main() {
 		if (!unchanged) writeFileSync(target, body);
 	}
 
-	// Remove stale generated nodes whose pass is no longer registered.
+	// Remove stale generated nodes whose pass is no longer registered, plus
+	// the retired kebab-case layout (invalid identifiers for the native
+	// loader). Generated output only — hand-written sources are never touched.
 	const nodesRoot = join(pkgRoot, 'nodes');
 	for (const entry of readdirSync(nodesRoot, { withFileTypes: true })) {
-		if (!entry.isDirectory() || !entry.name.startsWith('wax-pass-')) continue;
+		if (!entry.isDirectory()) continue;
+		const isGenerated =
+			entry.name.startsWith('wax-pass-') || (/^WaxPass[A-Z]/u.test(entry.name));
+		if (!isGenerated) continue;
 		if (![...wanted.values()].includes(entry.name)) {
 			rmSync(join(nodesRoot, entry.name), { recursive: true, force: true });
 		}
@@ -123,7 +134,7 @@ function main() {
 	];
 	const passNodes = [...wanted.keys()]
 		.sort()
-		.map((slug) => `dist/nodes/wax-pass-${slug}/wax-pass-${slug}.node.js`);
+		.map((slug) => `dist/nodes/WaxPass${pascal(slug)}/WaxPass${pascal(slug)}.node.js`);
 	const nodes = [...staticNodes, ...passNodes];
 	if (JSON.stringify(pkg.n8n?.nodes) !== JSON.stringify(nodes)) {
 		pkg.n8n.nodes = nodes;

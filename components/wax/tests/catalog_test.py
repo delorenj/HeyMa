@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wax import catalog, events, ledger, passes, paths, pipelines, sentinel
+from wax import catalog, documents, events, ledger, passes, paths, pipelines, sentinel
 
 
 def _close_test_connection() -> None:
@@ -172,6 +172,97 @@ class CatalogSafetyTest(unittest.TestCase):
         graph = next(p for p in snap["pipelines"]["pipelines"] if p["name"] == "graph")
         self.assertEqual(graph["drift"]["state"], "drifted")
         self.assertIn("compile", graph["drift"]["detail"])
+
+    def test_pipeline_outcomes_are_scoped_and_survive_registry_bumps(self):
+        # two pipelines sharing the SAME pass slug, over different folders:
+        # one pipeline's runs must never inflate the other's outcome counts
+        for name, folder in (("doc-a", "a"), ("doc-b", "b")):
+            (self.pipes / f"{name}.yaml").write_text(
+                f"name: {name}\nversion: 1\ndescription: {name}\ntrigger: documents\n"
+                f"enabled: true\nfolders: [{json.dumps(str(self.root / folder))}]\n"
+                "failure_policy: independent\npasses: [alpha]\n"
+            )
+        with patch.object(paths, "DB", self.runtime / "wax.db"), \
+                patch.object(paths, "VAR", self.runtime), \
+                patch.object(passes, "REGISTRY_DIR", self.registry), \
+                patch.object(pipelines, "PIPELINES_DIR", self.pipes):
+            _close_test_connection()
+            result = pipelines.compile(["doc-a", "doc-b"])
+            self.assertFalse(result["failed"], result["failed"])
+            conn = ledger.connect()
+            now = sentinel.utcnow()
+            # doc-a ran TWO documents to completion; doc-b failed one — one
+            # pass row per (item, slug), like the real ledger
+            runs = (("doc-a", "a", ("aaaaaaaaaaaaaaaa", "cccccccccccccccc"), "completed"),
+                    ("doc-b", "b", ("bbbbbbbbbbbbbbbb",), "failed"))
+            for name, folder, docs, state in runs:
+                definition_id = pipelines.compiled()[name]["definition_id"]
+                binding = f"{name}-{folder}-000000000000"
+                for doc in docs:
+                    # the receipt is what ties a document run to ITS pipeline
+                    conn.execute(
+                        "INSERT INTO document_receipts(binding_id,doc_id,pipeline,definition_id,"
+                        "state,attempts,last_attempt_at) VALUES(?,?,?,?,'completed',1,?)",
+                        (binding, f"doc-{doc}", name, definition_id, now))
+                    # and the pass ledger row under the binding-scoped item key
+                    key = documents.doc_key(binding, f"doc-{doc}")
+                    conn.execute(
+                        "INSERT INTO passes(item_id,ep_slug,version,state,attempt,updated_at) "
+                        "VALUES(?,?,1,?,1,?)", (key, "alpha", state, now))
+        snap = self._catalog()
+        by_name = {p["name"]: p for p in snap["pipelines"]["pipelines"]}
+        self.assertEqual(by_name["doc-a"]["outcomes"]["alpha"]["completed"], 2)
+        self.assertEqual(by_name["doc-a"]["outcomes"]["alpha"]["failed"], 0)
+        self.assertEqual(by_name["doc-b"]["outcomes"]["alpha"]["failed"], 1)
+        self.assertEqual(by_name["doc-b"]["outcomes"]["alpha"]["completed"], 0,
+                         "docB must not claim docA's runs through the shared slug")
+        self.assertEqual(by_name["doc-a"]["outcomes_scope"], "pipeline")
+
+        # the LIVE registry bumps alpha to v2 with no recompile: the compiled
+        # v1 counts are this pipeline's history and must NOT vanish into stale
+        (self.registry / "alpha.yaml").write_text(
+            "slug: alpha\nversion: 2\ndescription: Enriches the title.\n"
+            "enabled: true\nauto: true\ncapabilities: [document]\n"
+            "requires: []\nafter: []\n"
+            "when: [{field: classification, exists: true}]\n"
+            "command: [\"/bin/true\", \"{md_path}\"]\n"
+        )
+        snap = self._catalog()
+        docA = next(p for p in snap["pipelines"]["pipelines"] if p["name"] == "doc-a")
+        self.assertEqual(docA["outcomes"]["alpha"]["completed"], 2,
+                         "compiled-version counts survive a live registry bump")
+        self.assertEqual(docA["outcomes"]["alpha"]["stale"], 0)
+
+    def test_n8n_sourced_drift_is_an_exported_snapshot_never_in_sync(self):
+        export = {
+            "name": "Wax Flow",
+            "nodes": [
+                {"name": "Wax Pipeline", "type": "n8n-nodes-heyma.waxPipeline",
+                 "typeVersion": 1, "position": [0, 0],
+                 "parameters": {"trigger": "documents",
+                                "folders": [str(self.root / "none")],
+                                "enabled": True, "failurePolicy": "independent"}},
+                {"name": "A", "type": "n8n-nodes-heyma.waxEp", "typeVersion": 1,
+                 "position": [0, 0], "parameters": {"pass": "alpha"}},
+            ],
+            "connections": {},
+        }
+        path = self.root / "flow.json"
+        path.write_text(json.dumps(export))
+        with patch.object(paths, "DB", self.runtime / "wax.db"), \
+                patch.object(paths, "VAR", self.runtime), \
+                patch.object(passes, "REGISTRY_DIR", self.registry), \
+                patch.object(pipelines, "PIPELINES_DIR", self.pipes):
+            _close_test_connection()
+            pipelines.import_n8n(path)
+        snap = self._catalog()
+        flow = next(p for p in snap["pipelines"]["pipelines"] if p["name"] == "wax-flow")
+        # Wax cannot read the authored artifact inside n8n, so it cannot KNOW
+        # the graph is still in sync — it must never claim to
+        self.assertEqual(flow["drift"]["state"], "exported_snapshot")
+        self.assertEqual(flow["drift"]["detail"], "")
+        self.assertIsNone(flow["drift"].get("authored_id"))
+        self.assertNotIn("in_sync", json.dumps(flow["drift"]))
 
 
 if __name__ == "__main__":

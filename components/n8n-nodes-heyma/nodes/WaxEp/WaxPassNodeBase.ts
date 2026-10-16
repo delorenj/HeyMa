@@ -27,7 +27,7 @@ export abstract class WaxPassNodeBase extends WaxEp {
 			displayName: spec.displayName,
 			// n8n derives the node TYPE from the file name: wax-pass-<slug>
 			name: `wax-pass-${spec.slug}`,
-			icon: { light: 'file:heyma.svg', dark: 'file:heyma.dark.svg' },
+			icon: { light: 'file:../HeyMa/heyma.svg', dark: 'file:../HeyMa/heyma.dark.svg' },
 			group: ['transform'],
 			version: 1,
 			subtitle: spec.slug,

@@ -680,18 +680,29 @@ def import_n8n(path: Path, *, name: Optional[str] = None) -> dict[str, Any]:
     definition = _validate(name, doc, reg)
     # Imported versions are SYSTEM-managed: an identical re-import is a no-op,
     # and a changed export increments past whatever is stored — never silently
-    # rewriting history under the same version, never downgrading.
+    # rewriting history under the same version, never downgrading. The
+    # comparison must NORMALIZE first: the export carries the authored version,
+    # while the stored definition may have advanced past it through earlier
+    # increments — comparing fresh-authored vN against stored vN+k differs by
+    # construction and would keep incrementing an identical import.
     existing = ledger.connect().execute(
         "SELECT version, definition_id FROM pipelines WHERE name=?", (name,)).fetchone()
     if existing is not None:
-        if existing["definition_id"] == _definition_id(definition):
+        authored_version = int(definition["version"] or 1)
+        stored_version = int(existing["version"] or 1)
+        candidate = dict(definition)
+        # Re-stamp the authored graph at the stored version (respecting the
+        # authored floor) before hashing: is this export, at the system's
+        # current version, exactly what is stored?
+        candidate["version"] = max(authored_version, stored_version)
+        if existing["definition_id"] == _definition_id(candidate):
             return {"imported": name, "workflow": workflow_name,
-                    "version": int(existing["version"] or 1),
+                    "version": stored_version,
                     "definition_id": existing["definition_id"],
                     "trigger": definition["trigger"], "unchanged": True,
                     "nodes": len(definition["passes"]), "edges": len(definition["edges"])}
-        definition["version"] = max(int(definition["version"] or 1),
-                                    int(existing["version"] or 1) + 1)
+        candidate["version"] = max(authored_version, stored_version + 1)
+        definition = candidate
     definition_id = _store(name, definition, source="n8n",
                            source_ref=workflow_name, authored_id=_file_id(path))
     return {"imported": name, "workflow": workflow_name, "version": definition["version"],
@@ -749,14 +760,16 @@ def drift(name: str) -> dict[str, Any]:
     """Authored vs compiled identity for one pipeline. Content hashes both ways."""
     current = compiled().get(name)
     if current and current.get("source") == "n8n":
-        # The authored artifact lives in n8n, which Wax cannot read; the import
-        # IS the compile, so authored-vs-compiled cannot drift. Identity is the
-        # export that produced it; registry drift is reported separately.
-        return {"name": name, "state": "in_sync", "source": "n8n",
+        # The authored artifact lives in n8n, which Wax cannot read, so
+        # authored-vs-compiled CANNOT be known: never claim in_sync from a
+        # source that was never re-read. Identity is the export that produced
+        # this definition (authored_id unknown by construction); registry
+        # drift is reported separately.
+        return {"name": name, "state": "exported_snapshot", "source": "n8n",
                 "source_ref": current.get("source_ref"),
                 "definition_id": current["definition_id"],
-                "detail": f"authored in n8n workflow {current.get('source_ref')!r}; "
-                          "re-import to adopt a changed export"}
+                "authored_id": None,
+                "detail": ""}
     source = authored().get(name)
     authored_id = None
     if source and not source.get("error"):

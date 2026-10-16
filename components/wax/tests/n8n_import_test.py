@@ -242,10 +242,17 @@ class N8nImportTest(unittest.TestCase):
         export["nodes"].append(_typed_pass_node("Gamma", "gamma"))
         third = pipelines.import_n8n(_export(self.root, export))
         self.assertEqual(third["version"], 3)
-        # a LOWER authored version never downgrades the stored one
-        lower = self._doc_export(version=2)
-        lower["nodes"].append(_pass_node("Diarize", "diarize"))
-        lower["nodes"].append(_typed_pass_node("Gamma", "gamma"))
+        # an identical repeat AFTER a changed import stays a no-op: the
+        # authored version (still 1 in this export) normalizes to the stored
+        # version before the definition comparison, instead of endlessly
+        # re-incrementing the same graph
+        repeat = pipelines.import_n8n(_export(self.root, export))
+        self.assertTrue(repeat.get("unchanged"))
+        self.assertEqual(repeat["version"], 3)
+        self.assertEqual(repeat["definition_id"], third["definition_id"])
+        # a CHANGED graph with a LOWER authored version never downgrades: it
+        # increments past the stored version regardless
+        lower = self._doc_export(version=2)  # fewer nodes: genuinely different graph
         fourth = pipelines.import_n8n(_export(self.root, lower))
         self.assertEqual(fourth["version"], 4)
         # a non-numeric version is rejected loudly

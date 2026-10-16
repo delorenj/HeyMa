@@ -154,10 +154,16 @@ test('every node is registered and exposes the CLI transport parameters', () => 
 		assert.ok(nodes.includes(entry), `manifest must list ${entry}`);
 	}
 	// Per-pass node types are generated from the catalog (npm run nodes:passes):
-	// every manifest entry must exist on disk as a generated source.
-	const passNodes = nodes.filter((entry) => entry.startsWith('dist/nodes/wax-pass-'));
+	// every manifest entry must exist on disk as a generated source, and the
+	// basename must be a valid identifier — n8n's PackageDirectoryLoader
+	// instantiates `new (require(path).<basename>)()` in a vm.Script, so a
+	// kebab-case basename kills the whole package load.
+	const passNodes = nodes.filter((entry) => /^dist\/nodes\/WaxPass[A-Z]/u.test(entry));
 	assert.ok(passNodes.length >= 11, `expected the generated per-pass nodes, got ${passNodes.length}`);
 	for (const entry of passNodes) {
+		const className = entry.split('/').pop().replace(/\.node\.js$/u, '');
+		assert.match(className, /^[A-Z][A-Za-z0-9]*$/u,
+			`manifest basename must be a valid class identifier: ${entry}`);
 		const rel = entry.replace(/^dist\/nodes\//u, '').replace(/\.js$/u, '.ts');
 		assert.ok(existsSync(join('nodes', rel)),
 			`manifest entry ${entry} has no generated source`);
@@ -172,7 +178,7 @@ test('every node is registered and exposes the CLI transport parameters', () => 
 });
 
 test('per-pass nodes are WaxEp-derived node types with the pass fixed and stock two-port outputs', () => {
-	const { WaxPassTitleSlug } = require('../dist/nodes/wax-pass-title-slug/wax-pass-title-slug.node.js');
+	const { WaxPassTitleSlug } = require('../dist/nodes/WaxPassTitleSlug/WaxPassTitleSlug.node.js');
 	const node = new WaxPassTitleSlug();
 	assert.equal(node.description.name, 'wax-pass-title-slug');
 	const pass = node.description.properties.find((p) => p.name === 'pass');
@@ -363,7 +369,7 @@ console.log(JSON.stringify({ passes: { passes: [
 	});
 	const { readFileSync } = require('node:fs');
 	const source = readFileSync(
-		join(generatedDir, 'wax-pass-multiline/wax-pass-multiline.node.ts'),
+		join(generatedDir, 'WaxPassMultiline/WaxPassMultiline.node.ts'),
 		'utf8',
 	);
 	// the emitted literal stays on ONE line: real newlines would break syntax
@@ -379,6 +385,6 @@ console.log(JSON.stringify({ passes: { passes: [
 		'dist/nodes/HeyMa/HeyMa.node.js',
 		'dist/nodes/WaxEp/WaxEp.node.js',
 		'dist/nodes/WaxPipeline/WaxPipeline.node.js',
-		'dist/nodes/wax-pass-multiline/wax-pass-multiline.node.js',
+		'dist/nodes/WaxPassMultiline/WaxPassMultiline.node.js',
 	]);
 });

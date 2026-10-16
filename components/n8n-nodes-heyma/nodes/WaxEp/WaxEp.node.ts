@@ -75,7 +75,7 @@ export class WaxEp extends WaxNodeBase {
 	description: INodeTypeDescription = {
 		displayName: 'Wax Enrichment Pass',
 		name: 'waxEp',
-		icon: { light: 'file:heyma.svg', dark: 'file:heyma.dark.svg' },
+		icon: { light: 'file:../HeyMa/heyma.svg', dark: 'file:../HeyMa/heyma.dark.svg' },
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["pass"]}}',

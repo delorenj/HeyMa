@@ -63,7 +63,7 @@ export class WaxPipeline extends WaxNodeBase {
 	description: INodeTypeDescription = {
 		displayName: 'Wax Pipeline',
 		name: 'waxPipeline',
-		icon: { light: 'file:heyma.svg', dark: 'file:heyma.dark.svg' },
+		icon: { light: 'file:../HeyMa/heyma.svg', dark: 'file:../HeyMa/heyma.dark.svg' },
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"]}}',

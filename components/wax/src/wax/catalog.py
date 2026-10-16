@@ -86,6 +86,63 @@ def _tally() -> dict[tuple[str, str, int], int]:
     return out
 
 
+def _pipeline_item_keys(conn, name: str) -> set[str]:
+    """Item keys whose runs belong to THIS pipeline, exactly:
+
+    - documents: every (binding, doc) with a receipt under this pipeline —
+      receipts are the durable per-pipeline run record;
+    - audio: items whose stored plan names this pipeline as the minting
+      authority (plan provenance). Plan-less legacy items belong to the
+      registry, not to any compiled pipeline, and are never claimed here.
+    """
+    keys: set[str] = set()
+    try:
+        for row in conn.execute(
+                "SELECT binding_id, doc_id FROM document_receipts WHERE pipeline=?",
+                (name,)):
+            keys.add(documents.doc_key(row["binding_id"], row["doc_id"]))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pipeline receipt scan unavailable: %s: %s", type(exc).__name__, exc)
+    try:
+        for row in conn.execute("SELECT item_id, source FROM processing_plans"):
+            try:
+                provenance = json.loads(row["source"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if (isinstance(provenance, dict)
+                    and provenance.get("kind") == "pipeline"
+                    and provenance.get("name") == name):
+                keys.add(row["item_id"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pipeline plan scan unavailable: %s: %s", type(exc).__name__, exc)
+    return keys
+
+
+def _scoped_tally(conn, item_keys: set[str]) -> dict[tuple[str, str, int], int]:
+    """(slug, state, version) -> count over exactly the given item keys."""
+    out: dict[tuple[str, str, int], int] = {}
+    keys = list(item_keys)
+    for start in range(0, len(keys), 400):
+        chunk = keys[start:start + 400]
+        marks = ",".join("?" * len(chunk))
+        try:
+            for row in conn.execute(
+                    f"SELECT ep_slug, state, version, COUNT(*) AS n FROM passes "  # noqa: S608
+                    f"WHERE item_id IN ({marks}) GROUP BY ep_slug, state, version",
+                    chunk):
+                out[(row["ep_slug"], row["state"], int(row["version"] or 1))] = row["n"]
+            for row in conn.execute(
+                    f"SELECT ep_slug, version, COUNT(*) AS n FROM passes "  # noqa: S608
+                    f"WHERE item_id IN ({marks}) AND exhausted_at IS NOT NULL "
+                    f"GROUP BY ep_slug, version", chunk):
+                out[(row["ep_slug"], "exhausted", int(row["version"] or 1))] = row["n"]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("scoped outcome tally unavailable: %s: %s",
+                        type(exc).__name__, exc)
+            break
+    return out
+
+
 def pass_catalog(reg: Optional[dict[str, dict[str, Any]]] = None) -> dict[str, Any]:
     """Every registered pass: purpose, capability, availability, edges, outcomes."""
     reg = reg if reg is not None else passes.registry()
@@ -245,11 +302,21 @@ def pipeline_catalog() -> dict[str, Any]:
                     if r.get("reason_code") else {})}
                 for r in documents.recent_receipts(pipeline=name, limit=10)
             ]
-            tally = _tally()
+            frozen_versions = {
+                node["slug"]: int((node.get("registry") or {}).get("version") or 1)
+                for node in definition.get("passes") or []
+                if isinstance(node, dict) and node.get("slug")}
+            # Outcomes are scoped to THIS pipeline's own runs (its receipts,
+            # the audio plans it minted) at the COMPILED node versions: a live
+            # registry bump neither erases these counts into `stale` nor lets
+            # another scenario's rows inflate them. Registry-wide per-slug
+            # totals are a different view and live under `passes` above.
+            tally = _scoped_tally(conn, _pipeline_item_keys(conn, name))
             entry["outcomes"] = {
-                slug: _pass_outcomes(slug, int((reg.get(slug) or {}).get("version") or 1), tally)
+                slug: _pass_outcomes(slug, frozen_versions.get(slug, 1), tally)
                 for slug in slugs
             }
+            entry["outcomes_scope"] = "pipeline"
         rows.append(entry)
     return {
         "generated_at": sentinel.utcnow(),

@@ -28,7 +28,7 @@ cd /home/delorenj/HeyMa/components/n8n-nodes-heyma
 npm run nodes:passes   # reads `wax catalog --json`, emits nodes/wax-pass-<slug>/, updates the manifest
 ```
 
-Generated files carry an AUTO-GENERATED banner and are committed: the node manifest must stay reviewable and travel-safe.
+Generated files carry an AUTO-GENERATED banner and are committed: the node manifest must stay reviewable and travel-safe. Each generated node lives at `nodes/WaxPass<Class>/WaxPass<Class>.node.ts` — the basename MUST be the PascalCase class name, because n8n's native `PackageDirectoryLoader` derives the class to instantiate from the manifest basename (`new (require(path).<basename>)()` inside a `vm.Script`); a kebab-case basename is not a valid identifier and kills the entire package load, legacy nodes included. `description.name` keeps the kebab slug (`wax-pass-title-slug`), which is the identity stored in existing workflow exports. Node icons reference the shared `file:../HeyMa/heyma.svg` (n8n resolves `file:` icons relative to each node's own directory). `tests/nativeLoader.test.cjs` loads the whole built package with the REAL installed n8n-core loader — no mocks — and asserts every manifest entry loads and every icon resolves to a file on disk.
 
 ### Wax Pipeline (`WaxPipeline`)
 
