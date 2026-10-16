@@ -10,7 +10,7 @@ description: >
   cadence; the first scan of an existing folder seeds files without
   processing them.
 trigger: documents
-enabled: false
+enabled: true
 failure_policy: independent
 folders:
   - /home/delorenj/d/Inbox/Wax

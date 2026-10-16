@@ -1,5 +1,11 @@
 # n8n-nodes-heyma
 
+**Released control surface:** [Wax operator guide](../wax/docs/CONTROL-SURFACE.md)
+contains the live Holocene/n8n links, active folder binding, graph publishing
+boundary and verified deployment procedure. The `wax-*-workflow.json` exports
+below are disabled starter templates; `*-release.json` captures the active
+Wax-owned graphs.
+
 A private n8n community-node package for controlling HeyMa's Wax audio pipeline.
 
 Wax remains the single owner of recording, archiving, transcription, and enrichment. Every node here is a thin control client: each invokes the canonical `wax` CLI, which keeps capture serialization, sentinels, state transitions, retries, and receipts inside Wax. Nodes never execute pass scripts, never read `passes.d/` or the SQLite ledger, and never schedule anything.

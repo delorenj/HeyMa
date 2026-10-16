@@ -1,0 +1,86 @@
+{
+  "name": "Wax Documents Standard",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "configure",
+        "trigger": "documents",
+        "folders": {
+          "folderValues": [
+            {
+              "folder": "/home/delorenj/d/Inbox/Wax"
+            }
+          ]
+        },
+        "failurePolicy": "independent",
+        "enabled": true,
+        "description": "Active Wax-owned new-arrival Markdown enrichment from ~/d/Inbox/Wax; existing files are seeded, never backfilled.",
+        "version": 2
+      },
+      "id": "wax-doc-wrapper",
+      "name": "Wax Pipeline",
+      "type": "n8n-nodes-heyma.waxPipeline",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "wax-doc-classify",
+      "name": "Classify",
+      "type": "n8n-nodes-heyma.wax-pass-classification",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "when": "[{\"field\":\"classification\",\"exists\":true}]"
+      },
+      "id": "wax-doc-title",
+      "name": "Title",
+      "type": "n8n-nodes-heyma.wax-pass-title-slug",
+      "typeVersion": 1,
+      "position": [
+        220,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Wax Documents Standard\n\nBoth ports are stock MAIN. Output 0 'continue' only orders; output 1 'requires' gates: Title is wired from Classify's requires port, so Title waits for \u2014 and is blocked by the failure of \u2014 Classify.\n\nThis workflow is an AUTHORING artifact. `wax pipeline import` compiles it into a frozen, versioned pipeline; n8n never executes it.",
+        "height": 300,
+        "width": 380
+      },
+      "id": "wax-doc-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        160
+      ]
+    }
+  ],
+  "connections": {
+    "Classify": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
