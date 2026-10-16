@@ -31,10 +31,12 @@ row per (binding, doc, pipeline, compiled definition) — is what makes a
 duplicate arrival a no-op while a failed arrival stays retryable.
 """
 
+import fcntl
 import hashlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -181,15 +183,20 @@ def register(path: Path, *, binding_id: str = "", origin: str = "manual",
                          (digest, now, binding_id, doc_id))
             row["current_sha256"] = digest
         return row, False
-    conn.execute(
+    # Atomic registration: INSERT-then-reselect, not SELECT-then-INSERT — two
+    # concurrent scans (worker + CLI) of the same arrival race exactly here,
+    # and the losing SELECT must not crash on a UNIQUE constraint; it must
+    # observe the winner's row and agree this was not an arrival.
+    cursor = conn.execute(
         "INSERT INTO documents(binding_id,doc_id,path,sha256,current_sha256,bytes,"
-        "origin,state,first_seen,updated_at) VALUES(?,?,?,?,?,?,?,'pending',?,?)",
+        "origin,state,first_seen,updated_at) VALUES(?,?,?,?,?,?,?,'pending',?,?) "
+        "ON CONFLICT(binding_id,doc_id) DO NOTHING",
         (binding_id, doc_id, str(path), digest, digest, size, origin, now, now),
     )
     row = dict(conn.execute(
         "SELECT * FROM documents WHERE binding_id=? AND doc_id=?",
         (binding_id, doc_id)).fetchone())
-    return row, True
+    return row, cursor.rowcount == 1
 
 
 def md_for(key: str) -> Optional[Path]:
@@ -233,23 +240,88 @@ def list_documents(*, binding_id: Optional[str] = None, state: Optional[str] = N
 
 # -------------------------------------------------- run lock + receipts ----
 
-def claim_run(binding_id: str, doc_id: str) -> bool:
-    """Take the per-document run lock. False if another run owns it.
+class DocumentRunLock:
+    """A cross-process ``flock`` held for one document's whole run.
 
-    The compare-and-set is the whole concurrency story: a scan (worker or CLI)
-    and a manual ``documents run`` can race, and exactly one of them flips
-    ``pending``/``failed``/stale-``processing`` to ``processing``. A crash
-    leaves ``processing`` behind with ``run_started_at``; older than
-    STALE_RUN_S it is reclaimable, so a wedged claim cannot park a document
-    forever.
+    The DB ``processing`` state is the VISIBLE progress marker; THIS is the
+    exclusion authority. A time-based claim (``processing`` older than N
+    seconds) could be stolen out from under a live run that simply took longer
+    than N — a real ``flock`` cannot: it dies with the holding process (a
+    crash releases it immediately, no timer to expire) and blocks any second
+    claimant, same process or not, for exactly as long as the run lives.
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+        self._fd: Optional[int] = None
+
+    def acquire(self) -> bool:
+        """Try to take the lock without blocking. False = someone holds it."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, json.dumps({"pid": os.getpid(),
+                                     "at": sentinel.utcnow()}).encode())
+        except OSError:
+            pass  # the lock, not the label, is the contract
+        self._fd = fd
+        return True
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            os.close(self._fd)
+            self._fd = None
+
+
+def document_run_lock(binding_id: str, doc_id: str) -> DocumentRunLock:
+    """The per-(binding, document) run lock under var/doc-locks/."""
+    from . import paths
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", binding_id or "unbound")
+    return DocumentRunLock(paths.VAR / "doc-locks" / f"{safe}__{doc_id}.lock")
+
+
+def run_lock_held(binding_id: str, doc_id: str) -> bool:
+    """Whether a live run currently holds this document's lock (never guesses
+    from timestamps: it probes the actual flock)."""
+    lock = document_run_lock(binding_id, doc_id)
+    try:
+        if not lock.acquire():
+            return True
+    except OSError:
+        return False
+    lock.release()
+    return False
+
+
+def claim_run(binding_id: str, doc_id: str, *, force: bool = False) -> bool:
+    """Flip the document to the visible ``processing`` state.
+
+    ``force=True`` is only valid while the caller holds the flock: any
+    ``processing`` state seen under the lock belongs to a crashed holder, so
+    the stale-timer does not apply. Without force, a claim older than
+    STALE_RUN_S is reclaimable so a wedged row cannot park a document forever.
     """
     conn = ledger.connect()
     now = sentinel.utcnow()
+    stale_before = _iso_at(time.time() - STALE_RUN_S)
     cursor = conn.execute(
         "UPDATE documents SET state='processing', run_started_at=?, updated_at=? "
         "WHERE binding_id=? AND doc_id=? AND (state IN ('pending','failed','seeded') "
-        "OR (state='processing' AND run_started_at IS NOT NULL AND run_started_at < ?))",
-        (now, now, binding_id, doc_id, _iso_at(time.time() - STALE_RUN_S)),
+        "OR (state='processing' AND run_started_at IS NOT NULL "
+        "AND (run_started_at < ? OR ?)))",
+        (now, now, binding_id, doc_id, stale_before, 1 if force else 0),
     )
     return cursor.rowcount == 1
 
@@ -294,19 +366,23 @@ def receipt(binding_id: str, doc_id: str, pipeline: str, definition_id: str,
 
 
 def record_receipt(binding_id: str, doc_id: str, pipeline: str, definition_id: str,
-                   state: str, *, error: str = "") -> dict[str, Any]:
+                   state: str, *, error: str = "",
+                   reason_code: Optional[str] = None) -> dict[str, Any]:
     """Upsert the durable per-(binding, doc, pipeline, definition) receipt.
 
     ``completed`` is terminal (a duplicate arrival is a no-op); ``failed`` and
     ``halted`` count attempts and dead-letter at MAX_ATTEMPTS with
     ``exhausted_at`` — after which the scan stops retrying this arrival.
+    ``error`` is operator-only detail (the ledger is where humans look);
+    ``reason_code`` is the machine cause the CATALOG may show — raw
+    exception/stderr text never reaches a hosted surface through a receipt.
     """
     conn = ledger.connect()
     now = sentinel.utcnow()
     conn.execute(
         "INSERT INTO document_receipts(binding_id,doc_id,pipeline,definition_id,state,"
-        "attempts,last_attempt_at,completed_at,exhausted_at,last_error) "
-        "VALUES(?,?,?,?,?,1,?,?,NULL,?) "
+        "attempts,last_attempt_at,completed_at,exhausted_at,last_error,reason_code) "
+        "VALUES(?,?,?,?,?,1,?,?,NULL,?,?) "
         "ON CONFLICT(binding_id,doc_id,pipeline,definition_id) DO UPDATE SET "
         "state=excluded.state, attempts=document_receipts.attempts+1, "
         "last_attempt_at=excluded.last_attempt_at, "
@@ -314,10 +390,10 @@ def record_receipt(binding_id: str, doc_id: str, pipeline: str, definition_id: s
         "exhausted_at=CASE WHEN excluded.state IN ('failed','halted') "
         "AND document_receipts.attempts+1>=? THEN excluded.last_attempt_at "
         "ELSE document_receipts.exhausted_at END, "
-        "last_error=excluded.last_error",
+        "last_error=excluded.last_error, reason_code=excluded.reason_code",
         (binding_id, doc_id, pipeline, definition_id, state, now,
          now if state == "completed" else None, error[:500] if error else None,
-         MAX_ATTEMPTS),
+         reason_code, MAX_ATTEMPTS),
     )
     row = conn.execute(
         "SELECT * FROM document_receipts WHERE binding_id=? AND doc_id=? "
@@ -338,15 +414,68 @@ def receipts_for_doc(doc_id: str, pipeline: str, definition_id: str,
 
 def retryable(binding_id: str, *, max_attempts: int = MAX_ATTEMPTS,
               limit: int = 50) -> list[dict[str, Any]]:
-    """Failed documents under this binding still inside their attempt bound."""
+    """Failed documents under this binding still inside their attempt bound.
+
+    Also admits a ``processing`` row older than STALE_RUN_S: its holder
+    crashed (a live holder keeps the flock, and the scan re-checks the actual
+    lock before adopting it — a long run is never stolen on a timer alone).
+    """
     rows = ledger.connect().execute(
         "SELECT d.* FROM documents d LEFT JOIN document_receipts r "
         "ON r.binding_id=d.binding_id AND r.doc_id=d.doc_id "
-        "WHERE d.binding_id=? AND d.state='failed' "
+        "WHERE d.binding_id=? AND (d.state='failed' "
+        "OR (d.state='processing' AND d.run_started_at IS NOT NULL "
+        "AND d.run_started_at < ?)) "
         "AND d.attempts < ? AND r.exhausted_at IS NULL "
         "ORDER BY d.updated_at LIMIT ?",
-        (binding_id, max_attempts, max(1, min(int(limit), 500)))).fetchall()
+        (binding_id, _iso_at(time.time() - STALE_RUN_S), max_attempts,
+         max(1, min(int(limit), 500)))).fetchall()
     return [dict(r) for r in rows]
+
+
+def retry_exhausted(*, pipeline: Optional[str] = None,
+                    doc_id: Optional[str] = None) -> dict[str, Any]:
+    """Explicitly re-arm exhausted document receipts. No ledger surgery.
+
+    Semantics: for every matching exhausted receipt — the dead-letter state
+    reached after MAX_ATTEMPTS failed attempts — clear ``exhausted_at`` and
+    reset its attempt budget to zero, and reset the document row's attempt
+    counter so the binding's scan picks the arrival up again on its next pass
+    (or immediately via an explicit ``wax documents scan <pipeline>``). The
+    receipt's history (completed runs elsewhere, last_error detail) is kept.
+    """
+    conn = ledger.connect()
+    sql = ("SELECT r.binding_id, r.doc_id, r.pipeline, r.definition_id, r.attempts "
+           "FROM document_receipts r WHERE r.exhausted_at IS NOT NULL")
+    params: list[Any] = []
+    if pipeline:
+        sql += " AND r.pipeline=?"
+        params.append(pipeline)
+    if doc_id:
+        sql += " AND r.doc_id=?"
+        params.append(doc_id)
+    rows = conn.execute(sql, params).fetchall()
+    reset: list[dict[str, Any]] = []
+    now = sentinel.utcnow()
+    for row in rows:
+        conn.execute(
+            "UPDATE document_receipts SET exhausted_at=NULL, attempts=0, "
+            "last_attempt_at=? WHERE binding_id=? AND doc_id=? AND pipeline=? "
+            "AND definition_id=?",
+            (now, row["binding_id"], row["doc_id"], row["pipeline"],
+             row["definition_id"]),
+        )
+        conn.execute(
+            "UPDATE documents SET attempts=0, updated_at=? "
+            "WHERE binding_id=? AND doc_id=? AND state IN ('failed','processing')",
+            (now, row["binding_id"], row["doc_id"]),
+        )
+        reset.append({"binding_id": row["binding_id"], "doc_id": row["doc_id"],
+                      "pipeline": row["pipeline"], "definition_id": row["definition_id"],
+                      "previous_attempts": int(row["attempts"] or 0)})
+    return {"reset": len(reset), "receipts": reset,
+            "detail": "attempt budgets re-armed; the next scan (or an explicit "
+                      "`wax documents scan <pipeline>`) retries them"}
 
 
 def recent_receipts(pipeline: Optional[str] = None, limit: int = 10,
@@ -424,7 +553,10 @@ def seed(binding: dict[str, Any]) -> dict[str, Any]:
 
     A missing folder is NOT a seed: the binding stays unseeded so the day the
     folder appears, its existing files seed then (still without processing)
-    rather than silently counting as covered history.
+    rather than silently counting as covered history. An UNREADABLE file is
+    equally not a completed seed: the error is reported, ``seeded_at`` stays
+    unset, and the next scan retries the seed — claiming a folder seeded when
+    a file could not even be hashed is how history goes quietly uncovered.
     """
     folder = Path(binding["folder"])
     if not folder.is_dir():
@@ -432,15 +564,24 @@ def seed(binding: dict[str, Any]) -> dict[str, Any]:
                 "action": "folder_missing", "seeded": 0,
                 "detail": f"{folder} does not exist; binding stays unseeded"}
     known = 0
+    errors: list[dict[str, str]] = []
     for path in _iter_documents(folder):
         row, _arrival = register(path, binding_id=binding["binding_id"],
                                  origin="binding-seed")
-        if "error" not in row:
-            ledger.connect().execute(
-                "UPDATE documents SET state='seeded', updated_at=? "
-                "WHERE binding_id=? AND doc_id=? AND state='pending'",
-                (sentinel.utcnow(), binding["binding_id"], row["doc_id"]))
-            known += 1
+        if "error" in row:
+            errors.append({"path": str(path), "error": str(row["error"])})
+            continue
+        ledger.connect().execute(
+            "UPDATE documents SET state='seeded', updated_at=? "
+            "WHERE binding_id=? AND doc_id=? AND state='pending'",
+            (sentinel.utcnow(), binding["binding_id"], row["doc_id"]))
+        known += 1
+    if errors:
+        return {"binding_id": binding["binding_id"], "folder": str(folder),
+                "action": "seed_error", "seeded": known,
+                "error_count": len(errors), "errors": errors[:20],
+                "detail": "unreadable file(s); binding stays unseeded and the "
+                          "next scan retries the seed"}
     now = sentinel.utcnow()
     ledger.connect().execute(
         "UPDATE document_bindings SET seeded_at=?, documents_seen=?, updated_at=? "
@@ -482,7 +623,8 @@ def _arrivals(binding: dict[str, Any]) -> list[Path]:
 
 
 def _run_one(binding_id: str, pipeline: str, path: Path,
-             doc_id: Optional[str] = None) -> dict[str, Any]:
+             doc_id: Optional[str] = None, *,
+             explicit: bool = False) -> dict[str, Any]:
     from . import pipelines  # lazy: pipelines imports this module
 
     row, arrival = register(path, binding_id=binding_id or "",
@@ -491,7 +633,7 @@ def _run_one(binding_id: str, pipeline: str, path: Path,
     if "error" in row:
         return {"path": str(path), **row}
     run = pipelines.run_document(pipeline, path, binding_id=binding_id or "",
-                                 doc_id=row["doc_id"])
+                                 doc_id=row["doc_id"], explicit=explicit)
     run["doc_id"] = row["doc_id"]
     run["was_arrival"] = arrival
     return run
@@ -505,81 +647,120 @@ def scan(*, pipeline: Optional[str] = None,
     approved new-arrivals-only default. Later scans process only content the
     binding has never seen, plus failed arrivals still inside their attempt
     budget: a provider outage recovers without a human typing anything. A
-    binding whose PIPELINE is not compiled-and-enabled is refused outright;
-    registering arrivals for a disabled pipeline would swallow them into the
-    seed where only an explicit backfill could reach them. Execution belongs
-    to the pipeline module (the one graph authority); this decides WHAT runs.
+    binding whose PIPELINE is not compiled-and-enabled is refused — unless the
+    pipeline was NAMED on this call, which is an explicit operator action and
+    runs the compiled graph even while authored ``enabled: false`` (the toggle
+    gates automatic pickup, not a human invoking the pipeline). Registering
+    arrivals for an uncompiled pipeline is always refused: they would be
+    swallowed into the seed where only an explicit backfill could reach them.
+    Execution belongs to the pipeline module (the one graph authority); this
+    decides WHAT runs.
     """
     from . import pipelines  # noqa: F401 - readiness check below
 
+    explicit = pipeline is not None
     rows = [b for b in bindings(pipeline=pipeline) if b["enabled"]]
     refused: list[dict[str, Any]] = []
     for binding in list(rows):
         try:
             current = pipelines.compiled().get(binding["pipeline"])
-            ready = bool(current and current["definition"].get("enabled")
-                         and current["definition"].get("trigger") == "documents")
+            ready = bool(current
+                         and current["definition"].get("trigger") == "documents"
+                         and (current["definition"].get("enabled") or explicit))
         except Exception as exc:  # noqa: BLE001 - discovery-grade call, stay alive
             ready = False
         if not ready:
             rows.remove(binding)
             refused.append({"binding_id": binding["binding_id"],
                             "pipeline": binding["pipeline"],
-                            "reason": "pipeline is not compiled, enabled and trigger: documents"})
+                            "reason": "pipeline is not compiled with trigger: documents "
+                                      "and enabled" + ("" if explicit else
+                                                       " (or name the pipeline explicitly "
+                                                       "to run it while disabled)")})
     out: dict[str, Any] = {"bindings": [], "processed": 0,
                            **({"refused": refused} if refused else {})}
     for binding in rows:
-        if binding["seeded_at"] is None:
-            seeded = seed(binding)
-            out["bindings"].append(seeded)
-            continue
-        folder = Path(binding["folder"])
-        if not folder.is_dir():
+        try:
+            out["bindings"].append(_scan_binding(binding, max_attempts, explicit))
+        except Exception as exc:  # noqa: BLE001 - one binding never stops the rest
+            log.exception("scan of binding %s failed: %s", binding["binding_id"], exc)
             out["bindings"].append({
-                "binding_id": binding["binding_id"], "folder": str(folder),
-                "action": "folder_missing",
-                "detail": "bound folder does not exist",
+                "binding_id": binding["binding_id"], "folder": binding["folder"],
+                "action": "error", "error": f"{type(exc).__name__}: {exc}"[:400],
             })
-            continue
-        arrivals = _arrivals(binding)
-        retry_docs = retryable(binding["binding_id"], max_attempts=max_attempts)
-        results = []
-        for path in arrivals:
-            results.append(_run_one(binding["binding_id"], binding["pipeline"], path))
-        for doc in retry_docs:
-            path = Path(doc["path"])
-            if not path.is_file():
-                release_run(binding["binding_id"], doc["doc_id"], "failed",
-                            error="file vanished before retry")
-                continue
-            try:
-                digest = sha256_file(path)
-            except OSError:
-                continue
-            if digest not in (doc["sha256"], doc["current_sha256"] or doc["sha256"]):
-                # Someone else rewrote the file since the failure: the current
-                # bytes arrive as their own document; this stale row stops.
-                release_run(binding["binding_id"], doc["doc_id"], "failed",
-                            error="content changed since failure; superseded")
-                continue
-            results.append(_run_one(binding["binding_id"], binding["pipeline"],
-                                    path, doc_id=doc["doc_id"]))
-        processed = sum(1 for r in results if not r.get("skipped"))
-        now = sentinel.utcnow()
-        ledger.connect().execute(
-            "UPDATE document_bindings SET last_scan_at=?, "
-            "documents_seen=documents_seen+?, documents_processed=documents_processed+?, "
-            "updated_at=? WHERE binding_id=?",
-            (now, len(arrivals), processed, now, binding["binding_id"]),
-        )
-        out["bindings"].append({
-            "binding_id": binding["binding_id"], "folder": str(folder),
-            "action": "scanned", "arrivals": len(arrivals),
-            "retried": len(retry_docs), "processed": processed,
-            "results": results, "last_scan_at": now,
-        })
-        out["processed"] += processed
+    out["processed"] = sum(
+        b.get("processed", 0) for b in out["bindings"] if isinstance(b, dict))
     return out
+
+
+def _scan_binding(binding: dict[str, Any], max_attempts: int,
+                  explicit: bool) -> dict[str, Any]:
+    """One binding's scan slice. Per-DOCUMENT failures are isolated: one
+    document raising never stops its siblings in the same scan."""
+    if binding["seeded_at"] is None:
+        return seed(binding)
+    folder = Path(binding["folder"])
+    if not folder.is_dir():
+        return {
+            "binding_id": binding["binding_id"], "folder": str(folder),
+            "action": "folder_missing",
+            "detail": "bound folder does not exist",
+        }
+    arrivals = _arrivals(binding)
+    retry_docs = retryable(binding["binding_id"], max_attempts=max_attempts)
+    results = []
+
+    def _isolated(run, *, path: Path, label: str) -> None:
+        try:
+            results.append(run())
+        except Exception as exc:  # noqa: BLE001 - isolate per document
+            log.exception("document scan could not run %s (%s): %s",
+                          path, label, exc)
+            results.append({"path": str(path), "failed": True,
+                            "error": f"{type(exc).__name__}: {exc}"[:400]})
+
+    for path in arrivals:
+        _isolated(lambda p=path: _run_one(binding["binding_id"],
+                                          binding["pipeline"], p, explicit=explicit),
+                  path=path, label="arrival")
+    for doc in retry_docs:
+        path = Path(doc["path"])
+        if run_lock_held(binding["binding_id"], doc["doc_id"]):
+            # A live run owns it right now (its flock is held): never adopt a
+            # document out from under a running pipeline.
+            continue
+        if not path.is_file():
+            release_run(binding["binding_id"], doc["doc_id"], "failed",
+                        error="file vanished before retry")
+            continue
+        try:
+            digest = sha256_file(path)
+        except OSError:
+            continue
+        if digest not in (doc["sha256"], doc["current_sha256"] or doc["sha256"]):
+            # Someone else rewrote the file since the failure: the current
+            # bytes arrive as their own document; this stale row stops.
+            release_run(binding["binding_id"], doc["doc_id"], "failed",
+                        error="content changed since failure; superseded")
+            continue
+        _isolated(lambda d=doc, p=path: _run_one(
+            binding["binding_id"], binding["pipeline"], p,
+            doc_id=d["doc_id"], explicit=explicit),
+            path=path, label="retry")
+    processed = sum(1 for r in results if not r.get("skipped") and not r.get("error"))
+    now = sentinel.utcnow()
+    ledger.connect().execute(
+        "UPDATE document_bindings SET last_scan_at=?, "
+        "documents_seen=documents_seen+?, documents_processed=documents_processed+?, "
+        "updated_at=? WHERE binding_id=?",
+        (now, len(arrivals), processed, now, binding["binding_id"]),
+    )
+    return {
+        "binding_id": binding["binding_id"], "folder": str(folder),
+        "action": "scanned", "arrivals": len(arrivals),
+        "retried": len(retry_docs), "processed": processed,
+        "results": results, "last_scan_at": now,
+    }
 
 
 def backfill(*, pipeline: str, limit: int = 0) -> dict[str, Any]:
@@ -603,7 +784,8 @@ def backfill(*, pipeline: str, limit: int = 0) -> dict[str, Any]:
         path = Path(doc["path"])
         if not path.is_file():
             continue
-        run = _run_one(doc["binding_id"], pipeline, path, doc_id=doc["doc_id"])
+        run = _run_one(doc["binding_id"], pipeline, path, doc_id=doc["doc_id"],
+                       explicit=True)
         results.append(run)
     processed = sum(1 for r in results if not r.get("skipped"))
     return {"pipeline": pipeline, "candidates": len(todo), "processed": processed,
@@ -637,17 +819,28 @@ def worker_heartbeat_path() -> Path:
     return paths.VAR / "worker-heartbeat.json"
 
 
-def write_worker_heartbeat(*, tick: int = 0, scanning_documents: bool = False) -> None:
-    """The worker's liveness proof, one tiny file per loop iteration.
+def write_worker_heartbeat(*, tick: int = 0, scanning_documents: bool = False,
+                           busy: Optional[str] = None,
+                           busy_since: Optional[str] = None,
+                           pid: Optional[int] = None) -> None:
+    """The worker's liveness proof, written by a dedicated live thread.
 
-    The catalog reads this to say 'worker alive' vs 'nobody scans' — the
+    The beat is written on a timer by the worker's OWN heartbeat thread while
+    the worker is alive — including mid-``run_once``, which can hold a
+    transcription for the better part of an hour — so a fresh file means a
+    live thread wrote it, not that a loop counter once reached a number. The
+    catalog reads this to say 'worker alive' vs 'nobody scans' — the
     difference between a healthy idle binding and a dead scheduler.
     """
     path = worker_heartbeat_path()
     payload = {"at": sentinel.utcnow(), "tick": tick,
+               "pid": pid if pid is not None else os.getpid(),
+               "busy": busy,
                "pipeline_enabled": _pipeline_enabled_cached(),
                "documents": {"interval_s": SCAN_INTERVAL_S,
-                             "scanning": scanning_documents}}
+                             "scanning": scanning_documents or busy == "documents"}}
+    if busy_since:
+        payload["busy_since"] = busy_since
     tmp = path.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(payload))
@@ -674,6 +867,8 @@ def read_worker_heartbeat(now: Optional[float] = None) -> dict[str, Any]:
         "heartbeat_at": at,
         "age_seconds": round(age, 1),
         "tick": payload.get("tick"),
+        "pid": payload.get("pid"),
+        "busy": payload.get("busy"),
         "pipeline_enabled": bool(payload.get("pipeline_enabled")),
         "documents": payload.get("documents") or {},
         **({} if alive else {"note": f"last heartbeat {age:.0f}s ago; "

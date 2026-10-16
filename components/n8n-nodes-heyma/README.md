@@ -17,7 +17,7 @@ Runs one enrichment pass for one item or document through `wax ep run`. The pass
 
 This is a CLI-backed manual/preview operation, deliberately not a scheduler: automatic execution belongs to the Wax worker, which owns the plan, the attempt budget, and the dead-letter receipts.
 
-**Graph authoring outputs.** The node exposes two output ports: `main` (continue — ordering only) and `requirement` (gated — the target pass `requires` this one). The `When` / `Skip When` parameters carry JSON conditions. `wax pipeline import` compiles all of it into the pipeline definition; the parameters are ignored at execution time.
+**Graph authoring outputs.** The node exposes TWO STOCK MAIN output ports — `continue` (index 0, ordering only) and `requires` (index 1, gated — the target pass `requires` this one). Both are real `main` connections, so the editor wires and renders them like any other node; the *kind* of edge travels as the source output index, and `wax pipeline import` maps index 0 → `after` edges and index 1 → `requires` edges. Manual execution emits results on `continue` only, so clicking Execute cannot double-run downstream work wired to `requires`. The `When` / `Skip When` parameters carry JSON conditions (`When` is a list of clauses; `Skip When` is exactly `{field, equals}`). `wax pipeline import` compiles all of it into the pipeline definition; the parameters are ignored at execution time.
 
 ### Wax Pass nodes (`wax-pass-*`)
 
@@ -32,19 +32,20 @@ Generated files carry an AUTO-GENERATED banner and are committed: the node manif
 
 ### Wax Pipeline (`WaxPipeline`)
 
-Encapsulates a whole graph — passes, trigger, folder bindings — behind pipeline-level CLI operations:
+Encapsulates a whole graph — passes, trigger, folder bindings — behind pipeline-level CLI operations plus a pure authoring posture:
 
+- **Configure (Authoring)** — the wrapper posture for importable workflows: sets `trigger`, `folders` (the editor's Folders collection), `failurePolicy`, `enabled`, `description` and `version` on this node. Executing it is a pure preview (no CLI call): it echoes the normalized configuration — including flattening the Folders collection to the plain path list `wax pipeline import` compiles. The pipeline *name* is not authored here; import derives it from the workflow name (or `--name`).
 - **Compile** — explicitly validate and adopt authored graphs (`wax pipeline compile`); `definition_id` exposes drift until then.
-- **Import Workflow** — compile an exported n8n workflow JSON into a versioned pipeline (`wax pipeline import`). This is the graph-authoring path: the export is mapped (wrapper → trigger/folders/policy/enabled, Wax Pass nodes → graph nodes with conditions, `main` connections → continue edges, `requirement` connections → gated edges) and validated — unsupported node types, dynamic expressions, cycles, duplicate passes and dangling requirements are rejected loudly. n8n never executes the imported graph.
+- **Import Workflow** — compile an exported n8n workflow JSON into a versioned pipeline (`wax pipeline import`). This is the graph-authoring path: the export is mapped (wrapper → trigger/folders/policy/enabled/description/version, Wax Pass nodes → graph nodes with conditions, stock `main` connections → edges by SOURCE OUTPUT INDEX: output 0 `continue` → `after` edges, output 1 `requires` → `requires` edges) and validated — unsupported node types, dynamic expressions, cycles, duplicate passes, dangling requirements, malformed connection shapes and non-zero source/target output indexes are rejected loudly. A workflow with NO connections compiles to a graph with NO edges (the registry's edges are never inherited). Imported versions are system-managed: an identical re-import is a no-op, a changed export increments (never downgrades). n8n never executes the imported graph.
 - **Show** — one pipeline snapshot: trigger, nodes, edges, bindings, drift (`wax pipeline show`).
-- **Scan Documents** — seed new bindings and process new arrivals only, never backfills (`wax documents scan`).
-- **Run Document** — manually run a compiled pipeline over one Markdown file (`wax documents run`).
+- **Scan Documents** — seed new bindings and process new arrivals only, never backfills (`wax documents scan`). Naming a pipeline makes the scan an explicit operator action: it runs the compiled graph even while authored `enabled: false` (the toggle gates automatic worker pickup, not a human invoking the pipeline).
+- **Run Document** — manually run a compiled pipeline over one Markdown file (`wax documents run`) — equally explicit: works while disabled.
 
 n8n is the authoring surface, the Wax CLI is the compiler, and Wax is the executor. The node never edits YAML and never activates anything: enabling a pipeline stays a Wax-side act.
 
 ### Example workflows
 
-`examples/wax-documents-workflow.json` and `examples/wax-transcription-workflow.json` are real n8n exports showing gated (`requirement`) vs continue (`main`) edges, wrapper configuration and annotation sticky notes. Both ship with the wrapper's `enabled` toggle off — importing them compiles but activates nothing:
+`examples/wax-documents-workflow.json` and `examples/wax-transcription-workflow.json` are real n8n exports showing gated (source output 1, `requires`) vs continue (source output 0, `continue`) edges, wrapper configuration via the Configure (Authoring) operation, and annotation sticky notes. Both ship with the wrapper's `enabled` toggle off — importing them compiles but activates nothing:
 
 ```bash
 wax pipeline import components/n8n-nodes-heyma/examples/wax-documents-workflow.json
@@ -77,7 +78,7 @@ npm run lint
 npm run pack:check
 ```
 
-The tests use temporary fake Wax executables. They never touch the real microphone, inbox, ledger, or daemon.
+The tests use temporary fake Wax executables. They never touch the real microphone, inbox, ledger, or daemon. The generator-parity test runs `tools/generate-pass-nodes.mjs` against a throwaway package copy via `WAX_NODES_ROOT`, so regenerating in tests never rewrites the committed nodes or manifest.
 
 ## Install in self-hosted n8n
 
@@ -143,13 +144,24 @@ wax pipeline compile doc-standard
 wax pipeline show doc-standard
 ```
 
-**4. Enable and let the worker own it** (or keep it disabled and drive scans
-by hand — both are supported states):
+**4. Enable and let the worker own it** (or keep it disabled and drive it by
+hand — both are supported states, and the difference is honest):
 
 ```bash
 # flip enabled: true in components/wax/config/pipelines.d/doc-standard.yaml, then:
 wax pipeline compile doc-standard
 wax documents scan doc-standard   # seeds; afterwards the worker scans every 120s
+```
+
+While disabled, NAMING the pipeline is an explicit operator action:
+`wax documents scan doc-standard` and `wax documents run doc-standard <file>`
+run the compiled graph despite `enabled: false` (the toggle gates automatic
+worker pickup, not a human invoking it). Only the worker's unnamed scan
+respects the disabled state. An arrival that exhausts its attempt budget is
+dead-lettered until you re-arm it — no ledger surgery:
+
+```bash
+wax documents retry doc-standard   # re-arms exhausted receipts; the next scan retries
 ```
 
 **5. Install this adapter into n8n** (per Install above):

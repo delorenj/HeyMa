@@ -331,10 +331,21 @@ The durable receipt is per **(binding, document, pipeline, compiled
 definition)** in `document_receipts`: a completed receipt makes a duplicate
 arrival a no-op; a `failed`/`halted` receipt counts attempts and
 dead-letters at `WAX_DOCUMENT_MAX_ATTEMPTS` (default 3) with `exhausted_at`,
-after which scans stop retrying it (visible in the catalog). A per-document
-run lock (compare-and-set on `documents.state`) makes concurrent scans and
-manual runs safe: exactly one wins, and a crashed `processing` claim older
-than `WAX_DOCUMENT_STALE_RUN_S` (default 900s) is reclaimable.
+after which scans stop retrying it (visible in the catalog — recent runs
+carry the `reason_code` only, never the stored error detail, which can embed
+secrets). An exhausted arrival is re-armed explicitly, without ledger
+surgery: `wax documents retry [<pipeline>] [--doc <doc-id>]` clears
+`exhausted_at` and resets the attempt budget, and the next scan (or an
+explicit `wax documents scan <pipeline>`) retries it.
+
+Per-document exclusion is a real **cross-process `flock`** under
+`var/doc-locks/` held for the whole run: a live holder cannot be stolen —
+not by a timer, not by a concurrent scan or CLI run — and a crashed holder
+releases it with its process (no staleness window). The DB `processing`
+state is the *visible* progress marker, claimed only under the lock; a
+stale `processing` row (crash mid-run) is re-claimed by the next run that
+holds the lock, and a scan only adopts a `processing` retry candidate when
+its run lock is actually free (probed, not guessed from timestamps).
 
 ## Safe discovery: `wax catalog`
 
@@ -437,14 +448,23 @@ A binding (`documents` trigger) is **new-arrivals-only**:
 - the first scan of an **existing** folder seeds it by registering every
   document already there **without processing** (state `seeded`); a missing
   folder is reported `folder_missing` and never claims to be seeded — the day
-  it appears, it seeds then. Covering seeded history needs an explicit
+  it appears, it seeds then. An **unreadable** file is a `seed_error`: the
+  binding stays unseeded and the next scan retries the seed, because claiming
+  a folder seeded when a file could not even be hashed is how history goes
+  quietly uncovered. Covering seeded history needs an explicit
   `wax documents backfill <pipeline>`.
 - The worker scans bindings on its own cadence
   (`WAX_DOCUMENT_SCAN_INTERVAL_S`, default 120s, gated on
   `wax pipeline enable`): a file dropped into a bound folder processes
   without anyone typing a scan, and **failed arrivals retry each scan** until
-  they recover or exhaust their attempt budget. The scan is bounded and
-  lock-guarded (no overlapping runs, concurrent CLI scans are safe).
+  they recover or exhaust their attempt budget. The scan is bounded,
+  lock-guarded (the per-document flock above) and **isolated per document**:
+  one document raising mid-scan is reported as an error result and never
+  stops its siblings. The worker's unnamed scan also respects a compiled
+  pipeline's `enabled: false` (refused) — while **naming the pipeline**
+  (`wax documents scan <pipeline>`) is an explicit operator action that runs
+  the compiled graph even while disabled: the toggle gates automatic pickup,
+  not a human invoking the pipeline.
 - `wax documents list --binding B --state pending|seeded|processed|failed`,
   `wax pipeline bindings`, and the catalog all report binding state: folder
   existence, document counts by state, exhaustion counts, last scan time, and

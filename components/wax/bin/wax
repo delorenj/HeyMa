@@ -1316,7 +1316,8 @@ def main() -> int:
     dcl.add_argument("--binding", help="restrict to one binding id")
     dcl.add_argument("--state", help="pending|processing|processed|failed|seeded")
     dcs = dc.add_parser("scan", parents=[common],
-                        help="seed new bindings, then process new arrivals and retryable failures")
+                        help="seed new bindings, then process new arrivals and retryable failures "
+                             "(naming a pipeline runs it even while compiled enabled: false)")
     dcs.add_argument("pipeline", nargs="?")
     dcb = dc.add_parser("backfill", parents=[common],
                         help="explicitly process seeded-but-unrun documents")
@@ -1326,6 +1327,10 @@ def main() -> int:
                         help="run one compiled pipeline over one document (manual/preview)")
     dcr.add_argument("pipeline"); dcr.add_argument("file")
     dcr.add_argument("--binding", help="binding id that owns the run (receipts and retries)")
+    dcx = dc.add_parser("retry", parents=[common],
+                        help="re-arm exhausted document receipts (resets their attempt budget)")
+    dcx.add_argument("pipeline", nargs="?", help="restrict to one pipeline (default: all)")
+    dcx.add_argument("--doc", help="restrict to one document id (doc-<16hex>)")
 
     rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
     rc.add_argument("--rebuild", action="store_true")
@@ -1672,9 +1677,13 @@ def main() -> int:
             if args.binding:
                 binding = args.binding
             out = pipelines.run_document(args.pipeline, Path(args.file),
-                                         binding_id=binding)
+                                         binding_id=binding, explicit=True)
             _emit(out, J)
             return 2 if out.get("failed") else 0
+        if args.sub == "retry":
+            out = documents.retry_exhausted(pipeline=args.pipeline, doc_id=args.doc)
+            _emit(out, J)
+            return 0
         return 1
 
     if args.cmd == "reconcile":

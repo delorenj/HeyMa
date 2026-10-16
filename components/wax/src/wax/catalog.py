@@ -238,7 +238,11 @@ def pipeline_catalog() -> dict[str, Any]:
                  "state": r["state"], "attempts": int(r["attempts"] or 0),
                  "last_attempt_at": r["last_attempt_at"], "completed_at": r["completed_at"],
                  "exhausted_at": r["exhausted_at"],
-                 "error": (r["last_error"] or "")[:200] if r.get("last_error") else None}
+                 # reason_code ONLY. last_error is exception/stderr prose — it
+                 # can embed secrets, and a key a hosted surface may display is
+                 # a key one eventually will. Operator detail stays in the ledger.
+                 **({"reason_code": r["reason_code"]}
+                    if r.get("reason_code") else {})}
                 for r in documents.recent_receipts(pipeline=name, limit=10)
             ]
             tally = _tally()

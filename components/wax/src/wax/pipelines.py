@@ -63,9 +63,13 @@ N8N_WRAPPER_TYPE = f"{N8N_PACKAGE}.waxPipeline"
 N8N_EP_TYPE = f"{N8N_PACKAGE}.waxEp"
 N8N_PASS_TYPE_PREFIX = f"{N8N_PACKAGE}.wax-pass-"
 N8N_ANNOTATION_TYPES = {"n8n-nodes-base.stickyNote"}
-# Edge policies: a `main` connection orders (continue); a `requirement`
-# connection gates (the target `requires` the source).
-N8N_EDGE_KINDS = {"main": "after", "requirement": "requires"}
+# Edge semantics live on the SOURCE OUTPUT INDEX of a stock `main` connection:
+# output 0 is labeled `continue` (ordering, an `after` edge), output 1 is
+# labeled `requires` (gating, a `requires` edge). Both are stock
+# NodeConnectionType.main — n8n cannot wire (let alone render) a made-up
+# connection type, so the kind must travel as the port index, and any other
+# index or type is rejected rather than guessed at.
+N8N_OUTPUT_KINDS = {0: "after", 1: "requires"}
 
 
 class PipelineError(RuntimeError):
@@ -203,6 +207,22 @@ def _when_error(when: Any) -> Optional[str]:
         return f"invalid when: {exc}"
 
 
+def _skip_when_error(skip: Any) -> Optional[str]:
+    """`skip_when` has its own shape: exactly {field, equals}, one clause.
+
+    The runner evaluates it as a dict (passes.run reads condition["field"] and
+    condition["equals"]); validating it with the list-shaped `when` validator
+    rejected every legitimate skip_while node at compile, so the two shapes get
+    dedicated validators that match what run time actually consumes.
+    """
+    if skip is None:
+        return None
+    if (not isinstance(skip, dict) or set(skip) != {"field", "equals"}
+            or not isinstance(skip.get("field"), str)):
+        return "invalid skip_when: expected exactly {field: <frontmatter key>, equals: <value>}"
+    return None
+
+
 def _validate(name: str, doc: dict[str, Any], reg: dict[str, dict[str, Any]],
               ) -> dict[str, Any]:
     if not NAME_RE.match(name):
@@ -217,13 +237,13 @@ def _validate(name: str, doc: dict[str, Any], reg: dict[str, dict[str, Any]],
     if not isinstance(nodes_in, list) or not nodes_in:
         raise PipelineError(f"{name}: passes must be a non-empty list")
 
-    # Authored-edge mode: the author drew the graph (n8n import, or YAML that
-    # names per-node requires/after). Registry mode: edges are induced from the
-    # registry and frozen as-is.
-    authored_edges = any(
-        isinstance(node, dict) and ("requires" in node or "after" in node)
-        for node in nodes_in if isinstance(node, dict)) or bool(doc.get("edges"))
-
+    # Authored edges are PER NODE: a node that names `requires`/`after` owns its
+    # edges exactly as authored; a node that names neither inherits the
+    # registry's edges. Mixed YAML is therefore explicit about its intent
+    # instead of silently dropping (or silently inventing) edges, and an n8n
+    # import — which writes the keys onto EVERY node, empty lists included —
+    # is always fully authored, so a workflow with no connections compiles to
+    # a graph with no edges rather than inheriting the registry's.
     nodes: list[dict[str, Any]] = []
     slugs: list[str] = []
     for node in nodes_in:
@@ -236,9 +256,11 @@ def _validate(name: str, doc: dict[str, Any], reg: dict[str, dict[str, Any]],
         if slug in slugs:
             raise PipelineError(f"{name}: pass {slug!r} appears twice; node identity "
                                 "must be unique inside one graph")
-        for field in ("when", "skip_when"):
-            if node.get(field) is not None and _when_error(node[field]):
-                raise PipelineError(f"{name}: pass {slug}: {_when_error(node[field])}")
+        for field, validator in (("when", _when_error), ("skip_when", _skip_when_error)):
+            if node.get(field) is not None:
+                why = validator(node[field])
+                if why:
+                    raise PipelineError(f"{name}: pass {slug}: {why}")
         slugs.append(slug)
         entry: dict[str, Any] = {"slug": slug}
         if isinstance(node.get("name"), str) and node["name"]:
@@ -266,8 +288,11 @@ def _validate(name: str, doc: dict[str, Any], reg: dict[str, dict[str, Any]],
         frozen = dict(entry)
         frozen["registry"] = ep
         frozen_nodes.append(frozen)
-        req = list(node.get("requires") or []) if authored_edges else list(ep.get("requires") or [])
-        aft = list(node.get("after") or []) if authored_edges else list(ep.get("after") or [])
+        # Per-node authored edges: a node that names the key owns its edge list
+        # (an import writes both keys, empty lists included); a node that names
+        # neither inherits the registry's edges for that key.
+        req = list(node.get("requires") or []) if "requires" in node else list(ep.get("requires") or [])
+        aft = list(node.get("after") or []) if "after" in node else list(ep.get("after") or [])
         missing = [d for d in req if d not in slugs]
         if missing:
             raise PipelineError(
@@ -283,9 +308,18 @@ def _validate(name: str, doc: dict[str, Any], reg: dict[str, dict[str, Any]],
             if dep in slugs:
                 edges.append({"from": dep, "to": slug, "kind": "after"})
 
-    folders = [_expand_folder(f) for f in (doc.get("folders") or [])]
-    if not all(isinstance(f, str) and Path(f).is_absolute() for f in folders):
-        raise PipelineError(f"{name}: folders must be absolute paths")
+    # Folders are validated RAW, before any ~ / $VAR resolution: a relative
+    # path would silently resolve against the compiling process's cwd and
+    # freeze the wrong absolute folder into the definition.
+    raw_folders = doc.get("folders") or []
+    if not isinstance(raw_folders, list) or any(not isinstance(f, str) for f in raw_folders):
+        raise PipelineError(f"{name}: folders must be a list of path strings")
+    for raw in raw_folders:
+        if not (raw.startswith("~") or Path(raw).is_absolute()):
+            raise PipelineError(
+                f"{name}: folder {raw!r} must be absolute (or start with ~) BEFORE "
+                "expansion; a relative folder would resolve against the compiler's cwd")
+    folders = [_expand_folder(f) for f in raw_folders]
     if trigger == "documents" and not folders:
         raise PipelineError(f"{name}: trigger 'documents' requires at least one folder")
     if trigger != "documents" and folders:
@@ -446,11 +480,15 @@ def import_n8n(path: Path, *, name: Optional[str] = None) -> dict[str, Any]:
 
     Mapping:
     - exactly one Wax Pipeline wrapper node → trigger / folders / failure
-      policy / enabled / description;
+      policy / enabled / description / version (the Configure (Authoring)
+      operation is where those parameters live in the editor);
     - Wax Pass nodes (per-pass node types or the generic Wax Enrichment Pass)
       → one graph node each, slug fixed, optional when/skipWhen conditions;
-    - ``main`` connections → ordering (``after``) edges — continue;
-    - ``requirement`` connections → gating (``requires``) edges — gated;
+    - stock ``main`` connections carry the edge kind on the SOURCE OUTPUT
+      INDEX: output 0 (labeled ``continue``) → ordering (``after``) edges,
+      output 1 (labeled ``requires``) → gating (``requires``) edges;
+    - an export with no connections compiles to a graph with NO edges — the
+      registry's edges are never inherited by an import;
     - sticky notes are annotations and ignored.
 
     Node identity is preserved: the n8n node NAME is stored on the node and
@@ -508,8 +546,35 @@ def import_n8n(path: Path, *, name: Optional[str] = None) -> dict[str, Any]:
     policy = _static(_n8n_param(wrapper, "failurePolicy"), what="failure policy") or "independent"
     enabled = _static(_n8n_param(wrapper, "enabled"), what="pipeline enabled")
     folders_param = _static(_n8n_param(wrapper, "folders"), what="folders")
-    folders = folders_param if isinstance(folders_param, list) else []
     description = _static(_n8n_param(wrapper, "description"), what="description") or workflow_name
+    version_param = _static(_n8n_param(wrapper, "version"), what="pipeline version")
+    if version_param is not None and (isinstance(version_param, bool)
+                                      or not isinstance(version_param, (int, float))
+                                      or int(version_param) < 1):
+        raise PipelineError("pipeline version must be a positive integer")
+
+    def _folders(value: Any) -> list[str]:
+        """Folders arrive either as a plain list of strings or in the n8n
+        editor's fixedCollection export shape ({folderValues: [{folder}]}) —
+        the shape the Configure (Authoring) operation produces."""
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            entries = value.get("folderValues")
+            if not isinstance(entries, list):
+                raise PipelineError("folders collection must contain 'folderValues'")
+            out = []
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("folder"), str):
+                    raise PipelineError("each folders entry must be {folder: <path>}")
+                out.append(entry["folder"])
+            return out
+        if isinstance(value, list) and all(isinstance(f, str) for f in value):
+            return list(value)
+        raise PipelineError("folders must be a list of absolute paths or the editor's "
+                            "Folders collection")
+
+    folders = _folders(folders_param)
 
     doc_nodes: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -532,42 +597,75 @@ def import_n8n(path: Path, *, name: Optional[str] = None) -> dict[str, Any]:
         }
         doc_nodes.append({k: v for k, v in entry.items() if v is not None})
 
-    # Connections → authored edges. `name` is the n8n node identity.
+    # Connections → authored edges. `name` is the n8n node identity, and edge
+    # KIND rides the SOURCE OUTPUT INDEX of a stock `main` connection: output 0
+    # (labeled `continue`) maps to an `after` edge, output 1 (labeled
+    # `requires`) to a `requires` edge. Every node ends up with explicit
+    # requires/after keys — empty lists included — so an export with NO
+    # connections compiles to a graph with NO edges, never the registry's.
     by_name = {str(n.get("name")): n for n in pass_nodes}
-    connections = export.get("connections") or {}
+    wrapper_names = {str(w.get("name")) for w in wrappers}
+    edges_by_slug = {entry["slug"]: {"requires": [], "after": []} for entry in doc_nodes}
+    connections = export.get("connections", {})
     if not isinstance(connections, dict):
         raise PipelineError("'connections' must be an object")
     for source_name, kinds in connections.items():
+        if str(source_name) in wrapper_names:
+            continue  # wrapper node wires are annotations, not graph edges
         source = by_name.get(str(source_name))
         if source is None:
-            if str(source_name) in {str(w.get("name")) for w in wrappers}:
-                continue  # wrapper node wires are annotations, not graph edges
             raise PipelineError(f"connection from unknown node {source_name!r}")
         if not isinstance(kinds, dict):
             raise PipelineError(f"connections of {source_name!r} must be an object")
-        for kind, targets in kinds.items():
-            if kind not in N8N_EDGE_KINDS:
+        for kind, outputs in kinds.items():
+            if kind != "main":
                 raise PipelineError(
-                    f"unsupported connection type {kind!r} on {source_name!r}; a Wax graph "
-                    "uses 'main' (continue) and 'requirement' (gated) connections")
-            if not isinstance(targets, list):
-                continue
-            for group in targets:
+                    f"unsupported connection type {kind!r} on {source_name!r}; Wax pass "
+                    "nodes expose only stock 'main' outputs — output 0 'continue' orders, "
+                    "output 1 'requires' gates")
+            if not isinstance(outputs, list) or not outputs:
+                raise PipelineError(
+                    f"malformed connections on {source_name!r}: 'main' must be a non-empty "
+                    "array of output groups ([[targets of output 0], [targets of output 1]])")
+            for out_index, group in enumerate(outputs):
+                if out_index not in N8N_OUTPUT_KINDS:
+                    raise PipelineError(
+                        f"connection on {source_name!r} uses source output index {out_index}; "
+                        "Wax pass nodes have exactly two outputs (0 continue, 1 requires)")
                 if not isinstance(group, list):
-                    continue
+                    raise PipelineError(
+                        f"malformed connection group on {source_name!r} output {out_index}: "
+                        "expected an array of link objects")
                 for link in group:
                     if not isinstance(link, dict):
-                        continue
+                        raise PipelineError(
+                            f"malformed connection link on {source_name!r} output {out_index}: "
+                            "expected an object like {node, type, index}")
+                    link_type = link.get("type", "main")
+                    if link_type != "main":
+                        raise PipelineError(
+                            f"unsupported link type {link_type!r} on {source_name!r} output "
+                            f"{out_index}; Wax pass node inputs are stock 'main'")
+                    target_index = link.get("index", 0)
+                    if (isinstance(target_index, bool) or not isinstance(target_index, int)
+                            or target_index != 0):
+                        raise PipelineError(
+                            f"connection into {str(link.get('node'))!r} targets input index "
+                            f"{target_index!r}; a Wax pass node has exactly one input")
+                    if str(link.get("node")) in wrapper_names:
+                        continue  # a wire into the wrapper is an annotation
                     target = by_name.get(str(link.get("node")))
                     if target is None:
                         raise PipelineError(
-                            f"{kind!r} connection from {source_name!r} to unknown node "
+                            f"main connection from {source_name!r} to unknown node "
                             f"{link.get('node')!r}")
-                    target_slug = _n8n_slug(target)
-                    field = "requires" if N8N_EDGE_KINDS[kind] == "requires" else "after"
-                    for entry in doc_nodes:
-                        if entry["slug"] == target_slug:
-                            entry.setdefault(field, []).append(_n8n_slug(source))
+                    edges = edges_by_slug[_n8n_slug(target)]
+                    edges[N8N_OUTPUT_KINDS[out_index]].append(_n8n_slug(source))
+    for entry in doc_nodes:
+        edges = edges_by_slug[entry["slug"]]
+        # Dedup order-preserving: a wire drawn twice is still one edge.
+        entry["requires"] = list(dict.fromkeys(edges["requires"]))
+        entry["after"] = list(dict.fromkeys(edges["after"]))
 
     doc: dict[str, Any] = {
         "name": name,
@@ -577,8 +675,23 @@ def import_n8n(path: Path, *, name: Optional[str] = None) -> dict[str, Any]:
         "failure_policy": policy,
         "folders": folders,
         "passes": doc_nodes,
+        **({"version": int(version_param)} if version_param is not None else {}),
     }
     definition = _validate(name, doc, reg)
+    # Imported versions are SYSTEM-managed: an identical re-import is a no-op,
+    # and a changed export increments past whatever is stored — never silently
+    # rewriting history under the same version, never downgrading.
+    existing = ledger.connect().execute(
+        "SELECT version, definition_id FROM pipelines WHERE name=?", (name,)).fetchone()
+    if existing is not None:
+        if existing["definition_id"] == _definition_id(definition):
+            return {"imported": name, "workflow": workflow_name,
+                    "version": int(existing["version"] or 1),
+                    "definition_id": existing["definition_id"],
+                    "trigger": definition["trigger"], "unchanged": True,
+                    "nodes": len(definition["passes"]), "edges": len(definition["edges"])}
+        definition["version"] = max(int(definition["version"] or 1),
+                                    int(existing["version"] or 1) + 1)
     definition_id = _store(name, definition, source="n8n",
                            source_ref=workflow_name, authored_id=_file_id(path))
     return {"imported": name, "workflow": workflow_name, "version": definition["version"],
@@ -698,7 +811,8 @@ def transcription_authority() -> tuple[dict[str, dict[str, Any]], dict[str, Any]
     chosen = candidates[0]
     nodes, _order = _frozen_graph(chosen["definition"])
     return (nodes, {"kind": "pipeline", "name": chosen["name"],
-                    "definition_id": chosen["definition_id"]})
+                    "definition_id": chosen["definition_id"],
+                    "failure_policy": chosen["definition"].get("failure_policy", "independent")})
 
 
 # ------------------------------------------------------------- execution ----
@@ -732,7 +846,7 @@ def _record_skip(item_key: str, slug: str, reason: str, detail: str = "",
 
 
 def run_document(name: str, path: Path, *, binding_id: str = "",
-                 doc_id: Optional[str] = None) -> dict[str, Any]:
+                 doc_id: Optional[str] = None, explicit: bool = False) -> dict[str, Any]:
     """Run one compiled pipeline over one Markdown document.
 
     The pipeline module is the document scenario's ONLY executor: it resolves
@@ -745,12 +859,21 @@ def run_document(name: str, path: Path, *, binding_id: str = "",
 
     ``doc_id`` adopts an existing registration (a scan retry or backfill): the
     run continues that document's identity instead of minting a new one.
+
+    ``explicit`` marks an operator action (``wax documents run``, a named
+    ``documents scan``, ``backfill``): an explicitly invoked pipeline runs
+    even while compiled ``enabled: false`` — the toggle gates AUTOMATIC pickup
+    (the worker's scan, plan authority), not a human naming the pipeline.
+    Cross-process exclusion is a real ``flock`` held for the whole run: a
+    crashed holder releases it with its process, and no staleness window lets
+    a live run be stolen. The DB ``processing`` state remains the visible
+    progress marker, claimed only while the lock is held.
     """
     current = _pipeline(name)
     definition = current["definition"]
-    if not definition.get("enabled"):
+    if not definition.get("enabled") and not explicit:
         return {"pipeline": name, "skipped": "pipeline is not enabled "
-                "(compiled enabled: false)"}
+                "(compiled enabled: false); enable it or invoke it explicitly"}
     if definition.get("trigger") not in ("documents", "manual"):
         return {"pipeline": name, "skipped": f"trigger {definition.get('trigger')!r} "
                 "is not a document scenario"}
@@ -766,6 +889,8 @@ def run_document(name: str, path: Path, *, binding_id: str = "",
                            "binding_id": binding_id, "item_key": item_key,
                            "definition_id": current["definition_id"],
                            "version": current["version"]}
+    if explicit and not definition.get("enabled"):
+        out["explicit"] = "running a compiled-disabled pipeline (operator action)"
     receipt = documents.receipt(binding_id, doc_id, name, current["definition_id"])
     if receipt is None and not binding_id:
         # An UNBOUND manual run defers to any binding that already completed
@@ -783,49 +908,72 @@ def run_document(name: str, path: Path, *, binding_id: str = "",
         return out
     if receipt and receipt.get("exhausted_at"):
         out["skipped"] = (f"exhausted after {receipt.get('attempts')} attempts "
-                          f"({(receipt.get('last_error') or '')[:120]})")
+                          "(re-arm it with `wax documents retry`)")
         return out
-    if not documents.claim_run(binding_id, doc_id):
+    lock = documents.document_run_lock(binding_id, doc_id)
+    try:
+        acquired = lock.acquire()
+    except OSError as exc:
+        raise PipelineError(f"cannot open the document run lock: {exc}") from exc
+    if not acquired:
         out["skipped"] = "another run owns this document (run lock held)"
         return out
     try:
-        out["results"] = _execute_frozen(item_key, definition)
-    except _Halted as halt:
-        out["results"] = halt.results
-        out["halted"] = True
-        out["halted_after"] = halt.after_slug
-    except Exception as exc:  # noqa: BLE001 - the receipt must record any crash
-        documents.release_run(binding_id, doc_id, "failed", error=str(exc))
-        documents.record_receipt(binding_id, doc_id, name, current["definition_id"],
-                                 "failed", error=str(exc))
+        # force: we hold the exclusive lock, so any `processing` state visible
+        # here belongs to a crashed holder whose flock died with its process.
+        if not documents.claim_run(binding_id, doc_id, force=True):
+            out["skipped"] = "document state does not admit a run"
+            return out
+        try:
+            out["results"] = _execute_frozen(item_key, definition)
+        except _Halted as halt:
+            out["results"] = halt.results
+            out["halted"] = True
+            out["halted_after"] = halt.after_slug
+        except Exception as exc:  # noqa: BLE001 - the receipt must record any crash
+            documents.release_run(binding_id, doc_id, "failed", error=str(exc))
+            documents.record_receipt(binding_id, doc_id, name, current["definition_id"],
+                                     "failed", error=str(exc), reason_code="run_error")
+            documents.note_own_write(binding_id, doc_id, path)
+            raise
+        completed = sum(1 for r in out["results"] if r.get("state") == "completed")
+        failed = sum(1 for r in out["results"] if r.get("state") == "failed")
+        skipped = sum(1 for r in out["results"] if r.get("state") == "skipped")
+        halted = bool(out.get("halted"))
+        out["completed"] = completed
+        out["failed"] = failed
+        out["skipped_count"] = skipped
+        # The receipt lands only on a fully-terminal run; a document with a failed
+        # pass stays unprocessed, so the scan and a manual re-run keep retrying
+        # exactly the failed nodes (completed ones replay as no-ops).
+        terminal = bool(out["results"]) and failed == 0 and not halted
+        # The receipt carries a reason CODE, never the raw error text: exception
+        # prose and stderr tails can embed secrets, and receipts surface through
+        # the catalog (Holocene/n8n read it). Detail stays in the operator ledger.
+        first_reason = next((str(r.get("reason_code") or "failed")
+                             for r in out["results"] if r.get("state") == "failed"), None)
+        if halted:
+            first_reason = "halt_policy"
+        if terminal:
+            documents.record_receipt(binding_id, doc_id, name, current["definition_id"],
+                                     "completed")
+            documents.release_run(binding_id, doc_id, "processed")
+        else:
+            documents.record_receipt(binding_id, doc_id, name, current["definition_id"],
+                                     "halted" if halted else "failed",
+                                     error=str(next((r.get("error") or r.get("reason_code") or ""
+                                                     for r in out["results"]
+                                                     if r.get("state") == "failed"), "")),
+                                     reason_code=first_reason)
+            documents.release_run(binding_id, doc_id, "failed",
+                                  error=str(first_reason or ""))
+        # Own-write detection after EVERY run, terminal or not: a failing run
+        # still writes its pass notes, and an unrecorded hash change is how a
+        # pipeline re-registers its own output as a new arrival forever.
         documents.note_own_write(binding_id, doc_id, path)
-        raise
-    completed = sum(1 for r in out["results"] if r.get("state") == "completed")
-    failed = sum(1 for r in out["results"] if r.get("state") == "failed")
-    skipped = sum(1 for r in out["results"] if r.get("state") == "skipped")
-    halted = bool(out.get("halted"))
-    out["completed"] = completed
-    out["failed"] = failed
-    out["skipped_count"] = skipped
-    # The receipt lands only on a fully-terminal run; a document with a failed
-    # pass stays unprocessed, so the scan and a manual re-run keep retrying
-    # exactly the failed nodes (completed ones replay as no-ops).
-    terminal = bool(out["results"]) and failed == 0 and not halted
-    first_error = next((r.get("error") or r.get("reason_code") or ""
-                        for r in out["results"] if r.get("state") == "failed"), "")
-    if terminal:
-        documents.record_receipt(binding_id, doc_id, name, current["definition_id"],
-                                 "completed")
-        documents.release_run(binding_id, doc_id, "processed")
-    else:
-        documents.record_receipt(binding_id, doc_id, name, current["definition_id"],
-                                 "halted" if halted else "failed", error=str(first_error))
-        documents.release_run(binding_id, doc_id, "failed", error=str(first_error))
-    # Own-write detection after EVERY run, terminal or not: a failing run
-    # still writes its pass notes, and an unrecorded hash change is how a
-    # pipeline re-registers its own output as a new arrival forever.
-    documents.note_own_write(binding_id, doc_id, path)
-    return out
+        return out
+    finally:
+        lock.release()
 
 
 def _execute_frozen(item_key: str, definition: dict[str, Any]) -> list[dict[str, Any]]:

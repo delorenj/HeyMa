@@ -1140,9 +1140,32 @@ def run_all(item_id: str) -> list[dict[str, Any]]:
     return out
 
 
+def _plan_provenance(item_id: str) -> dict[str, Any]:
+    """The stored provenance of an item's plan: which authority minted it and
+    the failure policy frozen with it (a compiled pipeline's plan halts or
+    runs independent exactly as it was compiled, whatever the registry says
+    now)."""
+    row = ledger.connect().execute(
+        "SELECT source FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+    if not row:
+        return {}
+    try:
+        value = json.loads(row["source"] or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 @serialized
 def run_auto(item_id: str) -> list[dict[str, Any]]:
     definitions = ensure_plan(item_id)
+    provenance = _plan_provenance(item_id)
+    # A plan is FROZEN: dependency gating replays against the plan's stored
+    # versions, never the live registry's — bumping a registry dependency
+    # after the plan was minted must not strand the plan's dependents behind
+    # a version they already satisfied.
+    dependency_versions = {slug: int(ep.get("version") or 1)
+                           for slug, ep in definitions.items()}
     previous = {row["ep_slug"]: dict(row) for row in ledger.connect().execute(
         "SELECT * FROM passes WHERE item_id=?", (item_id,)).fetchall()}
     out = []
@@ -1157,12 +1180,23 @@ def run_auto(item_id: str) -> list[dict[str, Any]]:
             continue
         attempt = int(prior["attempt"] or 0) + 1 if prior else 1
         try:
-            out.append(run(item_id, slug, attempt=attempt, definition=ep))
+            result = run(item_id, slug, attempt=attempt, definition=ep,
+                         dependency_versions=dependency_versions)
         except PassError as exc:
             _record(item_id, slug, "failed", version=version, attempt=attempt,
                     detail=str(exc), reason_code="run_error", definition=ep)
-            out.append({"item_id": item_id, "ep_slug": slug, "version": version,
-                        "state": "failed", "error": str(exc), "reason_code": "run_error"})
+            result = {"item_id": item_id, "ep_slug": slug, "version": version,
+                      "state": "failed", "error": str(exc), "reason_code": "run_error"}
+        out.append(result)
+        if (provenance.get("failure_policy") == "halt"
+                and result.get("state") == "failed"):
+            # The plan's compiled policy is halt: stop issuing NEW passes. The
+            # un-run tail stays un-run — truthfully — and the item stays
+            # enrichment_pending until the failed pass succeeds on retry. No
+            # ep_slug on the marker: it describes the walk, not a pass.
+            out.append({"item_id": item_id, "state": "halted",
+                        "halted_after": slug, "reason_code": "halt_policy"})
+            break
     return out
 
 

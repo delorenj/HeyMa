@@ -81,7 +81,7 @@ wax catalog                # safe discovery snapshot (passes + pipelines) for Ho
 wax pipeline enable|disable|status   # historical worker toggle, unchanged
 wax pipeline list|compile|show|bindings   # versioned pipeline graphs (compile is explicit)
 wax pipeline import <export.json> [--name]  # compile an authored n8n workflow export
-wax documents list|scan|backfill|run     # document registration/bindings/processing
+wax documents list|scan|backfill|run|retry  # document registration/bindings/processing; retry re-arms exhausted receipts
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 

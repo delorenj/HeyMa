@@ -85,6 +85,16 @@ test('builds workflow-import args and accepts binding-scoped document keys', () 
 		}),
 		['--json', 'ep', 'run', 'title-slug', 'doc-0123456789abcdef@doc-docs-ca9365c0cba1'],
 	);
+	// binding ids embed the folder NAME, and the folder name's case is the
+	// user's: a bound `Wax` folder must not fail key validation
+	assert.deepEqual(
+		buildWaxSubcommandArgs({
+			kind: 'epRun',
+			slug: 'title-slug',
+			itemKey: 'doc-0123456789abcdef@doc-standard-Wax-a1b2c3d4e5f6',
+		}),
+		['--json', 'ep', 'run', 'title-slug', 'doc-0123456789abcdef@doc-standard-Wax-a1b2c3d4e5f6'],
+	);
 });
 
 test('rejects array responses even though ep list emits one natively', () => {
@@ -161,21 +171,25 @@ test('every node is registered and exposes the CLI transport parameters', () => 
 	}
 });
 
-test('per-pass nodes are WaxEp-derived node types with the pass fixed and gated outputs', () => {
+test('per-pass nodes are WaxEp-derived node types with the pass fixed and stock two-port outputs', () => {
 	const { WaxPassTitleSlug } = require('../dist/nodes/wax-pass-title-slug/wax-pass-title-slug.node.js');
 	const node = new WaxPassTitleSlug();
 	assert.equal(node.description.name, 'wax-pass-title-slug');
 	const pass = node.description.properties.find((p) => p.name === 'pass');
 	assert.equal(pass.type, 'hidden');
 	assert.equal(pass.default, 'title-slug', 'the pass is fixed at generation time');
-	assert.deepEqual(node.description.outputs, ['main', 'requirement']);
+	// TWO STOCK main outputs: n8n can only wire stock connection types. The
+	// KIND travels as the source output index (0 continue / 1 requires), and
+	// the labels carry the semantics.
+	assert.deepEqual(node.description.outputs, ['main', 'main']);
 	assert.deepEqual(node.description.outputNames, ['continue', 'requires']);
 	for (const shared of ['waxExecutable', 'waxRoot', 'timeoutSeconds', 'executeOnce']) {
 		assert.ok(node.description.properties.some((p) => p.name === shared),
 			`per-pass node must declare ${shared}`);
 	}
-	// the generic node exposes the same gated/continue outputs for ad-hoc graphs
-	assert.deepEqual(new WaxEp().description.outputs, ['main', 'requirement']);
+	// the generic node exposes the same stock two-port outputs for ad-hoc graphs
+	assert.deepEqual(new WaxEp().description.outputs, ['main', 'main']);
+	assert.deepEqual(new WaxEp().description.outputNames, ['continue', 'requires']);
 });
 
 test('WaxEp registers passes through the CLI catalog (loadOptions), never a static list', async (t) => {
@@ -230,4 +244,141 @@ test('runWaxPerItem surfaces exit-zero failures through continueOnFail output', 
 	}));
 	assert.equal(items.length, 1);
 	assert.match(String(items[0].json.error), /Wax reported failure: failed_passes/u);
+});
+
+// ---------------------------------------------------------------------------
+// execute-driven node behavior
+
+test('WaxEp execute returns the two-output shape: results on continue, empty requires', async (t) => {
+	const executable = await fakeWax(
+		t,
+		`console.log(JSON.stringify({ item_id: '0123456789abcdef', ep_slug: 'title-slug', state: 'completed' }));`,
+	);
+	const params = {
+		executeOnce: true,
+		waxExecutable: executable,
+		waxRoot: '/srv/heyma',
+		timeoutSeconds: 5,
+		pass: 'title-slug',
+		itemKey: '0123456789abcdef',
+		attempt: 0,
+	};
+	const execute = {
+		getInputData: () => [{ json: {} }],
+		getNodeParameter: (name, _itemIndex, fallback) => (name in params ? params[name] : fallback),
+		getNode: () => ({ id: 'test-node', name: 'test-node' }),
+		continueOnFail: () => false,
+	};
+	const outputs = await new WaxEp().execute.call(execute);
+	assert.equal(outputs.length, 2, 'two stock main outputs demand a two-array return');
+	assert.equal(outputs[0].length, 1);
+	assert.equal(outputs[0][0].json.state, 'completed');
+	assert.deepEqual(outputs[1], [], 'the requires port is authoring-only: no manual output');
+});
+
+test('WaxPipeline Configure (Authoring) is a pure preview that never calls the CLI', async () => {
+	const params = {
+		operation: 'configure',
+		trigger: 'documents',
+		folders: { folderValues: [{ folder: '/home/delorenj/d/Inbox/Wax' }] },
+		failurePolicy: 'independent',
+		enabled: false,
+		description: 'Inbox enrichment',
+		version: 1,
+		// a CLI path that CANNOT work: configure must not touch the transport
+		waxExecutable: '/nonexistent/wax',
+		waxRoot: '/nonexistent/heyma',
+	};
+	const execute = {
+		getInputData: () => [{ json: {} }],
+		getNodeParameter: (name, _itemIndex, fallback) => (name in params ? params[name] : fallback),
+		getNode: () => ({ id: 'test-node', name: 'test-node' }),
+		continueOnFail: () => false,
+	};
+	const outputs = await new WaxPipeline().execute.call(execute);
+	assert.equal(outputs.length, 1);
+	const json = outputs[0][0].json;
+	// the fixedCollection export shape is normalized to the flat path list
+	assert.deepEqual(json.folders, ['/home/delorenj/d/Inbox/Wax']);
+	assert.equal(json.trigger, 'documents');
+	assert.equal(json.failurePolicy, 'independent');
+	assert.equal(json.enabled, false);
+	assert.equal(json.version, 1);
+	assert.match(json.note, /import/u);
+});
+
+test('WaxPipeline declares every authoring parameter the importer reads', () => {
+	const node = new WaxPipeline();
+	const byName = new Map(node.description.properties.map((p) => [p.name, p]));
+	const operations = byName.get('operation').options.map((o) => o.value);
+	assert.ok(operations.includes('configure'), 'Configure (Authoring) operation must exist');
+	// the importer reads these exact parameter names off the exported wrapper
+	for (const [name, expected] of [
+		['trigger', 'options'],
+		['folders', 'fixedCollection'],
+		['failurePolicy', 'options'],
+		['enabled', 'boolean'],
+		['description', 'string'],
+		['version', 'number'],
+	]) {
+		const property = byName.get(name);
+		assert.ok(property, `WaxPipeline must declare ${name}`);
+		assert.equal(property.type, expected, `${name} must be a ${expected}`);
+		assert.deepEqual(
+			property.displayOptions.show.operation,
+			['configure'],
+			`${name} is shown for the authoring operation`,
+		);
+	}
+	assert.ok(byName.get('exportPath'), 'the Import Workflow operation keeps its path field');
+});
+
+// ---------------------------------------------------------------------------
+// generated-node parity: the generator output is deterministic and survives
+// descriptions that contain newlines, quotes, and backslashes
+
+test('generator escapes newline/quote/backslash descriptions into valid TypeScript', async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), 'heyma-generator-'));
+	t.after(async () => rm(directory, { force: true, recursive: true }));
+	const executable = join(directory, 'fake-wax');
+	await writeFile(executable, `#!${process.execPath}
+console.log(JSON.stringify({ passes: { passes: [
+	{ slug: 'multiline', description: 'line one\\nline two with a quote: it\\'s and a backslash \\\\ plus /api/key=sk-test' },
+] } }));
+`);
+	await chmod(executable, 0o700);
+	const generatedDir = join(directory, 'pkg', 'nodes');
+	const { mkdir } = require('node:fs/promises');
+	await mkdir(generatedDir, { recursive: true });
+	await writeFile(join(directory, 'pkg', 'package.json'), JSON.stringify({ n8n: { nodes: [] } }));
+	const { execFileSync } = require('node:child_process');
+	execFileSync(process.execPath, ['tools/generate-pass-nodes.mjs'], {
+		cwd: process.cwd(),
+		env: {
+			...process.env,
+			WAX_EXECUTABLE: executable,
+			WAX_ROOT: '/tmp',
+			WAX_NODES_ROOT: join(directory, 'pkg'),
+		},
+	});
+	const { readFileSync } = require('node:fs');
+	const source = readFileSync(
+		join(generatedDir, 'wax-pass-multiline/wax-pass-multiline.node.ts'),
+		'utf8',
+	);
+	// the emitted literal stays on ONE line: real newlines would break syntax
+	assert.ok(!source.includes('line one\nline two'), 'newlines must be escaped');
+	// quotes, backslashes and the secret-looking token all survive as escapes
+	assert.ok(
+		source.includes("'line one\\nline two with a quote: it\\'s and a backslash \\\\ plus /api/key=sk-test'"),
+		'the description literal must be exactly the escaped form',
+	);
+	// the manifest is kept in sync in the throwaway package
+	const pkg = JSON.parse(readFileSync(join(directory, 'pkg', 'package.json'), 'utf8'));
+	assert.deepEqual(pkg.n8n.nodes, [
+		'dist/nodes/HeyMa/HeyMa.node.js',
+		'dist/nodes/WaxEp/WaxEp.node.js',
+		'dist/nodes/WaxPipeline/WaxPipeline.node.js',
+		'dist/nodes/wax-pass-multiline/wax-pass-multiline.node.js',
+	]);
 });

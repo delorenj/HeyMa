@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import yaml
 
-from wax import events, finalize, frontmatter, ledger, passes, paths, sentinel
+from wax import events, finalize, frontmatter, ledger, passes, paths, pipelines, sentinel
 
 COMPLETED = "bloodbank.evt.audio.transcription.completed"
 INTAKE = "bloodbank.evt.audio.intake.detected"
@@ -327,6 +327,97 @@ class EarlyPublicationTest(ChainCase):
         published = finalize.publish_pass_events(self.item)
         self.assertEqual(published.get("pass_events", 0), 0)
         self.assertEqual(self.outbox(INTAKE), [])
+
+
+class CompiledPlanAuthorityTest(ChainCase):
+    """The compiled transcription pipeline freezes the audio plan: dependency
+    gating replays against the PLAN's versions and definitions, not the live
+    registry's, and the compiled halt policy stops the walk on failure."""
+
+    def setUp(self):
+        super().setUp()
+        self.pipes = self.root / "pipelines.d"
+        self.pipes.mkdir(exist_ok=True)
+        self.stack.enter_context(patch.object(pipelines, "PIPELINES_DIR", self.pipes))
+        self.close()
+
+    def tearDown(self):
+        self.close()
+        super().tearDown()
+
+    def _compile(self, name: str, *, policy: str = "independent",
+                 passes: tuple[str, ...] | None = None) -> None:
+        (self.pipes / f"{name}.yaml").write_text(yaml.safe_dump({
+            "name": name, "version": 1, "description": name,
+            "trigger": "transcription", "enabled": True,
+            "failure_policy": policy,
+            "passes": list(passes or ("dep", "dependent")),
+        }))
+        out = pipelines.compile([name])
+        self.assertFalse(out["failed"], out["failed"])
+
+    def test_plan_gate_uses_frozen_versions_not_the_live_registry(self):
+        self.add_pass("dep", fails=True)
+        self.add_pass("dependent", requires=["dep"])
+        self._compile("tplan")
+        # dep fails: the dependent is dependency-blocked
+        results = {r.get("ep_slug"): r for r in passes.run_auto(self.item)}
+        self.assertEqual(results["dep"]["state"], "failed")
+        self.assertEqual(results["dependent"]["reason_code"], "dependency_failed")
+        # the provider recovers, then the dependent fails on its own merits
+        self.add_pass("dep", {"frontmatter": {"ok": True}})
+        self.add_pass("dependent", fails=True)
+        results = {r.get("ep_slug"): r for r in passes.run_auto(self.item)}
+        self.assertEqual(results["dep"]["state"], "completed")
+        self.assertEqual(results["dependent"]["state"], "failed")
+        from wax import worker
+        # the live registry moves on (dep v2) while the plan stays frozen at v1
+        self.add_pass("dep", {"frontmatter": {"ok": True}}, version=2)
+        self.add_pass("dependent", {"frontmatter": {"ok": True}})
+        swept = worker.sweep_failed_passes()
+        dependent = next(r for r in swept["results"] if r["ep_slug"] == "dependent")
+        self.assertNotEqual(dependent.get("reason_code"), "dependency_failed",
+                            "the frozen plan gates on frozen versions")
+        self.assertEqual(dependent["state"], "completed")
+        # and the plan never re-minted from the drifted registry
+        provenance = passes._plan_provenance(self.item)
+        self.assertEqual(provenance.get("kind"), "pipeline")
+
+    def test_compiled_halt_policy_stops_the_audio_plan(self):
+        self.add_pass("first", fails=True)
+        self.add_pass("second", {"frontmatter": {"ok": True}})
+        self._compile("halter", policy="halt", passes=("first", "second"))
+        results = passes.run_auto(self.item)
+        by_slug = {r.get("ep_slug"): r for r in results}
+        self.assertEqual(by_slug["first"]["state"], "failed")
+        halted = next(r for r in results if r.get("reason_code") == "halt_policy")
+        self.assertEqual(halted["halted_after"], "first")
+        # the tail never ran: no ledger row, no note entry
+        self.assertIsNone(self.pass_row("second"))
+        # recovery lifts the halt: the tail runs on the next drive
+        self.add_pass("first", {"frontmatter": {"ok": True}})
+        results = passes.run_auto(self.item)
+        by_slug = {r.get("ep_slug"): r for r in results}
+        self.assertEqual(by_slug["first"]["state"], "completed")
+        self.assertEqual(by_slug["second"]["state"], "completed")
+
+    def test_sweep_replays_the_frozen_definition_not_the_live_registry(self):
+        self.add_pass("dep", {"frontmatter": {"ok": True}})
+        self.add_pass("dependent", fails=True)
+        self._compile("tplan")
+        passes.run_auto(self.item)  # dep completed; dependent failed@v1
+        # the live registry moves on: v2 with a DIFFERENT command payload
+        self.add_pass("dependent", {"frontmatter": {"marker": "live-v2"}}, version=2)
+        from wax import worker
+        swept = worker.sweep_failed_passes()
+        dependent = next(r for r in swept["results"] if r["ep_slug"] == "dependent")
+        self.assertEqual(dependent["version"], 1,
+                         "the sweep replays the plan's frozen definition")
+        fm, _ = frontmatter.read(self.md)
+        self.assertNotIn("marker", fm.get("wax", {}).get("passes", {})
+                         .get("dependent", {}),
+                         "the live v2 payload must not run through the frozen plan")
+        self.assertEqual(self.pass_row("dependent")["version"], 1)
 
 
 if __name__ == "__main__":

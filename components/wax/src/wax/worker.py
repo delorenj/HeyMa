@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import (archive, config, desktop, dropoff, finalize, ledger, passes, paths, procutil, rename, sanity,
+from . import (archive, config, desktop, documents, dropoff, finalize, ledger, passes, paths, procutil, rename, sanity,
                sentinel, state, transcribe_adapter)
 
 # Contract B: name only, handler configured exactly once in bin/waxd. Before
@@ -656,7 +656,23 @@ def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
     Shared by the worker's scheduled sweep and `wax ep sweep` (which keeps the
     dry-run/unknown-slug presentation layer). Emits the exhaustion dead-letters
     FIRST so a pass at its bound announces even when nothing will re-run it.
+
+    An item with a STORED plan is re-driven against the plan's frozen
+    definitions and dependency versions — the live registry moved on is drift
+    to report, not a new graph to run mid-item. Plan-less items (legacy
+    history) keep the live-registry path.
     """
+    def _stored_plan(item_id: str) -> dict[str, dict[str, Any]]:
+        row = ledger.connect().execute(
+            "SELECT definitions FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+        if not row:
+            return {}
+        try:
+            plan = json.loads(row["definitions"])
+        except (TypeError, ValueError):
+            return {}
+        return plan if isinstance(plan, dict) else {}
+
     fired = passes.sweep_exhaustions(max_attempts)
     targets = ledger.failed_passes_for_sweep(max_attempts)
     if slug:
@@ -671,13 +687,21 @@ def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
     }
     if not targets:
         return out
+    plans: dict[str, dict[str, dict[str, Any]]] = {}
     results = []
     for item_id, ep_slug, attempt in targets:
         try:
             # The attempt from the ledger is already incremented (its contract),
             # so it is handed straight through: re-using the recorded attempt
             # would replay a spent uuid5 command_id / idempotency key.
-            results.append(passes.run(item_id, ep_slug, attempt=attempt))
+            plan = plans.setdefault(item_id, _stored_plan(item_id))
+            frozen = plan.get(ep_slug)
+            dependency_versions = (
+                {s: int(p.get("version") or 1) for s, p in plan.items()}
+                if frozen is not None else None)
+            results.append(passes.run(item_id, ep_slug, attempt=attempt,
+                                      definition=frozen,
+                                      dependency_versions=dependency_versions))
         except passes.PassError as e:
             results.append({"item_id": item_id, "ep_slug": ep_slug, "state": "failed",
                             "error": str(e), "reason_code": "run_error"})
@@ -698,8 +722,25 @@ def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
     return out
 
 
+def _iso_epoch(epoch: float) -> str:
+    from datetime import datetime, timezone
+    return (datetime.fromtimestamp(epoch, timezone.utc)
+            .isoformat(timespec="milliseconds").replace("+00:00", "Z"))
+
+
 class Worker(threading.Thread):
-    """Background drain loop. Only runs while `wax pipeline enable` is set."""
+    """Background drain loop. Only runs while `wax pipeline enable` is set.
+
+    Liveness is proven by a dedicated heartbeat THREAD, not by the main loop's
+    tick: a tick-stamped file stops being evidence the moment one item holds
+    the loop for the length of a transcription, and an enabled branch that
+    `continue`d past the heartbeat write meant the busiest worker was exactly
+    the one whose heartbeat went stale. The thread beats every few seconds
+    while the Worker object is alive — mid-run included — and its death (with
+    the worker's) is what the catalog reads as "down".
+    """
+
+    HEARTBEAT_INTERVAL_S = 5.0
 
     def __init__(self):
         super().__init__(daemon=True, name="wax-worker")
@@ -711,47 +752,94 @@ class Worker(threading.Thread):
         # deserves the first tick's scan, not a wait.
         self._last_doc_scan = 0.0
         self._tick = 0
+        self._busy: Optional[str] = None
+        self._busy_since_monotonic: Optional[float] = None
+        self._state_lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop.set()
+
+    # -- shared liveness state (main loop writes, heartbeat thread reads) ----
+
+    def _set_busy(self, what: Optional[str]) -> None:
+        with self._state_lock:
+            self._busy = what
+            self._busy_since_monotonic = time.monotonic() if what else None
+
+    def _liveness_snapshot(self) -> tuple[int, Optional[str], Optional[str]]:
+        with self._state_lock:
+            busy_since = None
+            if self._busy and self._busy_since_monotonic is not None:
+                busy_since = _iso_epoch(
+                    time.time() - (time.monotonic() - self._busy_since_monotonic))
+            return self._tick, self._busy, busy_since
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop.wait(self.HEARTBEAT_INTERVAL_S):
+            tick, busy, busy_since = self._liveness_snapshot()
+            try:
+                documents.write_worker_heartbeat(
+                    tick=tick, busy=busy, busy_since=busy_since)
+            except Exception as exc:  # noqa: BLE001 - the beat must never kill waxd
+                log.warning("worker heartbeat write failed: %s: %s",
+                            type(exc).__name__, exc)
 
     def _scan_documents(self) -> None:
         """Bounded, worker-owned document scan: new arrivals + retryable failures.
 
         No overlapping runs by construction (single worker thread) plus the
-        per-document run lock, which also guards a concurrent CLI scan.
+        per-document flock, which also guards a concurrent CLI scan.
         """
         scanned = documents.scan()
         if scanned.get("processed") or scanned.get("refused"):
             log.info("document scan: %d processed, %d binding(s) refused",
                      scanned.get("processed", 0), len(scanned.get("refused") or []))
 
-    def run(self) -> None:
-        from . import documents as documents_mod
-        while not self._stop.is_set():
-            self._tick += 1
+    def _tick_once(self) -> bool:
+        """One loop iteration. Returns whether work happened (drain fast)."""
+        self._tick += 1
+        if not state.pipeline_enabled():
+            self._set_busy(None)
+            return False
+        now = time.monotonic()
+        if now - self._last_sweep >= SWEEP_INTERVAL_S:
+            self._last_sweep = now
+            self._set_busy("sweep")
             try:
-                if state.pipeline_enabled():
-                    now = time.monotonic()
-                    if now - self._last_sweep >= SWEEP_INTERVAL_S:
-                        self._last_sweep = now
-                        swept = sweep_failed_passes()
-                        if swept.get("candidates") or swept.get("exhausted"):
-                            log.info("scheduled sweep: %s candidate(s), %d exhaustion notice(s)",
-                                     swept["candidates"], len(swept.get("exhausted") or []))
-                    if now - self._last_doc_scan >= documents_mod.SCAN_INTERVAL_S:
-                        self._last_doc_scan = now
-                        self._scan_documents()
-                    if run_once() is None:
-                        self._stop.wait(POLL_S)
-                    continue
+                swept = sweep_failed_passes()
+                if swept.get("candidates") or swept.get("exhausted"):
+                    log.info("scheduled sweep: %s candidate(s), %d exhaustion notice(s)",
+                             swept["candidates"], len(swept.get("exhausted") or []))
+            finally:
+                self._set_busy(None)
+        if now - self._last_doc_scan >= documents.SCAN_INTERVAL_S:
+            self._last_doc_scan = now
+            self._set_busy("documents")
+            try:
+                self._scan_documents()
+            finally:
+                self._set_busy(None)
+        self._set_busy("inbox")
+        try:
+            return run_once() is not None
+        finally:
+            self._set_busy(None)
+
+    def run(self) -> None:
+        heartbeat = threading.Thread(target=self._heartbeat_loop,
+                                     name="wax-worker-heartbeat", daemon=True)
+        heartbeat.start()
+        while not self._stop.is_set():
+            try:
+                worked = self._tick_once()
             except Exception as e:  # noqa: BLE001 - a worker crash must not kill waxd
                 # A tick exception used to go into a snapshot field and nowhere
                 # else. exc_info is the whole point: the traceback is the only
                 # thing that makes an unexpected crash diagnosable after the fact.
+                self._set_busy(None)
                 log.exception("worker tick failed: %s", e)
                 ledger.record_transition("inbox", None, None, "error", "worker_exception", str(e)[:400])
                 _clear_claim()
-            documents_mod.write_worker_heartbeat(
-                tick=self._tick, scanning_documents=not self._stop.is_set())
-            self._stop.wait(POLL_S)
+                worked = False
+            if not worked:
+                self._stop.wait(POLL_S)

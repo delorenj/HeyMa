@@ -2,7 +2,7 @@
 title: Wax pipeline discovery and read-only Holocene surface
 type: feature
 created: 2026-10-16
-status: in-progress
+status: in-review
 baseline_commit: 1b6e2ebc43148fb435f875ba3eb12549561be232
 route: dispatch
 review_loop_iteration: 0

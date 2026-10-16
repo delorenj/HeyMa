@@ -1,11 +1,14 @@
 name: transcript-standard
 version: 1
 description: >
-  Post-transcription enrichment for every recording: the compiled view of the
-  registry plan the waxd worker already executes. Compiling this pipeline
-  changes nothing at runtime — the worker's ensure_plan() remains the one
-  graph authority for audio; this definition exists so discovery surfaces can
-  show the trigger, the graph and its truthful outcomes in one place.
+  Post-transcription enrichment for every recording, as a compiled graph.
+  With exactly one compiled AND enabled transcription pipeline — this one —
+  NEW audio plans are minted from its frozen definition (the worker's
+  ensure_plan() adopts it as the plan authority); with none compiled, the
+  live registry plan stands. Recompiling is explicit, so a registry edit
+  changes nothing until this file is compiled again; compile a second enabled
+  transcription pipeline and the authority is refused as ambiguous, falling
+  back to the registry plan.
 trigger: transcription
 enabled: true
 failure_policy: independent

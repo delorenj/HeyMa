@@ -361,17 +361,181 @@ class DocumentIdentityTest(unittest.TestCase):
         with _Scenario() as s:
             doc = s.drop("locked.md")
             row, _ = documents.register(doc, binding_id="")
-            # the compare-and-set is the whole concurrency story
+            # the DB state machine: a second non-forced claim sees it held
             self.assertTrue(documents.claim_run("", row["doc_id"]))
             self.assertFalse(documents.claim_run("", row["doc_id"]),
                              "a second claimant must see the lock held")
-            run = pipelines.run_document("doc", doc)
-            self.assertIn("run lock held", run.get("skipped", ""))
+            # the EXCLUSION authority is the flock, not the row: a crashed
+            # holder (state=processing, lock released with its process) must
+            # not wedge the document — an explicit run recovers it.
+            run = pipelines.run_document("doc", doc, explicit=True)
+            self.assertNotIn("skipped", run, "a stale processing state must "
+                             "never block a run nobody holds the lock on")
+            self.assertEqual(run["completed"], 1)  # alpha; diarize is audio-only
+            self.assertEqual(documents.get(documents.doc_key("", row["doc_id"]))["state"],
+                             "processed")
+            # a LIVE flock holder is what actually blocks a second run
+            doc2 = s.drop("held.md", "---\ntitle: Held\n---\nUniquely held.\n")
+            row2, _ = documents.register(doc2, binding_id="")
+            lock = documents.document_run_lock("", row2["doc_id"])
+            self.assertTrue(lock.acquire())
+            try:
+                self.assertTrue(documents.run_lock_held("", row2["doc_id"]))
+                skipped = pipelines.run_document("doc", doc2, explicit=True)
+                self.assertIn("run lock held", skipped.get("skipped", ""))
+            finally:
+                lock.release()
+            self.assertFalse(documents.run_lock_held("", row2["doc_id"]))
+            # two lock objects over one document: the second acquire fails
+            other = documents.document_run_lock("", row2["doc_id"])
+            self.assertTrue(other.acquire())
+            try:
+                again = documents.document_run_lock("", row2["doc_id"])
+                self.assertFalse(again.acquire(), "flock must exclude, not just advise")
+            finally:
+                other.release()
             # a stale claim (crashed run) becomes reclaimable, not wedged
             ledger.connect().execute(
-                "UPDATE documents SET run_started_at=? WHERE binding_id='' AND doc_id=?",
+                "UPDATE documents SET state='processing', run_started_at=? "
+                "WHERE binding_id='' AND doc_id=?",
                 ("2020-01-01T00:00:00.000Z", row["doc_id"]))
             self.assertTrue(documents.claim_run("", row["doc_id"]))
+
+    def test_register_is_atomic_under_duplicate_arrivals(self):
+        with _Scenario() as s:
+            doc = s.drop("race.md", "---\ntitle: Race\n---\nRacy bytes.\n")
+            first = documents.register(doc, binding_id="b")
+            second = documents.register(doc, binding_id="b")
+            # exactly one arrival, one row — the loser of the race observes
+            # the winner's row instead of dying on a UNIQUE constraint
+            self.assertTrue(first[1])
+            self.assertFalse(second[1])
+            self.assertEqual(first[0]["doc_id"], second[0]["doc_id"])
+            rows = documents.list_documents(binding_id="b")
+            self.assertEqual(len(rows), 1)
+
+    def test_scan_isolates_per_document_failures(self):
+        with _Scenario() as s:
+            s.drop("a.md", "---\ntitle: A\n---\nA body.\n")
+            s.drop("b.md", "---\ntitle: B\n---\nB body.\n")
+            documents.scan(pipeline="doc")  # seed
+            s.drop("good.md", "---\ntitle: Good\n---\nGood.\n")
+            s.drop("bad.md", "---\ntitle: Bad\n---\nBad.\n")
+            # NOTE: an unreadable file is filtered at _arrivals (its hash
+            # cannot be read); the isolation scope under test is _run_one
+            original = documents._run_one
+            calls = {"n": 0}
+
+            def flaky(binding_id, pipeline, path, doc_id=None, explicit=False):
+                calls["n"] += 1
+                if "good" in str(path):
+                    raise RuntimeError("planted scan explosion")
+                return original(binding_id, pipeline, path, doc_id=doc_id,
+                                explicit=explicit)
+            try:
+                with patch.object(documents, "_run_one", side_effect=flaky):
+                    out = documents.scan(pipeline="doc")
+                scan = out["bindings"][0]
+                # the explosion was isolated: 'bad' still ran and completed
+                self.assertEqual(calls["n"], 2, "every arrival gets its own attempt")
+                self.assertEqual(scan["action"], "scanned")
+                self.assertTrue(any(r.get("completed") == 1 for r in scan["results"]
+                                    if "bad" in str(r.get("path"))),
+                                "a sibling document still ran to completion")
+            finally:
+                pass
+
+    def test_unreadable_seed_reports_error_and_stays_unseeded(self):
+        with _Scenario() as s:
+            s.drop("fine.md", "---\ntitle: Fine\n---\nFine.\n")
+            locked = s.docs / "locked.md"
+            locked.write_text("---\ntitle: Locked\n---\nLocked.\n")
+            locked.chmod(0o000)
+            try:
+                out = documents.scan(pipeline="doc")
+                seed = out["bindings"][0]
+                self.assertEqual(seed["action"], "seed_error")
+                self.assertEqual(seed["error_count"], 1)
+                self.assertEqual(seed["seeded"], 1)
+                binding = documents.bindings(pipeline="doc")[0]
+                self.assertIsNone(binding["seeded_at"],
+                                  "an unreadable file must not silently "
+                                  "complete the seed")
+            finally:
+                locked.chmod(0o644)
+            # once readable, the next scan completes the seed cleanly
+            out = documents.scan(pipeline="doc")
+            self.assertEqual(out["bindings"][0]["action"], "seeded")
+
+    def test_exhausted_documents_are_retriable_by_explicit_cli_action(self):
+        with _Scenario() as s:
+            alpha = s.registry / "alpha"
+            failing = "#!/bin/sh\necho reason_code=provider_down >&2\nexit 1\n"
+            alpha.write_text(failing)
+            alpha.chmod(0o755)
+            documents.scan(pipeline="doc")  # seed (folder empty: nothing claimed)
+            s.drop("doomed.md", "---\ntitle:\n---\nDoomed, uniquely.\n")
+            documents.scan(pipeline="doc")  # arrival fails (attempt 1)
+            documents.scan(pipeline="doc")  # retry fails (attempt 2)
+            documents.scan(pipeline="doc")  # retry fails (attempt 3 -> exhausted)
+            parked = documents.scan(pipeline="doc")
+            self.assertEqual(parked["bindings"][0].get("retried", 0), 0,
+                             "exhausted arrivals are dead-lettered, not retried")
+            exhausted = [r for r in documents.recent_receipts(pipeline="doc")
+                         if r["exhausted_at"]]
+            self.assertEqual(len(exhausted), 1)
+            doc_id = exhausted[0]["doc_id"]
+            # the operator action: re-arm without ledger surgery
+            out = documents.retry_exhausted(pipeline="doc", doc_id=doc_id)
+            self.assertEqual(out["reset"], 1)
+            receipt = documents.receipt(exhausted[0]["binding_id"], doc_id,
+                                        "doc", exhausted[0]["definition_id"])
+            self.assertIsNone(receipt["exhausted_at"])
+            self.assertEqual(receipt["attempts"], 0)
+            # and the pipeline is fixed: the re-armed arrival completes
+            alpha.write_text(
+                "#!/bin/sh\nprintf '%s\\n' '" + json.dumps({
+                    "wax_ep_version": 1,
+                    "frontmatter": {"title": "Fixed", "summary": "ok"},
+                }) + "'\n")
+            alpha.chmod(0o755)
+            recovered = documents.scan(pipeline="doc")
+            self.assertEqual(recovered["bindings"][0]["retried"], 1)
+            processed = documents.list_documents(state="processed")
+            self.assertEqual([r["doc_id"] for r in processed], [doc_id])
+
+    def test_explicit_scan_runs_a_compiled_disabled_pipeline(self):
+        with _Scenario() as s:
+            (s.pipes / "off.yaml").write_text(
+                "name: off\nversion: 1\ndescription: disabled but compiled\n"
+                "trigger: documents\nenabled: false\n"
+                f"folders: [{json.dumps(str(s.docs))}]\n"
+                "failure_policy: independent\npasses: [alpha]\n"
+            )
+            pipelines.compile(["off"])
+            s.drop("first.md", "---\ntitle: First\n---\nOne.\n")
+            # worker posture: enabled bindings of a disabled pipeline are refused
+            refused = documents.scan()
+            self.assertTrue(refused.get("refused"))
+            # explicit operator posture: naming the pipeline works — and the
+            # FIRST contact still seeds (new-arrivals-only, explicit or not)
+            seeded = documents.scan(pipeline="off")
+            self.assertEqual(seeded["bindings"][0]["action"], "seeded")
+            # later arrivals under an explicit scan run the disabled graph
+            s.drop("second.md", "---\ntitle: Second\n---\nTwo.\n")
+            out = documents.scan(pipeline="off")
+            scan = out["bindings"][0]
+            self.assertEqual(scan["action"], "scanned")
+            self.assertEqual(scan["processed"], 1)
+            # and the direct run is equally explicit
+            run = pipelines.run_document("off", s.drop(
+                "third.md", "---\ntitle: Third\n---\nThree.\n"), explicit=True)
+            self.assertIn("explicit", run)
+            self.assertEqual(run["completed"], 1)
+            # a non-explicit run of the disabled pipeline still refuses
+            skip = pipelines.run_document("off", s.drop(
+                "third.md", "---\ntitle: Third\n---\nThree.\n"))
+            self.assertIn("not enabled", skip.get("skipped", ""))
 
     def test_missing_folder_is_never_claimed_as_seeded(self):
         with _Scenario() as s:

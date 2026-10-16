@@ -7,11 +7,17 @@
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkgRoot = join(here, '..');
+// WAX_NODES_ROOT lets tests run the generator against a throwaway package
+// copy instead of rewriting this one's committed nodes and manifest.
+const pkgRoot = process.env.WAX_NODES_ROOT
+	? resolve(isAbsolute(process.env.WAX_NODES_ROOT)
+		? process.env.WAX_NODES_ROOT
+		: join(process.cwd(), process.env.WAX_NODES_ROOT))
+	: join(here, '..');
 const pkgPath = join(pkgRoot, 'package.json');
 
 const executable = process.env.WAX_EXECUTABLE ?? '/home/delorenj/HeyMa/bin/wax';
@@ -51,16 +57,28 @@ function loadCatalog() {
 function render(row) {
 	const slug = row.slug;
 	const className = `WaxPass${pascal(slug)}`;
-	const description = String(row.description ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+	// Escape BEFORE slicing for the string literal, and slice BEFORE escaping
+	// for the comment — a description with real newlines must never break the
+	// generated file's syntax (a multi-line // comment is code, not comment).
+	const escape = (text) =>
+		text
+			.replace(/\\/g, '\\\\')
+			.replace(/'/g, "\\'")
+			.replace(/\r/g, '\\r')
+			.replace(/\n/g, '\\n');
+	// Slice the RAW text, then escape: slicing escaped text can cut an escape
+	// sequence in half and break the generated literal's syntax.
+	const description = escape(String(row.description ?? '').slice(0, 200));
+	const commentText = escape(String(row.description ?? '').slice(0, 100));
 	return `${BANNER}
 import { WaxPassNodeBase } from '../WaxEp/WaxPassNodeBase';
 
-// ${slug} — ${description.slice(0, 100)}
+// ${slug} — ${commentText}
 export class ${className} extends WaxPassNodeBase {
 	description = WaxPassNodeBase.describe({
 		slug: '${slug}',
 		displayName: 'Wax Pass \u00b7 ${titleCase(slug)}',
-		description: '${description.slice(0, 200)}',
+		description: '${description}',
 	});
 }
 `;

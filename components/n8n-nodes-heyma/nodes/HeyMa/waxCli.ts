@@ -143,8 +143,10 @@ export function parseWaxOutput(stdout: string): JsonObject {
 
 export const EP_SLUG_RE = /^[a-z][a-z0-9-]*$/u;
 /** Audio item ids are 16 hex chars; document ids are the same under `doc-`,
- * optionally binding-scoped (`doc-<16hex>@<binding-id>`). */
-export const WAX_KEY_RE = /^(?:doc-)?[0-9a-f]{16}(?:@[a-z0-9-]+)?$/u;
+ * optionally binding-scoped (`doc-<16hex>@<binding-id>`). Binding ids are
+ * `<pipeline>-<folder-name>-<digest12>` — the folder name is the user's, so
+ * the case is theirs too (a `Wax` folder must not fail key validation). */
+export const WAX_KEY_RE = /^(?:doc-)?[0-9a-f]{16}(?:@[A-Za-z0-9][A-Za-z0-9-]*)?$/u;
 export const PIPELINE_NAME_RE = /^[a-z][a-z0-9-]*$/u;
 
 export type WaxSubcommand =

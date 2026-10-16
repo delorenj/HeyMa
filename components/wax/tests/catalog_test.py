@@ -92,6 +92,49 @@ class CatalogSafetyTest(unittest.TestCase):
                        "env", "stderr", "detail"):
             self.assertNotIn(banned, encoded, f"catalog must never contain {banned!r}")
 
+    def test_recent_run_receipts_carry_reason_codes_never_error_prose(self):
+        folder = self.root / "inbox"
+        folder.mkdir()
+        (self.pipes / "dgraph.yaml").write_text(
+            "name: dgraph\nversion: 1\ndescription: documents graph\n"
+            "trigger: documents\nenabled: true\n"
+            f"folders: [{json.dumps(str(folder))}]\n"
+            "failure_policy: independent\npasses: [alpha]\n"
+        )
+        with patch.object(paths, "DB", self.runtime / "wax.db"), \
+                patch.object(paths, "VAR", self.runtime), \
+                patch.object(passes, "REGISTRY_DIR", self.registry), \
+                patch.object(pipelines, "PIPELINES_DIR", self.pipes):
+            _close_test_connection()
+            compiled = pipelines.compile(["dgraph"])
+            definition_id = pipelines.compiled()["dgraph"]["definition_id"]
+        self.assertFalse(compiled["failed"], compiled["failed"])
+        # A failed, exhausted receipt whose stored detail embeds a secret (as
+        # real exception text and stderr tails do). The catalog may carry the
+        # reason CODE; the prose must stay in the operator ledger.
+        now = sentinel.utcnow()
+        conn = ledger.connect()
+        conn.execute(
+            "INSERT INTO documents(binding_id,doc_id,path,sha256,current_sha256,bytes,"
+            "origin,state,attempts,first_seen,updated_at) VALUES"
+            "('b','doc-0123456789abcdef',?, 'x','x',1,'test','failed',3,?,?)",
+            (str(folder / "note.md"), now, now))
+        conn.execute(
+            "INSERT INTO document_receipts(binding_id,doc_id,pipeline,definition_id,"
+            "state,attempts,last_attempt_at,exhausted_at,last_error,reason_code) "
+            "VALUES('b','doc-0123456789abcdef','dgraph',?,'failed',3,?,?,?,?)",
+            (definition_id, now, now,
+             "provider said: Authorization Bearer sk-live-LEAKME-123", "provider_down"))
+        snap = self._catalog()
+        entry = next(p for p in snap["pipelines"]["pipelines"] if p["name"] == "dgraph")
+        run = entry["recent_runs"][0]
+        self.assertEqual(run["state"], "failed")
+        self.assertEqual(run["reason_code"], "provider_down")
+        self.assertNotIn("error", run, "recent_runs must not carry raw error text")
+        encoded = json.dumps(snap)
+        self.assertNotIn("sk-live-LEAKME-123", encoded)
+        self.assertNotIn("last_error", encoded)
+
     def test_pipeline_drift_and_outcomes_are_truthful(self):
         (self.pipes / "graph.yaml").write_text(
             "name: graph\nversion: 1\ndescription: one graph\ntrigger: manual\n"

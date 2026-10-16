@@ -15,7 +15,28 @@ import { WaxNodeBase } from '../WaxEp/WaxEpBase';
 // 2.x (NodeConnectionTypes); importing either runtime enum breaks the other.
 const MAIN_CONNECTION = 'main' as const;
 
-type PipelineOperation = 'compile' | 'import' | 'show' | 'scan' | 'runDocument';
+type PipelineOperation = 'configure' | 'compile' | 'import' | 'show' | 'scan' | 'runDocument';
+
+/** The editor's Folders collection exports as {folderValues: [{folder}]} —
+ * normalize it to the flat path list `wax pipeline import` compiles. */
+function normalizeFolders(value: unknown): string[] {
+	if (Array.isArray(value)) {
+		return value.filter((entry): entry is string => typeof entry === 'string');
+	}
+	if (typeof value === 'object' && value !== null) {
+		const entries = (value as { folderValues?: unknown }).folderValues;
+		if (Array.isArray(entries)) {
+			return entries
+				.map((entry) =>
+					typeof entry === 'object' && entry !== null && 'folder' in entry
+						? String((entry as { folder: unknown }).folder)
+						: undefined,
+				)
+				.filter((entry): entry is string => entry !== undefined);
+		}
+	}
+	return [];
+}
 
 /** A scan or run that ended with failed passes is a failure, even at exit zero. */
 function interpretDocumentRun(response: JsonObject) {
@@ -65,6 +86,13 @@ export class WaxPipeline extends WaxNodeBase {
 						action: 'Compile a pipeline',
 					},
 					{
+						name: 'Configure (Authoring)',
+						value: 'configure',
+						description:
+							'Set the pipeline graph parameters this node authors (trigger, folders, failure policy, enabled, description, version) for "pipeline import" to compile',
+						action: 'Configure pipeline authoring parameters',
+					},
+					{
 						name: 'Import Workflow',
 						value: 'import',
 						description:
@@ -91,6 +119,88 @@ export class WaxPipeline extends WaxNodeBase {
 					},
 				],
 				default: 'show',
+			},
+			{
+				displayName: 'Trigger',
+				name: 'trigger',
+				type: 'options',
+				noDataExpression: true,
+				required: true,
+				options: [
+					{ name: 'Documents', value: 'documents', description: 'Folder bindings; the Wax worker scans for new arrivals' },
+					{ name: 'Transcription', value: 'transcription', description: 'Post-transcription enrichment for every recording (plan authority when enabled)' },
+					{ name: 'Manual', value: 'manual', description: 'Runs only by explicit invocation' },
+				],
+				default: 'documents',
+				description: 'Which Wax execution path owns this graph',
+				displayOptions: { show: { operation: ['configure'] } },
+			},
+			{
+				displayName: 'Folders',
+				name: 'folders',
+				type: 'fixedCollection',
+				typeOptions: { multipleValues: true },
+				default: {},
+				options: [
+					{
+						name: 'folderValues',
+						displayName: 'Folders',
+						values: [
+							{
+								displayName: 'Folder Path',
+								name: 'folder',
+								type: 'string',
+								default: '',
+								placeholder: '/home/delorenj/d/Inbox/Wax',
+								description: 'Absolute folder path (or ~/…) bound by the documents trigger',
+							},
+						],
+					},
+				],
+				description: 'Folder bindings for trigger "documents" — first scan seeds, later scans process new arrivals',
+				displayOptions: { show: { operation: ['configure'] } },
+			},
+			{
+				displayName: 'Failure Policy',
+				name: 'failurePolicy',
+				type: 'options',
+				noDataExpression: true,
+				options: [
+					{ name: 'Independent', value: 'independent', description: 'A failed pass never blocks its siblings (the audio default)' },
+					{ name: 'Halt', value: 'halt', description: 'The run stops at the first failed pass; the tail stays un-run' },
+				],
+				default: 'independent',
+				description: 'What one failed pass does to the rest of the run',
+				displayOptions: { show: { operation: ['configure'] } },
+			},
+			{
+				displayName: 'Enabled',
+				name: 'enabled',
+				type: 'boolean',
+				default: false,
+				description:
+					'Whether the Wax worker may pick this pipeline up automatically — an explicit scan/run works while disabled',
+				displayOptions: { show: { operation: ['configure'] } },
+			},
+			{
+				displayName: 'Description',
+				name: 'description',
+				type: 'string',
+				typeOptions: { rows: 2 },
+				default: '',
+				placeholder: 'What this graph is for; shown by discovery surfaces',
+				description: 'Pipeline description frozen into the compiled definition',
+				displayOptions: { show: { operation: ['configure'] } },
+			},
+			{
+				displayName: 'Version',
+				name: 'version',
+				type: 'number',
+				typeOptions: { minValue: 1, maxValue: 9999 },
+				default: 1,
+				description:
+					'Authored version floor — an identical re-import is a no-op and a changed export never downgrades past the stored version',
+				displayOptions: { show: { operation: ['configure'] } },
 			},
 			{
 				displayName: 'Pipeline',
@@ -153,8 +263,25 @@ export class WaxPipeline extends WaxNodeBase {
 	};
 
 	async execute(this: IExecuteFunctions) {
+		const operation = String(this.getNodeParameter('operation', 0, 'show')) as PipelineOperation;
+		if (operation === 'configure') {
+			// Pure parameter preview: NO CLI call. The authoring values live on
+			// this node's parameters, and `wax pipeline import` reads them from
+			// the exported workflow — this branch just shows the human what the
+			// export will carry, in the same normalized shape import compiles.
+			const foldersRaw = this.getNodeParameter('folders', 0, {});
+			const configured = {
+				trigger: String(this.getNodeParameter('trigger', 0, 'documents')),
+				folders: normalizeFolders(foldersRaw),
+				failurePolicy: String(this.getNodeParameter('failurePolicy', 0, 'independent')),
+				enabled: Boolean(this.getNodeParameter('enabled', 0, false)),
+				description: String(this.getNodeParameter('description', 0, '')),
+				version: Number(this.getNodeParameter('version', 0, 1) ?? 1),
+				note: 'Authoring configuration — "pipeline import" compiles it; this node never writes',
+			};
+			return [[{ json: configured as unknown as JsonObject }]];
+		}
 		return WaxNodeBase.runWaxPerItem(this, (itemIndex) => {
-			const operation = String(this.getNodeParameter('operation', itemIndex, 'show')) as PipelineOperation;
 			switch (operation) {
 				case 'compile': {
 					const compileAll = this.getNodeParameter('compileAll', itemIndex, false) as boolean;

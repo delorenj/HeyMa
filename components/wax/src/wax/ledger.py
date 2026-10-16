@@ -149,9 +149,17 @@ def connect() -> sqlite3.Connection:
             "passes": {"reason_code": "TEXT", "result": "TEXT", "definition_id": "TEXT",
                        "exhausted_at": "TEXT"},
             "transcripts": {"asr_path": "TEXT", "body_sha256": "TEXT", "processing_seconds": "REAL"},
+            # Receipts surface through the catalog (Holocene/n8n): the raw
+            # last_error stays operator-only, the machine cause travels in
+            # reason_code. Additive for ledgers that predate the column.
+            "document_receipts": {"reason_code": "TEXT"},
         }
         for table, fields in additions.items():
             known = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if not known:
+                # Table not created yet (fresh DB): its CREATE TABLE below
+                # already carries the newest columns.
+                continue
             for name, kind in fields.items():
                 if name not in known:
                     try:
@@ -235,6 +243,7 @@ def connect() -> sqlite3.Connection:
                      "definition_id TEXT NOT NULL, state TEXT NOT NULL, "
                      "attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, "
                      "completed_at TEXT, exhausted_at TEXT, last_error TEXT, "
+                     "reason_code TEXT, "
                      "PRIMARY KEY (binding_id, doc_id, pipeline, definition_id))")
         # Folder bindings are compiled from a pipeline's authored folders. They
         # are new-arrivals-only: the first scan seeds every existing file as a

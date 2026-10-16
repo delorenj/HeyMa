@@ -3,11 +3,19 @@
   "nodes": [
     {
       "parameters": {
+        "operation": "configure",
         "trigger": "documents",
-        "folders": ["/home/delorenj/d/Inbox/Wax"],
+        "folders": {
+          "folderValues": [
+            {
+              "folder": "/home/delorenj/d/Inbox/Wax"
+            }
+          ]
+        },
         "failurePolicy": "independent",
         "enabled": false,
-        "description": "Ordinary Markdown document enrichment over the dedicated inbox. Ships disabled: import compiles it; flip the wrapper's enabled toggle and re-import to activate."
+        "description": "Ordinary Markdown document enrichment over the dedicated inbox. Ships disabled: import compiles it; flip the wrapper's enabled toggle and re-import to activate, or scan it by name for an explicit disabled run.",
+        "version": 1
       },
       "id": "wax-doc-wrapper",
       "name": "Wax Pipeline",
@@ -33,7 +41,7 @@
     },
     {
       "parameters": {
-        "content": "## Wax Documents Standard\n\nEdges: the REQUIREMENT port (gated) says \"this pass requires that one\". The MAIN port (continue) only orders.\n\nTitle is GATED on Classify: the requirement edge means Title waits for — and is blocked by the failure of — Classify.\n\nThis workflow is an AUTHORING artifact. `wax pipeline import` compiles it into a frozen, versioned pipeline; n8n never executes it.",
+        "content": "## Wax Documents Standard\n\nBoth ports are stock MAIN. Output 0 'continue' only orders; output 1 'requires' gates: Title is wired from Classify's requires port, so Title waits for — and is blocked by the failure of — Classify.\n\nThis workflow is an AUTHORING artifact. `wax pipeline import` compiles it into a frozen, versioned pipeline; n8n never executes it.",
         "height": 300,
         "width": 380
       },
@@ -46,7 +54,8 @@
   ],
   "connections": {
     "Classify": {
-      "requirement": [
+      "main": [
+        [],
         [
           {
             "node": "Title",

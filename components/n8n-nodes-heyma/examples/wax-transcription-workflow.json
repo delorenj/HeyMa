@@ -3,11 +3,13 @@
   "nodes": [
     {
       "parameters": {
+        "operation": "configure",
         "trigger": "transcription",
         "folders": [],
         "failurePolicy": "independent",
         "enabled": false,
-        "description": "The compiled view of post-transcription enrichment. With exactly one enabled transcription pipeline compiled, new audio plans are minted from its frozen definition; ships disabled so nothing is fabricated as active."
+        "description": "The compiled view of post-transcription enrichment. With exactly one enabled transcription pipeline compiled, new audio plans are minted from its frozen definition; ships disabled so nothing is fabricated as active.",
+        "version": 1
       },
       "id": "wax-tr-wrapper",
       "name": "Wax Pipeline",
@@ -57,7 +59,7 @@
     },
     {
       "parameters": {
-        "content": "## Wax Transcription Standard\n\nMAIN edges (continue) only order: Stamp → Clipboard → Classify.\n\nThe REQUIREMENT edge (gated) blocks Title until Classify completed — a failed Classify leaves Title dependency-blocked instead of dropped.\n\nDiarize is deliberately unconnected: GPU-bound, independent of the chain. Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
+        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN. Output 0 'continue' only orders: Stamp → Clipboard → Classify.\n\nOutput 1 'requires' gates: Title is wired from Classify's requires port, so a failed Classify leaves Title dependency-blocked instead of dropped.\n\nDiarize is deliberately unconnected: GPU-bound, independent of the chain. Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
         "height": 320,
         "width": 400
       },
@@ -92,7 +94,8 @@
       ]
     },
     "Classify": {
-      "requirement": [
+      "main": [
+        [],
         [
           {
             "node": "Title",
