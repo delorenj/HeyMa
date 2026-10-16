@@ -459,11 +459,15 @@ class N8nImportTest(unittest.TestCase):
                 self.assertGreaterEqual(out["nodes"], 2)
                 definition = pipelines.compiled()[f"example-{export.stem}"]["definition"]
                 kinds = {e["kind"] for e in definition["edges"]}
-                self.assertIn("requires", kinds,
-                              "each example demonstrates a gated edge")
+                # an authored graph may legitimately be edge-less (the
+                # release exports are drawn as they run in real n8n); what
+                # matters per file is that it imports cleanly and its edges
+                # are exactly the authored ones
                 all_kinds.update(kinds)
         self.assertIn("after", all_kinds,
                       "the examples together demonstrate continue edges")
+        self.assertIn("requires", all_kinds,
+                      "the examples together demonstrate gated edges")
 
 
 if __name__ == "__main__":

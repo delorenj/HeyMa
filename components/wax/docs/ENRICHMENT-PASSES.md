@@ -36,10 +36,13 @@ retried. Retries are no longer manual-only: the worker sweeps on a timer
 `wax ep sweep` (default 3, `dependency_failed` exempt). A pass that fails its
 final permitted attempt emits **`bloodbank.audio.task.exhausted`** — the
 dead-letter signal — exactly once per (item, slug, version); the receipt lives
-in `passes.exhausted_at`, and a registry version bump clears it so a fixed
-definition announces afresh. Automatic runs skip a pass already completed at
-the same `version` and the same definition; increasing `version` causes the
-new definition to run once.
+in `passes.exhausted_at`, and a version bump clears it so a fixed
+definition announces afresh (true wherever a run picks up the live
+registry — manual `wax ep run` and plan-less legacy items; a planned
+item's version is frozen with its plan, so its exhaustion clears only
+through the explicit retry paths). Automatic runs skip a pass already
+completed at the same `version` and the same definition; increasing
+`version` causes the new definition to run once.
 
 ## Registry contract
 
@@ -305,10 +308,14 @@ re-claims nothing).
 Identity survives Wax's own writes: a run's frontmatter output changes the
 file hash, so every run records the post-run hash as `current_sha256` on the
 same row — the next scan sees its own write as known content, never as a new
-arrival. A **human** edit after processing is genuinely new content and
-arrives as a new document (no-clobber frontmatter rules still protect human
-values). A retried failure adopts the failed row's identity instead of
-minting a fresh `doc_id`.
+arrival. A **human** edit after processing is new CONTENT but not a new
+ARRIVAL: the path is already known, so scans leave it alone — `wax documents
+run <pipeline> <file>` is the explicit path for edits, registering the edited
+bytes as a new document under its own identity (no-clobber frontmatter rules
+still protect human values). A retried failure adopts the failed row's
+identity instead of minting a fresh `doc_id`, and only while the bytes still
+match what failed — a human change supersedes the retry, it is never
+consumed silently.
 
 Pass rows key on the binding-scoped key `doc-<sha16>[@<binding-id>]`, so
 gating, attempts and outcome tallies behave exactly like audio.
@@ -408,8 +415,12 @@ which frozen nodes no longer match the registry.
   (`pipelines.transcription_authority()`); with none, the legacy
   live-registry plan stands; with more than one, the choice is refused and
   recorded (`ambiguous_transcription_authority`) before falling back — an
-  ambiguous graph is never fabricated as the active one. Items with stored
-  plans keep them; completed plans are immutable.
+  ambiguous graph is never fabricated as the active one. A minted plan
+  NEVER migrates — completed or not: an item finishes (or is retried) under
+  the graph it was given, because its attempts, exhaustion receipts and
+  halt policy all hang off that plan. New items get the new graph; moving
+  an unfinished item onto a changed authority is an explicit operator
+  decision, never a scan side effect.
 - `failure_policy: halt` stops a document run at the first failed node;
   `independent` runs siblings anyway. Either way the run is recorded and only a
   fully-terminal run writes the completed receipt — a failed pass stays
@@ -453,6 +464,13 @@ A binding (`documents` trigger) is **new-arrivals-only**:
   a folder seeded when a file could not even be hashed is how history goes
   quietly uncovered. Covering seeded history needs an explicit
   `wax documents backfill <pipeline>`.
+- **Arrival is a PATH question, not a content question**: a file whose path
+  the binding already knows is never an arrival, whatever its bytes. Human
+  edits to notes Wax has already seen are deliberately not auto-processed —
+  `wax documents run <pipeline> <file>` is the explicit path for edits. A
+  genuinely new path whose content the binding already ran (a move) is not
+  an arrival either; only new paths with content this binding has never
+  processed are picked up.
 - The worker scans bindings on its own cadence
   (`WAX_DOCUMENT_SCAN_INTERVAL_S`, default 120s, gated on
   `wax pipeline enable`): a file dropped into a bound folder processes

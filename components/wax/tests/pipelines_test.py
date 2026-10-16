@@ -309,6 +309,44 @@ class TranscriptionAuthorityTest(unittest.TestCase):
                 "AND cause_code='ambiguous_transcription_authority'").fetchall()
             self.assertTrue(transitions, "the refusal is recorded, not just logged")
 
+    def test_a_minted_plan_never_migrates_when_the_authority_changes(self):
+        with _Graph() as g:
+            _pass(g.registry, "t1", result=None, auto=True)
+            _pass(g.registry, "t2", result=None, auto=True, after=["t1"])
+            g.write_pipeline(["t1", "t2"], trigger="transcription", enabled=True)
+            pipelines.compile(["graph"])
+
+            # plan A is minted for item-1 and stays UNFINISHED (no completion)
+            plan_a = passes.ensure_plan("item-1")
+            self.assertEqual(set(plan_a), {"t1", "t2"})
+            before = ledger.connect().execute(
+                "SELECT definitions, source FROM processing_plans "
+                "WHERE item_id='item-1'").fetchone()
+            self.assertIsNone(ledger.connect().execute(
+                "SELECT 1 FROM completions WHERE item_id='item-1'").fetchone(),
+                "the item is genuinely unfinished")
+
+            # the authority MOVES ON: the same pipeline is recompiled smaller
+            g.write_pipeline(["t1"], trigger="transcription", enabled=True)
+            pipelines.compile(["graph"])
+            defs_b, _prov = pipelines.transcription_authority()
+            self.assertEqual(set(defs_b), {"t1"}, "sanity: the authority changed")
+
+            # the minted plan does NOT migrate: same definitions, same source
+            again = passes.ensure_plan("item-1")
+            self.assertEqual(set(again), {"t1", "t2"},
+                             "an unfinished item keeps the plan it was given")
+            after = ledger.connect().execute(
+                "SELECT definitions, source FROM processing_plans "
+                "WHERE item_id='item-1'").fetchone()
+            self.assertEqual(after["definitions"], before["definitions"])
+            self.assertEqual(after["source"], before["source"],
+                             "provenance is part of the frozen plan")
+
+            # new items, new graph
+            fresh = passes.ensure_plan("item-2")
+            self.assertEqual(set(fresh), {"t1"})
+
     def test_transcription_pipeline_rejects_manual_passes_at_compile(self):
         with _Graph() as g:
             g.write_pipeline(["a"], trigger="transcription", enabled=True)

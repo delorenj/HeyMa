@@ -338,16 +338,17 @@ def ensure_plan(item_id):
     row = conn.execute("SELECT definitions FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
     # Plan authority: with exactly one compiled+enabled transcription pipeline,
     # NEW plans come from its frozen definition; otherwise the live registry
-    # stands (legacy fallback). Items that already hold a plan keep it unless
-    # unfinished, exactly as before — historical completions are immutable.
+    # stands (legacy fallback). A minted plan NEVER migrates — completed or
+    # not. An item's attempts, exhaustion receipts and halt policy all hang
+    # off the plan it was given, so it finishes (or is retried) under the
+    # graph it started with; adopting a changed authority mid-flight would
+    # silently change what runs on an item as a scan side effect. New items,
+    # new graph — moving an unfinished item onto a new graph is an explicit
+    # operator decision, not something a tick does on its own.
+    if row:
+        return json.loads(row["definitions"])
     from . import pipelines
     definitions, provenance = pipelines.transcription_authority()
-    if row:
-        receipt = conn.execute("SELECT 1 FROM completions WHERE item_id=?", (item_id,)).fetchone()
-        if receipt:
-            return json.loads(row["definitions"])
-        if json.loads(row["definitions"]) == definitions:
-            return definitions
     for slug, ep in definitions.items():
         if any(dependency not in definitions for dependency in ep.get("requires") or []):
             raise PassError(f"automatic pass {slug} requires a manual pass")

@@ -131,6 +131,44 @@ class DocumentScenarioTest(unittest.TestCase):
             self.assertEqual(fm["title"], "Old")
             self.assertEqual(fm["summary"], "A grounded summary.")
 
+    def test_human_edit_at_a_known_path_is_never_an_auto_arrival(self):
+        with _Scenario() as s:
+            note = s.drop("note.md", "---\ntitle: Kept\n---\nFirst.\n")
+            documents.scan(pipeline="doc")  # seeds the folder without processing
+            fresh = s.drop("fresh.md", "---\ntitle: New\n---\nSecond file.\n")
+            out = documents.scan(pipeline="doc")
+            self.assertEqual(out["bindings"][0]["processed"], 1)
+            fm, _ = frontmatter.read(fresh)
+            self.assertEqual(fm["title"], "New")
+
+            # a HUMAN edit changes the bytes at a path the binding already
+            # knows: the default is new-PATHS-only, so no scan — however many
+            # — ever picks the edit up, and nothing registers behind it
+            note.write_text("---\ntitle: Kept\n---\nA human edit.\n")
+            out = documents.scan(pipeline="doc")
+            scan = out["bindings"][0]
+            self.assertEqual(scan["arrivals"], 0)
+            self.assertEqual(scan["processed"], 0)
+            self.assertEqual(len(documents.list_documents(state="processed")), 1)
+            self.assertEqual(len(documents.list_documents()), 2,
+                             "an edit at a known path registers no new document "
+                             "(the seeded original and the one arrival remain)")
+
+            # the explicit run is the one sanctioned path for edits: the
+            # edited bytes register as a NEW document under their own identity
+            # and process on the spot
+            binding = documents.bindings(pipeline="doc")[0]["binding_id"]
+            run = pipelines.run_document("doc", note, binding_id=binding,
+                                         explicit=True)
+            self.assertFalse(run.get("failed"), run)
+            rows = documents.list_documents(binding_id=binding)
+            self.assertEqual(len(rows), 3,
+                             "the edit is its own document; the seeded original "
+                             "and the first arrival stay as history")
+            self.assertEqual(len(documents.list_documents(binding_id=binding,
+                                                          state="processed")), 2,
+                             "the original arrival and the edited document processed")
+
     def test_wax_output_writes_are_ignored(self):
         with _Scenario() as s:
             s.drop(".wax-ep-staging.md", "staging output")

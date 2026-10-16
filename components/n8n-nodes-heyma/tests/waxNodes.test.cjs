@@ -261,6 +261,7 @@ test('WaxEp execute returns the two-output shape: results on continue, empty req
 		`console.log(JSON.stringify({ item_id: '0123456789abcdef', ep_slug: 'title-slug', state: 'completed' }));`,
 	);
 	const params = {
+		operation: 'run',
 		executeOnce: true,
 		waxExecutable: executable,
 		waxRoot: '/srv/heyma',
@@ -280,6 +281,83 @@ test('WaxEp execute returns the two-output shape: results on continue, empty req
 	assert.equal(outputs[0].length, 1);
 	assert.equal(outputs[0][0].json.state, 'completed');
 	assert.deepEqual(outputs[1], [], 'the requires port is authoring-only: no manual output');
+});
+
+test('pass nodes default to Author: execution has zero CLI side effects', async (t) => {
+	// The default operation must never touch the transport: point the CLI
+	// path at a script that RECORDS its own invocation, then prove the
+	// marker never appears — the exact guarantee an authoring graph needs.
+	const executable = await fakeWax(
+		t,
+		`require('node:fs').writeFileSync(process.argv[process.argv.length - 1], 'invoked'); process.exit(7);`,
+	);
+	const marker = executable + '.invoked';
+	const params = {
+		// operation deliberately ABSENT: author is the default
+		executeOnce: true,
+		waxExecutable: executable,
+		waxRoot: '/srv/heyma',
+		timeoutSeconds: 5,
+		pass: 'title-slug',
+		when: '[{"field": "classification", "exists": true}]',
+	};
+	const execute = {
+		getInputData: () => [{ json: {} }, { json: {} }],
+		getNodeParameter: (name, _itemIndex, fallback) => (name in params ? params[name] : fallback),
+		getNode: () => ({ id: 'test-node', name: 'test-node' }),
+		continueOnFail: () => false,
+	};
+	const outputs = await new WaxEp().execute.call(execute);
+	assert.equal(outputs.length, 2, 'the two stock main outputs keep their shape');
+	assert.equal(outputs[0].length, 2, 'one authoring summary per input item');
+	for (const item of outputs[0]) {
+		assert.equal(item.json.wax, 'author');
+		assert.equal(item.json.pass, 'title-slug');
+		assert.match(String(item.json.note), /pipeline import/u,
+			'the note explains export → compile instead of executing');
+	}
+	assert.deepEqual(outputs[1], []);
+	assert.equal(existsSync(marker), false, 'the Wax CLI was never invoked');
+});
+
+test('Run without an item key is a node error, not a silent empty run', async () => {
+	const params = {
+		operation: 'run',
+		executeOnce: true,
+		waxExecutable: '/nonexistent/wax',
+		waxRoot: '/nonexistent/heyma',
+		pass: 'title-slug',
+		// itemKey deliberately missing
+	};
+	const execute = {
+		getInputData: () => [{ json: {} }],
+		getNodeParameter: (name, _itemIndex, fallback) => (name in params ? params[name] : fallback),
+		getNode: () => ({ id: 'test-node', name: 'test-node' }),
+		continueOnFail: () => false,
+	};
+	await assert.rejects(
+		() => new WaxEp().execute.call(execute),
+		(error) => {
+			assert.equal(error.name, 'NodeOperationError');
+			assert.match(error.message, /Item Or Document ID/u);
+			return true;
+		},
+	);
+});
+
+test('the shared shell gates run-only and author-only fields by operation', () => {
+	for (const node of [new WaxEp(), new (require('../dist/nodes/WaxPassTitleSlug/WaxPassTitleSlug.node.js').WaxPassTitleSlug)()]) {
+		const byName = Object.fromEntries(node.description.properties.map((p) => [p.name, p]));
+		assert.equal(byName.operation.default, 'author', 'author is the default operation');
+		assert.deepEqual(byName.operation.options.map((o) => o.value), ['author', 'run']);
+		assert.deepEqual(byName.itemKey.displayOptions?.show?.operation, ['run'],
+			'itemKey is only asked for when running: authoring graphs show no missing-field warnings');
+		assert.equal(byName.itemKey.required, true);
+		assert.deepEqual(byName.attempt.displayOptions?.show?.operation, ['run']);
+		assert.deepEqual(byName.when.displayOptions?.show?.operation, ['author'],
+			'conditions are authoring fields');
+		assert.deepEqual(byName.skipWhen.displayOptions?.show?.operation, ['author']);
+	}
 });
 
 test('WaxPipeline Configure (Authoring) is a pure preview that never calls the CLI', async () => {

@@ -136,8 +136,11 @@ def register(path: Path, *, binding_id: str = "", origin: str = "manual",
       adopted onto that row's identity, so a retried run continues the same
       document instead of minting a new one.
 
-    Revised content at a known path — a human edit — is a NEW document: the
-    old row stays as history and the new content arrives.
+    Revised content at a known path — a human edit — registers as a NEW
+    document when an operator runs it explicitly: the old row stays as
+    history and the new content runs under its own identity. Automatic
+    scans never get here — a known path is not an arrival regardless of
+    bytes (`_arrivals`); this is the explicit `wax documents run` path.
     """
     try:
         digest = sha256_file(path)
@@ -593,11 +596,18 @@ def seed(binding: dict[str, Any]) -> dict[str, Any]:
 
 
 def _arrivals(binding: dict[str, Any]) -> list[Path]:
-    """Files whose content this binding has never seen.
+    """NEW PATHS this binding has never seen — and nothing else.
 
-    The content check is what makes identity durable: a path lookup alone
-    misses a moved file, and a global content lookup would suppress a second
-    binding over the same folder. Both lookups are per binding.
+    Arrival is a path question, not a content question: a known path is
+    never an arrival, whatever its bytes. That keeps unattended scans away
+    from human edits to notes Wax has already seen (an edit stays put until
+    an operator runs it explicitly via ``wax documents run``), and Wax's own
+    frontmatter writes are invisible twice over (the path is known AND the
+    post-run hash is recorded as ``current_sha256``). The content lookup only
+    suppresses a MOVE — the same bytes at a genuinely new path are content
+    this binding already ran, so a scan re-claims nothing. Both lookups are
+    per binding, which is what lets a second binding over the same folder
+    run the same content.
     """
     conn = ledger.connect()
     folder = Path(binding["folder"])
@@ -611,13 +621,16 @@ def _arrivals(binding: dict[str, Any]) -> list[Path]:
         except OSError:
             continue
         if row is not None:
-            if digest in (row["sha256"], row["current_sha256"] or row["sha256"]):
-                continue  # same content (or our own write): not an arrival
-            # Revised content at a known path: fall through — new content.
+            # A known path is never an arrival, regardless of bytes: human
+            # edits are deliberately NOT auto-processed. `wax documents run`
+            # is the explicit path for edits; retried failures still adopt
+            # their own row in _scan_binding (and never consume a human
+            # change — a moved digest supersedes the retry instead).
+            continue
         if conn.execute(
                 "SELECT 1 FROM documents WHERE binding_id=? AND doc_id=?",
                 (binding["binding_id"], _doc_id(digest))).fetchone():
-            continue  # this content is already known to this binding
+            continue  # a move: this content is already known to this binding
         out.append(path)
     return out
 
