@@ -118,8 +118,9 @@ gating; `after:` only orders): a dependent waits with `dependency_failed`. Failu
 is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
 `classification`, `diarization`, `clipboard-copy`, `title-slug` (hosted
-OpenAI-compatible endpoint; key from `op://`, never a file), `project-extraction`
-(pjangler project ids via TypeSafe Jev) and `ticketable` (tasks per project).
+OpenAI-compatible endpoint; key from `op://`, never a file). Implemented but
+currently disabled: `project-extraction` (pjangler project ids via TypeSafe Jev)
+and `ticketable` (tasks per project).
 `wax ep sweep` retries the ones whose latest attempt failed; the waxd worker also
 sweeps on a timer (`WAX_SWEEP_INTERVAL_S`, default 900s), and a pass that
 exhausts its attempts emits `bloodbank.audio.task.exhausted` (the dead-letter
