@@ -175,15 +175,67 @@ def connect() -> sqlite3.Connection:
                      "event_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, ep_slug TEXT NOT NULL, "
                      "command_id TEXT, type TEXT NOT NULL, outbox_id INTEGER, created_at TEXT NOT NULL)")
         conn.execute("CREATE INDEX IF NOT EXISTS pass_events_item ON pass_events(item_id)")
-        # Document enrichment scenario. A document is an ordinary Markdown file
-        # enriched in place; it deliberately has NO transcripts row (the audio
-        # provenance a transcripts row asserts must never be fabricated), so
-        # pass history keys on the doc_id here instead.
+        # Compiled pipelines: the execution authority. The authored YAML under
+        # config/pipelines.d is the authoring source; nothing runs from it until
+        # `wax pipeline compile` stores it here with a content-addressed
+        # definition_id, and drift between the two is always computable.
+        # source/source_ref/authored_id record WHERE the graph was authored
+        # ('yaml' file path / 'n8n' workflow export) so an import can name its
+        # origin and discovery can show it.
+        conn.execute("CREATE TABLE IF NOT EXISTS pipelines ("
+                     "name TEXT PRIMARY KEY, version INTEGER NOT NULL, definition_id TEXT NOT NULL, "
+                     "definition TEXT NOT NULL, compiled_at TEXT NOT NULL, "
+                     "source TEXT NOT NULL DEFAULT 'yaml', source_ref TEXT, authored_id TEXT)")
+        for name, kind in {"source": "TEXT NOT NULL DEFAULT 'yaml'",
+                           "source_ref": "TEXT", "authored_id": "TEXT"}.items():
+            known = {row["name"] for row in conn.execute("PRAGMA table_info(pipelines)")}
+            if name not in known:
+                try:
+                    conn.execute(f"ALTER TABLE pipelines ADD COLUMN {name} {kind}")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+        # The plan provenance: which authority (live registry vs one compiled
+        # transcription pipeline) minted this item's plan.
+        conn.execute("CREATE TABLE IF NOT EXISTS processing_plans ("
+                     "item_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, definitions TEXT NOT NULL, "
+                     "created_at TEXT NOT NULL)")
+        known = {row["name"] for row in conn.execute("PRAGMA table_info(processing_plans)")}
+        if "source" not in known:
+            try:
+                conn.execute("ALTER TABLE processing_plans ADD COLUMN source TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        # Document enrichment scenario, per folder binding. Identity is
+        # content AT FIRST SIGHT (doc_id) tracked per binding, so the same
+        # content under two pipelines keeps separate outcomes, and Wax's own
+        # frontmatter writes (current_sha256) can never re-register a document
+        # it just enriched. state: pending|processing|processed|failed|seeded.
+        shape = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+        if shape and "binding_id" not in shape:
+            # Pre-binding layout (no production data ever ran it): keep the
+            # rows, rename the table out of the way rather than dropping.
+            conn.execute("ALTER TABLE documents RENAME TO documents_prebinding")
+            conn.execute("DROP INDEX IF EXISTS documents_pipeline")
         conn.execute("CREATE TABLE IF NOT EXISTS documents ("
-                     "doc_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, path TEXT NOT NULL, "
-                     "bytes INTEGER, origin TEXT, processed_at TEXT, processed_pipeline TEXT, "
-                     "processed_definition_id TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL)")
-        conn.execute("CREATE INDEX IF NOT EXISTS documents_pipeline ON documents(processed_pipeline)")
+                     "binding_id TEXT NOT NULL, doc_id TEXT NOT NULL, path TEXT NOT NULL, "
+                     "sha256 TEXT NOT NULL, current_sha256 TEXT, bytes INTEGER, origin TEXT, "
+                     "state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, "
+                     "last_attempt_at TEXT, run_started_at TEXT, last_error TEXT, "
+                     "first_seen TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                     "PRIMARY KEY (binding_id, doc_id))")
+        conn.execute("CREATE INDEX IF NOT EXISTS documents_doc ON documents(doc_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS documents_path ON documents(binding_id, path)")
+        # One effective run per (binding, document, pipeline, compiled
+        # definition): the durable receipt that makes a duplicate arrival a
+        # no-op while a FAILED arrival stays retryable until its attempt bound.
+        conn.execute("CREATE TABLE IF NOT EXISTS document_receipts ("
+                     "binding_id TEXT NOT NULL, doc_id TEXT NOT NULL, pipeline TEXT NOT NULL, "
+                     "definition_id TEXT NOT NULL, state TEXT NOT NULL, "
+                     "attempts INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT, "
+                     "completed_at TEXT, exhausted_at TEXT, last_error TEXT, "
+                     "PRIMARY KEY (binding_id, doc_id, pipeline, definition_id))")
         # Folder bindings are compiled from a pipeline's authored folders. They
         # are new-arrivals-only: the first scan seeds every existing file as a
         # known document WITHOUT processing it, and historical coverage always
@@ -193,13 +245,6 @@ def connect() -> sqlite3.Connection:
                      "enabled INTEGER NOT NULL DEFAULT 1, seeded_at TEXT, last_scan_at TEXT, "
                      "documents_seen INTEGER NOT NULL DEFAULT 0, documents_processed INTEGER NOT NULL DEFAULT 0, "
                      "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
-        # Compiled pipelines: the execution authority. The authored YAML under
-        # config/pipelines.d is the authoring source; nothing runs from it until
-        # `wax pipeline compile` stores it here with a content-addressed
-        # definition_id, and drift between the two is always computable.
-        conn.execute("CREATE TABLE IF NOT EXISTS pipelines ("
-                     "name TEXT PRIMARY KEY, version INTEGER NOT NULL, definition_id TEXT NOT NULL, "
-                     "definition TEXT NOT NULL, compiled_at TEXT NOT NULL)")
         _local.conn = conn
     return conn
 

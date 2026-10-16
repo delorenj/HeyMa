@@ -295,16 +295,30 @@ is not, register it with `POST /v1/index` and the repo's `.project.json`, never
 ## Document runs
 
 The same runner also enriches **plain Markdown documents** — no audio item, no
-`transcripts` row, no rename. A document is content-addressed:
-`doc_id = "doc-" + sha256(file bytes)[:16]`, recorded in the `documents` ledger
-table with its first-seen path. The same bytes at a new path are the same
-document (a scan re-claims nothing), and a changed file is a new `doc_id`.
+`transcripts` row, no rename. A document is content-addressed at first sight:
+`doc_id = "doc-" + sha256(file bytes)[:16]`, tracked **per folder binding** in
+the `documents` ledger table. The same bytes under a second binding are a
+second registration (overlapping pipelines keep separate outcomes); the same
+bytes at a new path within one binding are the same document (a scan
+re-claims nothing).
+
+Identity survives Wax's own writes: a run's frontmatter output changes the
+file hash, so every run records the post-run hash as `current_sha256` on the
+same row — the next scan sees its own write as known content, never as a new
+arrival. A **human** edit after processing is genuinely new content and
+arrives as a new document (no-clobber frontmatter rules still protect human
+values). A retried failure adopts the failed row's identity instead of
+minting a fresh `doc_id`.
+
+Pass rows key on the binding-scoped key `doc-<sha16>[@<binding-id>]`, so
+gating, attempts and outcome tallies behave exactly like audio.
 
 Differences from an audio run, all enforced in `passes.run()`:
 
 - the pass must declare `capabilities: [document]` (with or without `audio`);
   otherwise it records `skipped` / `inapplicable_capability` and satisfies
-  ordering exactly like any other skip;
+  ordering exactly like any other skip — a dependency gated on an
+  inapplicable pass RUNS, it is never silently dropped;
 - the note is the document itself; there is no `transcripts` provenance block,
   no `transcript.slug` rename, and `md_for()` falls back to the document path
   for `{md_path}` placeholders;
@@ -312,6 +326,15 @@ Differences from an audio run, all enforced in `passes.run()`:
   result declares events. Document enrichment proposes frontmatter (and, with
   `body_mutation`, body edits) only; anything that should become a Bloodbank
   fact waits for the audio flow or an explicit n8n workflow.
+
+The durable receipt is per **(binding, document, pipeline, compiled
+definition)** in `document_receipts`: a completed receipt makes a duplicate
+arrival a no-op; a `failed`/`halted` receipt counts attempts and
+dead-letters at `WAX_DOCUMENT_MAX_ATTEMPTS` (default 3) with `exhausted_at`,
+after which scans stop retrying it (visible in the catalog). A per-document
+run lock (compare-and-set on `documents.state`) makes concurrent scans and
+manual runs safe: exactly one wins, and a crashed `processing` claim older
+than `WAX_DOCUMENT_STALE_RUN_S` (default 900s) is reclaimable.
 
 ## Safe discovery: `wax catalog`
 
@@ -322,10 +345,15 @@ purpose, `capabilities`, availability **and why** (`available`, `disabled`,
 declared emissions, and a bounded outcome tally per state (`completed`,
 `failed`, `skipped`, `running`, `exhausted`, `stale` — counts at the current
 version, older versions folded into `stale`). Pipelines (below) appear with
-authored/compiled identity, drift, graph and bindings. The Never list is
-enforced by an allowlist in `src/wax/catalog.py`: no `env`, no command argv, no
-result bodies, no stderr — a key added to the catalog is a key a hosted surface
-may display, so additions are deliberate.
+authored/compiled identity, drift, the **frozen compiled graph** (nodes with
+their authored n8n names, conditions, per-node registry drift; the stored edge
+list, never re-derived from the live registry), bindings with scan timing,
+bounded `recent_runs` from the durable receipts, and a `worker` freshness
+block (heartbeat age, pipeline-enabled state, document scan cadence) that
+distinguishes *live*, *healthy idle* and *worker down*. The Never list is
+enforced by an allowlist in `src/wax/catalog.py`: no `env`, no command argv,
+no result bodies, no stderr — a key added to the catalog is a key a hosted
+surface may display, so additions are deliberate.
 
 ## Pipelines
 
@@ -338,36 +366,90 @@ description: Document enrichment standard
 trigger: documents          # transcription | documents | manual
 enabled: false
 failure_policy: independent # independent | halt
-nodes: [frontmatter-stamp, classification, title-slug]
-bindings:
-  - folder: /home/delorenj/d/DocsInbox
+folders: [/home/delorenj/d/Inbox/Wax]
+passes: [classification, title-slug]
 ```
+
+A pass entry may also be an object with per-node graph authoring:
+`{slug: title-slug, when: [...], requires: [classification], after: [...]}` —
+the same mapping an n8n import produces.
+
+**The compiled definition is frozen and is the only thing that executes.**
+Each node carries the full runnable pass definition as it stood at compile
+time (command, env, edges, conditions, capabilities, version) and the edge
+list is stored, not re-derived. A registry edit therefore changes nothing
+until an explicit recompile; `registry_drift` in the catalog names exactly
+which frozen nodes no longer match the registry.
 
 - **Compile is explicit**: `wax pipeline compile [names…]` (no args = all
   authored). The compiled definition and its sha256 `definition_id` are stored
   in the `pipelines` table; `version` increments when the definition changes.
-  Nothing recompiles on its own — `wax pipeline status`/`list` report `drift`
+  Nothing recompiles on its own — `wax pipeline list` reports `drift`
   (authored ≠ compiled) until a human or n8n compiles, and drift is a visible
   badge in Holocene, never an error.
-- A `trigger: transcription` pipeline is a **compiled view** of the plan the
-  worker already executes — it is never a second scheduler. `documents` and
-  `manual` pipelines are executed by `wax documents scan|run` only.
+- A `requires` edge naming a pass **outside the graph is a compile error** —
+  a missing required dependency is never silently dropped. `after` edges may
+  leave the graph (vacuously satisfied) and are recorded as `after_external`.
+  Cycles, duplicate passes, unknown slugs and non-automatic passes in a
+  `transcription` pipeline are all loud compile failures.
+- With exactly one compiled **and enabled** `trigger: transcription` pipeline,
+  new audio plans are minted from its frozen definition
+  (`pipelines.transcription_authority()`); with none, the legacy
+  live-registry plan stands; with more than one, the choice is refused and
+  recorded (`ambiguous_transcription_authority`) before falling back — an
+  ambiguous graph is never fabricated as the active one. Items with stored
+  plans keep them; completed plans are immutable.
 - `failure_policy: halt` stops a document run at the first failed node;
   `independent` runs siblings anyway. Either way the run is recorded and only a
-  fully-terminal run writes the processed receipt — a failed pass stays
-  retryable, and completed passes replay as no-ops on re-run (one effective run
-  per binding/revision/definition).
+  fully-terminal run writes the completed receipt — a failed pass stays
+  retryable, and completed passes replay as no-ops on re-run.
+
+## Authoring in n8n: `wax pipeline import`
+
+An exported n8n workflow JSON is a second authoring source — nothing more:
+
+```
+wax pipeline import <export.json> [--name slug]
+```
+
+- the **Wax Pipeline** wrapper node supplies trigger / folders / failure
+  policy / enabled / description;
+- **Wax Pass** nodes (the per-pass node types generated from
+  `WaxPassNodeBase`, or the generic Wax Enrichment Pass) are the graph nodes,
+  with optional `when` / `skipWhen` JSON conditions;
+- a **`main`** connection is a continue edge (`after`, ordering only); a
+  **`requirement`** connection is a gated edge (`requires`);
+- sticky notes are annotations; everything else — native triggers, actions,
+  dynamic (`=`-prefixed) parameters, unknown connection types, cycles,
+  duplicate passes — is **rejected loudly**. An exported schedule trigger is
+  rejected by construction, so n8n can never become a second scheduler.
+
+Import compiles the frozen definition exactly like YAML authoring and stores
+the source identity (`n8n`, workflow name, export hash). Re-importing a
+changed export is the explicit adopt; `drift` for an n8n-sourced pipeline
+reports the workflow identity (authored content lives in n8n, which Wax
+cannot read), and `registry_drift` still reports frozen-vs-registry movement.
 
 ## Document folder bindings
 
 A binding (`documents` trigger) is **new-arrivals-only**:
 
-- `wax documents scan [pipeline]` seeds a binding by registering every document
-  already in the folder **without processing** (a receipt, not a backfill), then
-  processes only files that arrive afterwards.
-- Document runs never write into a bound folder the pipeline listens to (Wax
-  output goes elsewhere), and a manual `wax documents run <pipeline> <file>` is
-  the explicit, audited backfill tool.
-- `wax documents list|scan|run`, `wax pipeline bindings`, and the catalog all
-  report binding state: folder existence, document counts, unprocessed counts,
-  last scan time.
+- the first scan of an **existing** folder seeds it by registering every
+  document already there **without processing** (state `seeded`); a missing
+  folder is reported `folder_missing` and never claims to be seeded — the day
+  it appears, it seeds then. Covering seeded history needs an explicit
+  `wax documents backfill <pipeline>`.
+- The worker scans bindings on its own cadence
+  (`WAX_DOCUMENT_SCAN_INTERVAL_S`, default 120s, gated on
+  `wax pipeline enable`): a file dropped into a bound folder processes
+  without anyone typing a scan, and **failed arrivals retry each scan** until
+  they recover or exhaust their attempt budget. The scan is bounded and
+  lock-guarded (no overlapping runs, concurrent CLI scans are safe).
+- `wax documents list --binding B --state pending|seeded|processed|failed`,
+  `wax pipeline bindings`, and the catalog all report binding state: folder
+  existence, document counts by state, exhaustion counts, last scan time, and
+  the worker heartbeat that says whether anyone is scanning at all.
+- `wax documents run <pipeline> <file> [--binding B]` is the explicit manual
+  executor; without `--binding` it defers to any binding that already
+  completed the same content at the same definition (a duplicate drop is a
+  no-op), while bindings never suppress one another.

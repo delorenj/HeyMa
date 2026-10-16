@@ -336,9 +336,12 @@ def ordered(reg):
 def ensure_plan(item_id):
     conn = ledger.connect()
     row = conn.execute("SELECT definitions FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
-    reg = registry()
-    order = ordered(reg)
-    definitions = {slug: reg[slug] for slug in order if reg[slug].get("auto")}
+    # Plan authority: with exactly one compiled+enabled transcription pipeline,
+    # NEW plans come from its frozen definition; otherwise the live registry
+    # stands (legacy fallback). Items that already hold a plan keep it unless
+    # unfinished, exactly as before — historical completions are immutable.
+    from . import pipelines
+    definitions, provenance = pipelines.transcription_authority()
     if row:
         receipt = conn.execute("SELECT 1 FROM completions WHERE item_id=?", (item_id,)).fetchone()
         if receipt:
@@ -351,9 +354,12 @@ def ensure_plan(item_id):
     encoded = json.dumps(definitions, sort_keys=True, default=str)
     import hashlib
     plan_id = hashlib.sha256(encoded.encode()).hexdigest()
-    conn.execute("INSERT INTO processing_plans(item_id,plan_id,definitions,created_at) VALUES(?,?,?,?) "
-                 "ON CONFLICT(item_id) DO UPDATE SET plan_id=excluded.plan_id,definitions=excluded.definitions",
-                 (item_id, plan_id, encoded, sentinel.utcnow()))
+    conn.execute("INSERT INTO processing_plans(item_id,plan_id,definitions,created_at,source) "
+                 "VALUES(?,?,?,?,?) "
+                 "ON CONFLICT(item_id) DO UPDATE SET plan_id=excluded.plan_id,"
+                 "definitions=excluded.definitions,source=excluded.source",
+                 (item_id, plan_id, encoded, sentinel.utcnow(),
+                  json.dumps(provenance, sort_keys=True, default=str)))
     return definitions
 
 
@@ -886,7 +892,8 @@ def _write_pass_note(md: Path, item_id: str, slug: str, entry: dict[str, Any]) -
 
 @serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
-         definition=None) -> dict[str, Any]:
+         definition=None, dependency_versions: Optional[dict[str, int]] = None,
+         ) -> dict[str, Any]:
     """Run one pass against one item. Independent of its siblings, gated only by `requires`.
 
     `attempt` defaults to one past the highest attempt already recorded for
@@ -894,20 +901,27 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     run` — cannot mint a command_id that has already been issued.
     """
     reg = registry()
-    bad = quarantined(reg)
-    if slug in bad:
-        raise PassError(f"pass {slug!r} is quarantined: {bad[slug]}")
     ep = definition or reg.get(slug)
     if ep is None:
         raise PassError(f"unknown pass {slug!r}; known: {sorted(reg)}")
-    if not ep.get("enabled"):
-        raise PassError(f"pass {slug!r} is disabled in {ep.get('_path')}")
+    if definition is None:
+        # Live-registry execution consults registry health; a FROZEN compiled
+        # definition does not — it was validated at compile and is the thing
+        # executing, so a later registry edit cannot wedge a compiled pipeline.
+        bad = quarantined(reg)
+        if slug in bad:
+            raise PassError(f"pass {slug!r} is quarantined: {bad[slug]}")
+        if not ep.get("enabled"):
+            raise PassError(f"pass {slug!r} is disabled in {ep.get('_path')}")
     attempt = _next_attempt(item_id, slug) if attempt is None else int(attempt)
     for dependency in ep.get("requires") or []:
         row = ledger.connect().execute(
             "SELECT state,version FROM passes WHERE item_id=? AND ep_slug=?", (item_id, dependency)
         ).fetchone()
-        wanted = (reg.get(dependency) or {}).get("version")
+        if dependency_versions is not None and dependency in dependency_versions:
+            wanted = dependency_versions[dependency]
+        else:
+            wanted = (reg.get(dependency) or {}).get("version")
         if row and row["state"] in ("completed", "skipped") and row["version"] == wanted:
             continue
         # A gate that fires is a real attempt. It used to be recorded as attempt 1

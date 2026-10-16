@@ -129,21 +129,14 @@ def pass_catalog(reg: Optional[dict[str, dict[str, Any]]] = None) -> dict[str, A
 
 # ---------------------------------------------------------------- pipelines --
 
-def _edges(reg: dict[str, dict[str, Any]], slugs: list[str]) -> list[dict[str, str]]:
-    """The induced dependency graph: registry edges restricted to these nodes."""
-    member = set(slugs)
-    edges = []
-    for slug in slugs:
-        ep = reg.get(slug) or {}
-        for kind in ("requires", "after"):
-            for dep in ep.get(kind) or []:
-                if dep in member:
-                    edges.append({"from": dep, "to": slug, "kind": kind})
-    return edges
-
 
 def pipeline_catalog() -> dict[str, Any]:
-    """Every pipeline with authored/compiled identity, drift, graph and outcomes."""
+    """Every pipeline with authored/compiled identity, drift, graph and outcomes.
+
+    The graph shown is the FROZEN compiled graph (stored nodes and edges), not
+    a re-derivation from the live registry; registry drift is reported beside
+    it so an operator can see what a recompile would change.
+    """
     reg = passes.registry()
     bad = passes.quarantined(reg)
     sources = pipelines.authored()
@@ -154,6 +147,11 @@ def pipeline_catalog() -> dict[str, Any]:
         entry: dict[str, Any] = {"name": name}
         source = sources.get(name)
         compiled_def = current.get(name)
+        if compiled_def is not None:
+            entry["source"] = compiled_def.get("source") or "yaml"
+            entry["source_ref"] = compiled_def.get("source_ref")
+        elif source is not None:
+            entry["source"] = "yaml"
         if source is not None:
             entry["description"] = source.get("description") or ""
             entry["authored_path"] = source.get("_path")
@@ -170,25 +168,55 @@ def pipeline_catalog() -> dict[str, Any]:
                 "trigger": definition.get("trigger"),
                 "enabled": bool(definition.get("enabled")),
                 "failure_policy": definition.get("failure_policy", "independent"),
-                # A transcription pipeline is a compiled VIEW of the registry
-                # plan the worker already executes — never a second scheduler.
-                "executed_by": ("worker (registry plan)" if definition.get("trigger") == "transcription"
+                # With exactly one enabled transcription pipeline compiled, the
+                # audio plan authority is that frozen definition; otherwise the
+                # worker's registry plan stands and this is only a view.
+                "executed_by": ("worker (compiled plan authority)" if definition.get("trigger") == "transcription"
+                                and definition.get("enabled") else
+                                "worker (registry plan)" if definition.get("trigger") == "transcription"
                                 else "wax pipeline run/scan"),
             })
             document_scenario = definition.get("trigger") in ("documents", "manual")
+            drift_map = {d["slug"]: d for d in
+                         pipelines.registry_drift(definition, reg)["changed"]}
             nodes = []
-            for slug in slugs:
-                ep = reg.get(slug) or {}
-                node: dict[str, Any] = {
+            for node in definition.get("passes") or []:
+                if not isinstance(node, dict):
+                    continue
+                slug = node.get("slug")
+                frozen = node.get("registry") or {}
+                live = reg.get(slug) or {}
+                graph_node: dict[str, Any] = {
                     "slug": slug,
-                    "availability": _availability(ep, bad.get(slug)),
-                    "capabilities": list(ep.get("capabilities") or []),
+                    # Authoring identity (the n8n node name) preserved from import.
+                    **({"name": node["name"]} if node.get("name") else {}),
+                    "availability": _availability(
+                        {"enabled": frozen.get("enabled"), "description": frozen.get("description"),
+                         "error": None}, None),
+                    "live_availability": _availability(live, bad.get(slug)),
+                    "capabilities": list(frozen.get("capabilities") or []),
+                    "version": int(frozen.get("version") or 1),
                 }
+                if graph_node["availability"]["state"] == "available":
+                    graph_node["availability"]["reason"] = "compiled definition"
+                conditions = {}
+                if frozen.get("when") is not None:
+                    conditions["when"] = frozen["when"]
+                if frozen.get("skip_when") is not None:
+                    conditions["skip_when"] = frozen["skip_when"]
+                if conditions:
+                    graph_node["conditions"] = conditions
+                if slug in drift_map:
+                    graph_node["registry_drift"] = drift_map[slug]
                 if document_scenario:
-                    node["applicable"] = "document" in node["capabilities"]
-                nodes.append(node)
+                    graph_node["applicable"] = "document" in graph_node["capabilities"]
+                nodes.append(graph_node)
             entry["nodes"] = nodes
-            entry["edges"] = _edges(reg, slugs)
+            # The FROZEN edge list as compiled — never re-derived from the registry.
+            entry["edges"] = [dict(e) for e in pipelines._node_edges(definition)]
+            if definition.get("after_external"):
+                entry["after_external"] = definition["after_external"]
+            entry["registry_drift"] = pipelines.registry_drift(definition, reg)
             entry["bindings"] = [
                 {"binding_id": b["binding_id"], "folder": b["folder"],
                  "enabled": b["enabled"], "seeded_at": b["seeded_at"],
@@ -196,15 +224,23 @@ def pipeline_catalog() -> dict[str, Any]:
                  "folder_exists": b["folder_exists"]}
                 for b in documents.bindings(pipeline=name)
             ]
-            # Truthful outcomes: documents processed under this pipeline, plus
+            # Truthful outcomes: durable receipts under this pipeline, plus
             # bounded per-node state counts for its passes.
             try:
                 processed = conn.execute(
-                    "SELECT COUNT(*) AS n FROM documents WHERE processed_pipeline=?",
-                    (name,)).fetchone()
+                    "SELECT COUNT(*) AS n FROM document_receipts "
+                    "WHERE pipeline=? AND state='completed'", (name,)).fetchone()
                 entry["documents_processed"] = int(processed["n"] if processed else 0)
             except Exception:  # noqa: BLE001
                 entry["documents_processed"] = 0
+            entry["recent_runs"] = [
+                {"doc_id": r["doc_id"], "path": r.get("path"),
+                 "state": r["state"], "attempts": int(r["attempts"] or 0),
+                 "last_attempt_at": r["last_attempt_at"], "completed_at": r["completed_at"],
+                 "exhausted_at": r["exhausted_at"],
+                 "error": (r["last_error"] or "")[:200] if r.get("last_error") else None}
+                for r in documents.recent_receipts(pipeline=name, limit=10)
+            ]
             tally = _tally()
             entry["outcomes"] = {
                 slug: _pass_outcomes(slug, int((reg.get(slug) or {}).get("version") or 1), tally)
@@ -215,6 +251,7 @@ def pipeline_catalog() -> dict[str, Any]:
         "generated_at": sentinel.utcnow(),
         "pipelines": rows,
         "document_status": documents.status(),
+        "worker": documents.read_worker_heartbeat(),
     }
 
 

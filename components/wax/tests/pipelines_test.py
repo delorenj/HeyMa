@@ -35,7 +35,9 @@ def _fake_frontmatters(args):
 
 
 def _pass(directory: Path, slug: str, *, result: dict | None, fail: bool = False,
-          requires: list | None = None, after: list | None = None) -> None:
+          requires: list | None = None, after: list | None = None,
+          auto: bool = False, version: int = 1,
+          capabilities: str = "[document]") -> None:
     script = directory / slug
     if fail:
         script.write_text("#!/bin/sh\necho 'reason_code=provider_down' >&2\nexit 1\n")
@@ -46,8 +48,8 @@ def _pass(directory: Path, slug: str, *, result: dict | None, fail: bool = False
         script.write_text("#!/bin/sh\nprintf '%s\\n' '" + json.dumps(payload) + "'\n")
     script.chmod(0o755)
     definition = (
-        f"slug: {slug}\nversion: 1\ndescription: {slug} pass\n"
-        "enabled: true\nauto: false\ncapabilities: [document]\n"
+        f"slug: {slug}\nversion: {version}\ndescription: {slug} pass\n"
+        f"enabled: true\nauto: {str(auto).lower()}\ncapabilities: {capabilities}\n"
         f"requires: {json.dumps(requires or [])}\nafter: {json.dumps(after or [])}\n"
         f"command: [{json.dumps(str(script))}, \"{{md_path}}\"]\n"
     )
@@ -71,9 +73,9 @@ class _Graph:
             after = ["a"] if slug == "d" else None
             _pass(self.registry, slug, result=None, requires=requires, after=after)
 
-    def write_pipeline(self, passes: str, **extra) -> None:
+    def write_pipeline(self, passes, name: str = "graph", **extra) -> None:
         doc = {
-            "name": "graph",
+            "name": name,
             "version": 1,
             "description": "test graph",
             "trigger": "manual",
@@ -82,7 +84,7 @@ class _Graph:
             "passes": passes,
         }
         doc.update(extra)
-        (self.pipes / "graph.yaml").write_text(json.dumps(doc))
+        (self.pipes / f"{name}.yaml").write_text(json.dumps(doc))
 
     def __enter__(self):
         self.stack = [
@@ -180,9 +182,11 @@ class PipelineFailurePolicyTest(unittest.TestCase):
             self.assertEqual(states["a"]["state"], "failed")
             self.assertEqual(states["b"]["reason_code"], "dependency_failed")
             self.assertEqual(states["c"]["state"], "completed")
-            # the failed run withheld the processed receipt
-            row = documents.get(run["doc_id"])
-            self.assertIsNone(row["processed_at"])
+            # the failed run withheld the completed receipt: the durable
+            # receipt is 'failed' (retryable) and the document is not processed
+            receipt = documents.receipt("", run["doc_id"], "graph", run["definition_id"])
+            self.assertEqual(receipt["state"], "failed")
+            self.assertEqual(documents.get(run["doc_id"])["state"], "failed")
 
     def test_after_only_orders_and_survives_failure(self):
         with _Graph() as g:
@@ -219,6 +223,98 @@ class PipelineFailurePolicyTest(unittest.TestCase):
             run = pipelines.run_document("graph", g.doc("again.md"))
             a = next(r for r in run["results"] if r["ep_slug"] == "a")
             self.assertEqual(a["state"], "completed")
+
+
+class FrozenDefinitionTest(unittest.TestCase):
+    """Compiled storage freezes runnable definitions; the registry moves on
+    visibly, not behaviorally, until an explicit recompile."""
+
+    def test_registry_change_after_compile_changes_nothing_until_recompile(self):
+        with _Graph() as g:
+            g.write_pipeline(["a", "b"])
+            pipelines.compile(["graph"])
+            # the registry moves on: version bump on a
+            _pass(g.registry, "a", result=None, version=2)
+            # the compiled graph still runs the FROZEN definition
+            run = pipelines.run_document("graph", g.doc())
+            self.assertEqual(run["failed"], 0)
+            a = next(r for r in run["results"] if r["ep_slug"] == "a")
+            self.assertEqual(a["version"], 1, "frozen version executes, not live v2")
+            # drift is visible per node, not silent
+            drift = pipelines.registry_drift(
+                pipelines.compiled()["graph"]["definition"])
+            self.assertEqual([c["slug"] for c in drift["changed"]], ["a"])
+            self.assertEqual(drift["changed"][0]["live_version"], 2)
+            # explicit recompile adopts the registry change and clears drift
+            pipelines.compile(["graph"])
+            drift = pipelines.registry_drift(
+                pipelines.compiled()["graph"]["definition"])
+            self.assertEqual(drift["count"], 0)
+
+    def test_missing_required_dependency_is_a_loud_compile_error(self):
+        with _Graph() as g:
+            # b requires a; author a graph that includes b but not a
+            g.write_pipeline(["b", "c"])
+            out = pipelines.compile(["graph"])
+            self.assertIn("requires ['a'], which is not in this graph",
+                          out["failed"]["graph"])
+
+
+class TranscriptionAuthorityTest(unittest.TestCase):
+    """New audio plans come from ONE compiled transcription pipeline, or the
+    legacy registry plan stands; an ambiguous pair is never fabricated."""
+
+    def test_authority_freezes_falls_back_and_refuses_ambiguity(self):
+        with _Graph() as g:
+            _pass(g.registry, "t1", result=None, auto=True)
+            _pass(g.registry, "t2", result=None, auto=True, after=["t1"])
+
+            # no compiled transcription pipeline: the legacy registry plan
+            definitions, provenance = pipelines.transcription_authority()
+            self.assertEqual(provenance["kind"], "registry")
+            self.assertEqual(set(definitions), {"t1", "t2"})
+
+            # one compiled+enabled pipeline: its frozen graph is the authority
+            g.write_pipeline(["t1", "t2"], trigger="transcription", enabled=True)
+            pipelines.compile(["graph"])
+            definitions, provenance = pipelines.transcription_authority()
+            self.assertEqual(provenance["kind"], "pipeline")
+            self.assertEqual(provenance["name"], "graph")
+            self.assertEqual(definitions["t2"]["after"], ["t1"])
+
+            # ensure_plan mints from the authority and records its provenance
+            plan = passes.ensure_plan("item-1")
+            self.assertEqual(set(plan), {"t1", "t2"})
+            row = ledger.connect().execute(
+                "SELECT source FROM processing_plans WHERE item_id='item-1'").fetchone()
+            self.assertEqual(json.loads(row["source"])["kind"], "pipeline")
+
+            # a registry edit after compile does not change NEW plans
+            _pass(g.registry, "t2", result=None, auto=True, after=["t1"], version=2)
+            again = passes.ensure_plan("item-2")
+            self.assertEqual(set(again), {"t1", "t2"})
+            self.assertEqual(again["t2"]["version"], 1, "frozen version, not live v2")
+
+            # two enabled transcription pipelines: ambiguous, refuse loudly and
+            # fall back to the registry plan (never fabricate an active pick)
+            g.write_pipeline(["t1"], name="graph2", trigger="transcription",
+                             enabled=True)
+            pipelines.compile(["graph2"])
+            definitions, provenance = pipelines.transcription_authority()
+            self.assertEqual(provenance["kind"], "registry")
+            self.assertIn("multiple enabled transcription pipelines",
+                          provenance.get("fallback_reason", ""))
+            transitions = ledger.connect().execute(
+                "SELECT cause_code FROM transitions WHERE machine='pipeline' "
+                "AND cause_code='ambiguous_transcription_authority'").fetchall()
+            self.assertTrue(transitions, "the refusal is recorded, not just logged")
+
+    def test_transcription_pipeline_rejects_manual_passes_at_compile(self):
+        with _Graph() as g:
+            g.write_pipeline(["a"], trigger="transcription", enabled=True)
+            out = pipelines.compile(["graph"])
+            self.assertIn("only compile automatic, enabled passes",
+                          out["failed"]["graph"])
 
 
 if __name__ == "__main__":

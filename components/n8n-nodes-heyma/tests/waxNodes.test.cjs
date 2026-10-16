@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { existsSync } = require('node:fs');
 const { chmod, mkdtemp, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
@@ -51,6 +52,41 @@ test('builds catalog, pipeline, and document args with name/path validation', ()
 	assert.throws(() => buildWaxSubcommandArgs({ kind: 'documentsRun', pipeline: 'ok', file: 'relative.md' }), /absolute/u);
 });
 
+test('builds workflow-import args and accepts binding-scoped document keys', () => {
+	assert.deepEqual(
+		buildWaxSubcommandArgs({
+			kind: 'pipelineImport',
+			file: '/srv/exports/wax-documents-workflow.json',
+		}),
+		['--json', 'pipeline', 'import', '/srv/exports/wax-documents-workflow.json'],
+	);
+	assert.deepEqual(
+		buildWaxSubcommandArgs({
+			kind: 'pipelineImport',
+			file: '/srv/exports/wax-documents-workflow.json',
+			name: 'doc-graph',
+		}),
+		['--json', 'pipeline', 'import', '/srv/exports/wax-documents-workflow.json', '--name', 'doc-graph'],
+	);
+	assert.throws(
+		() => buildWaxSubcommandArgs({ kind: 'pipelineImport', file: 'exports/wax.json' }),
+		/absolute/u,
+	);
+	assert.throws(
+		() => buildWaxSubcommandArgs({ kind: 'pipelineImport', file: '/srv/exports/wax.txt' }),
+		/\.json/u,
+	);
+	// document runs are binding-scoped: doc-<16hex>@<binding-id> is a legal key
+	assert.deepEqual(
+		buildWaxSubcommandArgs({
+			kind: 'epRun',
+			slug: 'title-slug',
+			itemKey: 'doc-0123456789abcdef@doc-docs-ca9365c0cba1',
+		}),
+		['--json', 'ep', 'run', 'title-slug', 'doc-0123456789abcdef@doc-docs-ca9365c0cba1'],
+	);
+});
+
 test('rejects array responses even though ep list emits one natively', () => {
 	assert.throws(() => parseWaxOutput('[{"slug":"a"}]'), /must be an object/u);
 });
@@ -98,12 +134,24 @@ test('surfaces a CLI failure with exit status', async (t) => {
 // ---------------------------------------------------------------------------
 // node contracts
 
-test('both nodes are registered and expose the CLI transport parameters', () => {
-	assert.deepEqual(packageJson.n8n.nodes, [
+test('every node is registered and exposes the CLI transport parameters', () => {
+	const nodes = packageJson.n8n.nodes;
+	for (const entry of [
 		'dist/nodes/HeyMa/HeyMa.node.js',
 		'dist/nodes/WaxEp/WaxEp.node.js',
 		'dist/nodes/WaxPipeline/WaxPipeline.node.js',
-	]);
+	]) {
+		assert.ok(nodes.includes(entry), `manifest must list ${entry}`);
+	}
+	// Per-pass node types are generated from the catalog (npm run nodes:passes):
+	// every manifest entry must exist on disk as a generated source.
+	const passNodes = nodes.filter((entry) => entry.startsWith('dist/nodes/wax-pass-'));
+	assert.ok(passNodes.length >= 11, `expected the generated per-pass nodes, got ${passNodes.length}`);
+	for (const entry of passNodes) {
+		const rel = entry.replace(/^dist\/nodes\//u, '').replace(/\.js$/u, '.ts');
+		assert.ok(existsSync(join('nodes', rel)),
+			`manifest entry ${entry} has no generated source`);
+	}
 	for (const node of [new WaxEp(), new WaxPipeline()]) {
 		const names = node.description.properties.map((p) => p.name);
 		for (const shared of ['waxExecutable', 'waxRoot', 'timeoutSeconds', 'executeOnce']) {
@@ -111,6 +159,23 @@ test('both nodes are registered and expose the CLI transport parameters', () => 
 		}
 		assert.equal(node.description.defaults.name.length > 0, true);
 	}
+});
+
+test('per-pass nodes are WaxEp-derived node types with the pass fixed and gated outputs', () => {
+	const { WaxPassTitleSlug } = require('../dist/nodes/wax-pass-title-slug/wax-pass-title-slug.node.js');
+	const node = new WaxPassTitleSlug();
+	assert.equal(node.description.name, 'wax-pass-title-slug');
+	const pass = node.description.properties.find((p) => p.name === 'pass');
+	assert.equal(pass.type, 'hidden');
+	assert.equal(pass.default, 'title-slug', 'the pass is fixed at generation time');
+	assert.deepEqual(node.description.outputs, ['main', 'requirement']);
+	assert.deepEqual(node.description.outputNames, ['continue', 'requires']);
+	for (const shared of ['waxExecutable', 'waxRoot', 'timeoutSeconds', 'executeOnce']) {
+		assert.ok(node.description.properties.some((p) => p.name === shared),
+			`per-pass node must declare ${shared}`);
+	}
+	// the generic node exposes the same gated/continue outputs for ad-hoc graphs
+	assert.deepEqual(new WaxEp().description.outputs, ['main', 'requirement']);
 });
 
 test('WaxEp registers passes through the CLI catalog (loadOptions), never a static list', async (t) => {

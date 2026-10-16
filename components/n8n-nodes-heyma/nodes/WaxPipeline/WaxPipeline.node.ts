@@ -15,7 +15,7 @@ import { WaxNodeBase } from '../WaxEp/WaxEpBase';
 // 2.x (NodeConnectionTypes); importing either runtime enum breaks the other.
 const MAIN_CONNECTION = 'main' as const;
 
-type PipelineOperation = 'compile' | 'show' | 'scan' | 'runDocument';
+type PipelineOperation = 'compile' | 'import' | 'show' | 'scan' | 'runDocument';
 
 /** A scan or run that ended with failed passes is a failure, even at exit zero. */
 function interpretDocumentRun(response: JsonObject) {
@@ -65,10 +65,17 @@ export class WaxPipeline extends WaxNodeBase {
 						action: 'Compile a pipeline',
 					},
 					{
-						name: 'Show',
-						value: 'show',
-						description: 'One pipeline snapshot: trigger, nodes, edges, bindings, drift',
-						action: 'Show a pipeline',
+						name: 'Import Workflow',
+						value: 'import',
+						description:
+							'Compile an exported n8n workflow JSON into a versioned pipeline (authoring → Wax)',
+						action: 'Import a workflow as a pipeline',
+					},
+					{
+						name: 'Run Document',
+						value: 'runDocument',
+						description: 'Manually run the compiled pipeline over one Markdown file',
+						action: 'Run a pipeline over a document',
 					},
 					{
 						name: 'Scan Documents',
@@ -77,10 +84,10 @@ export class WaxPipeline extends WaxNodeBase {
 						action: 'Scan document bindings',
 					},
 					{
-						name: 'Run Document',
-						value: 'runDocument',
-						description: 'Manually run the compiled pipeline over one Markdown file',
-						action: 'Run a pipeline over a document',
+						name: 'Show',
+						value: 'show',
+						description: 'One pipeline snapshot: trigger, nodes, edges, bindings, drift',
+						action: 'Show a pipeline',
 					},
 				],
 				default: 'show',
@@ -94,6 +101,25 @@ export class WaxPipeline extends WaxNodeBase {
 				placeholder: 'doc-standard',
 				description: 'Pipeline name (lowercase slug) as authored in pipelines.d',
 				displayOptions: { show: { operation: ['compile', 'show', 'runDocument'] } },
+			},
+			{
+				displayName: 'Workflow Export Path',
+				name: 'exportPath',
+				type: 'string',
+				required: true,
+				default: '',
+				placeholder: '/home/delorenj/HeyMa/components/n8n-nodes-heyma/examples/wax-documents-workflow.json',
+				description: 'Absolute path to the exported n8n workflow JSON to compile',
+				displayOptions: { show: { operation: ['import'] } },
+			},
+			{
+				displayName: 'Pipeline Name Override',
+				name: 'importName',
+				type: 'string',
+				default: '',
+				placeholder: 'leave empty to derive from the workflow name',
+				description: 'Pipeline name slug when the workflow name is not one',
+				displayOptions: { show: { operation: ['import'] } },
 			},
 			{
 				displayName: 'Compile All Authored',
@@ -146,6 +172,20 @@ export class WaxPipeline extends WaxNodeBase {
 							}
 							return undefined;
 						},
+					};
+				}
+				case 'import': {
+					const exportPath = String(this.getNodeParameter('exportPath', itemIndex, ''));
+					const importName = String(this.getNodeParameter('importName', itemIndex, '')).trim();
+					return {
+						command: {
+							kind: 'pipelineImport' as const,
+							file: exportPath,
+							...(importName ? { name: importName } : {}),
+						},
+						// A rejected import (unsupported node, dynamic expression, cycle,
+						// missing dependency) is a CLI error (non-zero exit), surfaced by
+						// the transport; there is no exit-zero failure shape to interpret.
 					};
 				}
 				case 'show': {

@@ -1,16 +1,19 @@
 name: doc-standard
-version: 1
+version: 2
 description: >
-  Ordinary Markdown document enrichment. Disabled until a real folder is
-  bound: enabled stays false so no unconfigured scenario is ever represented
-  as active. When enabled, compile creates the folder binding (unseeded), the
-  first scan seeds existing files without processing them, and only new
-  arrivals run — historical coverage requires an explicit backfill.
+  Ordinary Markdown document enrichment over the dedicated inbox folder
+  ~/d/Inbox/Wax (created empty; a binding never processes history). Enabled
+  passes with the document capability only: classification and title-slug
+  (frontmatter proposals; the audio rename contract does not apply to
+  documents). project-extraction stays out until it is enabled in the
+  registry. Compiled+enabled, the worker scans the binding on its own
+  cadence; the first scan of an existing folder seeds files without
+  processing them.
 trigger: documents
 enabled: false
 failure_policy: independent
 folders:
-  - /home/delorenj/d/DocsInbox
+  - /home/delorenj/d/Inbox/Wax
 passes:
   - classification
-  - project-extraction
+  - title-slug

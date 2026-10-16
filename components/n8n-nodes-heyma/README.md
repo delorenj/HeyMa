@@ -17,16 +17,39 @@ Runs one enrichment pass for one item or document through `wax ep run`. The pass
 
 This is a CLI-backed manual/preview operation, deliberately not a scheduler: automatic execution belongs to the Wax worker, which owns the plan, the attempt budget, and the dead-letter receipts.
 
+**Graph authoring outputs.** The node exposes two output ports: `main` (continue — ordering only) and `requirement` (gated — the target pass `requires` this one). The `When` / `Skip When` parameters carry JSON conditions. `wax pipeline import` compiles all of it into the pipeline definition; the parameters are ignored at execution time.
+
+### Wax Pass nodes (`wax-pass-*`)
+
+One n8n node per registered pass — **Wax Pass · Title Slug**, **Wax Pass · Classification**, … — generated from the shared `WaxPassNodeBase` (itself the generic Wax Enrichment Pass with the pass fixed). A graph authored with per-pass nodes reads as itself in the editor. Regenerate deliberately after the pass registry changes:
+
+```bash
+cd /home/delorenj/HeyMa/components/n8n-nodes-heyma
+npm run nodes:passes   # reads `wax catalog --json`, emits nodes/wax-pass-<slug>/, updates the manifest
+```
+
+Generated files carry an AUTO-GENERATED banner and are committed: the node manifest must stay reviewable and travel-safe.
+
 ### Wax Pipeline (`WaxPipeline`)
 
 Encapsulates a whole graph — passes, trigger, folder bindings — behind pipeline-level CLI operations:
 
 - **Compile** — explicitly validate and adopt authored graphs (`wax pipeline compile`); `definition_id` exposes drift until then.
+- **Import Workflow** — compile an exported n8n workflow JSON into a versioned pipeline (`wax pipeline import`). This is the graph-authoring path: the export is mapped (wrapper → trigger/folders/policy/enabled, Wax Pass nodes → graph nodes with conditions, `main` connections → continue edges, `requirement` connections → gated edges) and validated — unsupported node types, dynamic expressions, cycles, duplicate passes and dangling requirements are rejected loudly. n8n never executes the imported graph.
 - **Show** — one pipeline snapshot: trigger, nodes, edges, bindings, drift (`wax pipeline show`).
 - **Scan Documents** — seed new bindings and process new arrivals only, never backfills (`wax documents scan`).
 - **Run Document** — manually run a compiled pipeline over one Markdown file (`wax documents run`).
 
 n8n is the authoring surface, the Wax CLI is the compiler, and Wax is the executor. The node never edits YAML and never activates anything: enabling a pipeline stays a Wax-side act.
+
+### Example workflows
+
+`examples/wax-documents-workflow.json` and `examples/wax-transcription-workflow.json` are real n8n exports showing gated (`requirement`) vs continue (`main`) edges, wrapper configuration and annotation sticky notes. Both ship with the wrapper's `enabled` toggle off — importing them compiles but activates nothing:
+
+```bash
+wax pipeline import components/n8n-nodes-heyma/examples/wax-documents-workflow.json
+wax pipeline import components/n8n-nodes-heyma/examples/wax-transcription-workflow.json
+```
 
 ## Contract shared by all nodes
 
@@ -89,3 +112,68 @@ Start Recording returns Wax fields such as `started`, `target`, `source`, and `p
 ## Compatibility
 
 Developed and validated against n8n 2.18.4 and the `@n8n/node-cli` 0.44.4 toolchain.
+
+## Deploying the document scenario (exact commands)
+
+Everything below is prepared and verified; the activation steps are yours.
+Nothing is activated by building, committing, or importing as written —
+`doc-standard` and both example workflows ship disabled.
+
+**1. The folder.** A dedicated inbox, distinct from the transcript vault
+(`~/d/Transcripts` is Wax output; binding it would double-enrich):
+
+```bash
+mkdir -p ~/d/Inbox/Wax
+```
+
+**2. Deploy the new Wax code and restart the daemon** (worker-owned scanning,
+frozen pipelines, heartbeat — the running waxd predates all of it):
+
+```bash
+cd ~/HeyMa && git pull
+systemctl --user restart waxd.service
+wax pipeline status        # the drain loop must be enabled for scanning
+```
+
+**3. Compile the documents pipeline** (creates the binding, unseeded — an
+empty folder seeds as "0 documents" and still never processes history):
+
+```bash
+wax pipeline compile doc-standard
+wax pipeline show doc-standard
+```
+
+**4. Enable and let the worker own it** (or keep it disabled and drive scans
+by hand — both are supported states):
+
+```bash
+# flip enabled: true in components/wax/config/pipelines.d/doc-standard.yaml, then:
+wax pipeline compile doc-standard
+wax documents scan doc-standard   # seeds; afterwards the worker scans every 120s
+```
+
+**5. Install this adapter into n8n** (per Install above):
+
+```bash
+cd ~/HeyMa/components/n8n-nodes-heyma && npm run build
+mkdir -p ~/.n8n/nodes && (cd ~/.n8n/nodes && npm install ~/HeyMa/components/n8n-nodes-heyma)
+# restart n8n, then the Wax Pass / Wax Pipeline / HeyMa nodes appear in the editor
+```
+
+**6. Author or import graphs in n8n** (optional — YAML authoring is equally
+first-class):
+
+```bash
+wax pipeline import ~/HeyMa/components/n8n-nodes-heyma/examples/wax-documents-workflow.json
+```
+
+Then watch it in Holocene's Wax tab (worker heartbeat, graph, recent runs) or:
+
+```bash
+wax documents list --state processed
+wax catalog --json | jq '."pipelines"'
+```
+
+Only enabled, document-capable passes run on documents: today that is
+`classification` and `title-slug`. `project-extraction` stays out of
+`doc-standard` until it is enabled in the registry.

@@ -80,6 +80,7 @@ wax reconcile [--rebuild]  # rebuild the ledger from durable sources
 wax catalog                # safe discovery snapshot (passes + pipelines) for Holocene/n8n
 wax pipeline enable|disable|status   # historical worker toggle, unchanged
 wax pipeline list|compile|show|bindings   # versioned pipeline graphs (compile is explicit)
+wax pipeline import <export.json> [--name]  # compile an authored n8n workflow export
 wax documents list|scan|backfill|run     # document registration/bindings/processing
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
@@ -143,26 +144,41 @@ To add one, use the `create-enrichment-pass` skill; see
 
 Pass YAML declares `capabilities:` (`audio` and/or `document`). The audio flow
 is unchanged; a **document run** (plain Markdown, content-addressed
-`doc-<sha16>` in the `documents` table, never a `transcripts` row) only runs
-`document`-capable passes (others skip with `inapplicable_capability`), applies
-frontmatter/body only, and rejects `events`.
+`doc-<sha16>` per folder binding in the `documents` table, never a
+`transcripts` row) only runs `document`-capable passes (others skip with
+`inapplicable_capability` — and a dependency gated on a skipped pass runs),
+applies frontmatter/body only, and rejects `events`. Identity is durable
+against Wax's own writes (`current_sha256`), retries adopt the failed row, and
+receipts are per (binding, document, pipeline, compiled definition) with an
+attempt bound (`exhausted_at` dead-letters).
 
-**Pipelines** (`config/pipelines.d/*.yaml`) are authored graphs compiled —
-explicitly, via `wax pipeline compile` — into immutable versioned definitions
-(`pipelines` table, sha256 `definition_id`). Authored-vs-compiled **drift** is
-visible state (`wax pipeline list`, Holocene), never an error. A
-`trigger: transcription` pipeline is a compiled view of the plan the worker
-already executes — not a second scheduler. Document folder bindings are
-new-arrivals-only: `wax documents scan` seeds existing files as receipts
-without processing; `wax documents run` is the explicit backfill.
+**Pipelines** (`config/pipelines.d/*.yaml`, or an n8n workflow export via
+`wax pipeline import`) are authored graphs compiled — explicitly — into
+immutable versioned definitions (`pipelines` table, sha256 `definition_id`).
+The compiled definition is **frozen**: node commands/env/edges/conditions as
+they stood at compile; execution and the catalog graph never consult the live
+registry for a compiled pipeline (registry drift is reported beside it). A
+`requires` edge naming a pass outside the graph fails compile loudly. With
+exactly one compiled+enabled `trigger: transcription` pipeline, NEW audio
+plans come from its frozen definition; with none, the legacy registry plan
+stands; ambiguity is refused and recorded. Document bindings are
+new-arrivals-only (a missing folder never claims seeded) and the worker scans
+them on its own cadence (`WAX_DOCUMENT_SCAN_INTERVAL_S`, default 120s) with
+scan retries for failed arrivals; `wax documents backfill` is the explicit
+history tool.
 
 **The control surface boundary**: Holocene's Wax tab is read-only and reads one
 thing — `wax catalog --json` through the Holocene API, which allowlist-projects
 it (no env, command bodies, or stderr can pass through) and reports a DOWN
-source on CLI failure rather than healthy emptiness. n8n (`components/n8n-nodes-heyma`
-— HeyMa, WaxEp, WaxPipeline nodes) invokes the same CLI for manual/preview
-operations and explicit compiles; it never executes pass scripts. Wax owns every
-artifact mutation, receipt, retry, and schedule.
+source on CLI failure rather than healthy emptiness. It draws the frozen graph
+(gated vs continue edges, conditions, drift), recent runs from the durable
+receipts, and worker freshness (live / healthy idle / down via the worker
+heartbeat). n8n (`components/n8n-nodes-heyma` — HeyMa, WaxEp, generated
+per-pass `wax-pass-*` nodes, WaxPipeline) invokes the same CLI for
+manual/preview operations, explicit compiles and workflow-import compiles; it
+never executes pass scripts and no exported n8n trigger can join an import —
+n8n can never become a second scheduler. Wax owns every artifact mutation,
+receipt, retry, and schedule.
 
 ## Docs & tests
 

@@ -1300,6 +1300,10 @@ def main() -> int:
     plc = pl.add_parser("compile", parents=[common],
                         help="validate and store authored graphs (explicit; nothing auto-compiles)")
     plc.add_argument("names", nargs="*", help="pipeline names (default: every authored one)")
+    pli = pl.add_parser("import", parents=[common],
+                        help="compile a supported exported n8n workflow JSON into a pipeline")
+    pli.add_argument("file", help="path to the exported workflow JSON")
+    pli.add_argument("--name", help="pipeline name slug (default: derived from the workflow name)")
     pls = pl.add_parser("show", parents=[common], help="one pipeline's compiled snapshot")
     pls.add_argument("name")
     plb = pl.add_parser("bindings", parents=[common],
@@ -1309,10 +1313,10 @@ def main() -> int:
     dc = sub.add_parser("documents", help="ordinary Markdown document enrichment",
                         parents=[common]).add_subparsers(dest="sub", required=True)
     dcl = dc.add_parser("list", parents=[common])
-    dcl.add_argument("--pipeline")
-    dcl.add_argument("--unprocessed", action="store_true")
+    dcl.add_argument("--binding", help="restrict to one binding id")
+    dcl.add_argument("--state", help="pending|processing|processed|failed|seeded")
     dcs = dc.add_parser("scan", parents=[common],
-                        help="seed new bindings, then process new arrivals only")
+                        help="seed new bindings, then process new arrivals and retryable failures")
     dcs.add_argument("pipeline", nargs="?")
     dcb = dc.add_parser("backfill", parents=[common],
                         help="explicitly process seeded-but-unrun documents")
@@ -1321,6 +1325,7 @@ def main() -> int:
     dcr = dc.add_parser("run", parents=[common],
                         help="run one compiled pipeline over one document (manual/preview)")
     dcr.add_argument("pipeline"); dcr.add_argument("file")
+    dcr.add_argument("--binding", help="binding id that owns the run (receipts and retries)")
 
     rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
     rc.add_argument("--rebuild", action="store_true")
@@ -1621,6 +1626,19 @@ def main() -> int:
                 for name, why in out.get("failed", {}).items():
                     print(f"  !! {name}: {why}", file=sys.stderr)
             return 2 if out.get("failed") else 0
+        if args.sub == "import":
+            try:
+                out = pipelines.import_n8n(Path(args.file), name=args.name)
+            except pipelines.PipelineError as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            if J:
+                _emit(out, True)
+            else:
+                print(f"  imported {out['imported']} v{out['version']} from n8n workflow "
+                      f"{out['workflow']!r} ({out['nodes']} nodes, {out['edges']} edges, "
+                      f"{out['definition_id'][:12]})")
+            return 0
         if args.sub == "show":
             snapshot = catalog.pipeline_catalog()
             row = next((p for p in snapshot["pipelines"] if p["name"] == args.name), None)
@@ -1637,7 +1655,7 @@ def main() -> int:
     if args.cmd == "documents":
         if args.sub == "list":
             _emit(documents.list_documents(
-                pipeline=args.pipeline, unprocessed_only=args.unprocessed), J)
+                binding_id=args.binding or None, state=args.state), J)
             return 0
         if args.sub == "scan":
             out = documents.scan(pipeline=args.pipeline)
@@ -1650,7 +1668,11 @@ def main() -> int:
             _emit(out, J)
             return 2 if out.get("failed") else 0
         if args.sub == "run":
-            out = pipelines.run_document(args.pipeline, Path(args.file))
+            binding = ""
+            if args.binding:
+                binding = args.binding
+            out = pipelines.run_document(args.pipeline, Path(args.file),
+                                         binding_id=binding)
             _emit(out, J)
             return 2 if out.get("failed") else 0
         return 1

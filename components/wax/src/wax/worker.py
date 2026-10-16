@@ -707,12 +707,29 @@ class Worker(threading.Thread):
         # 0.0, not now: the first tick sweeps, because a failure that stranded
         # while waxd was down is exactly the failure the sweep exists for.
         self._last_sweep = 0.0
+        # Same for document bindings: a file that arrived while waxd was down
+        # deserves the first tick's scan, not a wait.
+        self._last_doc_scan = 0.0
+        self._tick = 0
 
     def stop(self) -> None:
         self._stop.set()
 
+    def _scan_documents(self) -> None:
+        """Bounded, worker-owned document scan: new arrivals + retryable failures.
+
+        No overlapping runs by construction (single worker thread) plus the
+        per-document run lock, which also guards a concurrent CLI scan.
+        """
+        scanned = documents.scan()
+        if scanned.get("processed") or scanned.get("refused"):
+            log.info("document scan: %d processed, %d binding(s) refused",
+                     scanned.get("processed", 0), len(scanned.get("refused") or []))
+
     def run(self) -> None:
+        from . import documents as documents_mod
         while not self._stop.is_set():
+            self._tick += 1
             try:
                 if state.pipeline_enabled():
                     now = time.monotonic()
@@ -722,6 +739,9 @@ class Worker(threading.Thread):
                         if swept.get("candidates") or swept.get("exhausted"):
                             log.info("scheduled sweep: %s candidate(s), %d exhaustion notice(s)",
                                      swept["candidates"], len(swept.get("exhausted") or []))
+                    if now - self._last_doc_scan >= documents_mod.SCAN_INTERVAL_S:
+                        self._last_doc_scan = now
+                        self._scan_documents()
                     if run_once() is None:
                         self._stop.wait(POLL_S)
                     continue
@@ -732,4 +752,6 @@ class Worker(threading.Thread):
                 log.exception("worker tick failed: %s", e)
                 ledger.record_transition("inbox", None, None, "error", "worker_exception", str(e)[:400])
                 _clear_claim()
+            documents_mod.write_worker_heartbeat(
+                tick=self._tick, scanning_documents=not self._stop.is_set())
             self._stop.wait(POLL_S)

@@ -36,7 +36,8 @@
 		"test": "npm run build && node --test tests/*.test.cjs",
 		"pack:check": "npm pack --dry-run",
 		"release": "n8n-node release",
-		"prepublishOnly": "n8n-node prerelease"
+		"prepublishOnly": "n8n-node prerelease",
+		"nodes:passes": "node tools/generate-pass-nodes.mjs"
 	},
 	"files": [
 		"dist"
@@ -48,7 +49,18 @@
 		"nodes": [
 			"dist/nodes/HeyMa/HeyMa.node.js",
 			"dist/nodes/WaxEp/WaxEp.node.js",
-			"dist/nodes/WaxPipeline/WaxPipeline.node.js"
+			"dist/nodes/WaxPipeline/WaxPipeline.node.js",
+			"dist/nodes/wax-pass-classification/wax-pass-classification.node.js",
+			"dist/nodes/wax-pass-clipboard-copy/wax-pass-clipboard-copy.node.js",
+			"dist/nodes/wax-pass-diarization/wax-pass-diarization.node.js",
+			"dist/nodes/wax-pass-domain-curation/wax-pass-domain-curation.node.js",
+			"dist/nodes/wax-pass-frontmatter-stamp/wax-pass-frontmatter-stamp.node.js",
+			"dist/nodes/wax-pass-mem-ops/wax-pass-mem-ops.node.js",
+			"dist/nodes/wax-pass-project-extraction/wax-pass-project-extraction.node.js",
+			"dist/nodes/wax-pass-ticketable/wax-pass-ticketable.node.js",
+			"dist/nodes/wax-pass-title-slug/wax-pass-title-slug.node.js",
+			"dist/nodes/wax-pass-transcription-enhance/wax-pass-transcription-enhance.node.js",
+			"dist/nodes/wax-pass-wikification/wax-pass-wikification.node.js"
 		]
 	},
 	"devDependencies": {

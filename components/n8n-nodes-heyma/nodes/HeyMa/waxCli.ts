@@ -142,14 +142,16 @@ export function parseWaxOutput(stdout: string): JsonObject {
 // run pass scripts and never read the ledger directly — `wax` is the contract.
 
 export const EP_SLUG_RE = /^[a-z][a-z0-9-]*$/u;
-/** Audio item ids are 16 hex chars; document ids are the same under `doc-`. */
-export const WAX_KEY_RE = /^(?:doc-)?[0-9a-f]{16}$/u;
+/** Audio item ids are 16 hex chars; document ids are the same under `doc-`,
+ * optionally binding-scoped (`doc-<16hex>@<binding-id>`). */
+export const WAX_KEY_RE = /^(?:doc-)?[0-9a-f]{16}(?:@[a-z0-9-]+)?$/u;
 export const PIPELINE_NAME_RE = /^[a-z][a-z0-9-]*$/u;
 
 export type WaxSubcommand =
 	| { kind: 'epRun'; slug: string; itemKey: string; attempt?: number }
 	| { kind: 'catalog' }
 	| { kind: 'pipelineCompile'; names?: string[] }
+	| { kind: 'pipelineImport'; file: string; name?: string }
 	| { kind: 'pipelineShow'; name: string }
 	| { kind: 'documentsScan'; pipeline?: string }
 	| { kind: 'documentsRun'; pipeline: string; file: string };
@@ -182,6 +184,22 @@ export function buildWaxSubcommandArgs(command: WaxSubcommand): string[] {
 					throw new WaxCliError(`Invalid pipeline name: ${name}`);
 				}
 				args.push(name);
+			}
+			return args;
+		}
+		case 'pipelineImport': {
+			if (!isAbsolute(command.file)) {
+				throw new WaxCliError('Workflow export must be an absolute path');
+			}
+			if (command.file.endsWith('.json') === false) {
+				throw new WaxCliError('Workflow export must be a .json file');
+			}
+			args.push('pipeline', 'import', command.file);
+			if (command.name !== undefined) {
+				if (!PIPELINE_NAME_RE.test(command.name)) {
+					throw new WaxCliError(`Invalid pipeline name: ${command.name}`);
+				}
+				args.push('--name', command.name);
 			}
 			return args;
 		}

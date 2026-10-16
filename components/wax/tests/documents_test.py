@@ -111,8 +111,9 @@ class DocumentScenarioTest(unittest.TestCase):
             self.assertEqual(seed["action"], "seeded")
             self.assertEqual(seed["seeded"], 1)
             self.assertEqual(seed["processed"], 0)
-            row = documents.get(documents.register(existing)["doc_id"])
-            self.assertIsNone(row["processed_at"], "seeding must never process")
+            seeded = documents.list_documents(state="seeded")
+            self.assertEqual(len(seeded), 1, "seeding must register without processing")
+            self.assertEqual(seeded[0]["state"], "seeded")
 
             fresh = s.drop("new.md")
             out = documents.scan(pipeline="doc")
@@ -212,9 +213,10 @@ class DocumentScenarioTest(unittest.TestCase):
             alpha.chmod(0o755)
             first = pipelines.run_document("doc", doc)
             self.assertEqual(first["failed"], 1)
-            row = documents.get(first["doc_id"])
-            self.assertIsNone(row["processed_at"],
-                              "a failed run must not mark the document processed")
+            receipt = documents.receipt("", first["doc_id"], "doc", first["definition_id"])
+            self.assertEqual(receipt["state"], "failed",
+                             "a failed run must not record a completed receipt")
+            self.assertEqual(documents.get(first["doc_id"])["state"], "failed")
             alpha.write_text(
                 "#!/bin/sh\n"
                 "printf '%s\\n' '" + json.dumps({
@@ -227,8 +229,184 @@ class DocumentScenarioTest(unittest.TestCase):
             self.assertEqual(second["failed"], 0)
             completed = next(r for r in second["results"] if r["ep_slug"] == "alpha")
             self.assertEqual(completed["state"], "completed")
-            row = documents.get(second["doc_id"])
-            self.assertIsNotNone(row["processed_at"])
+            receipt = documents.receipt("", second["doc_id"], "doc", second["definition_id"])
+            self.assertEqual(receipt["state"], "completed")
+            self.assertEqual(documents.get(second["doc_id"])["state"], "processed")
+
+
+class DocumentIdentityTest(unittest.TestCase):
+    """Durable per-binding identity: own writes, overlapping pipelines, run
+    locking, scan-driven recovery, exhaustion, and honest seeding."""
+
+    def test_own_enrichment_write_is_not_a_new_arrival(self):
+        with _Scenario() as s:
+            s.drop("seed.md", "---\ntitle: Seed\n---\nseed only\n")
+            documents.scan(pipeline="doc")     # seed
+            fresh = s.drop("fresh.md")         # empty title -> alpha fills it
+            original = fresh.read_bytes()
+            out = documents.scan(pipeline="doc")
+            self.assertEqual(out["bindings"][0]["arrivals"], 1)
+            fm, _ = frontmatter.read(fresh)
+            self.assertEqual(fm["title"], "A Grounded Title")
+            self.assertNotEqual(fresh.read_bytes(), original,
+                                "the enrichment write changed the file bytes")
+            # the next scan must NOT see Wax's own frontmatter write as new
+            # content: identity is the document, not the current hash
+            again = documents.scan(pipeline="doc")
+            scan = again["bindings"][0]
+            self.assertEqual(scan["arrivals"], 0)
+            self.assertEqual(scan.get("results", []), [])
+            self.assertEqual(len(documents.list_documents()), 2)
+
+    def test_overlapping_pipelines_keep_separate_outcomes(self):
+        with _Scenario() as s:
+            # a second pipeline over the SAME folder: per-binding identity,
+            # not a global content lookup that would suppress the second run
+            (s.pipes / "doc2.yaml").write_text(
+                "name: doc2\nversion: 1\ndescription: second view\ntrigger: documents\n"
+                f"enabled: true\nfolders: [{json.dumps(str(s.docs))}]\n"
+                "failure_policy: independent\npasses: [alpha]\n"
+            )
+            pipelines.compile(["doc2"])
+            s.drop("seed.md", "---\ntitle: Seed\n---\nseed\n")
+            documents.scan(pipeline="doc")   # seeds doc
+            documents.scan(pipeline="doc2")  # seeds doc2 (same folder, its own seed)
+            shared = s.drop("shared.md")
+            documents.scan(pipeline="doc")
+            documents.scan(pipeline="doc2")
+            # both pipelines processed the same content, each with its own
+            # binding-scoped rows and receipts — no cross-suppression
+            rows = documents.list_documents()
+            by_state = {}
+            for r in rows:
+                if r["path"].endswith("shared.md"):
+                    by_state.setdefault(r["binding_id"], []).append(r["state"])
+            self.assertEqual(
+                by_state,
+                {b["binding_id"]: ["processed"]
+                 for b in documents.bindings()
+                 if b["pipeline"] in ("doc", "doc2")},
+                "each binding processed the shared file exactly once")
+
+    def test_dependency_on_inapplicable_skip_is_satisfied(self):
+        # alpha (document) gated on diarize (audio-only): in a document run
+        # diarize is VISIBLY skipped, and a skip satisfies the requirement —
+        # the dependent runs; nothing is silently dropped
+        with _Scenario() as s:
+            (s.registry / "alpha.yaml").write_text(
+                (s.registry / "alpha.yaml").read_text()
+                .replace("requires: []", "requires: [diarize]")
+            )
+            (s.pipes / "doc.yaml").write_text(
+                "name: doc\nversion: 1\ndescription: document graph\ntrigger: documents\n"
+                f"enabled: true\nfolders: [{json.dumps(str(s.docs))}]\n"
+                "failure_policy: independent\npasses: [alpha, diarize]\n"
+            )
+            pipelines.compile(["doc"])
+            doc = s.drop("note.md")
+            run = pipelines.run_document("doc", doc)
+            states = {r["ep_slug"]: r for r in run["results"]}
+            self.assertEqual(states["diarize"]["reason_code"], "inapplicable_capability")
+            self.assertEqual(states["alpha"]["state"], "completed")
+
+    def test_failed_arrival_recovers_on_scan_until_exhausted(self):
+        with _Scenario() as s:
+            alpha = s.registry / "alpha"
+            s.drop("seed.md", "---\ntitle: Seed\n---\nseed\n")
+            documents.scan(pipeline="doc")  # seed
+            failing = "#!/bin/sh\necho 'reason_code=provider_down' >&2\nexit 1\n"
+            alpha.write_text(failing)
+            alpha.chmod(0o755)
+            doc = s.drop("broken.md")
+            first = documents.scan(pipeline="doc")
+            self.assertEqual(first["bindings"][0]["arrivals"], 1)
+            self.assertEqual(first["bindings"][0]["results"][0]["failed"], 1)
+            failed = documents.list_documents(state="failed")
+            self.assertEqual(len(failed), 1)
+            failed_doc = failed[0]["doc_id"]
+            self.assertEqual(failed[0]["path"], str(doc))
+
+            # recovery: fix the pass; the NEXT scan retries the SAME identity
+            # (a failed run's pass-note writes moved the hash — adoption, not
+            # a fresh registration)
+            alpha.write_text(
+                "#!/bin/sh\nprintf '%s\\n' '" + json.dumps({
+                    "wax_ep_version": 1,
+                    "frontmatter": {"title": "Fixed", "summary": "ok"},
+                }) + "'\n")
+            alpha.chmod(0o755)
+            second = documents.scan(pipeline="doc")
+            self.assertEqual(second["bindings"][0]["retried"], 1,
+                             "a failed arrival is retried by the scan, not parked")
+            self.assertEqual(second["bindings"][0]["results"][0]["failed"], 0)
+            processed = documents.list_documents(state="processed")
+            self.assertEqual([r["doc_id"] for r in processed], [failed_doc],
+                             "recovery continues the failed row's identity")
+
+            # exhaustion: keep failing and the scan stops after the bound
+            alpha.write_text(failing)
+            alpha.chmod(0o755)
+            s.drop("doomed.md", "---\ntitle:\n---\nDoomed, uniquely.\n")
+            documents.scan(pipeline="doc")  # arrival fails (attempt 1)
+            documents.scan(pipeline="doc")  # retry fails (attempt 2)
+            documents.scan(pipeline="doc")  # retry fails (attempt 3 -> exhausted)
+            fourth = documents.scan(pipeline="doc")
+            self.assertEqual(fourth["bindings"][0].get("retried", 0), 0,
+                             "exhausted arrivals are dead-lettered, not retried forever")
+            exhausted = [r for r in documents.recent_receipts(pipeline="doc")
+                         if r["exhausted_at"]]
+            self.assertEqual(len(exhausted), 1)
+
+    def test_concurrent_duplicate_runs_take_the_lock_once(self):
+        with _Scenario() as s:
+            doc = s.drop("locked.md")
+            row, _ = documents.register(doc, binding_id="")
+            # the compare-and-set is the whole concurrency story
+            self.assertTrue(documents.claim_run("", row["doc_id"]))
+            self.assertFalse(documents.claim_run("", row["doc_id"]),
+                             "a second claimant must see the lock held")
+            run = pipelines.run_document("doc", doc)
+            self.assertIn("run lock held", run.get("skipped", ""))
+            # a stale claim (crashed run) becomes reclaimable, not wedged
+            ledger.connect().execute(
+                "UPDATE documents SET run_started_at=? WHERE binding_id='' AND doc_id=?",
+                ("2020-01-01T00:00:00.000Z", row["doc_id"]))
+            self.assertTrue(documents.claim_run("", row["doc_id"]))
+
+    def test_missing_folder_is_never_claimed_as_seeded(self):
+        with _Scenario() as s:
+            (s.pipes / "ghost.yaml").write_text(
+                "name: ghost\nversion: 1\ndescription: bound to nothing yet\n"
+                "trigger: documents\nenabled: true\n"
+                "folders: [" + json.dumps(str(s.root / "not-yet")) + "]\n"
+                "failure_policy: independent\npasses: [alpha]\n"
+            )
+            pipelines.compile(["ghost"])
+            out = documents.scan(pipeline="ghost")
+            self.assertEqual(out["bindings"][0]["action"], "folder_missing")
+            binding = documents.bindings(pipeline="ghost")[0]
+            self.assertIsNone(binding["seeded_at"],
+                              "a missing folder must not claim seeded history")
+            # the day the folder exists, it seeds (still without processing)
+            (s.root / "not-yet").mkdir()
+            (s.root / "not-yet" / "a.md").write_text("---\ntitle: A\n---\nA.\n")
+            out = documents.scan(pipeline="ghost")
+            self.assertEqual(out["bindings"][0]["action"], "seeded")
+            self.assertEqual(out["bindings"][0]["seeded"], 1)
+
+    def test_worker_heartbeat_reports_liveness(self):
+        with _Scenario() as s:
+            self.assertEqual(documents.read_worker_heartbeat()["state"], "down",
+                             "no heartbeat yet: nobody scans")
+            documents.write_worker_heartbeat(tick=7)
+            beat = documents.read_worker_heartbeat()
+            self.assertEqual(beat["state"], "live")
+            self.assertEqual(beat["tick"], 7)
+            self.assertEqual(beat["documents"]["interval_s"], documents.SCAN_INTERVAL_S)
+            # a stale heartbeat is DOWN, not healthy-idle
+            documents.worker_heartbeat_path().write_text(json.dumps(
+                {"at": "2020-01-01T00:00:00.000Z", "tick": 1}))
+            self.assertEqual(documents.read_worker_heartbeat()["state"], "down")
 
 
 if __name__ == "__main__":

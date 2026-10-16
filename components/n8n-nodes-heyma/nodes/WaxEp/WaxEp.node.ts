@@ -14,10 +14,22 @@ import { WaxNodeBase } from './WaxEpBase';
 // `wax ep run` — a CLI-backed manual/preview operation, deliberately not a
 // scheduler: automatic execution belongs to the Wax worker, which owns the
 // plan, the attempt budget and the dead-letter receipts.
+//
+// Graph authoring: the node exposes TWO outputs. `main` is a continue edge
+// (ordering only); `requirement` is a gated edge — wire it into a downstream
+// pass to say "that pass requires this one". `wax pipeline import` maps the
+// two kinds onto after/requires edges of the compiled graph.
 
 // The literal works with both n8n-workflow 1.x (NodeConnectionType) and
 // 2.x (NodeConnectionTypes); importing either runtime enum breaks the other.
 const MAIN_CONNECTION = 'main' as const;
+const REQUIREMENT_CONNECTION = 'requirement' as const;
+
+export const WAX_PASS_OUTPUTS = [MAIN_CONNECTION, REQUIREMENT_CONNECTION];
+export const WAX_PASS_OUTPUT_NAMES = ['continue', 'requires'];
+/** `'requirement'` is a Wax edge kind, not a stock NodeConnectionType member;
+ * cast back to the description shape like the connection literals above. */
+export const WAX_PASS_TYPED_OUTPUTS = WAX_PASS_OUTPUTS as unknown as INodeTypeDescription['outputs'];
 
 interface CatalogPass {
 	slug?: unknown;
@@ -69,7 +81,8 @@ export class WaxEp extends WaxNodeBase {
 		description: 'Run one Wax enrichment pass for one item through the Wax CLI',
 		defaults: { name: 'Wax Enrichment Pass' },
 		inputs: [MAIN_CONNECTION],
-		outputs: [MAIN_CONNECTION],
+		outputs: WAX_PASS_TYPED_OUTPUTS,
+		outputNames: WAX_PASS_OUTPUT_NAMES,
 		properties: [
 			{
 				displayName: 'Pass Name or ID',
@@ -89,6 +102,26 @@ export class WaxEp extends WaxNodeBase {
 				default: '',
 				placeholder: '0123456789abcdef or doc-0123456789abcdef',
 				description: 'Audio item ID (16 hex) or document ID (doc- + 16 hex) to enrich',
+			},
+			{
+				displayName: 'When (Condition, JSON)',
+				name: 'when',
+				type: 'string',
+				typeOptions: { alwaysOpenEditWindow: true },
+				default: '',
+				placeholder: '[{"field": "classification", "exists": true}]',
+				description:
+					'Graph authoring only — compiled into the pipeline by "pipeline import"; ignored at execution',
+			},
+			{
+				displayName: 'Skip When (Condition, JSON)',
+				name: 'skipWhen',
+				type: 'string',
+				typeOptions: { alwaysOpenEditWindow: true },
+				default: '',
+				placeholder: '[{"field": "title", "exists": true}]',
+				description:
+					'Graph authoring only — compiled into the pipeline by "pipeline import"; ignored at execution',
 			},
 			{
 				displayName: 'Attempt',

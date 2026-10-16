@@ -1,0 +1,110 @@
+{
+  "name": "Wax Transcription Standard",
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": "transcription",
+        "folders": [],
+        "failurePolicy": "independent",
+        "enabled": false,
+        "description": "The compiled view of post-transcription enrichment. With exactly one enabled transcription pipeline compiled, new audio plans are minted from its frozen definition; ships disabled so nothing is fabricated as active."
+      },
+      "id": "wax-tr-wrapper",
+      "name": "Wax Pipeline",
+      "type": "n8n-nodes-heyma.waxPipeline",
+      "typeVersion": 1,
+      "position": [-560, 0]
+    },
+    {
+      "parameters": {},
+      "id": "wax-tr-stamp",
+      "name": "Stamp",
+      "type": "n8n-nodes-heyma.wax-pass-frontmatter-stamp",
+      "typeVersion": 1,
+      "position": [-280, -140]
+    },
+    {
+      "parameters": {},
+      "id": "wax-tr-clipboard",
+      "name": "Clipboard",
+      "type": "n8n-nodes-heyma.wax-pass-clipboard-copy",
+      "typeVersion": 1,
+      "position": [-40, -140]
+    },
+    {
+      "parameters": {},
+      "id": "wax-tr-classify",
+      "name": "Classify",
+      "type": "n8n-nodes-heyma.wax-pass-classification",
+      "typeVersion": 1,
+      "position": [200, -140]
+    },
+    {
+      "parameters": {},
+      "id": "wax-tr-title",
+      "name": "Title",
+      "type": "n8n-nodes-heyma.wax-pass-title-slug",
+      "typeVersion": 1,
+      "position": [460, -140]
+    },
+    {
+      "parameters": {},
+      "id": "wax-tr-diarize",
+      "name": "Diarize",
+      "type": "n8n-nodes-heyma.wax-pass-diarization",
+      "typeVersion": 1,
+      "position": [460, 60]
+    },
+    {
+      "parameters": {
+        "content": "## Wax Transcription Standard\n\nMAIN edges (continue) only order: Stamp → Clipboard → Classify.\n\nThe REQUIREMENT edge (gated) blocks Title until Classify completed — a failed Classify leaves Title dependency-blocked instead of dropped.\n\nDiarize is deliberately unconnected: GPU-bound, independent of the chain. Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
+        "height": 320,
+        "width": 400
+      },
+      "id": "wax-tr-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-560, 220]
+    }
+  ],
+  "connections": {
+    "Stamp": {
+      "main": [
+        [
+          {
+            "node": "Clipboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clipboard": {
+      "main": [
+        [
+          {
+            "node": "Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify": {
+      "requirement": [
+        [
+          {
+            "node": "Title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
