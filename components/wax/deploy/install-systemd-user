@@ -44,6 +44,8 @@ def render_unit(name: str, component=None, repo=None) -> str:
         .replace("@WAX_EXEC_START@", systemd_quote(repo / "bin" / "waxd"))
         .replace("@WAX_EXEC_QUIESCE@",
                  f"{systemd_quote(repo / 'bin' / 'wax')} rec quiesce --json")
+        .replace("@WAX_PATH_ENV@",
+                 systemd_quote(f'PATH={Path.home() / ".local/bin"}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
         # The quotes wrap the whole NAME=value assignment, not just the path:
         # Environment= splits on unquoted whitespace, so a repo under a path
         # with a space would otherwise arrive as two words and lose the tail.

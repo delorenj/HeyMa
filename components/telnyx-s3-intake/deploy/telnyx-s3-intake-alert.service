@@ -1,0 +1,7 @@
+[Unit]
+Description=Desktop alert when the Telnyx inbox transport fails
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/notify-send -a HeyMa -u critical -i dialog-error "Telnyx intake failed" "Check journalctl --user -u telnyx-s3-intake.service and ~/HeyMa/bin/telnyx-s3-intake status"
+TimeoutStartSec=10

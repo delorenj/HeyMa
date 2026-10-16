@@ -117,7 +117,31 @@ class PortabilityTest(unittest.TestCase):
         self.assertNotIn("%h/HeyMa", template)
         self.assertIn("@WAX_EXEC_START@", template)
         self.assertIn("@WAX_DOCUMENTATION_URI@", template)
+        self.assertIn("Environment=@WAX_PATH_ENV@", template)
         self.assertIn("Environment=WAX_DIARIZATION_DEVICE=cuda", template)
+
+    def test_systemd_path_uses_installing_users_home(self):
+        installer = load_systemd_installer()
+        with patch.object(installer.Path, "home", return_value=Path("/srv/wax-operator")), \
+                patch.dict(os.environ, {"PATH": "/unrelated/bin"}):
+            rendered = installer.render(COMPONENT_ROOT, Path("/opt/relocated-heyma"))
+        self.assertIn(
+            'Environment="PATH=/srv/wax-operator/.local/bin:'
+            '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"\n',
+            rendered,
+        )
+        self.assertNotIn("@WAX_PATH_ENV@", rendered)
+
+    def test_systemd_path_quotes_home_as_one_literal_assignment(self):
+        installer = load_systemd_installer()
+        home = Path('/home/Wax #100% $user "quoted"\\tools')
+        with patch.object(installer.Path, "home", return_value=home):
+            rendered = installer.render(COMPONENT_ROOT, Path("/opt/heyma"))
+        self.assertIn(
+            r'Environment="PATH=/home/Wax #100%% \x24user \"quoted\"\\tools/.local/bin:'
+            '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"\n',
+            rendered,
+        )
 
     def test_capture_guard_orders_shutdown_before_audio_graph(self):
         template = (COMPONENT_ROOT / "deploy/systemd/user/wax-capture-guard.service").read_text()

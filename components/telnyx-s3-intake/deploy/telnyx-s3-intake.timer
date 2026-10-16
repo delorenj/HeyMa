@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll native Telnyx S3 recordings every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+OnBootSec=60s
+Persistent=true
+RandomizedDelaySec=5s
+AccuracySec=1s
+Unit=telnyx-s3-intake.service
+
+[Install]
+WantedBy=timers.target

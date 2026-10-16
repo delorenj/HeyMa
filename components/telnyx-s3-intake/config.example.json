@@ -1,0 +1,14 @@
+{
+  "endpoint": "https://s3.delo.sh",
+  "region": "us-east-1",
+  "bucket": "recordings",
+  "prefix": "5c224422-c4be-4c68-9b17-e3848499a198/",
+  "access_key_ref": "op://DeLoSecrets/lplftgheb5r4k4l3xxplblt3zq/accessKey",
+  "secret_key_ref": "op://DeLoSecrets/lplftgheb5r4k4l3xxplblt3zq/secretKey",
+  "op": "/home/delorenj/.local/bin/op",
+  "aws": "/home/delorenj/.local/bin/aws",
+  "ffprobe": "/usr/bin/ffprobe",
+  "settle_seconds": 120,
+  "max_object_bytes": 2147483648,
+  "run_seconds": 240
+}

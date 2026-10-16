@@ -1,0 +1,16 @@
+[Unit]
+Description=Copy completed native Telnyx S3 audio into the Wax inbox
+After=network-online.target
+Wants=network-online.target
+OnFailure=telnyx-s3-intake-alert.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/HeyMa/bin/telnyx-s3-intake run
+TimeoutStartSec=270
+TimeoutStopSec=10
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+LimitCORE=0
+Environment=PYTHONDONTWRITEBYTECODE=1

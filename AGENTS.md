@@ -39,6 +39,12 @@ named recordings once and saves permanent filename exclusions, so hub deletions
 cannot be downloaded again. It never writes audio or owns pipeline stages.
 Configuration and verification: `components/syncthing-audio/README.md`.
 
+Telnyx intake reads only the configured native recording prefix through AWS CLI.
+`telnyx-s3-intake.service` owns transport receipts and private staging under
+`var/telnyx-s3-intake/`, then delivers verified audio into `inbox/`. Wax owns every
+pipeline stage; intake never edits `dropoff/`. Configuration, delivery boundaries,
+and operator proof: [Telnyx S3 intake](components/telnyx-s3-intake/README.md).
+
 ## waxd — the single owner
 
 `waxd.service` (systemd **user** unit, `enabled`+`active`) holds
