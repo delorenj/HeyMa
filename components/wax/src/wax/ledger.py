@@ -175,6 +175,31 @@ def connect() -> sqlite3.Connection:
                      "event_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, ep_slug TEXT NOT NULL, "
                      "command_id TEXT, type TEXT NOT NULL, outbox_id INTEGER, created_at TEXT NOT NULL)")
         conn.execute("CREATE INDEX IF NOT EXISTS pass_events_item ON pass_events(item_id)")
+        # Document enrichment scenario. A document is an ordinary Markdown file
+        # enriched in place; it deliberately has NO transcripts row (the audio
+        # provenance a transcripts row asserts must never be fabricated), so
+        # pass history keys on the doc_id here instead.
+        conn.execute("CREATE TABLE IF NOT EXISTS documents ("
+                     "doc_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, path TEXT NOT NULL, "
+                     "bytes INTEGER, origin TEXT, processed_at TEXT, processed_pipeline TEXT, "
+                     "processed_definition_id TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        conn.execute("CREATE INDEX IF NOT EXISTS documents_pipeline ON documents(processed_pipeline)")
+        # Folder bindings are compiled from a pipeline's authored folders. They
+        # are new-arrivals-only: the first scan seeds every existing file as a
+        # known document WITHOUT processing it, and historical coverage always
+        # needs an explicit backfill.
+        conn.execute("CREATE TABLE IF NOT EXISTS document_bindings ("
+                     "binding_id TEXT PRIMARY KEY, pipeline TEXT NOT NULL, folder TEXT NOT NULL, "
+                     "enabled INTEGER NOT NULL DEFAULT 1, seeded_at TEXT, last_scan_at TEXT, "
+                     "documents_seen INTEGER NOT NULL DEFAULT 0, documents_processed INTEGER NOT NULL DEFAULT 0, "
+                     "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        # Compiled pipelines: the execution authority. The authored YAML under
+        # config/pipelines.d is the authoring source; nothing runs from it until
+        # `wax pipeline compile` stores it here with a content-addressed
+        # definition_id, and drift between the two is always computable.
+        conn.execute("CREATE TABLE IF NOT EXISTS pipelines ("
+                     "name TEXT PRIMARY KEY, version INTEGER NOT NULL, definition_id TEXT NOT NULL, "
+                     "definition TEXT NOT NULL, compiled_at TEXT NOT NULL)")
         _local.conn = conn
     return conn
 

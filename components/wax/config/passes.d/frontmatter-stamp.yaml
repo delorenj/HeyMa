@@ -1,6 +1,7 @@
 slug: frontmatter-stamp
 version: 1
 description: Stamp source, duration, model and word count onto the transcript.
+capabilities: [audio]      # stamps transcript metrics from the ledger
 enabled: true
 auto: true
 # `requires` is honoured: a non-empty list orders this pass after those passes

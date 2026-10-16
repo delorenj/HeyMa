@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-heyma",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "n8n nodes for controlling the HeyMa Wax audio pipeline",
 	"license": "UNLICENSED",
 	"homepage": "https://github.com/delorenj/HeyMa/tree/main/components/n8n-nodes-heyma#readme",
@@ -46,7 +46,9 @@
 		"strict": false,
 		"credentials": [],
 		"nodes": [
-			"dist/nodes/HeyMa/HeyMa.node.js"
+			"dist/nodes/HeyMa/HeyMa.node.js",
+			"dist/nodes/WaxEp/WaxEp.node.js",
+			"dist/nodes/WaxPipeline/WaxPipeline.node.js"
 		]
 	},
 	"devDependencies": {

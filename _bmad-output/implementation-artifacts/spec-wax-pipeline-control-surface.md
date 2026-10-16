@@ -2,7 +2,8 @@
 title: Wax pipeline discovery and read-only Holocene surface
 type: feature
 created: 2026-10-16
-status: draft
+status: in-progress
+baseline_commit: 1b6e2ebc43148fb435f875ba3eb12549561be232
 route: dispatch
 review_loop_iteration: 0
 ---
@@ -21,6 +22,10 @@ EPs transform document text/metadata into enriched text/frontmatter. Audio-depen
 
 **Never:** Add Holocene editing controls; silently enable passes; expose environment/secrets/bodies/raw stderr in discovery; represent unconfigured scenarios as active. No production cutover, backfill or workflow activation during planning.
 
+### Approved decisions (2026-10-16)
+
+The user approved the recommendations and delegated remaining release decisions. n8n is the visual authoring source; the Wax CLI compiles supported graphs into versioned pipelines, and Wax owns graph execution/retries. Folder bindings default to new arrivals only, seed existing files without processing them, ignore Wax output writes and require explicit historical backfill. First release proves existing audio transcription plus ordinary Markdown document enrichment; Auto/voice appears only when actually configured, not as a fabricated active scenario. Authoring changes must be recompiled explicitly and definition identity exposes drift. Native n8n EP execution is a CLI-backed preview/manual operation, not a second active scheduler. Linked audio and notification effects remain capability-specific adapters.
+
 ## I/O & Edge-Case Matrix
 
 | State | Expected behavior |
@@ -34,12 +39,6 @@ EPs transform document text/metadata into enriched text/frontmatter. Audio-depen
 | CLI unavailable/stale | Explicit source failure/age, never healthy emptiness |
 
 </frozen-after-approval>
-
-## Open Questions
-
-1. n8n authority: compile supported n8n graphs through the CLI into versioned Wax-executed pipelines (recommended), or execute graphs in n8n with CLI-backed EP nodes? The latter moves graph progression/retry ownership to n8n; do not build both.
-2. Folder binding: new arrivals only, or also subsequent human edits? Both exclude Wax's own writes to prevent loops; historical backfill stays explicit.
-3. First release: prove transcription and generic vault-document scenarios, displaying Auto/voice only if configured (recommended), or also implement a new Auto voice/intent pipeline? The latter needs a delegation/acknowledgment contract.
 
 ## Code Map
 

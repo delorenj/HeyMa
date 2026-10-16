@@ -1,0 +1,16 @@
+name: doc-standard
+version: 1
+description: >
+  Ordinary Markdown document enrichment. Disabled until a real folder is
+  bound: enabled stays false so no unconfigured scenario is ever represented
+  as active. When enabled, compile creates the folder binding (unseeded), the
+  first scan seeds existing files without processing them, and only new
+  arrivals run — historical coverage requires an explicit backfill.
+trigger: documents
+enabled: false
+failure_policy: independent
+folders:
+  - /home/delorenj/d/DocsInbox
+passes:
+  - classification
+  - project-extraction

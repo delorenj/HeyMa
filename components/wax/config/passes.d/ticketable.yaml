@@ -1,6 +1,7 @@
 slug: ticketable
 version: 1
 description: Ticketable work from the transcript, one ticket per deliverable, filed under the note's project-ids.
+capabilities: [document]   # reads note text + project-ids
 enabled: false
 auto: false
 # title-slug: tickets record the FINAL transcript filename.

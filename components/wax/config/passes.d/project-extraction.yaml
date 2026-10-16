@@ -1,6 +1,7 @@
 slug: project-extraction
 version: 1
 description: The pjangler projects a transcript talks about, decided by Jev over the project registry.
+capabilities: [document]   # reads note text; works on ordinary documents
 enabled: false
 auto: false
 requires: []

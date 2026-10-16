@@ -77,6 +77,10 @@ wax drain                  # process the inbox now, one-shot
 wax retry [<item>]         # requeue preserved failed/suspect inbox items (all, or one)
 wax ep list|status|run <slug> <item>|run-all <item>|sweep
 wax reconcile [--rebuild]  # rebuild the ledger from durable sources
+wax catalog                # safe discovery snapshot (passes + pipelines) for Holocene/n8n
+wax pipeline enable|disable|status   # historical worker toggle, unchanged
+wax pipeline list|compile|show|bindings   # versioned pipeline graphs (compile is explicit)
+wax documents list|scan|backfill|run     # document registration/bindings/processing
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 
@@ -134,6 +138,31 @@ and unpublished pass events.
 
 To add one, use the `create-enrichment-pass` skill; see
 `components/wax/docs/ENRICHMENT-PASSES.md`.
+
+## Pipelines, documents, and the control surface
+
+Pass YAML declares `capabilities:` (`audio` and/or `document`). The audio flow
+is unchanged; a **document run** (plain Markdown, content-addressed
+`doc-<sha16>` in the `documents` table, never a `transcripts` row) only runs
+`document`-capable passes (others skip with `inapplicable_capability`), applies
+frontmatter/body only, and rejects `events`.
+
+**Pipelines** (`config/pipelines.d/*.yaml`) are authored graphs compiled —
+explicitly, via `wax pipeline compile` — into immutable versioned definitions
+(`pipelines` table, sha256 `definition_id`). Authored-vs-compiled **drift** is
+visible state (`wax pipeline list`, Holocene), never an error. A
+`trigger: transcription` pipeline is a compiled view of the plan the worker
+already executes — not a second scheduler. Document folder bindings are
+new-arrivals-only: `wax documents scan` seeds existing files as receipts
+without processing; `wax documents run` is the explicit backfill.
+
+**The control surface boundary**: Holocene's Wax tab is read-only and reads one
+thing — `wax catalog --json` through the Holocene API, which allowlist-projects
+it (no env, command bodies, or stderr can pass through) and reports a DOWN
+source on CLI failure rather than healthy emptiness. n8n (`components/n8n-nodes-heyma`
+— HeyMa, WaxEp, WaxPipeline nodes) invokes the same CLI for manual/preview
+operations and explicit compiles; it never executes pass scripts. Wax owns every
+artifact mutation, receipt, retry, and schedule.
 
 ## Docs & tests
 

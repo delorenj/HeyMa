@@ -1,6 +1,7 @@
 slug: classification
 version: 1
 description: Grounded document classification as monolog, meeting or other.
+capabilities: [document]   # grounded text classification; no audio needed
 enabled: true
 auto: true
 requires: []

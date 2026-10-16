@@ -28,7 +28,9 @@ COMPONENT_ROOT = next(
 )
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
-from wax import archive, capture, component, config, events, finalize, ledger, migrate, natsclient, passes, paths, reconcile, sanity, sentinel, state, transcribe_adapter, worker  # noqa: E402
+from wax import (archive, catalog, capture, component, config, documents, events, finalize,
+                 ledger, migrate, natsclient, passes, paths, pipelines, reconcile, sanity,
+                 sentinel, state, transcribe_adapter, worker)  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -1066,7 +1068,13 @@ def _expand_command(ep: dict[str, Any]) -> Optional[str]:
 
 
 def ep_list_rows() -> list[dict[str, Any]]:
-    """Registered passes with their enabled state, version, and outcome tally."""
+    """Registered passes with their enabled state, version, and outcome tally.
+
+    Discovery-safe fields only — description, conditions (when/skip_when),
+    ordering edges (requires/after), emits and capabilities join the row so a
+    human can read the whole routing table here; env (secrets) never appears,
+    and outcome detail stays in `wax ep status`.
+    """
     registry = passes.registry()
     tally: dict[tuple[str, str, int], int] = {}
     try:
@@ -1091,10 +1099,20 @@ def ep_list_rows() -> list[dict[str, Any]]:
                 counted["stale"] += n
             else:
                 counted[row_state] = counted.get(row_state, 0) + n
+        conditions: dict[str, Any] = {}
+        if ep.get("when"):
+            conditions["when"] = ep["when"]
+        if ep.get("skip_when"):
+            conditions["skip_when"] = ep["skip_when"]
         rows.append({
             "slug": slug, "enabled": bool(ep.get("enabled")), "auto": bool(ep.get("auto")),
             "version": version, "timeout_s": ep.get("timeout_s"),
+            "description": ep.get("description"),
+            "capabilities": list(ep.get("capabilities") or []),
             "requires": ep.get("requires") or [],
+            "after": ep.get("after") or [],
+            "conditions": conditions or None,
+            "emits": ep.get("emits") or [],
             # Expanded, not the raw template: the column exists so a human can
             # go look at the file, and `{component_root}` is not a path.
             "command": _expand_command(ep),
@@ -1224,8 +1242,6 @@ def main() -> int:
     sub.add_parser("status", parents=[common],
                    help="both machines, queue, and pass/diarization health (exit 2 if unhealthy)")
 
-    pl = sub.add_parser("pipeline", parents=[common]); pl.add_argument("action", choices=["enable", "disable", "status"])
-
     h = sub.add_parser("history", help="append-only transition log", parents=[common])
     h.add_argument("-n", type=int, default=20); h.add_argument("--machine", choices=["stream", "inbox", "item"])
     sub.add_parser("items", help="ledger item states", parents=[common])
@@ -1268,6 +1284,43 @@ def main() -> int:
     epw.add_argument("--slug", help="limit the sweep to one pass")
     epw.add_argument("--dry-run", action="store_true", help="list targets, run nothing")
     epw.add_argument("--limit", type=int, default=0, help="process at most N targets")
+
+    sub.add_parser("catalog", parents=[common],
+                   help="safe discovery: passes and pipelines, no env/bodies/stderr")
+
+    # `wax pipeline` keeps its historical meaning (enable/disable/status of the
+    # worker's audio pipeline) and gains the versioned-graph surface: list,
+    # compile, show and bindings. Existing invocations are unchanged.
+    pl = sub.add_parser("pipeline", parents=[common]).add_subparsers(dest="sub", required=True)
+    pl.add_parser("enable", parents=[common], help="start the background drain loop")
+    pl.add_parser("disable", parents=[common], help="stop the background drain loop")
+    pl.add_parser("status", parents=[common], help="is the background drain loop enabled")
+    pll = pl.add_parser("list", parents=[common],
+                        help="enrichment pipelines: authored/compiled identity and drift")
+    plc = pl.add_parser("compile", parents=[common],
+                        help="validate and store authored graphs (explicit; nothing auto-compiles)")
+    plc.add_argument("names", nargs="*", help="pipeline names (default: every authored one)")
+    pls = pl.add_parser("show", parents=[common], help="one pipeline's compiled snapshot")
+    pls.add_argument("name")
+    plb = pl.add_parser("bindings", parents=[common],
+                        help="document folder bindings and processed counts")
+    plb.add_argument("name", nargs="?")
+
+    dc = sub.add_parser("documents", help="ordinary Markdown document enrichment",
+                        parents=[common]).add_subparsers(dest="sub", required=True)
+    dcl = dc.add_parser("list", parents=[common])
+    dcl.add_argument("--pipeline")
+    dcl.add_argument("--unprocessed", action="store_true")
+    dcs = dc.add_parser("scan", parents=[common],
+                        help="seed new bindings, then process new arrivals only")
+    dcs.add_argument("pipeline", nargs="?")
+    dcb = dc.add_parser("backfill", parents=[common],
+                        help="explicitly process seeded-but-unrun documents")
+    dcb.add_argument("pipeline")
+    dcb.add_argument("--limit", type=int, default=0)
+    dcr = dc.add_parser("run", parents=[common],
+                        help="run one compiled pipeline over one document (manual/preview)")
+    dcr.add_argument("pipeline"); dcr.add_argument("file")
 
     rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
     rc.add_argument("--rebuild", action="store_true")
@@ -1450,6 +1503,19 @@ def main() -> int:
                           f"{'yes' if r['auto'] else 'no':<6}{r['version']:<5}"
                           f"{str(r['timeout_s']) + 's':<7}{r['completed']:<5}{r['failed']:<6}"
                           f"{r['stale']:<7}{r['command'] or '-'}")
+                    if r.get("description"):
+                        print(f"  {'':<24} {str(r['description']).strip().splitlines()[0][:96]}")
+                    extras = []
+                    if r.get("capabilities"):
+                        extras.append(f"capabilities: {', '.join(r['capabilities'])}")
+                    if r.get("after"):
+                        extras.append(f"after: {', '.join(r['after'])}")
+                    if r.get("emits"):
+                        extras.append(f"emits: {', '.join(r['emits'])}")
+                    if extras:
+                        print(f"  {'':<24} {' · '.join(extras)}")
+                    if r.get("conditions"):
+                        print(f"  {'':<24} conditions: {json.dumps(r['conditions'])}")
                     if r["error"]:
                         print(f"  {'':<24} !! {r['error']}")
                     if r.get("quarantined"):
@@ -1506,6 +1572,87 @@ def main() -> int:
             # A sweep that re-ran something and it failed again is not success;
             # neither is one aimed at a pass that does not exist.
             return 2 if (out.get("failed") or out.get("warning")) else 0
+        return 1
+
+    if args.cmd == "catalog":
+        # The one safe discovery read: purposes, capabilities, availability,
+        # conditions, edges, bindings and bounded outcome counts. No env, no
+        # command bodies, no stderr — Holocene and n8n consume exactly this.
+        _emit(catalog.snapshot(), J)
+        return 0
+
+    if args.cmd == "pipeline":
+        if args.sub in ("enable", "disable", "status"):
+            # The historical worker toggle, unchanged.
+            if args.sub == "enable":
+                state.ENABLED_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                state.ENABLED_FLAG.touch()
+            elif args.sub == "disable":
+                state.ENABLED_FLAG.unlink(missing_ok=True)
+            _emit({"enabled": state.pipeline_enabled()}, J)
+            return 0
+        if args.sub == "list":
+            rows = catalog.pipeline_catalog()["pipelines"]
+            if J:
+                _emit(rows, True)
+            else:
+                for r in rows:
+                    head = (f"{r['name']:<22} v{r.get('version', '-')}"
+                            f"  {r.get('trigger', '?'):<14}"
+                            f"{'enabled' if r.get('enabled') else 'disabled':<9}"
+                            f"{r['drift']['state']}")
+                    print(f"  {head}")
+                    if r.get("description"):
+                        print(f"  {'':<22} {str(r['description']).strip().splitlines()[0][:96]}")
+                    if r["drift"].get("detail"):
+                        print(f"  {'':<22} !! {r['drift']['detail']}")
+                    if r.get("authored_error"):
+                        print(f"  {'':<22} !! {r['authored_error']}")
+            return 0
+        if args.sub == "compile":
+            out = pipelines.compile(args.names or None)
+            if J:
+                _emit(out, True)
+            else:
+                for c in out.get("compiled", []):
+                    print(f"  compiled {c['name']} v{c['version']} ({c['definition_id'][:12]})")
+                for c in out.get("unchanged", []):
+                    print(f"  unchanged {c['name']} ({c['definition_id'][:12]})")
+                for name, why in out.get("failed", {}).items():
+                    print(f"  !! {name}: {why}", file=sys.stderr)
+            return 2 if out.get("failed") else 0
+        if args.sub == "show":
+            snapshot = catalog.pipeline_catalog()
+            row = next((p for p in snapshot["pipelines"] if p["name"] == args.name), None)
+            if row is None:
+                print(f"error: no pipeline named {args.name!r}", file=sys.stderr)
+                return 2
+            _emit(row, J)
+            return 0
+        if args.sub == "bindings":
+            _emit(documents.status(pipeline=args.name), J)
+            return 0
+        return 1
+
+    if args.cmd == "documents":
+        if args.sub == "list":
+            _emit(documents.list_documents(
+                pipeline=args.pipeline, unprocessed_only=args.unprocessed), J)
+            return 0
+        if args.sub == "scan":
+            out = documents.scan(pipeline=args.pipeline)
+            _emit(out, J)
+            failed = sum(1 for b in out.get("bindings", [])
+                         for r in (b.get("results") or []) if r.get("failed"))
+            return 2 if failed else 0
+        if args.sub == "backfill":
+            out = documents.backfill(pipeline=args.pipeline, limit=args.limit)
+            _emit(out, J)
+            return 2 if out.get("failed") else 0
+        if args.sub == "run":
+            out = pipelines.run_document(args.pipeline, Path(args.file))
+            _emit(out, J)
+            return 2 if out.get("failed") else 0
         return 1
 
     if args.cmd == "reconcile":
@@ -1571,15 +1718,6 @@ def main() -> int:
     if args.cmd == "doctor":
         return doctor(J, args.quiet)
 
-    if args.cmd == "pipeline":
-        if args.action == "enable":
-            state.ENABLED_FLAG.parent.mkdir(parents=True, exist_ok=True)
-            state.ENABLED_FLAG.touch()
-        elif args.action == "disable":
-            state.ENABLED_FLAG.unlink(missing_ok=True)
-        _emit({"enabled": state.pipeline_enabled()}, J)
-        return 0
-
     return 1
 
 
@@ -1587,6 +1725,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (capture.CaptureError, archive.ArchiveError, passes.PassError,
+            pipelines.PipelineError,
             transcribe_adapter.TranscribeError, RuntimeError, SystemExit) as e:
         if isinstance(e, SystemExit):
             raise

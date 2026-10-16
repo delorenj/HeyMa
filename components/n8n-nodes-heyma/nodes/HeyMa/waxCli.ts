@@ -137,6 +137,121 @@ export function parseWaxOutput(stdout: string): JsonObject {
 	return parsed as JsonObject;
 }
 
+// ---------------------------------------------------------------------------
+// Enrichment control surface: every operation is a CLI invocation. Nodes never
+// run pass scripts and never read the ledger directly — `wax` is the contract.
+
+export const EP_SLUG_RE = /^[a-z][a-z0-9-]*$/u;
+/** Audio item ids are 16 hex chars; document ids are the same under `doc-`. */
+export const WAX_KEY_RE = /^(?:doc-)?[0-9a-f]{16}$/u;
+export const PIPELINE_NAME_RE = /^[a-z][a-z0-9-]*$/u;
+
+export type WaxSubcommand =
+	| { kind: 'epRun'; slug: string; itemKey: string; attempt?: number }
+	| { kind: 'catalog' }
+	| { kind: 'pipelineCompile'; names?: string[] }
+	| { kind: 'pipelineShow'; name: string }
+	| { kind: 'documentsScan'; pipeline?: string }
+	| { kind: 'documentsRun'; pipeline: string; file: string };
+
+export function buildWaxSubcommandArgs(command: WaxSubcommand): string[] {
+	const args = ['--json'];
+	switch (command.kind) {
+		case 'catalog':
+			return [...args, 'catalog'];
+		case 'epRun': {
+			if (!EP_SLUG_RE.test(command.slug)) {
+				throw new WaxCliError(`Invalid pass slug: ${command.slug}`);
+			}
+			if (!WAX_KEY_RE.test(command.itemKey)) {
+				throw new WaxCliError('Item must be an audio item id (16 hex) or document id (doc- + 16 hex)');
+			}
+			args.push('ep', 'run', command.slug, command.itemKey);
+			if (command.attempt !== undefined) {
+				if (!Number.isInteger(command.attempt) || command.attempt < 1 || command.attempt > 999) {
+					throw new WaxCliError('Attempt must be an integer between 1 and 999');
+				}
+				args.push('--attempt', String(command.attempt));
+			}
+			return args;
+		}
+		case 'pipelineCompile': {
+			args.push('pipeline', 'compile');
+			for (const name of command.names ?? []) {
+				if (!PIPELINE_NAME_RE.test(name)) {
+					throw new WaxCliError(`Invalid pipeline name: ${name}`);
+				}
+				args.push(name);
+			}
+			return args;
+		}
+		case 'pipelineShow': {
+			if (!PIPELINE_NAME_RE.test(command.name)) {
+				throw new WaxCliError(`Invalid pipeline name: ${command.name}`);
+			}
+			return [...args, 'pipeline', 'show', command.name];
+		}
+		case 'documentsScan': {
+			args.push('documents', 'scan');
+			if (command.pipeline !== undefined) {
+				if (!PIPELINE_NAME_RE.test(command.pipeline)) {
+					throw new WaxCliError(`Invalid pipeline name: ${command.pipeline}`);
+				}
+				args.push(command.pipeline);
+			}
+			return args;
+		}
+		case 'documentsRun': {
+			if (!PIPELINE_NAME_RE.test(command.pipeline)) {
+				throw new WaxCliError(`Invalid pipeline name: ${command.pipeline}`);
+			}
+			if (!isAbsolute(command.file)) {
+				throw new WaxCliError('Document must be an absolute path');
+			}
+			return [...args, 'documents', 'run', command.pipeline, command.file];
+		}
+	}
+}
+
+export async function runWaxSubcommand(options: {
+	command: WaxSubcommand;
+	executable: string;
+	timeoutMs: number;
+	waxRoot: string;
+}): Promise<WaxCommandResult> {
+	validateConfiguration({
+		executable: options.executable,
+		operation: 'start',
+		timeoutMs: options.timeoutMs,
+		waxRoot: options.waxRoot,
+	});
+	const args = buildWaxSubcommandArgs(options.command);
+	try {
+		const { stderr, stdout } = await execFileAsync(options.executable, args, {
+			encoding: 'utf8',
+			env: { ...process.env, WAX_ROOT: options.waxRoot },
+			maxBuffer: MAX_OUTPUT_BYTES,
+			timeout: options.timeoutMs,
+			windowsHide: true,
+		});
+		return {
+			response: parseWaxOutput(stdout),
+			stderr: stderr.trim(),
+		};
+	} catch (error: unknown) {
+		if (error instanceof WaxCliError) throw error;
+
+		const fields = errorFields(error);
+		const stderr = text(fields.stderr);
+		const suffix = stderr || fields.message || String(error);
+		const timedOut = fields.killed && fields.signal;
+		const message = timedOut
+			? `Wax command timed out after ${Math.round(options.timeoutMs / 1000)} seconds: ${suffix}`
+			: `Wax command failed${fields.code === undefined ? '' : ` (exit ${fields.code})`}: ${suffix}`;
+		throw new WaxCliError(message, fields);
+	}
+}
+
 export async function runWaxCommand(options: WaxCommandOptions): Promise<WaxCommandResult> {
 	const args = buildWaxArgs(options);
 	try {

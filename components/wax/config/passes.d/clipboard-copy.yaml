@@ -1,6 +1,7 @@
 slug: clipboard-copy
 version: 1
 description: Copy the transcript text to the clipboard and play a sound.
+capabilities: [audio]      # desk effect of the recording scenario
 enabled: true
 auto: true
 requires: []

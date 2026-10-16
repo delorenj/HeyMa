@@ -1,0 +1,17 @@
+name: transcript-standard
+version: 1
+description: >
+  Post-transcription enrichment for every recording: the compiled view of the
+  registry plan the waxd worker already executes. Compiling this pipeline
+  changes nothing at runtime — the worker's ensure_plan() remains the one
+  graph authority for audio; this definition exists so discovery surfaces can
+  show the trigger, the graph and its truthful outcomes in one place.
+trigger: transcription
+enabled: true
+failure_policy: independent
+passes:
+  - frontmatter-stamp
+  - clipboard-copy
+  - classification
+  - title-slug
+  - diarization

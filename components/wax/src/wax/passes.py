@@ -480,9 +480,20 @@ def md_for(item_id: str) -> Optional[Path]:
     row = ledger.connect().execute(
         "SELECT md_path FROM transcripts WHERE item_id=?", (item_id,)).fetchone()
     if not row:
-        return None
+        # Document context: an ordinary Markdown note enriched in place. It has
+        # no transcripts row by design (that row asserts audio provenance), so
+        # resolution falls through to the documents table — never a fabricated
+        # transcript.
+        from . import documents
+        return documents.md_for(item_id)
     p = Path(row["md_path"])
     return p if p.is_file() else None
+
+
+def is_document(item_id: str) -> bool:
+    """Whether this pass-ledger key names a document rather than an audio item."""
+    from . import documents
+    return documents.is_document_key(item_id)
 
 
 def _expand(value: Any, *, item_id: str, md: Path) -> str:
@@ -721,13 +732,27 @@ def _validated_events(ep: dict[str, Any], result: dict[str, Any]) -> list[dict[s
     return declared
 
 
-def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, Any]) -> tuple[Path, list[str]]:
-    """Apply a pass's declarative mutations and return the current note path."""
+def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, Any],
+                  *, document: bool = False) -> tuple[Path, list[str]]:
+    """Apply a pass's declarative mutations and return the current note path.
+
+    ``document=True`` is the ordinary-document context: no transcript identity
+    is stamped (a document must never acquire fabricated transcript/audio
+    provenance), no archive references exist to link, and the transcript-slug
+    rename contract does not apply. Frontmatter proposals keep their full
+    no-clobber semantics either way.
+    """
     if not result:
         return md, []
     # First, before the note, the ledger or the filesystem is touched: a rejected
     # event list must leave the pass's other proposals unapplied too, or the
     # recorded `failed` would sit next to a half-enriched note.
+    if document and result.get("events"):
+        # Event envelopes are stamped with audio identity (transcription_id,
+        # transcript URI) and validated against audio Bloodbank schemas; a
+        # document run cannot satisfy that contract, so it is refused here
+        # rather than publishing a fabricated-provenance event.
+        raise PassError("document runs cannot declare events")
     _validated_events(ep, result)
     raw_updates = result.get("frontmatter") or {}
     if not isinstance(raw_updates, dict):
@@ -747,28 +772,29 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
     }
     updates = dict(effective_updates)
 
-    # This runner currently targets transcript artifacts only. Fill known base
-    # identity/provenance when older notes predate the metadata-first contract;
-    # never replace a non-empty upstream value.
-    # `captured` is when the AUDIO WAS RECORDED and is derived from the source's
-    # mtime by transcribe_adapter; stamping it with transcribed-at here silently
-    # rewrote a recording's date to whenever Whisper happened to get to it.
-    base_values = {
-        "schema-version": 1,
-        "asset-kind": "transcript",
-        "specialist": "transcripts",
-        "source": "audio-recording",
-    }
-    for key, value in base_values.items():
-        if value not in (None, "") and not existing.get(key):
-            updates[key] = value
+    if not document:
+        # This runner targets transcript artifacts for audio items. Fill known
+        # base identity/provenance when older notes predate the metadata-first
+        # contract; never replace a non-empty upstream value. `captured` is
+        # when the AUDIO WAS RECORDED and is derived from the source's mtime by
+        # transcribe_adapter; stamping it with transcribed-at here silently
+        # rewrote a recording's date to whenever Whisper happened to get to it.
+        base_values = {
+            "schema-version": 1,
+            "asset-kind": "transcript",
+            "specialist": "transcripts",
+            "source": "audio-recording",
+        }
+        for key, value in base_values.items():
+            if value not in (None, "") and not existing.get(key):
+                updates[key] = value
 
-    refs = archive.references(item_id)
-    if refs:
-        primary = refs[0]
-        updates["source-sha256"] = primary["sha256"]
-        updates["source-s3-key"] = primary["s3_key"]
-        updates["source-s3-uri"] = f"s3://{primary['bucket']}/{primary['s3_key']}"
+        refs = archive.references(item_id)
+        if refs:
+            primary = refs[0]
+            updates["source-sha256"] = primary["sha256"]
+            updates["source-s3-key"] = primary["s3_key"]
+            updates["source-s3-uri"] = f"s3://{primary['bucket']}/{primary['s3_key']}"
 
     transcript = result.get("transcript") or {}
     if not isinstance(transcript, dict):
@@ -779,6 +805,10 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
         requested_slug = existing_slug
     if requested_slug:
         requested_slug = _normalise_slug(requested_slug)
+    if document:
+        # The date-prefixed filename contract belongs to transcripts; an
+        # ordinary document keeps the name its owner gave it.
+        requested_slug = None
     original = md.read_bytes()
     _, body = frontmatter.split(original.decode("utf-8"))
     replacement = result.get("body_replace")
@@ -810,7 +840,7 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
         current = _rename_transcript(md, item_id, requested_slug) if requested_slug else md
     finally:
         staging.unlink(missing_ok=True)
-    if replacement is not None:
+    if replacement is not None and not document:
         ledger.connect().execute("UPDATE transcripts SET diarized=1 WHERE item_id=?", (item_id,))
 
     changed = [f"frontmatter.{key}" for key in effective_updates]
@@ -906,6 +936,27 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     if md is None:
         raise PassError(f"no transcript recorded for item {item_id}")
 
+    # Document context: a pass that has not declared the `document` capability
+    # is VISIBLY inapplicable — recorded and noted as a skip with its reason —
+    # never silently omitted and never run against a note it cannot own.
+    document = is_document(item_id)
+    if document and "document" not in (ep.get("capabilities") or []):
+        detail = (f"pass declares capabilities {ep.get('capabilities') or []}; "
+                  "document runs require the 'document' capability")
+        _record(item_id, slug, "skipped", version=int(ep.get("version") or 1),
+                attempt=attempt, reason_code="inapplicable_capability", detail=detail,
+                definition=ep)
+        try:
+            _write_pass_note(md, item_id, slug, {
+                "state": "skipped", "at": sentinel.utcnow(),
+                "version": int(ep.get("version") or 1),
+                "reason_code": "inapplicable_capability", "detail": detail,
+            })
+        except OSError:
+            pass
+        return {"item_id": item_id, "ep_slug": slug, "state": "skipped",
+                "reason_code": "inapplicable_capability", "detail": detail}
+
     skip_reason = None
     skip_detail = ""
     if ep.get("kind") == "diarization" and os.environ.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
@@ -971,7 +1022,8 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
             reason_code = None
             try:
                 pass_result = _parse_result(r.stdout or "")
-                current_md, changed_fields = _apply_result(item_id, md, ep, pass_result)
+                current_md, changed_fields = _apply_result(item_id, md, ep, pass_result,
+                                                           document=document)
                 effective, _ = frontmatter.read(current_md)
                 pass_result = {**pass_result, "effective_metadata": {
                     key: effective.get(key) for key in (pass_result.get("frontmatter") or {})

@@ -1,6 +1,7 @@
 slug: diarization
 version: 1
 description: CUDA Sortformer speaker turns using durable timed ASR without repeating Whisper.
+capabilities: [audio]      # needs the recording and its ledger rows
 enabled: true
 auto: true
 kind: diarization

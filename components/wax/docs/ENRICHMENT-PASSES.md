@@ -64,6 +64,7 @@ command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item
 | `slug`, `description` | Identity. `slug` defaults to the file stem. |
 | `version` | Integer, default 1. Bump it whenever behaviour or output semantics change and existing items should rerun. |
 | `enabled` | Available to `wax ep run` and, with `auto`, to the flow. Default false. |
+| `capabilities` | List of media this pass can run over: `audio` (transcript notes) and/or `document` (plain Markdown documents). Absent means `audio` only. A document run replaces an absent list with `["audio"]` and skips the pass with `inapplicable_capability` — the audio flow is unchanged by this field. |
 | `auto` | Part of the post-transcription flow (and so of the item's stored plan). Default false. |
 | `requires` | Other **enabled** passes this one consumes. Orders the pass after them AND gates it: `run()` will not execute it until each is `completed` or `skipped` at the live registry version; otherwise it records `dependency_failed` (ledger row, a real attempt, and a `wax.passes.<slug>` note entry saying `waiting on <dep> (<state>@v<n>)`). An `auto` pass may only require other `auto` passes. A requirement that is missing, disabled, quarantined or manual-when-auto **quarantines the dependent**, loudly, instead of raising the whole registry down. |
 | `after` | Ordering only. No gate: a failed `after` target never stops its dependent. It must still name an enabled pass, and (unlike `requires`) is not checked against the plan, so pointing it at a non-`auto` pass makes `run_auto` raise. |
@@ -290,3 +291,83 @@ has a new content hash and is published as a new intake.
 is not, register it with `POST /v1/index` and the repo's `.project.json`, never
 `pj init --apply`, which rewrites the manifest and the `heyma-pm` agent key),
 `jev api key`, and `pass events enqueued`.
+
+## Document runs
+
+The same runner also enriches **plain Markdown documents** — no audio item, no
+`transcripts` row, no rename. A document is content-addressed:
+`doc_id = "doc-" + sha256(file bytes)[:16]`, recorded in the `documents` ledger
+table with its first-seen path. The same bytes at a new path are the same
+document (a scan re-claims nothing), and a changed file is a new `doc_id`.
+
+Differences from an audio run, all enforced in `passes.run()`:
+
+- the pass must declare `capabilities: [document]` (with or without `audio`);
+  otherwise it records `skipped` / `inapplicable_capability` and satisfies
+  ordering exactly like any other skip;
+- the note is the document itself; there is no `transcripts` provenance block,
+  no `transcript.slug` rename, and `md_for()` falls back to the document path
+  for `{md_path}` placeholders;
+- `events` are **rejected**: a document run returns `result_apply_failed` if a
+  result declares events. Document enrichment proposes frontmatter (and, with
+  `body_mutation`, body edits) only; anything that should become a Bloodbank
+  fact waits for the audio flow or an explicit n8n workflow.
+
+## Safe discovery: `wax catalog`
+
+`wax catalog --json` is the one read Holocene (and n8n's loadOptions) consume.
+It is a safe projection by construction: every registered pass with its
+purpose, `capabilities`, availability **and why** (`available`, `disabled`,
+`placeholder`, `quarantined`, `unparseable`), run conditions, dependency edges,
+declared emissions, and a bounded outcome tally per state (`completed`,
+`failed`, `skipped`, `running`, `exhausted`, `stale` — counts at the current
+version, older versions folded into `stale`). Pipelines (below) appear with
+authored/compiled identity, drift, graph and bindings. The Never list is
+enforced by an allowlist in `src/wax/catalog.py`: no `env`, no command argv, no
+result bodies, no stderr — a key added to the catalog is a key a hosted surface
+may display, so additions are deliberate.
+
+## Pipelines
+
+A pipeline is an **authored graph** compiled into an immutable, versioned
+definition. Author YAML lives in `config/pipelines.d/<name>.yaml`:
+
+```yaml
+name: doc-standard
+description: Document enrichment standard
+trigger: documents          # transcription | documents | manual
+enabled: false
+failure_policy: independent # independent | halt
+nodes: [frontmatter-stamp, classification, title-slug]
+bindings:
+  - folder: /home/delorenj/d/DocsInbox
+```
+
+- **Compile is explicit**: `wax pipeline compile [names…]` (no args = all
+  authored). The compiled definition and its sha256 `definition_id` are stored
+  in the `pipelines` table; `version` increments when the definition changes.
+  Nothing recompiles on its own — `wax pipeline status`/`list` report `drift`
+  (authored ≠ compiled) until a human or n8n compiles, and drift is a visible
+  badge in Holocene, never an error.
+- A `trigger: transcription` pipeline is a **compiled view** of the plan the
+  worker already executes — it is never a second scheduler. `documents` and
+  `manual` pipelines are executed by `wax documents scan|run` only.
+- `failure_policy: halt` stops a document run at the first failed node;
+  `independent` runs siblings anyway. Either way the run is recorded and only a
+  fully-terminal run writes the processed receipt — a failed pass stays
+  retryable, and completed passes replay as no-ops on re-run (one effective run
+  per binding/revision/definition).
+
+## Document folder bindings
+
+A binding (`documents` trigger) is **new-arrivals-only**:
+
+- `wax documents scan [pipeline]` seeds a binding by registering every document
+  already in the folder **without processing** (a receipt, not a backfill), then
+  processes only files that arrive afterwards.
+- Document runs never write into a bound folder the pipeline listens to (Wax
+  output goes elsewhere), and a manual `wax documents run <pipeline> <file>` is
+  the explicit, audited backfill tool.
+- `wax documents list|scan|run`, `wax pipeline bindings`, and the catalog all
+  report binding state: folder existence, document counts, unprocessed counts,
+  last scan time.

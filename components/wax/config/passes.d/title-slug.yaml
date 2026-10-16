@@ -1,6 +1,7 @@
 slug: title-slug
 version: 3
 description: Grounded title and summary, with a date-prefixed transcript filename.
+capabilities: [audio]      # date-prefixed transcript rename is audio identity
 enabled: true
 auto: true
 requires: []
