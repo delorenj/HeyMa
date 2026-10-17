@@ -29,10 +29,6 @@ task = "link:agentfiles"
 description = "Symlink all agent files to AGENTS.md"
 run = "'{{config_root}}/.mise/scripts/link-agentfiles.sh' '{{config_root}}'"
 
-[tasks."skills:sync"]
-description = "Reconcile this project's selected skills"
-tools = { "npm:@delorenj/skillex" = { version = "0.1.2", allow_low_downloads = true }, node = "24" }
-run = "skillex sync --scope project --project '{{config_root}}'"
 
 [tasks."codex:sync"]
 description = "Regenerate the isolated AutomaticAI Codex provider and model catalog"

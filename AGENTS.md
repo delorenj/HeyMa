@@ -189,15 +189,28 @@ receipt, retry, and schedule.
 
 ## Skills (Skillex)
 
-`.agents/skills/` is a **generated projection** — symlinks into this machine's
-skillex checkout and pack cache, rebuilt by `mise run skills:sync` and gitignored
-because every entry is an absolute `/home/<user>/…` path. Never author there; the
-next sync deletes it.
+`.agents/skills/` is a **generated discovery root**. Never author there or
+replace foreign content by hand; Skillex owns activation. Canonical definitions
+live in `~/code/skillex/all-skills/<name>/` (Git: `delorenj/skills`), the `all-skills`
+submodule of `delorenj/skillex`. Commit/push definitions there, then advance the
+Skillex parent pin. Machine-local `.agents/skills.json` selects names.
 
-Canonical skill source lives in the registry at `~/code/skillex/all-skills/<name>/`
-(git: `delorenj/skillex`). To add one here: write it there, append
-`{"name": …, "source": "file://…"}` to `.agents/skills.json`, then
-`mise run skills:sync`. `.agents/skills.json` is machine-local, so the skill's
-durable home is the skillex repo — commit and push it there.
+Use the installed `skillex` CLI directly (via `mise x -- skillex …` when needed),
+not a `skills:*` mise task. Preview `skillex enable skill <name> --project <repo>
+--dry-run --json` and inspect sync conflicts before applying. Preserve foreign
+skills/host-owned system packages; do not force a root migration to add one skill.
 
-This repo's own troubleshooting skill is `heyma-pipeline-doctor`.
+- `wax-pipeline`: CLI-first audio/document pipeline operations, provenance,
+  compiled graphs, n8n authoring and read-only Holocene.
+- `create-enrichment-pass`: portable EP implementation, capabilities, result
+  envelope, no-clobber and tests; runtime integration routes to `wax-pipeline`.
+- `heyma-pipeline-doctor`: incident diagnosis/recovery; its legacy audio board is
+  not proof of document-binding health.
+
+If activation is blocked, load these canonical paths explicitly and report the
+blocker rather than copying skill bodies into the generated root. In particular,
+this checkout still has a preserved foreign `create-enrichment-pass` directory;
+until Skillex can safely reconcile it, read
+`~/code/skillex/all-skills/create-enrichment-pass/SKILL.md` explicitly instead of
+trusting that older local discovery copy. The corresponding pipeline entry is
+`~/code/skillex/all-skills/wax-pipeline/SKILL.md`.
