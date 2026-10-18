@@ -892,6 +892,22 @@ def _write_pass_note(md: Path, item_id: str, slug: str, entry: dict[str, Any]) -
 
 
 @serialized
+def _frozen_plan_entry(item_id: str, slug: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, int]]]:
+    """(the plan's frozen definition of `slug`, the plan's pass versions) for an item, or (None, None) when the item
+    has no plan or the plan does not name the pass (legacy history keeps the live-registry path, as in the sweep)."""
+    row = ledger.connect().execute(
+        "SELECT definitions FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+    if not row:
+        return None, None
+    try:
+        plan = json.loads(row["definitions"])
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(plan, dict) or not isinstance(plan.get(slug), dict):
+        return None, None
+    return plan[slug], {s: int(p.get("version") or 1) for s, p in plan.items() if isinstance(p, dict)}
+
+
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
          definition=None, dependency_versions: Optional[dict[str, int]] = None,
          ) -> dict[str, Any]:
@@ -902,6 +918,15 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     run` — cannot mint a command_id that has already been issued.
     """
     reg = registry()
+    if definition is None:
+        # An item with a minted plan runs under that plan's frozen definition no matter who asks: `wax ep run`,
+        # the tray's retry and the sweep must agree. A manual retry under the LIVE registry recorded a definition
+        # the plan never froze, so finalize refused it (passes_incomplete) even after the pass succeeded.
+        frozen, frozen_versions = _frozen_plan_entry(item_id, slug)
+        if frozen is not None:
+            definition = frozen
+            if dependency_versions is None:
+                dependency_versions = frozen_versions
     ep = definition or reg.get(slug)
     if ep is None:
         raise PassError(f"unknown pass {slug!r}; known: {sorted(reg)}")
