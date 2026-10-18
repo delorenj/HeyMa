@@ -181,3 +181,28 @@ class ModelAwareVramFloorTest(unittest.TestCase):
     def test_explicit_env_floor_wins(self):
         with patch.dict("os.environ", {"TRANSCRIBE_MIN_FREE_VRAM_MB": "7000"}):
             self.assertEqual(TRANSCRIBE.min_free_vram_for("base"), TRANSCRIBE._MIN_FREE_VRAM_MB)
+
+
+class VramFloorCallSiteTest(unittest.TestCase):
+    def test_transcribe_local_asks_for_the_models_floor(self):
+        import os
+        fake = types.ModuleType("faster_whisper")
+
+        class _Model:
+            def __init__(self, *a, **k):
+                pass
+
+            def transcribe(self, *a, **k):
+                return iter(()), types.SimpleNamespace(duration=0, language="en", language_probability=1.0)
+
+        fake.WhisperModel = _Model
+        os.environ.pop("TRANSCRIBE_MIN_FREE_VRAM_MB", None)
+        with patch.dict(sys.modules, {"faster_whisper": fake}), \
+                patch.object(TRANSCRIBE, "cuda_runtime_available", return_value=(True, "ok")), \
+                patch.object(TRANSCRIBE, "gpu_vram_headroom", return_value=(True, "ok")) as headroom, \
+                contextlib.redirect_stderr(io.StringIO()):
+            try:
+                TRANSCRIBE.transcribe_local("x.ogg", "base", "en")
+            except Exception:
+                pass
+        headroom.assert_called_once_with(1200)

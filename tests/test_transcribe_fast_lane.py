@@ -42,6 +42,18 @@ echo hi > {d}/out.md
     def run_wrapper(self, audio, *extra, timeout=20):
         return subprocess.run([str(WRAPPER), str(audio), *extra], env=self.env, capture_output=True, text=True, timeout=timeout)
 
+    def assert_waits(self, audio, *extra):
+        """The run queues on the heavy slot: it says so, and is still waiting when the test gives up."""
+        p = subprocess.Popen([str(WRAPPER), str(audio), *extra], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                p.wait(timeout=4)
+        finally:
+            p.kill()
+            _, err = p.communicate()
+        self.assertIn("Another transcription holds the slot", err)
+        self.assertNotIn("fast lane", err)
+
     def hold_heavy(self):
         holder = subprocess.Popen(["flock", str(self.d / "heavy.lock"), "sleep", "60"])
         self.addCleanup(holder.kill)
@@ -52,7 +64,7 @@ echo hi > {d}/out.md
 
     def test_short_clip_takes_the_fast_lane_when_the_heavy_slot_is_busy(self):
         self.hold_heavy()
-        r = self.run_wrapper(self.clip(5), "--model", "large-v3", "--diarization")
+        r = self.run_wrapper(self.clip(5), "--ephemeral", "--model", "large-v3", "--diarization")
         self.assertEqual(r.returncode, 0, r.stderr)
         a = self.args()
         self.assertEqual(a[a.index("--model") + 1], "small")
@@ -63,7 +75,7 @@ echo hi > {d}/out.md
 
     def test_a_caller_small_model_is_kept(self):
         self.hold_heavy()
-        r = self.run_wrapper(self.clip(5), "--model", "base")
+        r = self.run_wrapper(self.clip(5), "--ephemeral", "--model", "base")
         self.assertEqual(r.returncode, 0, r.stderr)
         a = self.args()
         self.assertEqual(a.count("--model"), 1)
@@ -71,13 +83,22 @@ echo hi > {d}/out.md
 
     def test_long_clip_waits_its_turn(self):
         self.hold_heavy()
-        with self.assertRaises(subprocess.TimeoutExpired):
-            self.run_wrapper(self.clip(130), timeout=4)
+        self.assert_waits(self.clip(130), "--ephemeral")
 
     def test_pinned_device_waits_its_turn(self):
         self.hold_heavy()
-        with self.assertRaises(subprocess.TimeoutExpired):
-            self.run_wrapper(self.clip(5), "--device", "cuda", timeout=4)
+        self.assert_waits(self.clip(5), "--ephemeral", "--device", "cuda")
+
+    def test_wax_style_short_clip_is_never_downgraded(self):
+        """Wax's 60 s segments are not --ephemeral: they wait for the heavy slot and keep their model."""
+        self.hold_heavy()
+        self.assert_waits(self.clip(60), "--no-diarization")
+
+    def test_container_without_a_duration_does_not_crash(self):
+        bogus = self.d / "nodur.ogg"
+        bogus.write_bytes(b"not really audio")
+        r = self.run_wrapper(bogus, "--ephemeral")
+        self.assertNotIn("unbound variable", r.stderr)
 
     def test_free_slot_runs_normally_and_keeps_caller_args(self):
         r = self.run_wrapper(self.clip(5), "--model", "large-v3")

@@ -110,7 +110,8 @@ enforce_transcription_duration_limit() {
   local actual actual_whole limit
   actual="$(ffprobe -v error -show_entries format=duration \
     -of default=nw=1:nk=1 -- "$AUDIO" 2>/dev/null || true)"
-  [[ -n "$actual" ]] || return 0
+  # A container that reports no duration prints "N/A": not a number, so not a reason to block (or to crash set -u).
+  [[ "$actual" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 0
   actual_whole="${actual%%.*}"
   limit="$(duration_seconds "$MAX_AUDIO_DURATION_FOR_TRANSCRIPTION")"
   if ((actual_whole >= limit)); then
@@ -132,6 +133,9 @@ audio_seconds() {
 
 fast_lane_eligible() {
   [[ "$FAST_LANE_MAX_S" =~ ^[0-9]+$ ]] && ((FAST_LANE_MAX_S > 0)) || return 1
+  # Only throwaway interactive runs (--ephemeral: Hermes voice notes, Holocene car memos). Wax's 60 s capture
+  # segments are short too, and must never be quietly downgraded to a small CPU model while a voice note runs.
+  [[ "$EPHEMERAL" == "true" ]] || return 1
   # A caller that pinned a device or the Groq API asked for something specific: honour it, wait in line.
   has_arg --device && return 1
   has_arg --groq && return 1
