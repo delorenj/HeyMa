@@ -1,0 +1,73 @@
+[
+  {
+    "verdict": "FAIL",
+    "findings": [
+      {
+        "severity": "major",
+        "file": "/home/delorenj/HeyMa/components/wax/src/wax/passes.py",
+        "summary": "b40825d moved the @serialized decorator off run() onto the new _frozen_plan_entry(). run() lost its per-item lock, so direct callers run without it.",
+        "evidence": "The diff inserts the new helper between the existing `@serialized` line and `def run`, so the decorator now binds to the helper. Before b40825d, `git show b40825d^:...passes.py` has `@serialized` directly above `def run`. At HEAD, line 894 `@serialized` sits above `_frozen_plan_entry` and `run` at line 911 has none. A runtime check (PYTHONPATH=src, python -I) gave `run serialized: False | _frozen_plan_entry serialized: True`. `@serialized` takes `operations.item_lock(item_id)`, a flock held for the whole pass. Callers of run() that never took the lock themselves: bin/wax `ep run` (via worker), worker.py:615 (tray retry), worker.py:702 (sweep re-drive), and pipelines.py:1022. Only run_all and run_auto (lines 1139 and 1185) still hold the lock. So a manual `wax ep run` or tray retry can now overlap the sweep or run_auto on the same item. Both can pick the same attempt via _next_attempt(), write the same passes row, and rewrite the same note's frontmatter. That is the scenario this ticket produces (a manual retry while waxd runs). The new tests and the 272-test suite do not exercise the lock, so they stay green.",
+        "fix": "Move `@serialized` back to sit directly above `def run`, and give `_frozen_plan_entry` no decorator or its own. The lock is reentrant, so run_all and run_auto are unaffected. Add a test asserting `hasattr(passes.run, '__wrapped__')`, or that item_lock is held while run executes. Then restart waxd, which is running the unserialized build now."
+      },
+      {
+        "severity": "minor",
+        "file": "/home/delorenj/HeyMa/components/wax/src/wax/passes.py",
+        "summary": "Quarantine and enabled checks are now also skipped for any planned slug on a manual run, and run_all's per-slug run() calls now use frozen definitions. This matches the sweep and the intended 'plan wins' semantics, but it is a wider change than the stated bug.",
+        "evidence": "In run(), `if definition is None:` guards the quarantined()/enabled checks. With a plan entry, definition is now set, so an operator who disabled or quarantined a pass in the live registry can still run it by hand on a planned item. The sweep (worker.py:702) already behaves this way, so this is consistent. run_all (line 1157) calls run(item_id, slug) for every registry slug and now silently picks up the frozen definition for planned slugs. run_auto, pipelines.py:1022 (explicit definition=ep) and document runs are unchanged because they pass a definition. No test covers the disabled-in-live-but-planned case."
+      },
+      {
+        "severity": "minor",
+        "file": "/home/delorenj/HeyMa/components/wax/tests/passes_plan_retry_test.py",
+        "summary": "The no-plan test is weak. On the old code it fails with AttributeError (no `_frozen_plan_entry`), not on behavior.",
+        "evidence": "On a /tmp copy of b40825d^ with the new test file, both tests fail. The main test fails on the behavior (definition_id 73728c... vs 9fb23e..., so it is a genuine regression test). The no-plan test fails only because it calls `passes._frozen_plan_entry`. The no-plan behavior is exercised by the final assert, but the old code would pass that assert if the helper existed. Not a blocker."
+      }
+    ]
+  },
+  {
+    "verdict": "PASS_WITH_NOTES",
+    "findings": [
+      {
+        "severity": "major",
+        "file": "/home/delorenj/HeyMa/components/wax/src/wax/passes.py",
+        "summary": "b40825d moved the @serialized decorator off passes.run and onto the new _frozen_plan_entry helper, so run() is no longer taken under the per-item flock.",
+        "evidence": "The diff context shows `@serialized` kept above the inserted helper, with `def run(` now undecorated. Confirmed live: hasattr(passes.run,'__wrapped__') is False and hasattr(passes._frozen_plan_entry,'__wrapped__') is True. Before the commit, run() took operations.item_lock (a cross-process flock under var/item-locks). Callers that relied on run() for the lock and are not serialized themselves: worker.sweep_failed_passes (waxd), bin/wax `ep run` at line 1539, and pipelines.py:1022. A manual `wax ep run` can now race waxd's run_auto or sweep on the same item. The races are _next_attempt reuse (a spent uuid5 command_id), concurrent frontmatter and note writes, and concurrent _record upserts. The suite passes only because no test asserts the lock. Behaviour is unchanged only for callers already serialized: run_auto, run_all and retry_failed_passes.",
+        "fix": "Re-apply `@serialized` directly above `def run(`. Leave the helper undecorated, or keep its decorator only if the extra lock is wanted; item_lock is re-entrant per thread, so nesting is safe. Add a test asserting passes.run holds item_lock, e.g. that operations._local.held contains the item id inside a stubbed child."
+      },
+      {
+        "severity": "minor",
+        "file": "/home/delorenj/HeyMa/components/wax/src/wax/passes.py",
+        "summary": "A manual run of a planned item now bypasses the live enabled and quarantine guard. This matches the sweep and run_auto, so I judge it acceptable, but it is a behaviour change and nothing documents it.",
+        "evidence": "`if definition is None:` guards the quarantined and enabled checks, and the frozen path sets definition. The sweep already behaves this way. `wax ep run` on a planned item, and run_all for a planned slug, now execute a pass the operator disabled or that is quarantined in the live registry. run_all reports the quarantined slug and then runs it anyway, because its loop iterates reg and calls run(). The WAX_DIARIZATION kill switch is still honoured. In the live registry today all 5 planned slugs are enabled, quarantined() is empty, and 6 non-planned passes are disabled. So there is no practical impact now.",
+        "fix": "Note the behaviour in the wax-pipeline and pipeline-doctor skills. Optionally have run_all skip quarantined slugs explicitly."
+      },
+      {
+        "severity": "minor",
+        "file": "/home/delorenj/HeyMa/components/wax/src/wax/passes.py",
+        "summary": "_frozen_plan_entry guards malformed JSON and a missing slug but not a malformed per-pass version. Dependency versions are also frozen only when the target slug itself is in the plan.",
+        "evidence": "json.loads errors (TypeError, ValueError), a non-dict plan and a missing or non-dict slug entry all return (None, None), and I read them correctly. `int(p.get('version') or 1)` is outside the try, so a non-numeric version string in a plan raises an uncaught ValueError out of run(). Separately, a planned item whose manual pass is not in its plan (a non-auto pass requiring an auto one) gets no frozen dependency_versions. The gate then compares the dependency row's recorded version against the live version and can fail with dependency_failed after a live version bump. This predates the commit, but the frozen-plan intent is incomplete. In the live data, title-slug is at version 3 live and 1 in plans.",
+        "fix": "Wrap the version coercion in the try, or return None, None on error. Optionally derive dependency_versions from the plan even when the slug is absent from it."
+      },
+      {
+        "severity": "minor",
+        "file": "/home/delorenj/HeyMa/components/wax/tests/passes_plan_retry_test.py",
+        "summary": "Test gaps.",
+        "evidence": "The tests cover only the happy path with a differing frozen definition and plan-less items. They do not cover malformed plan JSON, a plan without the slug, explicit-definition precedence, frozen dependency_versions gating, run() holding the item lock (which would have caught the decorator regression), or the retry_failed_passes and run-selected paths.",
+        "fix": "Add cases for those, especially a lock assertion."
+      },
+      {
+        "severity": "minor",
+        "file": "/home/delorenj/HeyMa/var/wax.db",
+        "summary": "The fix applies to every planned item: 94 plans, and every plan differs from the live registry. This is read-only data, not a defect in the patch.",
+        "evidence": "All 94 plans differ from the live registry for classification, diarization, frontmatter-stamp and title-slug, plus clipboard-copy where present. That is 92 complete items and 2 enrichment_pending. Plan rows have 4 distinct signatures. The live diarization definition differs only by a newly added `capabilities: [audio]` (older plans lack it) and, for bc81421c, by `_path`/`after`. The `capabilities` field is only consulted for document runs, so there is no behavioural effect. There are no definition_id mismatches between the passes table and the plan frozen definitions (0 of 783 rows), so no recorded run is currently stuck on the live-registry bug. Plans exist for non-document items only (no plan rows with a doc key). Document runs go through pipelines.py with an explicit definition, so they are unaffected. Items still pending: ab8f6337e387119c has diarization failed at attempt 3 and exhausted since 2026-10-14. e5a727403046d70c has diarization 'running' at attempt 4, updated 23:14:49Z, exhausted_at set. bc81421c7b194b2b is now done: its diarization row is skipped with reason human_edits at attempt 5, definition_id equal to the plan's, and it is no longer pending.",
+        "fix": "None required. Note for the recovery: the two remaining items still hit the CUDA OOM, since the frozen definition equals the live one apart from capabilities, so only GPU capacity or tuning will fix them."
+      },
+      {
+        "severity": "minor",
+        "file": "/home/delorenj/HeyMa/components/wax/src/wax/worker.py",
+        "summary": "The other manual paths are now covered by the fix; none still bypasses the frozen plan, though the exhaustion interplay is unchanged.",
+        "evidence": "retry_failed_passes (tray run-selected, and waxd line 382) calls passes.run(item_id, slug) with no definition, so it now picks up the frozen plan, then run_auto and finalize. `bin/wax ep run` does the same. run_all covers planned slugs through run(). sweep, run_auto and pipelines pass explicit definitions, so those paths are unchanged. Attempt numbering and command_id uniqueness are intact: _next_attempt is MAX(attempt)+1, and an explicit attempt is passed through. A manual success after dead-lettering leaves exhausted_at set; _record clears it only on a version change. This is pre-existing and finalize does not appear to depend on it, as the bc81421c row shows.",
+        "fix": "None required."
+      }
+    ]
+  }
+]
