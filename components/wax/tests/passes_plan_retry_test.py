@@ -69,6 +69,25 @@ class PlanFrozenManualRetryTest(unittest.TestCase):
         self.assertEqual(row["definition_id"], operations.definition_id(self.planned))
         self.assertTrue(finalize.finalize(self.item)["finalized"])
 
+    def test_run_still_holds_the_item_lock(self):
+        """b40825d's first cut left run() undecorated: a manual run could race waxd's sweep on the same item."""
+        seen = []
+        real = passes._frozen_plan_entry
+
+        def spy(item_id, slug):
+            seen.append(item_id in getattr(operations._local, "held", set()))
+            return real(item_id, slug)
+
+        with patch.object(passes, "_frozen_plan_entry", side_effect=spy):
+            passes.run(self.item, "diarization")
+        self.assertEqual(seen, [True])
+
+    def test_a_malformed_plan_falls_back_to_the_live_registry(self):
+        for bad in ("not json", json.dumps(["a list"]), json.dumps({"other": {"version": 1}}),
+                    json.dumps({"diarization": {"version": "v-two"}})):
+            ledger.connect().execute("UPDATE processing_plans SET definitions=? WHERE item_id=?", (bad, self.item))
+            self.assertEqual(passes._frozen_plan_entry(self.item, "diarization"), (None, None), bad)
+
     def test_items_without_a_plan_keep_the_live_registry(self):
         ledger.connect().execute("DELETE FROM processing_plans WHERE item_id=?", (self.item,))
         self.assertEqual(passes._frozen_plan_entry(self.item, "diarization"), (None, None))

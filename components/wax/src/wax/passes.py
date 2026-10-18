@@ -891,7 +891,6 @@ def _write_pass_note(md: Path, item_id: str, slug: str, entry: dict[str, Any]) -
     os.replace(tmp, md)
 
 
-@serialized
 def _frozen_plan_entry(item_id: str, slug: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, int]]]:
     """(the plan's frozen definition of `slug`, the plan's pass versions) for an item, or (None, None) when the item
     has no plan or the plan does not name the pass (legacy history keeps the live-registry path, as in the sweep)."""
@@ -905,9 +904,14 @@ def _frozen_plan_entry(item_id: str, slug: str) -> tuple[Optional[dict[str, Any]
         return None, None
     if not isinstance(plan, dict) or not isinstance(plan.get(slug), dict):
         return None, None
-    return plan[slug], {s: int(p.get("version") or 1) for s, p in plan.items() if isinstance(p, dict)}
+    try:
+        versions = {s: int(p.get("version") or 1) for s, p in plan.items() if isinstance(p, dict)}
+    except (TypeError, ValueError):
+        return None, None
+    return plan[slug], versions
 
 
+@serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
          definition=None, dependency_versions: Optional[dict[str, int]] = None,
          ) -> dict[str, Any]:
