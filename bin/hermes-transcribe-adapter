@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Hermes local_command STT -> HeyMa's transcribe wrapper (bin/transcribe).
+
+Hermes profiles call this through HERMES_LOCAL_STT_COMMAND (~/.local/bin/hermes-transcribe-adapter, a symlink here).
+Voice notes are single-speaker and short: diarization is skipped, and the wrapper's fast lane keeps them from
+queueing behind long Wax jobs.
+"""
+from __future__ import annotations
+import os
+
+import argparse
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+TRANSCRIBE_BIN = Path(os.environ.get('HERMES_TRANSCRIBE_BIN') or Path.home() / '.local/bin/transcribe')
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description='Adapter from Hermes local_command STT to custom transcribe script')
+    parser.add_argument('--input', dest='input_path', required=True)
+    parser.add_argument('--output-dir', dest='output_dir', required=True)
+    parser.add_argument('--language', default='en')
+    parser.add_argument('--model', default='base')
+    parser.add_argument('--ephemeral', action='store_true', help='Treat as a temporary run: cleanup markdown output and bypass vault storage')
+    return parser.parse_args()
+
+
+def markdown_to_text(markdown: str) -> str:
+    text = markdown.replace('\r\n', '\n')
+    # Strip the YAML frontmatter. The old split('\n---\n') needed THREE parts and the opening fence has no newline
+    # before it, so it never matched: every agent got "source-audio: ... diarized: ..." ahead of the words.
+    if text.startswith('---\n'):
+        end = text.find('\n---\n', 4)
+        if end != -1:
+            text = text[end + 5:]
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == '---':
+            continue
+        if not stripped:
+            lines.append('')
+            continue
+        if stripped.startswith('# '):
+            continue
+        if stripped.startswith('- **Source**:') or stripped.startswith('- **Date**:') or stripped.startswith('- **Duration**:') or stripped.startswith('- **Language**:') or stripped.startswith('- **Model**:'):
+            continue
+        lines.append(stripped)
+    cleaned = '\n'.join(lines).strip()
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned
+
+
+def main() -> int:
+    args = parse_args()
+    input_path = Path(args.input_path).expanduser().resolve()
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Security: validate language and model args to prevent argument injection
+    if args.language.startswith('-') or args.model.startswith('-'):
+        print("Invalid language or model argument", file=sys.stderr)
+        return 1
+
+    if not TRANSCRIBE_BIN.exists():
+        print(f'Custom transcribe script not found: {TRANSCRIBE_BIN}', file=sys.stderr)
+        return 1
+
+    # Route the markdown output explicitly into the hermes output dir
+    # so it does not clutter the audio inbox or the user's vault
+    temp_md = output_dir / f'{input_path.stem}.md'
+
+    cmd = [
+        str(TRANSCRIBE_BIN),
+        str(input_path),
+        '--language', args.language,
+        '--model', args.model,
+        '--output', str(temp_md),
+        '--no-diarization',
+    ]
+    
+    if args.ephemeral:
+        cmd.append('--ephemeral')
+
+    # The caller is a Hermes gateway running its own Python; none of its interpreter environment may reach the
+    # wrapper's venv (a leaked PYTHONPATH broke every voice note on 2026-10-18).
+    env = {k: v for k, v in os.environ.items() if k not in ('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV')}
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        return result.returncode
+
+    # Rely strictly on the transcribe script's stdout contract
+    transcript_path_str = result.stdout.strip()
+    if not transcript_path_str:
+        print('transcribe succeeded but returned no output path on stdout', file=sys.stderr)
+        return 1
+
+    transcript_md = Path(transcript_path_str)
+    if not transcript_md.exists():
+        print(f'transcribe returned a path that does not exist: {transcript_md}', file=sys.stderr)
+        return 1
+
+    transcript_text = markdown_to_text(transcript_md.read_text(encoding='utf-8'))
+    if not transcript_text:
+        print(f'No transcript text extracted from {transcript_md}', file=sys.stderr)
+        return 1
+
+    # Security: unlink the target if it is a symlink to prevent overwrite attacks
+    output_path = output_dir / f'{input_path.stem}.txt'
+    if output_path.is_symlink():
+        output_path.unlink()
+
+    output_path.write_text(transcript_text + '\n', encoding='utf-8')
+
+    # Cleanup the markdown file since Hermes only uses the .txt file
+    if args.ephemeral:
+        try:
+            transcript_md.unlink(missing_ok=True)
+            # Also cleanup the original audio since it's ephemeral
+            input_path.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"Warning: Failed to cleanup ephemeral files: {e}", file=sys.stderr)
+
+    print(str(output_path))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

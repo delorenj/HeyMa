@@ -119,13 +119,54 @@ enforce_transcription_duration_limit() {
   fi
 }
 
+# ---- fast lane: short clips do not wait behind long jobs (see the lock below) ----
+FAST_LANE_MAX_S="${TRANSCRIBE_FAST_LANE_MAX_S:-120}"
+FAST_MODEL=""
+AUDIO_SECONDS=""
+
+audio_seconds() {
+  local d
+  d="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 -- "$AUDIO" 2>/dev/null || true)"
+  [[ "$d" =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf '%s\n' "${d%%.*}"
+}
+
+fast_lane_eligible() {
+  [[ "$FAST_LANE_MAX_S" =~ ^[0-9]+$ ]] && ((FAST_LANE_MAX_S > 0)) || return 1
+  # A caller that pinned a device or the Groq API asked for something specific: honour it, wait in line.
+  has_arg --device && return 1
+  has_arg --groq && return 1
+  AUDIO_SECONDS="$(audio_seconds)"
+  [[ -n "$AUDIO_SECONDS" ]] && ((AUDIO_SECONDS <= FAST_LANE_MAX_S))
+}
+
+# Keep a caller's tiny/base model (already fast); anything larger becomes TRANSCRIBE_FAST_MODEL (small) on CPU.
+apply_fast_lane_args() {
+  local -a kept=() ; local i=0 n=${#EXTRA_ARGS[@]} asked=""
+  while ((i < n)); do
+    case "${EXTRA_ARGS[i]}" in
+      --model) asked="${EXTRA_ARGS[i+1]:-}"; i=$((i + 2)) ;;
+      --model=*) asked="${EXTRA_ARGS[i]#--model=}"; i=$((i + 1)) ;;
+      --diarization|--no-diarization) i=$((i + 1)) ;;
+      *) kept+=("${EXTRA_ARGS[i]}"); i=$((i + 1)) ;;
+    esac
+  done
+  case "$asked" in
+    tiny|tiny.en|base|base.en) FAST_MODEL="$asked" ;;
+    *) FAST_MODEL="${TRANSCRIBE_FAST_MODEL:-small}" ;;
+  esac
+  EXTRA_ARGS=("${kept[@]}" --model "$FAST_MODEL" --device cpu --no-diarization)
+}
+
 AUDIO="${1:?Usage: transcribe <audio-file> [options] [--archive-s3]}"
 shift
 ARCHIVE_S3=false
+EPHEMERAL=false
 EXTRA_ARGS=()
 while (("$#" > 0)); do
   case "$1" in
     --archive-s3) ARCHIVE_S3=true; shift ;;
+    # A throwaway run (agent voice notes): never archived to S3, transcript kept out of the vault.
+    --ephemeral) EPHEMERAL=true; shift ;;
     *) EXTRA_ARGS+=("$1"); shift ;;
   esac
 done
@@ -213,7 +254,11 @@ PY
     runner=(nice -n 15 mise x -- uv run python)
   fi
 
-  ( cd "$TRANSCRIBE_DIR" && PYTHONUNBUFFERED=1 "${runner[@]}" scripts/transcribe.py "${cmd_args[@]}" )
+  # The runner is always this repo's own interpreter, so nothing the CALLER's Python exported may leak in. A Hermes
+  # gateway (python3.14) once leaked its site-packages as PYTHONPATH into this python3.12 venv; numpy then loaded a
+  # cpython-314 extension and every voice note failed ("No module named numpy._core._multiarray_umath").
+  ( cd "$TRANSCRIBE_DIR" && env -u PYTHONPATH -u PYTHONHOME -u VIRTUAL_ENV PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 \
+      "${runner[@]}" scripts/transcribe.py "${cmd_args[@]}" )
 }
 
 run_remote_transcribe() {
@@ -331,7 +376,7 @@ if is_local; then
   # STEP 1 (PRIORITY): back up the source audio to S3 BEFORE transcribing.
   # The audio is the irreplaceable artifact; the transcript can always be
   # regenerated from it. We never delete the source.
-  if [[ "$ARCHIVE_S3" == "true" ]]; then
+  if [[ "$ARCHIVE_S3" == "true" && "$EPHEMERAL" != "true" ]]; then
     archive_to_s3 "$AUDIO" || log "[warn] backup did not reach S3; proceeding (source is preserved/stashed)."
   fi
 
@@ -351,10 +396,23 @@ if is_local; then
   mkdir -p "$(dirname "$TRANSCRIBE_LOCK_FILE")" 2>/dev/null || true
   exec 200>"$TRANSCRIBE_LOCK_FILE"
   if ! flock -n 200; then
-    log "[lock] Another transcription holds the slot; waiting for it to finish..."
-    flock 200
+    if fast_lane_eligible; then
+      # FAST LANE: a short clip (an agent voice note, a car memo) never queues behind a long job. A 3 h Wax
+      # recording held this slot for 2+ hours on 2026-10-16 and every voice note behind it timed out. Short
+      # clips run now, on CPU with a small model and no diarization, one at a time under their own lock.
+      apply_fast_lane_args
+      TRANSCRIBE_FAST_LOCK_FILE="${TRANSCRIBE_FAST_LOCK_FILE:-${HOME}/.cache/heyma-transcribe-fast.lock}"
+      exec 201>"$TRANSCRIBE_FAST_LOCK_FILE"
+      flock 201
+      log "[lock] Heavy slot busy; ${AUDIO_SECONDS}s clip takes the fast lane (cpu, model ${FAST_MODEL}, no diarization)."
+    else
+      log "[lock] Another transcription holds the slot; waiting for it to finish..."
+      flock 200
+      log "[lock] Acquired transcription slot."
+    fi
+  else
+    log "[lock] Acquired transcription slot."
   fi
-  log "[lock] Acquired transcription slot."
 
   # STEP 2: transcribe.
   # Stream stderr to log file AND to caller's stderr via tee. The `2>&1 1>/dev/null`
@@ -408,7 +466,7 @@ log "[remote] Upload complete."
 
 # STEP 1 (PRIORITY): back up the source to S3 BEFORE transcribing, via the
 # already-staged remote copy, and verify it landed. The source is never deleted.
-if [[ "$ARCHIVE_S3" == "true" ]]; then
+if [[ "$ARCHIVE_S3" == "true" && "$EPHEMERAL" != "true" ]]; then
   KEY="$(s3_key_for "$AUDIO")"
   log "[s3] (backup-first) Uploading via remote mc -> ${S3_ALIAS}/${S3_BUCKET}/${KEY}"
   if ssh -q "$REMOTE" "${MC_BIN} cp --quiet '${REMOTE_FILE}' '${S3_ALIAS}/${S3_BUCKET}/${KEY}' && ${MC_BIN} stat '${S3_ALIAS}/${S3_BUCKET}/${KEY}' >/dev/null" >&2; then
@@ -458,7 +516,7 @@ if [[ -z "$REMOTE_MD" ]]; then
   exit 1
 fi
 
-LOCAL_DIR="${TRANSCRIPTS:-${HOME}/d/Notes/Transcripts}"
+if [[ "$EPHEMERAL" == "true" ]]; then LOCAL_DIR="/tmp/ephemeral_transcripts"; else LOCAL_DIR="${TRANSCRIPTS:-${HOME}/d/Notes/Transcripts}"; fi
 mkdir -p "$LOCAL_DIR"
 LOCAL_MD="${LOCAL_DIR}/$(basename "$REMOTE_MD")"
 scp -q "${REMOTE}:${REMOTE_MD}" "$LOCAL_MD"

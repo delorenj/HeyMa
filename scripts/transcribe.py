@@ -176,6 +176,15 @@ def cuda_runtime_available() -> tuple[bool, str]:
 # Tunable via env for CI / low-VRAM hosts.
 _MIN_FREE_VRAM_MB = int(os.getenv("TRANSCRIBE_MIN_FREE_VRAM_MB", "5000"))
 _VRAM_WAIT_SECS = int(os.getenv("TRANSCRIBE_VRAM_WAIT_SECS", "30"))
+# The 5 GB floor is sized for large-v3. A small model on a busy GPU waited 30 s for 5 GB it never needed and then
+# ran on CPU anyway (agent voice notes use base). TRANSCRIBE_MIN_FREE_VRAM_MB, when set, still wins for every model.
+_MODEL_VRAM_MB = {"tiny": 1000, "base": 1200, "small": 2000, "medium": 3500}
+
+
+def min_free_vram_for(model_size: str) -> int:
+    if os.getenv("TRANSCRIBE_MIN_FREE_VRAM_MB"):
+        return _MIN_FREE_VRAM_MB
+    return _MODEL_VRAM_MB.get(model_size.split(".")[0], _MIN_FREE_VRAM_MB)
 
 
 def free_vram_mb() -> int | None:
@@ -263,14 +272,14 @@ def transcribe_local(audio_path: str, model_size: str, language: str | None, dev
             raise RuntimeError(f"CUDA requested but unavailable: {cuda_reason}")
         # Honor the explicit request, but wait out a transient spike first. Never
         # silently downgrade a forced --device cuda; just warn if headroom is low.
-        vram_ok, vram_reason = gpu_vram_headroom()
+        vram_ok, vram_reason = gpu_vram_headroom(min_free_vram_for(model_size))
         if not vram_ok:
             log(f"  [vram] WARNING: proceeding on cuda with low headroom ({vram_reason})")
         model = WhisperModel(model_size, device="cuda", compute_type="float16")
         log("  Device: cuda (float16)")
     else:
         # Auto: use CUDA only when the runtime preflight AND VRAM headroom pass.
-        vram_ok, vram_reason = gpu_vram_headroom() if cuda_ok else (False, cuda_reason)
+        vram_ok, vram_reason = gpu_vram_headroom(min_free_vram_for(model_size)) if cuda_ok else (False, cuda_reason)
         if cuda_ok and vram_ok:
             try:
                 model = WhisperModel(model_size, device="cuda", compute_type="float16")

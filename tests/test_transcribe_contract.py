@@ -167,3 +167,17 @@ class TranscribeArtifactContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelAwareVramFloorTest(unittest.TestCase):
+    def test_small_models_do_not_wait_for_large_v3_headroom(self):
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("TRANSCRIBE_MIN_FREE_VRAM_MB", None)
+            self.assertEqual(TRANSCRIBE.min_free_vram_for("base"), 1200)
+            self.assertEqual(TRANSCRIBE.min_free_vram_for("base.en"), 1200)
+            self.assertEqual(TRANSCRIBE.min_free_vram_for("large-v3"), TRANSCRIBE._MIN_FREE_VRAM_MB)
+
+    def test_explicit_env_floor_wins(self):
+        with patch.dict("os.environ", {"TRANSCRIBE_MIN_FREE_VRAM_MB": "7000"}):
+            self.assertEqual(TRANSCRIBE.min_free_vram_for("base"), TRANSCRIBE._MIN_FREE_VRAM_MB)
