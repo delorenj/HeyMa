@@ -199,7 +199,7 @@ def _convert_pending(binding_id: str, pdfs: list[Path], seeded_at: float, now: f
     for pdf in pdfs:
         try:
             st = pdf.stat()
-            if max(st.st_mtime, st.st_ctime) < seeded_at:
+            if max(st.st_mtime, st.st_ctime) < seeded_at + 1.0:  # seeded_at is ms-truncated
                 continue  # in the folder before the binding seeded: history, not an arrival
             if now - st.st_mtime < MIN_AGE_S:
                 continue

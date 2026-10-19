@@ -36,6 +36,7 @@ class _Intake(_Scenario):
         self.env.start()
         pdf_intake._hashes.clear()
         documents.scan(pipeline="doc")  # seed the empty folder
+        time.sleep(1.1)  # arrivals land clearly after the seed
         return self
 
     def __exit__(self, *a):
