@@ -723,7 +723,7 @@ def _scan_binding(binding: dict[str, Any], max_attempts: int,
     # then sees as an ordinary new arrival.
     from . import pdf_intake  # lazy: keeps the converter out of import-time paths
     try:
-        pdfs = pdf_intake.convert_folder(folder)
+        pdfs = pdf_intake.convert_binding(binding)
     except Exception as exc:  # noqa: BLE001 - intake never stops the binding's own scan
         log.exception("pdf intake failed for %s: %s", folder, exc)
         pdfs = [{"converted": False, "error": f"{type(exc).__name__}: {exc}"[:400]}]
