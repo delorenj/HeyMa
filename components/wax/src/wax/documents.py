@@ -719,6 +719,14 @@ def _scan_binding(binding: dict[str, Any], max_attempts: int,
             "action": "folder_missing",
             "detail": "bound folder does not exist",
         }
+    # Preliminary pass: a PDF becomes a note beside it, which this same scan
+    # then sees as an ordinary new arrival.
+    from . import pdf_intake  # lazy: keeps the converter out of import-time paths
+    try:
+        pdfs = pdf_intake.convert_folder(folder)
+    except Exception as exc:  # noqa: BLE001 - intake never stops the binding's own scan
+        log.exception("pdf intake failed for %s: %s", folder, exc)
+        pdfs = [{"converted": False, "error": f"{type(exc).__name__}: {exc}"[:400]}]
     arrivals = _arrivals(binding)
     retry_docs = retryable(binding["binding_id"], max_attempts=max_attempts)
     results = []
@@ -773,6 +781,7 @@ def _scan_binding(binding: dict[str, Any], max_attempts: int,
         "action": "scanned", "arrivals": len(arrivals),
         "retried": len(retry_docs), "processed": processed,
         "results": results, "last_scan_at": now,
+        **({"pdf_intake": pdfs} if pdfs else {}),
     }
 
 
