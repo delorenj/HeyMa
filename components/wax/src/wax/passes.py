@@ -386,7 +386,14 @@ def _record(item_id: str, slug: str, state: str, *, version: int = 1, attempt: i
         # A version bump is a NEW definition with a fresh retry budget, so the
         # dead-letter receipt from the old definition must not suppress the
         # new one's. Same reason sweep stops counting stale-version failures.
+        # A non-failed terminal state (completed, skipped) means the pass is no
+        # longer dead-lettered, so the receipt goes too; otherwise `wax catalog`
+        # and Holocene keep counting a recovered row as exhausted. `running` and
+        # `failed` (dependency_failed included) keep it: an in-flight re-run has
+        # not recovered yet, and keeping it is what stops a repeat failure past
+        # the bound from re-announcing the same exhaustion.
         updates += (", exhausted_at=CASE WHEN passes.version != excluded.version "
+                    "OR excluded.state IN ('completed','skipped') "
                     "THEN NULL ELSE passes.exhausted_at END")
     conn.execute(
         f"INSERT INTO passes({','.join(columns)}) VALUES({','.join('?' * len(columns))}) "
@@ -415,7 +422,8 @@ def _emit_exhausted(item_id: str, slug: str, *, version: int, attempt: int,
     this pass automatically, and finalize() keeps withholding the item's
     completion. The exhausted_at receipt is the dedup; _record clears it when
     the registry version changes, so a bumped definition announces afresh on
-    its next exhaustion. (The attempt counter is lifetime-per-pair — it is the
+    its next exhaustion, and when the pass reaches completed or skipped, so a
+    recovered pass is no longer counted as exhausted. (The attempt counter is lifetime-per-pair — it is the
     command_id entropy and can never reset.) dependency_failed never exhausts:
     the pass never ran, and its gate lifts when a DIFFERENT pass succeeds.
     """

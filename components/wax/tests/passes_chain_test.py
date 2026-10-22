@@ -237,6 +237,27 @@ class ExhaustionTest(ChainCase):
         passes.run(self.item, "doomed")
         self.assertEqual(len(self.outbox(EXHAUSTED)), 1)
 
+    def test_recovery_clears_the_exhausted_receipt_but_a_rerun_in_flight_keeps_it(self):
+        self.add_pass("doomed", fails=True)
+        for _ in range(3):
+            passes.run(self.item, "doomed")
+        self.assertIsNotNone(self.pass_row("doomed")["exhausted_at"])
+        # running and failed keep the receipt: a re-run in flight has not
+        # recovered, and a repeat failure must not re-announce.
+        passes._record(self.item, "doomed", "running", attempt=4)
+        self.assertIsNotNone(self.pass_row("doomed")["exhausted_at"])
+        passes.run(self.item, "doomed")
+        self.assertIsNotNone(self.pass_row("doomed")["exhausted_at"])
+        self.assertEqual(len(self.outbox(EXHAUSTED)), 1)
+        # Completing clears it, so catalog stops counting the row as exhausted.
+        self.add_pass("doomed")
+        self.assertEqual(passes.run(self.item, "doomed")["state"], "completed")
+        self.assertIsNone(self.pass_row("doomed")["exhausted_at"])
+        # A skip is also a non-failed terminal state.
+        ledger.connect().execute("UPDATE passes SET exhausted_at='x' WHERE ep_slug='doomed'")
+        passes._record(self.item, "doomed", "skipped", attempt=7, reason_code="condition_unmet")
+        self.assertIsNone(self.pass_row("doomed")["exhausted_at"])
+
     def test_sweep_exhaustions_covers_prehook_rows_and_version_bump_rearms(self):
         self.add_pass("doomed", fails=True)
         for _ in range(3):
