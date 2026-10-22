@@ -1,0 +1,48 @@
+# HeyMa inference through the AutomaticAI gateway (2026-10-22)
+
+**Policy:** every HeyMa agent and agent-service LLM call goes through
+`https://api.automaticai.io` on a named consumer token. Secrets are `op://`
+references only (`op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/<token-name>` for
+gateway tokens). Gateway source: `~/code/client-portal/gateway`
+(`~/docker/stacks/ai/newapi` symlinks to it; tokens via `ops/gateway-tokens.py`).
+
+**Result:** the Wax chat passes and the heyma-obsidian CI review are migrated and
+proven. Jev (project-extraction) is off OpenRouter, but it runs through the fleet
+Jev ingress as a recorded capability exception. The ASR Groq path was deleted.
+**heyma-pm (Hermes) is not closed**: it fails the completion gate (see blockers 1-3).
+
+## Consumers
+
+| Consumer | Owner (source) | Route / account | Token | Evidence | Status |
+|---|---|---|---|---|---|
+| Wax `title-slug`, `classification` (enabled), `ticketable` (disabled) | HeyMa `components/wax/config/passes.d/*.yaml`, `deploy/provision-inference` | `automaticai/auto/fast`. Members: personal glm-5.3-flash, personal glm-5.3, personal claude-sonnet-5.5, damien claude-sonnet-5.5, damien claude-haiku-4.5. Kimi is excluded (400 when temperature != 1). Intelliforia is excluded (team account). gpt-5.5 is excluded (unknown model in the gateway). | `heyma-wax-inference` (id 66) | 8 exhausted items recovered, served by damien haiku (subscription, quota 0). Compiled pipelines re-imported (transcript-standard v3, doc-standard v4). The `wax doctor` `/v1/models` check had failed with 403 (Cloudflare 1010); the HeyMa-Wax User-Agent fixed it. Guard: `chat_pass_routing_test.py`. | **Migrated** (HeyMa 61b934f) |
+| Wax `project-extraction` (Jev / TypeSafe) | HeyMa `project-extraction.yaml`, `src/wax/jev.py`; stack `~/docker/stacks/ai/jev-litellm` | Not the gateway. The gateway has no decisions route, so the call goes `https://jev.delo.sh/typesafe/v1/systemone` → jev-litellm → api.typesafe.ai, model pinned to `jev-1.13.0` | jev-litellm virtual key `heyma-wax-project-extraction` ($1/day, 120 rpm), `op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential` | Real requests at 10:36:18 and 10:41:25 appear in LiteLLM_SpendLogs under alias `heyma-wax-project-extraction` (21676 prompt tokens, status success). Both doctor checks pass (`jev ingress`, `jev api key`). The key is virtual (403 on `/key/list`). Guard: `JevRoutingTest`. 302 tests pass. | **Off OpenRouter; capability exception.** Pass still `enabled: false` (HeyMa 9987cee, DeLoContainers ba82502) |
+| heyma-obsidian CI code review | heyma-obsidian `.github/workflows/code-review.yml`, `.github/scripts/check-gateway-routing.mjs` | `automaticai/personal/claude-opus-5.5` (personal opus/sonnet), `ANTHROPIC_BASE_URL=https://api.automaticai.io`, runner `[self-hosted, Linux, delonet]` (repo-level `delonet-hmob-r1`) | `heyma-obsidian-review` (id 89, 90-day expiry at epoch 1800438981 = 2027-01-20) | Code Review run 39759601274 (PR `tmp/gateway-review-proof`) succeeded at 2026-10-22T09:58:59Z. Guard: `npm run lint` fails on a missing `--model` or a non-`automaticai/` one. | **Migrated** (heyma-obsidian 68a7810, 1cd9f06; HeyMa pins 59cef2d, cdcfa61) |
+| ASR `--groq` lane (`scripts/transcribe.py`, `bin/transcribe`) | HeyMa | Deleted. It called api.groq.com directly with a raw `GROQ_API_KEY` and had no callers. ASR stays on local faster-whisper. | none | Deletion verified in the diff. `test_asr_has_no_direct_groq_path` fails on the pre-709dc98 files. | **Removed** (HeyMa 709dc98) |
+| Hermes `heyma-pm` agent | `~/.hermes/profiles/heyma-pm/config.delta.yaml` (rendered by `hermes-profile-config.py`), profile `auth.json`; gateway token | Main and fallbacks: `automaticai` (glm-5.3, kimi-2.8). Delegation: auto/subagent. Vision: glm-5.3-flash. 13 aux slots pinned to `automaticai/auto/fast`. | `hermes-heyma-pm` (id 42, scoped to the same 20 routes as hermes-delonet-director, expiry 1798555899 = 2026-12-29) | CLI one-shot with `env -i` printed "pong". The gateway ledger has token-42 rows at 10:36:52Z/10:37:08Z and 10:47:09Z/10:47:13Z (zai-personal glm-5.3, plus a glm-5.3-flash aux row). Render is idempotent (md5 1e36dce0…). Pool cleared and suppressed for openrouter, kimi-coding, zai, copilot, gemini and openai-api. | **Not closed.** Verdict `holds: false`: no regression guard, multiplexed gateway path not proved, direct lane still inheritable. Nothing tracked to commit. |
+
+Related fix (not a consumer): `passes.exhausted_at` now clears when a pass
+completes or is skipped (HeyMa 25a9e4c). On the live ledger, 12 completed rows
+were cleared.
+
+## Open blockers
+
+| # | Blocker | Owner | Next step |
+|---|---|---|---|
+| 1 | heyma-pm has no regression guard. Concurrent PM-delta rollouts can silently drop the aux pins or the token override. | Hermes template / flume owner | Add a `flume audit` or `hermes-profile-config.py check` rule. It fails when: the generated config lacks `AUTOMATICAI_GATEWAY_KEY=op://…/hermes-heyma-pm`; any model or aux provider is not `automaticai`; or the pool holds non-gateway rows without `suppressed_sources`. Prove it fails on `backups/config.delta.yaml.pre-gateway-hygiene-20261022`, then commit and push. |
+| 2 | heyma-pm through the installed multiplexed `hermes-gateway.service` is not proved. The service restarted at 06:32:21 EDT, before the aux pins were written at 06:36. Secrets hydrate once per home per process. | Operator | Drive a real heyma-pm turn (Bloodbank command or kanban dispatch) and show a token-42 row (`aai:hermes-heyma-pm:…`). If the row shows the fleet token, run `systemctl --user reload hermes-gateway.service` and repeat. |
+| 3 | A direct lane is still inheritable. The global `~/.hermes/auth.json` holds real openai-codex OAuth rows, and `read_credential_pool()` falls back to them. `HF_TOKEN` is hydrated alongside a global huggingface env row. | Hermes template / flume owner | Suppress or shadow openai-codex and huggingface in the heyma-pm `auth.json`, or stop the global fallback for gateway-only agents. |
+| 4 | The heyma-pm aux-pin rationale was wrong: `_discovery_chain_allowed()` already blocks the OpenRouter/Nous chain when the main provider is automaticai. The pins moved compression, curator and background_review off the main model, and the `session_search` pin is a dead slot. | heyma-pm owner | Decide whether background_review and compression should stay on auto/fast, drop the `session_search` pin, and correct the fleet-wide "falls through to OpenRouter" claim. |
+| 5 | The fleet base `MISTRAL_API_KEY` ref (`l4cuosmvbn2m2fz4thvv5ya4a4/qxycti4uw3rlerq4pjlfkknj6a`) fails to resolve on every launch. | Hermes fleet base owner | Fix or remove the ref. |
+| 6 | `project-extraction` is still `enabled: false`. The 0.6/0.75 thresholds have not been recalibrated on the ingress. | Operator | Dry-run `components/wax/config/passes.d/bin/project-extraction ~/d/Transcripts/<note>.md` on several notes, compare the results to the thresholds, set `enabled: true`, then run `wax ep run project-extraction <item>`. |
+| 7 | Jev has no gateway route. This is a capability exception, not a cutover. | Gateway owner | Revisit if the gateway gains a decisions/systemone route, then move project-extraction onto it. |
+| 8 | `~/.config/jev-clairic/typesafe.key` holds the jev-litellm master key in plaintext (now also vault item `olonpzrcmxdx52vhoib3uyfzdi`). `typesafe.key.direct.bak` holds the raw TypeSafe key. Both are mode 600. | Fleet Jev tools owner (zcrank-gate, jev-*) | Mint per-tool virtual keys (`mise run keys`), switch the tools to `op://`, then delete both files. |
+| 9 | The gateway does not normalize temperature for Kimi (400 when temperature != 1), so Kimi stays out of `heyma-wax-inference`. | Gateway owner | Add temperature normalization for the Kimi route, then re-scope the token. |
+| 10 | The `auto` strong tier has a dead `gpt-5.5` member (unknown model). | Gateway owner | Remove it or map it to a real route in `ops/AUTO-ROUTER.md` policy. |
+| 11 | Sibling repos and templates still run direct Claude OAuth: CommonProject, pjangler `code-review.yml.jinja`, pilot, deckard, and others. | Each repo owner | Fork one remediation worker per configuration owner, following the heyma-obsidian pattern: a scoped token, the gateway `--model`, and the guard script. |
+| 12 | The heyma-obsidian guard checks only `--model`. `--fallback-model claude-sonnet-4-5` passes. | heyma-obsidian | Match every `*-model` flag and require `automaticai/`. |
+| 13 | Wax attempt counters never reset. After a recovery, a single failure re-emits `bloodbank.audio.task.exhausted` right away. | HeyMa wax | Count attempts since the last completion, or document the behavior. |
+| 14 | One live ledger row still has `exhausted_at` set (diarization, skipped/human_edits), so `wax catalog` shows exhausted=1. | Operator | Run the same UPDATE with `state='skipped'`, or wait for the next skip. |
+| 15 | The `heyma-obsidian-review` token expires on 2027-01-20. | Operator | Rotate it beforehand: `python3 ops/gateway-tokens.py rotate heyma-obsidian-review`, then update the repo secret. |
+| 16 | Unrelated, left untouched: the `wax doctor` "outbox drained" check FAILs on a row about 21 days old. `~/code/HeyMa` is a stale second checkout, mid-rebase with a UU conflict in `components/wax/bin/waxd`, holding a20976d. The OpenRouter vault item `yydsybdlpernq5j5tcf42hmtsi` is unused by HeyMa. | Operator | Drain or inspect the outbox, decide whether to finish or delete `~/code/HeyMa`, and retire the vault item. |
+| 17 | `~/code/DeLoDocs` is not a git repository, so the DeLoDocs copy of this record cannot be committed. | Operator | `git init` DeLoDocs with a remote, or accept it as an uncommitted mirror. |
