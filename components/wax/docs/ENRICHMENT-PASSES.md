@@ -46,39 +46,87 @@ completed at the same `version` and the same definition; increasing
 
 ## Model chains for chat passes
 
-Operator order, 2026-10-22: **no Anthropic models for Wax inference.** A chat
-pass (`title-slug`, `classification`, `ticketable`) names an ordered list: the
-primary (`WAX_TITLE_MODEL` / `WAX_TICKETS_MODEL`), then the comma-separated
-`*_MODEL_FALLBACKS`. Today: `automaticai/auto/fast`, `automaticai/hypercharm/glm-5.3`,
-`automaticai/hypercharm/minimax-m3`, `automaticai/free`. Implemented once, in
-`wax.provider.run_chain`, and used by all three passes.
+Operator order, 2026-10-22: **no Anthropic models for Wax inference; Hyper and
+free are fallbacks.** A chat pass (`title-slug`, `classification`, `ticketable`)
+names an ordered list: the primary (`WAX_TITLE_MODEL` / `WAX_TICKETS_MODEL`),
+then the comma-separated `*_MODEL_FALLBACKS`. Today:
+
+1. `automaticai/auto/fast` (the router)
+2. `automaticai/personal/glm-5.3-flash`, 3. `automaticai/personal/glm-5.3`
+   (explicit subscription GLM)
+4. `automaticai/hypercharm/glm-5.3`, 5. `automaticai/hypercharm/minimax-m3`
+   (metered Hyper)
+6. `automaticai/free` (the free router)
+
+The explicit GLM routes sit right after the primary because on 2026-10-22 every
+other member answered 503 on the live gateway (auto/fast picked the
+channel-less `hypercharm/glm-5.3`, Hyper had no channel in `aai-personal`, free
+picked a channel-less Kimi) while explicit `personal/glm-5.3*` answered 200.
+Implemented once, in `wax.provider.run_chain`, and used by all three passes.
 
 | Failure | Next member? |
 |---|---|
 | 429, 402, 5xx, unreachable, timeout | yes |
+| truncated body (`IncompleteRead`), garbled status line, peer hung up | yes (`provider_bad_response` / `provider_unreachable`, never a traceback) |
 | unknown model (`model_not_found`, `missing_model`), 400 bad request | yes |
 | 403 "This token has no access to model" (outside the token's scope) | yes |
 | empty or unparseable content | yes |
 | `no_api_key`, 401, any other 403 | **no** (the key is shared by every member) |
+| served by an Anthropic model (`anthropic_model_served`) | **no**: the pass fails closed |
 
 `title-slug`/`classification` read `/v1/models` once and skip a member the token
-cannot see (recorded as `missing_model`, no request). Router family names the
-gateway never lists (`automaticai/free`) are never skipped for being unlisted.
-`ticketable` runs the chain per window and relies on the 403 for scope.
+cannot see (recorded as `missing_model`, `skipped`, no request). Router family
+names the gateway never lists (`automaticai/free`) are never skipped for being
+unlisted. `ticketable` runs the chain per window and relies on the 403 for scope.
 
-Provenance: the result's `evidence` is `{model, chain, fallbacks:[{model,
-reason_code, status}]}` (stored with the pass row), and a successful run writes
-`model` (and `fell_through` when a member failed) into the note's
-`wax.passes.<slug>` block. When the whole chain fails the pass exits with the
-PRIMARY's reason code (`provider_rate_limited` if every member was rate limited)
-and the detail lists every attempt as `model=reason/status`.
+**One deadline per run.** A socket timeout is not a deadline (urllib applies it
+per connect and per recv, so a trickle never trips it), and the runner kills a
+pass at `timeout_s` keeping nothing it printed. So the runner passes the timeout
+it enforces as `WAX_PASS_TIMEOUT_S` (after the env block; YAML cannot override
+it), and a chat pass runs its key lookup, catalog read and whole chain against
+one monotonic deadline of that value less `RESERVE_S` (10s). Each request's
+timeout is `min(*_REQUEST_TIMEOUT_S, remaining - 1s)` under a SIGALRM wall-clock
+limit; a member with under 2s left is recorded as `deadline_exceeded` (skipped)
+instead of started. `ticketable`'s windows each get an equal share of what is
+left. Sizing: `title-slug`/`classification` `timeout_s: 390` fits all six
+members at 60s plus the 10s catalog and 5s op read (375s <= 380s);
+`ticketable` `timeout_s: 1800` gives each of 3 windows ~596s, room for the
+primary and both GLM routes at 120s. Tests enforce both.
 
-Sizing: per-request timeout x chain length must stay under `timeout_s`
-(`title-slug`/`classification`: 60s x 4 = 240s < 270s; `ticketable`: 120s x 4 x
-3 windows = 1440s < 1500s). A test enforces it. Compiled pipelines freeze pass
-env, so re-import the n8n release exports after changing a chain. The token
-scope is `deploy/provision-inference` (see AGENTS.md). Kimi stays out of the
-chain until gateway bug AAI-55 closes.
+**Provenance.** The result's `evidence` is `{model, served_by, route, auto,
+chain, fallbacks:[{model, reason_code, status, route, skipped}]}`: `model` is
+the chain member Wax asked for, `served_by` is the response body's `model` (what
+actually answered: `glm-5.3-flash`, not `auto/fast`), `route` is
+`X-AutomaticAI-Route` and `auto` is `X-AutomaticAI-Auto` (or `-Free`) when the
+gateway sends them. A failed member's `route` names what a router picked before
+it failed (`auto/fast=provider_http_error/503->automaticai/hypercharm/glm-5.3`).
+A successful run writes `model`, `served_by`, `route` (and `fell_through` when
+a member failed) into the note's `wax.passes.<slug>` block.
+
+**Fail closed on Anthropic.** If `served_by` or `route` ever names
+claude/sonnet/haiku/opus/fable/anthropic, the pass exits
+`reason_code=anthropic_model_served` without trying the next member (a fallback
+succeeding would hide the scope regression); an Anthropic chain member is never
+asked (`anthropic_model_refused`). The runner refuses the same evidence again
+before applying any result, so a pass that forgets the check cannot write an
+Anthropic answer into a note.
+
+**Whole-chain failure** exits with the reason code of the first member that was
+actually ASKED (a skipped member says nothing about the providers),
+`provider_rate_limited` if every asked member was rate limited, `missing_model`
+only when every member was skipped, and the detail lists every member as
+`model=reason/status->route`.
+
+**Changing a chain.** Compiled pipelines freeze pass env and `timeout_s`, so
+re-import the n8n release exports after changing a chain (dry-run the diff on a
+copy of the ledger first; only chain and timeout env may change). An item's
+plan is frozen too: `wax ep run` and the sweep re-run the env it was minted
+with. An unfinished item minted under a dead chain moves only by the explicit
+`wax ep replan <item> [--apply]` (refused for a completed item, a changed set
+of passes, or a pass that already finished under the old definition), then
+`wax ep run <slug> <item>` for each failed pass. The token scope is
+`deploy/provision-inference` (see AGENTS.md). Kimi stays out of the chain until
+gateway bug AAI-55 closes.
 
 ## Registry contract
 
@@ -91,11 +139,11 @@ auto: true
 requires: []
 after: []
 clobber: []
-timeout_s: 270   # 4 chain members x 60s request timeout, plus the catalog lookup
+timeout_s: 390   # 6 chain members x 60s + catalog + op read, inside 390s less the reserve
 frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
 env:
   WAX_TITLE_MODEL: automaticai/auto/fast
-  WAX_TITLE_MODEL_FALLBACKS: automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
+  WAX_TITLE_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
   WAX_TITLE_REQUEST_TIMEOUT_S: "60"
 command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]
 ```
@@ -304,7 +352,7 @@ executables are `config/passes.d/{project-extraction,ticketable}.yaml` and
 | Pass | Owns | How |
 |---|---|---|
 | `project-extraction` | `project-ids` (pjangler ids, most probable first; `[]` = ran, none) and `projects` (names, index-aligned) | Candidates come from the pjangler registry (`GET $PJ_REGISTRY_URL/v1/registry`, default `http://127.0.0.1:8764`) plus the spoken forms and one-line descriptions in `config/project-aliases.yaml`, which fills the registry's empty descriptions. Decided by TypeSafe's Jev (`jev-1.13.0`, through the fleet Jev ingress): one `noul` question per project in a single request, a project is kept when P(true) is at least `WAX_PROJECT_MIN_P` (0.6), or `WAX_PROJECT_MIN_P_LONG` (0.75) for transcripts over 30K characters, where scores saturate. |
-| `ticketable` | `ticketable`: a list of `{project_id, description, transcript}`; `[]` = ran, none | `requires: [title-slug, project-extraction]`, so `transcript` is the final filename. Extracted through the model chain `automaticai/auto/fast` -> Hyper -> `automaticai/free` (`WAX_TICKETS_MODEL` / `WAX_TICKETS_MODEL_FALLBACKS`, the `heyma-wax-inference` token) with a strict JSON schema whose `project_id` is an enum of the note's `project-ids`. Declares `emits: [intake.detected]` and returns one event per distinct ticket, keyed by a hash of `(project_id, description)`; the event's `intake_id` is `<item>:<first 12 hex of that key>`. If the note has no `project-ids` it reports `skipped` / `no_project`. |
+| `ticketable` | `ticketable`: a list of `{project_id, description, transcript}`; `[]` = ran, none | `requires: [title-slug, project-extraction]`, so `transcript` is the final filename. Extracted through the model chain `automaticai/auto/fast` -> explicit personal GLM -> Hyper -> `automaticai/free` (`WAX_TICKETS_MODEL` / `WAX_TICKETS_MODEL_FALLBACKS`, the `heyma-wax-inference` token) with a strict JSON schema whose `project_id` is an enum of the note's `project-ids`. Declares `emits: [intake.detected]` and returns one event per distinct ticket, keyed by a hash of `(project_id, description)`; the event's `intake_id` is `<item>:<first 12 hex of that key>`. If the note has no `project-ids` it reports `skipped` / `no_project`. |
 
 The runner publishes each ticket as `bloodbank.audio.intake.detected` after
 `transcription.completed` (schema:

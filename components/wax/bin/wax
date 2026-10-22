@@ -111,9 +111,12 @@ JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential"
 # these mirror the bin defaults in config/passes.d/bin/{title-slug,ticketable}.
 TITLE_API_BASE_DEFAULT = "https://api.automaticai.io/v1"
 TITLE_MODEL_DEFAULT = "automaticai/auto/fast"
-# Ordered fallbacks after the primary: metered Hyper, then the free family.
-# Operator order 2026-10-22: no Anthropic model anywhere (chat_pass_routing_test).
-TITLE_MODEL_FALLBACKS_DEFAULT = "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free"
+# Ordered fallbacks after the primary: explicit subscription GLM, then metered
+# Hyper, then the free family. Operator order 2026-10-22: no Anthropic model
+# anywhere (chat_pass_routing_test).
+TITLE_MODEL_FALLBACKS_DEFAULT = ("automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,"
+                                 "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,"
+                                 "automaticai/free")
 ANTHROPIC_RE = re.compile(r"claude|sonnet|haiku|opus|fable|anthropic", re.IGNORECASE)
 TITLE_KEY_OP_DEFAULT = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
 # api.automaticai.io sits behind Cloudflare, which answers urllib's default
@@ -272,7 +275,10 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_TITLE_MODEL_FALLBACKS", "passes.d/bin/title-slug, classification (comma-separated, in order)",
      TITLE_MODEL_FALLBACKS_DEFAULT),
     ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug, classification (gateway token)", TITLE_KEY_OP_DEFAULT),
-    ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug (per chain member)", "60"),
+    ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug (per chain member, capped by the chain deadline)",
+     "60"),
+    ("WAX_PASS_TIMEOUT_S", "set by wax/passes.py to the timeout_s it enforces; chat passes budget their chain "
+     "against it", "<runner>"),
     ("WAX_TITLE_API_KEY", "passes.d/bin/title-slug (direct key; prefer op://)", "<unset>"),
     ("WAX_JEV_URL", "wax/jev.py, passes.d/bin/project-extraction (Jev ingress systemone endpoint)",
      JEV_URL_DEFAULT),
@@ -293,7 +299,8 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
      TITLE_MODEL_FALLBACKS_DEFAULT),
     ("WAX_TICKETS_API_KEY_OP", "passes.d/bin/ticketable (gateway token)", TITLE_KEY_OP_DEFAULT),
     ("WAX_TICKETS_API_KEY", "passes.d/bin/ticketable (direct key; prefer op://)", "<unset>"),
-    ("WAX_TICKETS_REQUEST_TIMEOUT_S", "passes.d/bin/ticketable (per chain member)", "120"),
+    ("WAX_TICKETS_REQUEST_TIMEOUT_S", "passes.d/bin/ticketable (per chain member, capped by the chain deadline)",
+     "120"),
     ("OP_SERVICE_ACCOUNT_TOKEN", "`op read` inside title-slug", "<unset>"),
     ("TRANSCRIBE_DIR", "bin/transcribe", "<dirname(realpath(transcribe))/..>"),
     ("DIARIZATION_VENV", "bin/transcribe", "<TRANSCRIBE_DIR>/.venv-diarization"),
@@ -399,6 +406,43 @@ def _chat_probe(api_base: str, token: str, model: str) -> tuple[Optional[Any], s
         return None, f"HTTP {e.code}", e.code
     except (urllib.error.URLError, OSError, ValueError) as e:
         return None, f"{type(e).__name__}: {e}", 0
+
+
+def _chain_serves(api_base: str, token: str, chain: list[str]) -> dict[str, Any]:
+    """Walk the chain with 1-token requests, as a pass would, until a member serves.
+
+    Listing is not serving: on 2026-10-22 every member was listed for the token
+    and every one but the explicit GLM routes answered 503. This row says which
+    member a pass would land on right now and what the gateway says served it.
+    """
+    url = f"{api_base}/chat/completions"
+    failed: list[str] = []
+    for index, member in enumerate(chain):
+        headers: dict[str, str] = {}
+        try:
+            body = provider.post_json(url, {"model": member, "max_tokens": 1,
+                                            "messages": [{"role": "user", "content": "ok"}]},
+                                      key=token, timeout=HTTP_TIMEOUT_S, response_headers=headers)
+        except provider.ProviderError as exc:
+            route = f"->{exc.route}" if exc.route and exc.route != member else ""
+            failed.append(f"{member}={exc.status or exc.reason_code}{route}")
+            if not provider.falls_through(exc):
+                break
+            continue
+        served = provider.provenance_of(body, headers)
+        banned = provider.anthropic_in(served)
+        origin = ", ".join(f"{k} {v}" for k, v in served.items() if k != "auto") or "no served_by reported"
+        before = f" after {'; '.join(failed)}" if failed else ""
+        if banned:
+            return _probe("inference chain serves", FAIL,
+                          f"{member} was served by an Anthropic model ({banned}){before}",
+                          "python3 deploy/provision-inference --apply   # then report the router to token-ops")
+        return _probe("inference chain serves", PASS if index == 0 else WARN,
+                      f"{member} serves ({origin}){before}",
+                      "" if index == 0 else
+                      "the chain is falling through gateway-side failures; report them to token-ops")
+    return _probe("inference chain serves", FAIL, "no member served: " + "; ".join(failed),
+                  "gateway-side: report to token-ops; passes will fail and the sweep retries them")
 
 
 def _get_json_direct(url: str, *, timeout: float = PJ_TIMEOUT_S) -> tuple[Optional[Any], str]:
@@ -884,6 +928,7 @@ def probe_all() -> list[dict[str, Any]]:
                        ("the token still grants Anthropic route(s): " + ", ".join(leaked)) if leaked
                        else f"no Anthropic route among the {len(seen)} listed for this token",
                        "python3 deploy/provision-inference --apply" if leaked else ""))
+        add(_chain_serves(api_base, key, chain))
 
     # -- project-extraction dependencies ------------------------------------
     probe_project_extraction(add, repo=repo, effective=effective, yenv=yenv)
@@ -1405,6 +1450,11 @@ def main() -> int:
     # number re-mints an already-issued command_id on purpose (replay/debug).
     epr.add_argument("--attempt", type=int, default=None,
                      help="force an attempt number (default: one past the last recorded)")
+    eprp = ep.add_parser("replan", parents=[common],
+                         help="move ONE unfinished item's plan onto the current authority (dry run "
+                              "unless --apply); then `wax ep run` its failed passes")
+    eprp.add_argument("item_id")
+    eprp.add_argument("--apply", action="store_true", help="write the new plan (nothing runs)")
     epa = ep.add_parser("run-all", help="run every enabled pass for one item", parents=[common])
     epa.add_argument("item_id")
     eps = ep.add_parser("status", help="recorded pass outcomes, newest first", parents=[common])
@@ -1671,6 +1721,13 @@ def main() -> int:
             result["pass_events"] = finalize.publish_pass_events(args.item_id)
             result["completion"] = finalize.finalize(args.item_id)
             _emit(result, J)
+            return 0
+        if args.sub == "replan":
+            try:
+                _emit(passes.replan(args.item_id, apply=args.apply), True)
+            except passes.PassError as e:
+                print(f"refused: {e}", file=sys.stderr)
+                return 2
             return 0
         if args.sub == "run-all":
             _emit({"results": passes.run_all(args.item_id),

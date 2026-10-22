@@ -21,15 +21,19 @@ specific way those copies hurt once a second provider arrived:
 Nothing in this module writes a file or logs a key.
 """
 
+import contextlib
 import http.client
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 USER_AGENT = "HeyMa-Wax/1.0"
 # `op read` is a local IPC round-trip to an already-authenticated agent. If it
@@ -79,11 +83,15 @@ class ProviderError(RuntimeError):
     """
 
     def __init__(self, message: str, reason_code: str = "run_error", *,
-                 status: Optional[int] = None, detail_code: Optional[str] = None) -> None:
+                 status: Optional[int] = None, detail_code: Optional[str] = None,
+                 route: Optional[str] = None) -> None:
         super().__init__(message)
         self.reason_code = reason_code
         self.status = status
         self.detail_code = detail_code
+        # The gateway's X-AutomaticAI-Route on a failed request: which route a
+        # router name (auto/fast, free) actually picked before it failed.
+        self.route = route
 
 
 def note(message: str) -> None:
@@ -160,14 +168,35 @@ def _marker(body: str) -> Optional[str]:
     return None
 
 
+def gateway_route(headers: Any) -> Optional[str]:
+    """X-AutomaticAI-Route from a response's headers (any case), or None."""
+    if not headers:
+        return None
+    try:
+        items = headers.items()
+    except AttributeError:
+        return None
+    for name, value in items:
+        if str(name).lower() == "x-automaticai-route" and str(value).strip():
+            return str(value).strip()[:120]
+    return None
+
+
 def _http_error(exc: urllib.error.HTTPError, url: str, key: str) -> ProviderError:
     status = exc.code
+    route = gateway_route(exc.headers)
     try:
         body = exc.read(_ERROR_BODY_LIMIT).decode("utf-8", "replace")
     except (OSError, ValueError, http.client.HTTPException):
         # A drained error body is still a real HTTP failure; losing the body
         # must never turn into losing the classification.
         body = ""
+    error = _classify_http(status, body, url, key, exc.headers)
+    error.route = route
+    return error
+
+
+def _classify_http(status: int, body: str, url: str, key: str, headers: Any) -> ProviderError:
     detail_code = _marker(body)
     where = f"HTTP {status} from {url}" + (f" ({detail_code})" if detail_code else "")
     if status == 403 and detail_code == "model_out_of_scope":
@@ -185,7 +214,7 @@ def _http_error(exc: urllib.error.HTTPError, url: str, key: str) -> ProviderErro
         return ProviderError(f"{where}: the key's spend limit is exhausted",
                              "provider_quota_exceeded", status=status, detail_code=detail_code)
     if status == 429:
-        retry_after = (exc.headers.get("Retry-After") or "").strip() if exc.headers else ""
+        retry_after = (headers.get("Retry-After") or "").strip() if headers else ""
         hint = f"; retry after {retry_after}s" if retry_after.isdigit() else ""
         return ProviderError(f"{where}: rate limited{hint}", "provider_rate_limited",
                              status=status, detail_code=detail_code)
@@ -193,6 +222,34 @@ def _http_error(exc: urllib.error.HTTPError, url: str, key: str) -> ProviderErro
         return ProviderError(f"{where}: the provider rejected the request", "provider_bad_request",
                              status=status, detail_code=detail_code)
     return ProviderError(where, "provider_http_error", status=status, detail_code=detail_code)
+
+
+def transport_error(exc: BaseException, url: str, timeout: Optional[float]) -> ProviderError:
+    """A failure below the HTTP status line, as a reason code the chain falls through on.
+
+    http.client.HTTPException is NOT an OSError: a body cut short
+    (IncompleteRead) or a garbled status line (BadStatusLine) escaped every
+    `except OSError` and killed the pass with a traceback whose first stderr
+    line was no `reason_code=`. A response that started and broke off is the
+    provider's bad answer; a peer that hung up before answering is unreachable.
+    """
+    within = f" within {timeout:g}s" if timeout is not None else ""
+    if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError):
+        if isinstance(exc.reason, TimeoutError):
+            return ProviderError(f"{url} did not answer{within}", "timeout")
+        return ProviderError(f"cannot reach {url}: {exc.reason}", "provider_unreachable")
+    if isinstance(exc, TimeoutError):
+        return ProviderError(f"{url} did not answer{within}", "timeout")
+    if isinstance(exc, http.client.IncompleteRead):
+        expected = f"{exc.expected} more expected" if exc.expected is not None else "more expected"
+        return ProviderError(f"{url} cut its response short ({len(exc.partial or b'')} bytes read, "
+                             f"{expected})", "provider_bad_response", detail_code="truncated_response")
+    if isinstance(exc, http.client.RemoteDisconnected):
+        return ProviderError(f"{url} closed the connection without answering", "provider_unreachable")
+    if isinstance(exc, http.client.HTTPException):
+        return ProviderError(f"{url} answered with a malformed HTTP response ({type(exc).__name__})",
+                             "provider_bad_response", detail_code="malformed_response")
+    return ProviderError(f"cannot reach {url}: {type(exc).__name__}: {exc}", "provider_unreachable")
 
 
 def post_json(url: str, payload: dict[str, Any], *, key: str, timeout: float,
@@ -270,15 +327,10 @@ def _request_json(url: str, payload: Optional[dict[str, Any]], *, key: str, time
         # MUST precede URLError, which it subclasses: catching the parent first
         # is precisely what once discarded the status that named a dead model.
         raise _http_error(exc, url, key) from None
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise ProviderError(f"{url} did not answer within {timeout:g}s", "timeout") from None
-        raise ProviderError(f"cannot reach {url}: {exc.reason}", "provider_unreachable") from None
-    except TimeoutError:
-        raise ProviderError(f"{url} did not answer within {timeout:g}s", "timeout") from None
     except (OSError, http.client.HTTPException) as exc:
-        raise ProviderError(f"cannot reach {url}: {type(exc).__name__}: {exc}",
-                            "provider_unreachable") from None
+        # URLError is an OSError; HTTPException (IncompleteRead, BadStatusLine)
+        # is not, and must still become a reason code, never a traceback.
+        raise transport_error(exc, url, timeout) from None
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -316,9 +368,16 @@ def parse_json_object(text: str) -> dict[str, Any]:
 
 def chat_json(*, base: str, model: str, key: str, system: str, user: str,
               schema: dict[str, Any], schema_name: str, max_tokens: int, timeout: float,
-              temperature: float = 0.1, headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
-    """One strict json_schema chat completion, returned as the parsed object."""
+              temperature: float = 0.1, headers: Optional[dict[str, str]] = None,
+              provenance: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """One strict json_schema chat completion, returned as the parsed object.
+
+    `provenance`, when given, is filled with what the gateway says served the
+    request (served_by/route/auto, see provenance_of). An Anthropic server is
+    refused here, before its content is even parsed.
+    """
     url = base.rstrip("/") + "/chat/completions"
+    answer_headers: dict[str, str] = {}
     response = post_json(url, {
         "model": model,
         # Unset, OpenRouter prices the request against the model's full output
@@ -329,7 +388,11 @@ def chat_json(*, base: str, model: str, key: str, system: str, user: str,
             "name": schema_name, "strict": True, "schema": schema}},
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
-    }, key=key, timeout=timeout, headers=headers)
+    }, key=key, timeout=timeout, headers=headers, response_headers=answer_headers)
+    served = provenance_of(response, answer_headers)
+    refuse_anthropic(model, served)
+    if provenance is not None:
+        provenance.update(served)
     try:
         choice = response["choices"][0]
         content = choice["message"]["content"]
@@ -417,8 +480,11 @@ def falls_through(exc: BaseException) -> bool:
 class ChainFailed(ProviderError):
     """Every chain member failed (or one failed in a way no member can fix).
 
-    reason_code is the PRIMARY's class, except that a chain which was rate
-    limited end to end says so. `attempts` lists every member tried.
+    reason_code is the class of the first member that was actually ASKED: a
+    member skipped without a request (unlisted, out of budget) says nothing
+    about the providers, so it never names the failure. A chain rate limited
+    end to end says so; missing_model only when every member was skipped.
+    `attempts` lists every member, tried or skipped.
     """
 
     def __init__(self, attempts: list[dict[str, Any]], *, reason_code: str,
@@ -429,47 +495,258 @@ class ChainFailed(ProviderError):
 
 
 def describe_attempts(attempts: list[dict[str, Any]]) -> str:
-    """One short line per run: `model=reason(status)`; never a body."""
+    """One short line per member: `model=reason/status[->route]`; never a body."""
     parts = []
     for item in attempts:
         status = f"/{item['status']}" if item.get("status") else ""
-        parts.append(f"{item['model']}={item['reason_code']}{status}")
+        route = f"->{item['route']}" if item.get("route") and item["route"] != item["model"] else ""
+        parts.append(f"{item['model']}={item['reason_code']}{status}{route}")
     return "; ".join(parts)
 
 
-def run_chain(models: list[str], call, *, listed=None) -> tuple[Any, str, list[dict[str, Any]]]:
-    """Run `call(model)` down `models`; return (value, serving model, failed attempts).
+# -- deadlines ----------------------------------------------------------------
+#
+# A socket timeout is not a deadline. urllib applies it to each connect and
+# each recv, so a gateway trickling a byte at a time never trips it, and a
+# chain of N members can spend N x timeout. The runner kills a pass at its
+# `timeout_s` and keeps nothing the pass printed, so a chain cut off there
+# loses exactly the per-member evidence that says which route failed. A chat
+# pass therefore runs its chain against ONE monotonic deadline, taken at start
+# from the timeout the runner enforces (WAX_PASS_TIMEOUT_S) minus a reserve:
+# each request gets min(its cap, what is left minus a margin), a wall-clock
+# limit covers what a socket timeout cannot see, and a member with too little
+# left is skipped and recorded rather than started and killed.
 
-    `listed(model)` False skips a member without a request, recorded as
-    missing_model: the token cannot see it, so asking would only earn a 403.
-    A failure that does not fall through (no_api_key, a rejected key) stops the
-    chain at once, so a bad credential is not retried N times.
+PASS_TIMEOUT_ENV = "WAX_PASS_TIMEOUT_S"  # set by wax.passes.run to the timeout_s it enforces
+RESERVE_S = 10.0         # between the chain deadline and the runner's kill: report and exit
+REQUEST_MARGIN_S = 1.0   # a request's own timeout ends this long before the deadline
+MIN_REQUEST_S = 2.0      # less than this left: skip the member, do not start it
+HARD_GRACE_S = 0.5       # the wall-clock limit fires this long after the socket timeout
+
+
+class DeadlineExceeded(Exception):
+    """The wall-clock limit fired. Deliberately not an OSError or ProviderError,
+    so no transport handler between the signal and run_chain can swallow it."""
+
+
+class Deadline:
+    """A budget on the monotonic clock, shared by every member of a chain."""
+
+    def __init__(self, seconds: float, *, clock=time.monotonic) -> None:
+        self._clock = clock
+        self.budget = max(0.0, float(seconds))
+        self.expires = clock() + self.budget
+
+    def remaining(self) -> float:
+        return max(0.0, self.expires - self._clock())
+
+    def request_timeout(self, cap: Optional[float]) -> float:
+        """The timeout for the next request: its cap, never past the deadline."""
+        left = self.remaining() - REQUEST_MARGIN_S
+        return max(0.0, left if cap is None else min(float(cap), left))
+
+    def share(self, parts: int) -> "Deadline":
+        """A sub-deadline holding 1/parts of what is left (one of N windows)."""
+        return Deadline(self.remaining() / max(1, parts), clock=self._clock)
+
+
+def pass_deadline(default_timeout_s: float) -> Deadline:
+    """The chain deadline for this pass run: the runner's timeout minus RESERVE_S.
+
+    WAX_PASS_TIMEOUT_S is what the runner will actually enforce (a compiled
+    pipeline's frozen timeout_s included); `default_timeout_s` mirrors the
+    pass YAML for a bare-shell run.
+    """
+    timeout = default_timeout_s
+    raw = os.environ.get(PASS_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            timeout = value
+        else:
+            note(f"note: {PASS_TIMEOUT_ENV}={raw!r} is not a positive number; budgeting {default_timeout_s:g}s")
+    return Deadline(max(0.0, timeout - RESERVE_S))
+
+
+@contextlib.contextmanager
+def wall_clock_limit(seconds: Optional[float]):
+    """Raise DeadlineExceeded after `seconds` of wall time, whatever is blocking.
+
+    SIGALRM interrupts a blocking recv/poll and its handler's exception
+    propagates (PEP 475 retries only when the handler returns). Main thread
+    only, as signal handlers are; elsewhere this degrades to the socket
+    timeout alone. A name lookup blocked inside getaddrinfo is not interrupted.
+    """
+    usable = (seconds is not None and seconds > 0 and hasattr(signal, "setitimer")
+              and threading.current_thread() is threading.main_thread())
+    if not usable:
+        yield
+        return
+
+    def _fire(_signum, _frame):
+        raise DeadlineExceeded(f"no complete answer within {seconds:g}s of wall time")
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+# -- provenance -----------------------------------------------------------------
+#
+# The chain member is what Wax ASKED for; a router name (auto/fast, free) says
+# nothing about who answered. The gateway says it in the response body's
+# `model` and in X-AutomaticAI-Route / X-AutomaticAI-Auto (X-AutomaticAI-Free
+# for the free router). Operator order 2026-10-22: no Anthropic model serves
+# Wax. A scope or router regression must fail the pass loudly, never serve one
+# silently, so an Anthropic server is refused with its own reason code, and it
+# does not fall through: the next member succeeding would hide the regression.
+
+ANTHROPIC_RE = re.compile(r"claude|sonnet|haiku|opus|fable|anthropic", re.IGNORECASE)
+ANTHROPIC_SERVED = "anthropic_model_served"
+ANTHROPIC_REFUSED = "anthropic_model_refused"
+
+
+def provenance_of(payload: Any, headers: Any) -> dict[str, str]:
+    """served_by (the response's `model`), route and auto decision, where present."""
+    out: dict[str, str] = {}
+    served = payload.get("model") if isinstance(payload, dict) else None
+    if isinstance(served, str) and served.strip():
+        out["served_by"] = served.strip()[:120]
+    lowered: dict[str, str] = {}
+    try:
+        lowered = {str(k).lower(): str(v).strip() for k, v in (headers or {}).items()}
+    except AttributeError:
+        pass
+    if lowered.get("x-automaticai-route"):
+        out["route"] = lowered["x-automaticai-route"][:120]
+    decision = lowered.get("x-automaticai-auto") or lowered.get("x-automaticai-free")
+    if decision:
+        out["auto"] = decision[:240]
+    return out
+
+
+def anthropic_in(provenance: dict[str, Any]) -> Optional[str]:
+    """`served_by=<x>` / `route=<x>` when either names an Anthropic model."""
+    for field in ("served_by", "route"):
+        value = provenance.get(field)
+        if isinstance(value, str) and ANTHROPIC_RE.search(value):
+            return f"{field}={value}"
+    return None
+
+
+def refuse_anthropic(model: str, provenance: dict[str, Any]) -> None:
+    banned = anthropic_in(provenance)
+    if banned:
+        raise ProviderError(
+            f"{model} was served by an Anthropic model ({banned}); refused, operator order "
+            "2026-10-22. The token scope or a router regressed: run deploy/provision-inference",
+            ANTHROPIC_SERVED)
+
+
+class Answer:
+    """A chain member's value plus what the gateway says served it."""
+
+    __slots__ = ("value", "provenance")
+
+    def __init__(self, value: Any, provenance: Optional[dict[str, str]] = None) -> None:
+        self.value = value
+        self.provenance = dict(provenance or {})
+
+
+class ChainResult(NamedTuple):
+    value: Any
+    model: str                      # the chain member that answered
+    attempts: list[dict[str, Any]]  # every member before it, tried or skipped
+    provenance: dict[str, str]      # served_by / route / auto, as the gateway reported
+
+
+def _attempt(model: str, exc: ProviderError) -> dict[str, Any]:
+    route = getattr(exc, "route", None)
+    return {"model": model, "reason_code": exc.reason_code,
+            **({"status": exc.status} if exc.status else {}),
+            **({"route": route} if route else {}),
+            "detail": str(exc)[:200]}
+
+
+def run_chain(models: list[str], call, *, listed=None, deadline: Optional[Deadline] = None,
+              request_timeout: Optional[float] = None) -> ChainResult:
+    """Run `call(model, timeout)` down `models`; return the first answer as a ChainResult.
+
+    `call` may return a plain value or an Answer carrying the gateway's
+    provenance. `listed(model)` False skips a member without a request
+    (missing_model). With a `deadline`, each request's timeout is
+    min(request_timeout, remaining - margin) under a wall-clock limit, and a
+    member with less than MIN_REQUEST_S left is skipped as deadline_exceeded,
+    so the chain always ends, with its evidence, before the runner's kill.
+    A failure that does not fall through (no_api_key, a rejected key, an
+    Anthropic server) stops the chain at once.
     """
     attempts: list[dict[str, Any]] = []
-    for model in models:
+    for index, model in enumerate(models):
+        if ANTHROPIC_RE.search(model):
+            attempts.append({"model": model, "reason_code": ANTHROPIC_REFUSED, "skipped": True,
+                             "detail": "an Anthropic chain member is never asked (operator order 2026-10-22)"})
+            note(f"note: refused chain member {model}: Anthropic models never serve Wax")
+            continue
         if listed is not None and not listed(model):
-            attempts.append({"model": model, "reason_code": "missing_model",
+            attempts.append({"model": model, "reason_code": "missing_model", "skipped": True,
                              "detail": "not listed for this token"})
             continue
+        timeout = request_timeout
+        if deadline is not None:
+            timeout = deadline.request_timeout(request_timeout)
+            if timeout < MIN_REQUEST_S:
+                left = deadline.remaining()
+                for rest in models[index:]:
+                    attempts.append({"model": rest, "reason_code": "deadline_exceeded", "skipped": True,
+                                     "detail": f"{left:.1f}s left of the {deadline.budget:g}s chain budget"})
+                break
         try:
-            return call(model), model, attempts
+            with wall_clock_limit(None if deadline is None else timeout + HARD_GRACE_S):
+                answer = call(model, timeout)
+        except DeadlineExceeded:
+            attempts.append({"model": model, "reason_code": "timeout",
+                             "detail": f"no complete answer within {timeout:g}s (chain deadline)"})
+            continue
         except ProviderError as exc:
-            attempts.append({"model": model, "reason_code": exc.reason_code,
-                             **({"status": exc.status} if exc.status else {}),
-                             "detail": str(exc)[:200]})
+            attempts.append(_attempt(model, exc))
             if not falls_through(exc):
                 raise ChainFailed(attempts, reason_code=exc.reason_code, status=exc.status,
                                   detail_code=exc.detail_code) from exc
-    codes = [item["reason_code"] for item in attempts]
-    reason = ("provider_rate_limited" if codes and set(codes) == {"provider_rate_limited"}
-              else (codes[0] if codes else "missing_model"))
-    first = attempts[0] if attempts else {}
-    raise ChainFailed(attempts, reason_code=reason, status=first.get("status"))
+            continue
+        if isinstance(answer, Answer):
+            value, provenance = answer.value, answer.provenance
+        else:
+            value, provenance = answer, {}
+        banned = anthropic_in(provenance)
+        if banned:
+            attempts.append({"model": model, "reason_code": ANTHROPIC_SERVED, **provenance,
+                             "detail": f"refused: {banned}"})
+            raise ChainFailed(attempts, reason_code=ANTHROPIC_SERVED)
+        return ChainResult(value, model, attempts, provenance)
+    tried = [item for item in attempts if not item.get("skipped")]
+    codes = [item["reason_code"] for item in tried]
+    if not tried:
+        skipped = {item["reason_code"] for item in attempts}
+        reason = ("timeout" if "deadline_exceeded" in skipped
+                  else ANTHROPIC_REFUSED if skipped == {ANTHROPIC_REFUSED} else "missing_model")
+        raise ChainFailed(attempts, reason_code=reason)
+    reason = "provider_rate_limited" if set(codes) == {"provider_rate_limited"} else codes[0]
+    raise ChainFailed(attempts, reason_code=reason, status=tried[0].get("status"))
 
 
-def evidence_for(models: list[str], served: str, attempts: list[dict[str, Any]]) -> dict[str, Any]:
-    """The pass evidence: who served, the chain, and why earlier members did not."""
-    return {"model": served, "chain": models,
+def evidence_for(models: list[str], served: str, attempts: list[dict[str, Any]],
+                 provenance: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """The pass evidence: the member that answered, who actually served it, the
+    chain, and why each earlier member did not."""
+    return {"model": served, **(provenance or {}), "chain": models,
             "fallbacks": [{k: v for k, v in item.items() if k != "detail"} for item in attempts]}
 
 

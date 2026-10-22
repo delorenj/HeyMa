@@ -27,6 +27,7 @@ declarative result on stdout. Wax owns frontmatter writes, collision-safe
 renames, ledger updates, and S3 linkage.
 """
 
+import http.client
 import json
 import os
 import re
@@ -61,13 +62,22 @@ MAX_OUTPUT_TOKENS = 2_048
 # env block; the defaults exist so the pass still runs from a bare shell.
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
 DEFAULT_MODEL = "automaticai/auto/fast"
-# Tried in order after DEFAULT_MODEL (wax.provider.run_chain): the metered Hyper
-# routes, then the free family. The operator order of 2026-10-22: nothing
-# Anthropic, ever; chat_pass_routing_test fails if one appears.
-DEFAULT_MODEL_FALLBACKS = "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free"
+# Tried in order after DEFAULT_MODEL (wax.provider.run_chain): the explicit
+# subscription GLM routes, then the metered Hyper routes, then the free family.
+# The GLM routes sit right after the primary because on 2026-10-22 auto/fast,
+# Hyper and free all answered 503 (no channel) while explicit personal GLM
+# answered 200. Operator order of 2026-10-22: nothing Anthropic, ever; Hyper and
+# free are fallbacks. chat_pass_routing_test fails if an Anthropic name appears.
+DEFAULT_MODEL_FALLBACKS = ("automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,"
+                           "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,"
+                           "automaticai/free")
 DEFAULT_API_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
-# 4 chain members x 60s = 240s, plus the 10s catalog lookup, under timeout_s 270.
+# Per request, and never past the chain deadline (wax.provider.Deadline).
 DEFAULT_REQUEST_TIMEOUT_S = 60.0
+# Mirrors timeout_s in title-slug.yaml / classification.yaml; the chain budget
+# when the runner did not say (WAX_PASS_TIMEOUT_S unset: a bare-shell run).
+# 6 members x 60s + catalog 10s + op read 5s = 375s <= 390s - RESERVE_S.
+DEFAULT_PASS_TIMEOUT_S = 390.0
 
 # Preflight is a cheap catalog lookup; it must never be the reason a run is slow.
 PREFLIGHT_TIMEOUT_S = 10.0
@@ -185,11 +195,17 @@ def resolve_api_key(*, primary_ref: str, fallback_ref: str = "") -> str:
 
 def _http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> TitlePassError:
     """Turn an HTTP error into the most specific reason_code its body supports."""
+    error = _classify_http_failure(exc, url=url, model=model)
+    error.route = chat_provider.gateway_route(exc.headers)
+    return error
+
+
+def _classify_http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> TitlePassError:
     try:
         body = exc.read().decode("utf-8", "replace").strip()
-    except (OSError, ValueError):
-        # A drained or already-closed error body is still a real HTTP failure;
-        # losing the body must never turn into losing the whole diagnosis.
+    except (OSError, ValueError, http.client.HTTPException):
+        # A drained, already-closed or truncated error body is still a real
+        # HTTP failure; losing the body must never lose the whole diagnosis.
         body = ""
     detail = f"HTTP {exc.code} from {url}: {body[:300] or exc.reason}"
     lowered = body.lower()
@@ -225,8 +241,13 @@ def api_base_of(url: str) -> str:
 
 
 def _api_request(url: str, *, key: str, model: str, timeout: float,
-                 payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """One OpenAI-compatible call. GET when payload is None, else POST."""
+                 payload: Optional[dict[str, Any]] = None,
+                 response_headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """One OpenAI-compatible call. GET when payload is None, else POST.
+
+    `response_headers`, when given, is filled with the success response's
+    headers (the gateway names the route that served in them).
+    """
     data = json.dumps(payload).encode() if payload is not None else None
     headers = {"Authorization": f"Bearer {key}", "User-Agent": "HeyMa-Wax/1.0"}
     if data is not None:
@@ -240,29 +261,28 @@ def _api_request(url: str, *, key: str, model: str, timeout: float,
         url, data=data, headers=headers, method="POST" if data is not None else "GET")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8", "replace"))
+            raw = response.read()
+            if response_headers is not None:
+                response_headers.update(response.headers.items())
+        return json.loads(raw.decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
         # MUST be caught before URLError: HTTPError subclasses it, and catching
         # the parent first is precisely what discarded the body naming the model.
         raise _http_failure(exc, url=url, model=model) from exc
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise TitlePassError(f"{url} did not answer within {timeout:g}s",
-                                 reason_code="timeout") from exc
-        raise TitlePassError(f"cannot reach {url}: {exc.reason}",
-                             reason_code="provider_unreachable") from exc
-    except TimeoutError as exc:
-        raise TitlePassError(f"{url} did not answer within {timeout:g}s",
-                             reason_code="timeout") from exc
-    except OSError as exc:
-        raise TitlePassError(f"cannot reach {url}: {exc}",
-                             reason_code="provider_unreachable") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        # URLError and timeouts are OSErrors. http.client.HTTPException is not:
+        # a body cut short (IncompleteRead) or a garbled status line once
+        # escaped this handler and killed the pass with a bare traceback.
+        error = chat_provider.transport_error(exc, url, timeout)
+        raise TitlePassError(str(error), reason_code=error.reason_code,
+                             detail_code=error.detail_code) from exc
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise TitlePassError(f"{url} returned a non-JSON body: {exc}",
                              reason_code="provider_bad_response") from exc
 
 
-def served_ids(*, api_base: str, api_key: str) -> Optional[set[str]]:
+def served_ids(*, api_base: str, api_key: str,
+               deadline: Optional[chat_provider.Deadline] = None) -> Optional[set[str]]:
     """The model ids the key can see, or None when the catalog is unreadable.
 
     A deleted model is the failure that started all of this, and catching it on
@@ -272,9 +292,14 @@ def served_ids(*, api_base: str, api_key: str) -> Optional[set[str]]:
     gone, so None never blocks anything.
     """
     url = f"{api_base}/models"
+    timeout = PREFLIGHT_TIMEOUT_S if deadline is None else deadline.request_timeout(PREFLIGHT_TIMEOUT_S)
+    if timeout < chat_provider.MIN_REQUEST_S:
+        note("note: model preflight skipped (no time left in the chain budget)")
+        return None
     try:
-        payload = _api_request(url, key=api_key, model="", timeout=PREFLIGHT_TIMEOUT_S)
-    except TitlePassError as exc:
+        with chat_provider.wall_clock_limit(None if deadline is None else timeout + chat_provider.HARD_GRACE_S):
+            payload = _api_request(url, key=api_key, model="", timeout=timeout)
+    except (chat_provider.ProviderError, chat_provider.DeadlineExceeded) as exc:
         note(f"note: model preflight skipped ({exc})")
         return None
     entries = payload.get("data") if isinstance(payload, dict) else None
@@ -300,20 +325,40 @@ def model_chain() -> list[str]:
                                      default_fallbacks=DEFAULT_MODEL_FALLBACKS)
 
 
-def run_model_chain(call, *, api_base: str, api_key: str) -> tuple[Any, dict[str, Any]]:
-    """Run `call(model)` down the chain: (value, evidence naming the serving model).
+def run_model_chain(call, *, api_base: str, api_key: str,
+                    deadline: Optional[chat_provider.Deadline] = None,
+                    request_timeout: Optional[float] = None) -> tuple[Any, dict[str, Any]]:
+    """Run `call(model, timeout)` down the chain: (value, evidence naming who served).
 
     The chain is preflighted against the catalog ONCE: a member the key cannot
     see is skipped (recorded as missing_model), never a reason to stop, so a
     primary that left the catalog costs nothing but its entry in the evidence.
+    The catalog lookup and every member share one deadline (see wax.provider).
     """
     models = model_chain()
-    ids = served_ids(api_base=api_base, api_key=api_key)
+    ids = served_ids(api_base=api_base, api_key=api_key, deadline=deadline)
     listed = None if ids is None else (lambda model: chat_provider.is_listed(model, ids))
-    value, served, attempts = chat_provider.run_chain(models, call, listed=listed)
-    for item in attempts:
+    chain = chat_provider.run_chain(models, call, listed=listed, deadline=deadline,
+                                    request_timeout=request_timeout)
+    for item in chain.attempts:
         note(f"note: {item['model']} did not serve ({item['reason_code']}); fell through")
-    return value, chat_provider.evidence_for(models, served, attempts)
+    return chain.value, chat_provider.evidence_for(models, chain.model, chain.attempts,
+                                                   chain.provenance)
+
+
+def chat_request(api_base: str, *, key: str, model: str, timeout: float,
+                 payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """POST one chat completion: (response, provenance), an Anthropic server refused.
+
+    Provenance is what the gateway says served the request: the body's
+    `model` (served_by), X-AutomaticAI-Route and the auto decision header.
+    """
+    headers: dict[str, str] = {}
+    response = _api_request(f"{api_base}/chat/completions", key=key, model=model,
+                            timeout=timeout, payload=payload, response_headers=headers)
+    provenance = chat_provider.provenance_of(response, headers)
+    chat_provider.refuse_anthropic(model, provenance)
+    return response, provenance
 
 
 def _parse_json_content(content: str) -> dict[str, Any]:
@@ -345,7 +390,8 @@ def _parse_json_content(content: str) -> dict[str, Any]:
 
 def hosted_enrichment(body: str, *, model: str, api_base: str, api_key: str,
                       timeout: float, existing_title: str = "",
-                      existing_summary: str = "") -> dict[str, str]:
+                      existing_summary: str = "",
+                      provenance: Optional[dict[str, str]] = None) -> dict[str, str]:
     prompt = """Create durable metadata for this private audio transcript.
 
 Return a specific title and a factual summary. The title must be 4-10 words,
@@ -360,8 +406,8 @@ the supplied transcript. Do not infer names or facts that are not present.
         prompt += f"\nPreserve this existing summary exactly: {existing_summary}\n"
     prompt += "\nTRANSCRIPT:\n" + transcript_context(body)
 
-    payload = _api_request(
-        f"{api_base}/chat/completions",
+    payload, served = chat_request(
+        api_base,
         key=api_key,
         model=model,
         timeout=timeout,
@@ -385,6 +431,8 @@ the supplied transcript. Do not infer names or facts that are not present.
             ],
         },
     )
+    if provenance is not None:
+        provenance.update(served)
     try:
         content = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -424,12 +472,14 @@ def build_result(md: Path) -> dict[str, Any]:
         enriched = {"title": existing_title, "summary": existing_summary}
     else:
         api_base = os.environ.get("WAX_TITLE_API_BASE", DEFAULT_API_BASE).strip().rstrip("/")
+        deadline = chat_provider.pass_deadline(DEFAULT_PASS_TIMEOUT_S)
         api_key = resolve_api_key(
             primary_ref=os.environ.get("WAX_TITLE_API_KEY_OP", DEFAULT_API_KEY_OP).strip(),
         )
-        timeout = _request_timeout()
-        enriched, evidence = run_model_chain(
-            lambda member: hosted_enrichment(
+
+        def enrich(member: str, timeout: float) -> chat_provider.Answer:
+            served: dict[str, str] = {}
+            value = hosted_enrichment(
                 body,
                 model=member,
                 api_base=api_base,
@@ -437,8 +487,12 @@ def build_result(md: Path) -> dict[str, Any]:
                 timeout=timeout,
                 existing_title=existing_title,
                 existing_summary=existing_summary,
-            ),
-            api_base=api_base, api_key=api_key)
+                provenance=served,
+            )
+            return chat_provider.Answer(value, served)
+
+        enriched, evidence = run_model_chain(enrich, api_base=api_base, api_key=api_key,
+                                             deadline=deadline, request_timeout=_request_timeout())
         # Enrichment never clobbers grounded values a person or prior pass set.
         enriched["title"] = existing_title or enriched["title"]
         enriched["summary"] = existing_summary or enriched["summary"]
@@ -479,6 +533,8 @@ def main() -> int:
         result = build_result(md)
     except chat_provider.ProviderError as exc:
         return _fail(exc.reason_code, str(exc))
+    except Exception as exc:  # noqa: BLE001 - contract D: never a bare traceback
+        return _fail("run_error", f"{type(exc).__name__}: {exc}")
     print(json.dumps(result, ensure_ascii=False))
     _flush_notes()
     return 0

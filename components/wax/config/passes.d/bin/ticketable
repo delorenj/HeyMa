@@ -64,12 +64,18 @@ MAX_OUTPUT_TOKENS = 8_192
 
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
 DEFAULT_MODEL = "automaticai/auto/fast"
-# Tried in order after DEFAULT_MODEL (see wax.provider.run_chain): the metered
-# Hyper routes, then the free family. Nothing Anthropic, ever.
-DEFAULT_MODEL_FALLBACKS = "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free"
+# Tried in order after DEFAULT_MODEL (see wax.provider.run_chain): the explicit
+# subscription GLM routes, then the metered Hyper routes, then the free family.
+# Nothing Anthropic, ever; Hyper and free are fallbacks.
+DEFAULT_MODEL_FALLBACKS = ("automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,"
+                           "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,"
+                           "automaticai/free")
 DEFAULT_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
 KEY_ENV = "WAX_TICKETS_API_KEY"
+# Per request, and never past the window's share of the chain deadline.
 DEFAULT_REQUEST_TIMEOUT_S = 120.0
+# Mirrors timeout_s in ticketable.yaml; the budget when WAX_PASS_TIMEOUT_S is unset.
+DEFAULT_PASS_TIMEOUT_S = 1800.0
 
 SYSTEM_PROMPT = """\
 You extract ticketable work from one transcript of a private voice memo or meeting. A project \
@@ -205,7 +211,10 @@ def extract(text: str, *, fm: dict[str, Any], ids: list[str],
     Each window runs the model chain on its own, so one window that had to fall
     back does not drag the others off the primary. The evidence names the model
     that served the first window, every distinct server, and every failed attempt.
+    The windows share one pass deadline: each gets an equal part of what is left
+    when it starts, so a slow first window cannot starve the last of evidence.
     """
+    deadline = provider.pass_deadline(DEFAULT_PASS_TIMEOUT_S)
     parts = provider.windows(text, WINDOW_CHARS, WINDOW_OVERLAP) if len(text) > SINGLE_CALL_MAX_CHARS else [text]
     truncated = len(parts) > MAX_WINDOWS
     if truncated:
@@ -221,6 +230,7 @@ def extract(text: str, *, fm: dict[str, Any], ids: list[str],
     timeout = provider.env_number("WAX_TICKETS_REQUEST_TIMEOUT_S", DEFAULT_REQUEST_TIMEOUT_S, minimum=1.0)
     raw: list[Any] = []
     served: list[str] = []
+    servers: list[dict[str, str]] = []
     failed: list[dict[str, Any]] = []
     for index, part in enumerate(parts, 1):
         user = json.dumps({
@@ -231,22 +241,29 @@ def extract(text: str, *, fm: dict[str, Any], ids: list[str],
             "transcript": part,
         }, ensure_ascii=False)
 
-        def ask(model: str) -> list[Any]:
+        def ask(model: str, request_timeout: float) -> provider.Answer:
+            origin: dict[str, str] = {}
             answer = provider.chat_json(base=base, model=model, key=key, system=SYSTEM_PROMPT, user=user,
                                         schema=response_schema(ids), schema_name="ticketable_tasks",
-                                        max_tokens=MAX_OUTPUT_TOKENS, timeout=timeout, temperature=0.1)
+                                        max_tokens=MAX_OUTPUT_TOKENS, timeout=request_timeout,
+                                        temperature=0.1, provenance=origin)
             tickets = answer.get("tickets")
             if not isinstance(tickets, list):
                 raise provider.ProviderError(f"{model} answered without a tickets list", "provider_bad_response")
-            return tickets
+            return provider.Answer(tickets, origin)
 
-        tickets, model, attempts = provider.run_chain(models, ask)
-        raw.extend(tickets)
-        served.append(model)
-        failed.extend(attempts)
-    evidence = provider.evidence_for(models, served[0], failed)
+        chain = provider.run_chain(models, ask, deadline=deadline.share(len(parts) - index + 1),
+                                   request_timeout=timeout)
+        raw.extend(chain.value)
+        served.append(chain.model)
+        servers.append(chain.provenance)
+        failed.extend(chain.attempts)
+    evidence = provider.evidence_for(models, served[0], failed, servers[0])
     if len(set(served)) > 1:
         evidence["served"] = list(dict.fromkeys(served))
+    served_by = list(dict.fromkeys(s["served_by"] for s in servers if s.get("served_by")))
+    if len(served_by) > 1:
+        evidence["served_by_all"] = served_by
     return raw, len(parts), truncated, evidence
 
 
@@ -365,7 +382,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         result = build_result(md, transcript=md.name, item_id=args[1].strip() if len(args) > 1 else "")
     except (provider.ProviderError, pjregistry.RegistryError) as exc:
         return provider.fail(exc.reason_code, str(exc))
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 - the first stderr line is always reason_code=
         return provider.fail("run_error", f"{type(exc).__name__}: {exc}")
     provider.emit_result(result)
     return 0

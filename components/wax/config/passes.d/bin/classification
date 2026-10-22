@@ -17,16 +17,17 @@ CLASSES = {"monolog", "meeting", "other"}
 def enrich_document(body):
     if not body.strip():
         raise provider.TitlePassError("document has no body", reason_code="empty_document")
+    # One budget for the key lookup, the catalog and every chain member.
+    deadline = provider.chat_provider.pass_deadline(provider.DEFAULT_PASS_TIMEOUT_S)
     key = provider.resolve_api_key(primary_ref=os.environ.get("WAX_TITLE_API_KEY_OP", provider.DEFAULT_API_KEY_OP),
                                    fallback_ref="")
     base = os.environ.get("WAX_TITLE_API_BASE", provider.DEFAULT_API_BASE).rstrip("/")
     schema = {"type": "object", "properties": {"classification": {"type": "string", "enum": sorted(CLASSES)}},
               "required": ["classification"], "additionalProperties": False}
-    timeout = provider._request_timeout()
 
-    def classify(model):
-        response = provider._api_request(base + "/chat/completions", key=key, model=model,
-                                         timeout=timeout, payload={
+    def classify(model, timeout):
+        response, served = provider.chat_request(base, key=key, model=model,
+                                                 timeout=timeout, payload={
             "model": model, "max_tokens": 2048, "temperature": 0.1,
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "document_classification", "strict": True, "schema": schema}},
@@ -45,9 +46,10 @@ def enrich_document(body):
         if value.get("classification") not in CLASSES:
             raise provider.TitlePassError("classifier returned an unsupported class",
                                           reason_code="provider_bad_response")
-        return value["classification"]
+        return provider.chat_provider.Answer(value["classification"], served)
 
-    label, evidence = provider.run_model_chain(classify, api_base=base, api_key=key)
+    label, evidence = provider.run_model_chain(classify, api_base=base, api_key=key, deadline=deadline,
+                                               request_timeout=provider._request_timeout())
     return {"classification": label}, evidence
 
 
@@ -68,3 +70,5 @@ if __name__ == "__main__":
         print(json.dumps(build_result(Path(sys.argv[1])), ensure_ascii=False))
     except (provider.ProviderError, OSError) as exc:
         raise SystemExit(provider._fail(getattr(exc, "reason_code", "run_error"), str(exc)))
+    except Exception as exc:  # noqa: BLE001 - the first stderr line is always reason_code=
+        raise SystemExit(provider._fail("run_error", f"{type(exc).__name__}: {exc}"))

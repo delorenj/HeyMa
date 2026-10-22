@@ -76,6 +76,7 @@ wax items | queue | history | state <machine> [--cold]
 wax drain                  # process the inbox now, one-shot
 wax retry [<item>]         # requeue preserved failed/suspect inbox items (all, or one)
 wax ep list|status|run <slug> <item>|run-all <item>|sweep
+wax ep replan <item> [--apply]   # move ONE unfinished item's frozen plan onto the current pipeline
 wax reconcile [--rebuild]  # rebuild the ledger from durable sources
 wax catalog                # safe discovery snapshot (passes + pipelines) for Holocene/n8n
 wax pipeline enable|disable|status   # historical worker toggle, unchanged
@@ -121,15 +122,22 @@ is recorded per-slug with a `reason_code` in both the ledger and the note's
 pass (`classification`, `title-slug`, and `ticketable`) calls the AutomaticAI
 gateway at `https://api.automaticai.io/v1` on the scoped `heyma-wax-inference`
 token (`op://`, never a file), and tries an ordered **model chain**
-(`wax.provider.run_chain`): `automaticai/auto/fast`, then
-`automaticai/hypercharm/glm-5.3`, `automaticai/hypercharm/minimax-m3` (metered
-Hyper), then `automaticai/free`. The chain lives in each pass YAML env
-(`WAX_TITLE_MODEL` + `WAX_TITLE_MODEL_FALLBACKS`, `WAX_TICKETS_*`) with matching
-bin defaults. It moves on for provider-side failures only (429, 402, 5xx,
-unreachable, timeout, unknown model, 400, a 403 that means "outside the token's
-scope", empty or unparseable content) and never for `no_api_key` or a rejected
-key. The result's `evidence` names the serving model and each failed member; the
-note's `wax.passes.<slug>` block records `model` and `fell_through`. **No
+(`wax.provider.run_chain`): `automaticai/auto/fast`, then the explicit
+subscription routes `automaticai/personal/glm-5.3-flash` and
+`automaticai/personal/glm-5.3`, then `automaticai/hypercharm/glm-5.3`,
+`automaticai/hypercharm/minimax-m3` (metered Hyper), then `automaticai/free`.
+The chain lives in each pass YAML env (`WAX_TITLE_MODEL` +
+`WAX_TITLE_MODEL_FALLBACKS`, `WAX_TICKETS_*`) with matching bin defaults. It
+moves on for provider-side failures only (429, 402, 5xx, unreachable, timeout,
+truncated or garbled responses, unknown model, 400, a 403 that means "outside
+the token's scope", empty or unparseable content) and never for `no_api_key` or
+a rejected key. The whole chain runs against one deadline taken from the
+runner's `WAX_PASS_TIMEOUT_S`, so the runner never kills a pass before it
+reports every member. The result's `evidence` names the member asked (`model`),
+what the gateway says served it (`served_by`, `route`, `auto`) and each failed
+member; the note's `wax.passes.<slug>` block records `model`, `served_by`,
+`route` and `fell_through`. A pass served by an Anthropic model fails closed
+(`anthropic_model_served`), and the runner refuses such a result again. **No
 Anthropic model, anywhere, by operator order (2026-10-22)**: `chat_pass_routing_test`
 fails on any claude/sonnet/haiku/opus/fable/anthropic model in pass env, bin and
 library defaults, the doctor rows, `deploy/provision-inference`, authored
@@ -138,7 +146,9 @@ AAI-55 closes. The token's scope is owned by
 `components/wax/deploy/provision-inference` (the SSOT; it skips routes the
 gateway catalog lacks, so re-run it after a gateway deploy). Compiled pipelines
 freeze pass env, so after changing a chain re-import the n8n release exports
-(`wax pipeline import ... --name transcript-standard|doc-standard`). Implemented
+(`wax pipeline import ... --name transcript-standard|doc-standard`); an
+unfinished item minted under the old chain moves only by
+`wax ep replan <item> --apply`, then `wax ep run`. Implemented
 but currently disabled: `project-extraction` (pjangler project ids via TypeSafe
 Jev) and `ticketable` (tasks per project).
 `wax ep sweep` retries the ones whose latest attempt failed; the waxd worker also

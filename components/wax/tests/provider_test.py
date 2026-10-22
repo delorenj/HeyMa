@@ -118,13 +118,18 @@ class PostJsonTest(NotesIsolation):
         self.assertIn("$WAX_TEST_PROVIDER_KEY", str(error))
         self.assertIn("is_provisioning_key", str(error))
 
-    def test_transport_failures_map_to_timeout_or_unreachable(self):
+    def test_transport_failures_map_to_a_reason_code(self):
+        # A response that started and broke off (IncompleteRead) or never was
+        # HTTP (BadStatusLine) is the provider's bad answer; a peer that hung
+        # up before answering is unreachable. Every one falls through a chain.
         cases = [
             (urllib.error.URLError(TimeoutError("timed out")), "timeout"),
             (TimeoutError("read timed out"), "timeout"),
             (urllib.error.URLError(ConnectionRefusedError(111, "refused")), "provider_unreachable"),
             (ConnectionResetError(104, "reset"), "provider_unreachable"),
-            (http.client.IncompleteRead(b"partial"), "provider_unreachable"),
+            (http.client.RemoteDisconnected("closed"), "provider_unreachable"),
+            (http.client.IncompleteRead(b"partial", 100), "provider_bad_response"),
+            (http.client.BadStatusLine("garbage"), "provider_bad_response"),
         ]
         for outcome, reason in cases:
             with self.subTest(outcome=type(outcome).__name__):

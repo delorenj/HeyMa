@@ -67,7 +67,7 @@ import yaml
 import tempfile
 from functools import wraps
 
-from . import archive, component, events, frontmatter, ledger, operations, paths, rename, sentinel
+from . import archive, component, events, frontmatter, ledger, operations, paths, provider, rename, sentinel
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
@@ -364,6 +364,71 @@ def ensure_plan(item_id):
     return definitions
 
 
+def replan(item_id: str, *, apply: bool = False) -> dict[str, Any]:
+    """Move ONE unfinished item onto the current plan authority. Nothing runs here.
+
+    ensure_plan never migrates a plan on its own; this is the explicit operator
+    step it defers to. The case it exists for: 2026-10-22, an item minted under
+    transcript-standard v4 froze a model chain whose every member answered 503,
+    and `wax ep run` / the sweep rightly re-ran that frozen chain, so the item
+    could not recover after v5 fixed the chain.
+
+    Refused when the item already completed (its plan is history), when the
+    authority is ambiguous, when the new plan would add or drop a pass, or
+    when a pass that already completed or skipped would change definition
+    (its result belongs to the plan it ran under). So only unfinished passes
+    move; attempt counters and every recorded result are kept. Dry run unless
+    `apply`.
+    """
+    from . import pipelines
+    conn = ledger.connect()
+    row = conn.execute("SELECT plan_id, definitions, source FROM processing_plans WHERE item_id=?",
+                       (item_id,)).fetchone()
+    if not row:
+        raise PassError(f"{item_id} has no plan; its next run mints one from the current authority")
+    if conn.execute("SELECT 1 FROM completions WHERE item_id=?", (item_id,)).fetchone():
+        raise PassError(f"{item_id} already completed under its plan; a completed plan is history")
+    old = json.loads(row["definitions"])
+    new, provenance = pipelines.transcription_authority()
+    if provenance.get("fallback_reason"):
+        raise PassError(f"the plan authority is ambiguous: {provenance['fallback_reason']}")
+    if set(old) != set(new):
+        raise PassError(f"the current authority runs {sorted(new)}, the plan runs {sorted(old)}; "
+                        "replan moves definitions, never the set of passes")
+    recorded = {r["ep_slug"]: dict(r) for r in conn.execute(
+        "SELECT ep_slug, state FROM passes WHERE item_id=?", (item_id,))}
+    changed = sorted(slug for slug in old
+                     if operations.definition_id(old[slug]) != operations.definition_id(new[slug]))
+    settled = [slug for slug in changed if (recorded.get(slug) or {}).get("state") in ("completed", "skipped")]
+    if settled:
+        raise PassError(f"{', '.join(settled)} already finished under the old definition; "
+                        "replan only moves unfinished passes")
+    diff = {}
+    for slug in changed:
+        a, b = old[slug], new[slug]
+        keys = sorted(k for k in set(a) | set(b) if not k.startswith("_") and a.get(k) != b.get(k))
+        env_keys = sorted(k for k in set(a.get("env") or {}) | set(b.get("env") or {})
+                          if (a.get("env") or {}).get(k) != (b.get("env") or {}).get(k))
+        diff[slug] = {"fields": keys, **({"env": env_keys} if env_keys else {})}
+    out: dict[str, Any] = {"item_id": item_id, "applied": False, "changed": diff,
+                           "from": json.loads(row["source"] or "{}"), "to": provenance}
+    if not changed or not apply:
+        return out
+    encoded = json.dumps(new, sort_keys=True, default=str)
+    import hashlib
+    plan_id = hashlib.sha256(encoded.encode()).hexdigest()
+    conn.execute("UPDATE processing_plans SET plan_id=?, definitions=?, source=? WHERE item_id=?",
+                 (plan_id, encoded, json.dumps(provenance, sort_keys=True, default=str), item_id))
+    # Audit on its own machine: the item state machine (pending, archived,
+    # ...) is recomputed from its transitions and has no "replanned" state.
+    ledger.record_transition("plan", item_id, row["plan_id"][:12], plan_id[:12], "operator_replan",
+                             f"{row['plan_id'][:12]} -> {plan_id[:12]} ({provenance.get('name') or provenance.get('kind')}"
+                             f" {str(provenance.get('definition_id') or '')[:12]}): {', '.join(changed)}")
+    out["applied"] = True
+    out["plan_id"] = plan_id
+    return out
+
+
 def _record(item_id: str, slug: str, state: str, *, version: int = 1, attempt: int = 1,
              command_id: Optional[str] = None, detail: str = "",
              reason_code: Optional[str] = None, result=None, definition=None) -> None:
@@ -517,6 +582,26 @@ def _expand(value: Any, *, item_id: str, md: Path) -> str:
             .replace("{item_id}", item_id)
             .replace("{component_root}", str(component.ROOT))
             .replace("{home}", str(Path.home())))
+
+
+class _Refused(Exception):
+    """A pass result the runner will not apply."""
+
+
+def _anthropic_served(result: Any) -> Optional[str]:
+    """`served_by=<x>` when a chat pass's evidence says an Anthropic model answered.
+
+    Chat-pass evidence is the model-chain shape (it has a `chain`); other
+    passes' evidence is not read, so an audio codec named opus is not a model.
+    """
+    evidence = result.get("evidence") if isinstance(result, dict) else None
+    if not isinstance(evidence, dict) or "chain" not in evidence:
+        return None
+    for field in ("model", "served_by", "route"):
+        value = evidence.get(field)
+        if isinstance(value, str) and provider.ANTHROPIC_RE.search(value):
+            return f"{field}={value[:120]}"
+    return None
 
 
 def _parse_result(stdout: str) -> dict[str, Any]:
@@ -1042,9 +1127,14 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     if not argv:
         raise PassError(f"pass {slug!r} has no command")
     version = int(ep.get("version") or 1)
+    timeout_s = float(ep.get("timeout_s") or DEFAULT_TIMEOUT_S)
     pass_env = dict(os.environ)
     for key, value in (ep.get("env") or {}).items():
         pass_env[str(key)] = _expand(value, item_id=item_id, md=md)
+    # The timeout this runner enforces, after the env block so no YAML can
+    # misstate it: a chat pass budgets its whole model chain against it and
+    # finishes, with every member's evidence, before the kill below.
+    pass_env[provider.PASS_TIMEOUT_ENV] = f"{timeout_s:g}"
 
     cid = events.emit_ep_command(item_id, slug, argv, attempt)
     _record(item_id, slug, "running", version=version, attempt=attempt, command_id=cid, definition=ep)
@@ -1060,8 +1150,7 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     reason_code: Optional[str] = None
     pass_result = {}
     try:
-        r = subprocess.run(argv, capture_output=True, text=True,
-                           env=pass_env, timeout=float(ep.get("timeout_s") or DEFAULT_TIMEOUT_S))
+        r = subprocess.run(argv, capture_output=True, text=True, env=pass_env, timeout=timeout_s)
         # Read the reason off the FULL stderr: truncating first would cut away
         # the very end the header is on. Which end to KEEP then depends on who
         # wrote the stderr — a pass that emits the header authored the lines
@@ -1074,12 +1163,22 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
             reason_code = None
             try:
                 pass_result = _parse_result(r.stdout or "")
+                banned = _anthropic_served(pass_result)
+                if banned:
+                    # The single owner refuses it too: a pass that forgot the
+                    # check must not get an Anthropic answer into a note.
+                    raise _Refused(banned)
                 current_md, changed_fields = _apply_result(item_id, md, ep, pass_result,
                                                            document=document)
                 effective, _ = frontmatter.read(current_md)
                 pass_result = {**pass_result, "effective_metadata": {
                     key: effective.get(key) for key in (pass_result.get("frontmatter") or {})
                 }}
+            except _Refused as exc:
+                ok, reason_code = False, provider.ANTHROPIC_SERVED
+                err = (f"refused the result: an Anthropic model served it ({exc}); operator order "
+                       "2026-10-22, run deploy/provision-inference")
+                pass_result = {"evidence": pass_result.get("evidence")}
             except (archive.ArchiveError, PassError, OSError) as exc:
                 ok, reason_code = False, "result_apply_failed"
                 err = str(exc)[-800:]
@@ -1132,6 +1231,12 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         evidence = pass_result.get("evidence") if isinstance(pass_result, dict) else None
         if isinstance(evidence, dict) and isinstance(evidence.get("model"), str):
             note_entry["model"] = evidence["model"][:120]
+            # What the gateway says actually answered: a router member
+            # (auto/fast) names no model, the response's `model` does.
+            if isinstance(evidence.get("served_by"), str):
+                note_entry["served_by"] = evidence["served_by"][:120]
+            if isinstance(evidence.get("route"), str):
+                note_entry["route"] = evidence["route"][:120]
             skipped = [f"{item.get('model')}={item.get('reason_code')}"
                        for item in evidence.get("fallbacks") or [] if isinstance(item, dict)]
             if skipped:

@@ -277,8 +277,12 @@ class NoAnthropicModelsTest(unittest.TestCase):
             self.assertEqual(anthropic_hits(name), [], name)
 
 
-CHAIN = ["automaticai/auto/fast", "automaticai/hypercharm/glm-5.3",
-         "automaticai/hypercharm/minimax-m3", "automaticai/free"]
+# 2026-10-22, live outage: auto/fast picked the channel-less hypercharm/glm-5.3,
+# Hyper had no channel and free picked a channel-less Kimi, all 503; the
+# explicit subscription GLM routes answered 200. So they sit right after the
+# primary, and Hyper and free stay fallbacks.
+CHAIN = ["automaticai/auto/fast", "automaticai/personal/glm-5.3-flash", "automaticai/personal/glm-5.3",
+         "automaticai/hypercharm/glm-5.3", "automaticai/hypercharm/minimax-m3", "automaticai/free"]
 NOTE_TEXT = "---\nlanguage: en\n---\n# Transcript\nDiscussing a modular enrichment pass for audio.\n"
 
 
@@ -292,20 +296,29 @@ def _chat_answer(content: dict) -> dict:
 
 
 class FakeGateway:
-    """Stands in for title-slug._api_request: a /models list and a scripted answer per model."""
+    """Stands in for title-slug._api_request: a /models list and a scripted answer per model.
 
-    def __init__(self, answers: dict, listed=None):
+    `headers` scripts the success response headers per model (the gateway's
+    X-AutomaticAI-Route / -Auto); every chat request's timeout is recorded.
+    """
+
+    def __init__(self, answers: dict, listed=None, headers=None):
         self.answers = answers
         self.listed = CHAIN if listed is None else listed
+        self.headers = headers or {}
         self.chat_models: list = []
+        self.timeouts: list = []
 
-    def __call__(self, url, *, key, model, timeout, payload=None):
+    def __call__(self, url, *, key, model, timeout, payload=None, response_headers=None):
         if payload is None:
             return {"data": [{"id": name} for name in self.listed]}
         self.chat_models.append(payload["model"])
+        self.timeouts.append(timeout)
         outcome = self.answers[payload["model"]]
         if isinstance(outcome, BaseException):
             raise outcome
+        if response_headers is not None:
+            response_headers.update(self.headers.get(payload["model"], {}))
         return outcome
 
 
@@ -338,8 +351,14 @@ class FallbackChainTest(unittest.TestCase):
 
     GOOD = _chat_answer({"title": "Modular Enrichment Pass", "summary": "A pass for audio."})
 
-    def test_the_default_chain_is_auto_then_hyper_then_free(self):
+    def test_the_default_chain_is_auto_then_glm_then_hyper_then_free(self):
+        self.assertEqual(CHAIN[1:3], ["automaticai/personal/glm-5.3-flash", "automaticai/personal/glm-5.3"])
         self.assertEqual(self.title.model_chain(), CHAIN)
+        tree = ast.parse((COMPONENT_ROOT / "bin" / "wax").read_text())
+        doctor = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body
+                  if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                  and node.targets[0].id in ("TITLE_MODEL_DEFAULT", "TITLE_MODEL_FALLBACKS_DEFAULT")}
+        self.assertEqual([doctor["TITLE_MODEL_DEFAULT"], *doctor["TITLE_MODEL_FALLBACKS_DEFAULT"].split(",")], CHAIN)
         for slug in ("title-slug", "classification"):
             env = yaml.safe_load((PASSES_DIR / f"{slug}.yaml").read_text())["env"]
             self.assertEqual([env["WAX_TITLE_MODEL"], *env["WAX_TITLE_MODEL_FALLBACKS"].split(",")], CHAIN)
@@ -349,13 +368,25 @@ class FallbackChainTest(unittest.TestCase):
         self.assertEqual([ticketable.DEFAULT_MODEL, *ticketable.DEFAULT_MODEL_FALLBACKS.split(",")], CHAIN)
 
     def test_every_chain_fits_inside_its_pass_timeout(self):
-        # Worst case: every member burns its whole request timeout.
-        for slug, var, windows in (("title-slug", "WAX_TITLE_REQUEST_TIMEOUT_S", 1),
-                                   ("classification", "WAX_TITLE_REQUEST_TIMEOUT_S", 1),
-                                   ("ticketable", "WAX_TICKETS_REQUEST_TIMEOUT_S", 3)):
+        # The chain runs against a deadline of timeout_s less the reserve, so
+        # the runner can never cut off its evidence. The sizing still matters:
+        # title-slug/classification fit every member at its full request
+        # timeout plus the catalog and key lookups; ticketable's windows each
+        # get an equal share, enough for the primary and both GLM routes.
+        from wax import provider
+        title = self.title
+        for slug in ("title-slug", "classification"):
             doc = yaml.safe_load((PASSES_DIR / f"{slug}.yaml").read_text())
-            worst = windows * len(CHAIN) * float(doc["env"][var])
-            self.assertLess(worst, float(doc["timeout_s"]), f"{slug}: {worst}s worst case vs timeout_s")
+            budget = float(doc["timeout_s"]) - provider.RESERVE_S
+            worst = (len(CHAIN) * float(doc["env"]["WAX_TITLE_REQUEST_TIMEOUT_S"])
+                     + title.PREFLIGHT_TIMEOUT_S + title.OP_READ_TIMEOUT_S)
+            self.assertLessEqual(worst, budget, f"{slug}: {worst}s worst case vs a {budget}s budget")
+            self.assertEqual(float(doc["timeout_s"]), title.DEFAULT_PASS_TIMEOUT_S, slug)
+        doc = yaml.safe_load((PASSES_DIR / "ticketable.yaml").read_text())
+        ticketable = load_script(PASSES_DIR / "bin" / "ticketable")
+        share = (float(doc["timeout_s"]) - provider.RESERVE_S) / ticketable.MAX_WINDOWS
+        self.assertGreaterEqual(share, 3 * float(doc["env"]["WAX_TICKETS_REQUEST_TIMEOUT_S"]))
+        self.assertEqual(float(doc["timeout_s"]), ticketable.DEFAULT_PASS_TIMEOUT_S)
 
     def test_primary_serves_and_the_evidence_names_it(self):
         gateway = FakeGateway({CHAIN[0]: self.GOOD})
@@ -363,28 +394,29 @@ class FallbackChainTest(unittest.TestCase):
         self.assertEqual(gateway.chat_models, [CHAIN[0]])
         self.assertEqual(result["evidence"], {"model": CHAIN[0], "chain": CHAIN, "fallbacks": []})
 
-    def test_a_429_on_the_primary_falls_to_hyper(self):
+    def test_a_429_on_the_primary_falls_to_the_glm_route(self):
         gateway = FakeGateway({CHAIN[0]: self.title._http_failure(_http_error(429, "slow"), url="u", model=CHAIN[0]),
                                CHAIN[1]: self.GOOD})
         result = self.run_title(gateway)
         self.assertEqual(gateway.chat_models, CHAIN[:2])
-        self.assertEqual(result["evidence"]["model"], "automaticai/hypercharm/glm-5.3")
+        self.assertEqual(result["evidence"]["model"], "automaticai/personal/glm-5.3-flash")
         self.assertEqual(result["evidence"]["fallbacks"],
                          [{"model": CHAIN[0], "reason_code": "provider_rate_limited", "status": 429}])
 
-    def test_hyper_failing_too_falls_to_the_free_family(self):
+    def test_glm_and_hyper_failing_too_falls_to_the_free_family(self):
+        no_channel = '{"error":{"code":"model_not_found","message":"No available channel"}}'
         gateway = FakeGateway({
             CHAIN[0]: self.title._http_failure(_http_error(429), url="u", model=CHAIN[0]),
-            CHAIN[1]: self.title._http_failure(
-                _http_error(503, '{"error":{"code":"model_not_found","message":"No available channel"}}'),
-                url="u", model=CHAIN[1]),
-            CHAIN[2]: self.title._http_failure(_http_error(500), url="u", model=CHAIN[2]),
-            CHAIN[3]: self.GOOD})
+            CHAIN[1]: self.title._http_failure(_http_error(500), url="u", model=CHAIN[1]),
+            CHAIN[2]: self.title._http_failure(_http_error(502), url="u", model=CHAIN[2]),
+            CHAIN[3]: self.title._http_failure(_http_error(503, no_channel), url="u", model=CHAIN[3]),
+            CHAIN[4]: self.title._http_failure(_http_error(500), url="u", model=CHAIN[4]),
+            CHAIN[5]: self.GOOD})
         result = self.run_title(gateway)
         self.assertEqual(gateway.chat_models, CHAIN)
         self.assertEqual(result["evidence"]["model"], "automaticai/free")
         self.assertEqual([f["reason_code"] for f in result["evidence"]["fallbacks"]],
-                         ["provider_rate_limited", "provider_http_error", "provider_http_error"])
+                         ["provider_rate_limited"] + ["provider_http_error"] * 4)
 
     def test_each_provider_side_failure_falls_through(self):
         failures = {
@@ -437,7 +469,7 @@ class FallbackChainTest(unittest.TestCase):
         from wax import provider
         calls = []
 
-        def call(model):
+        def call(model, timeout):
             calls.append(model)
             raise provider.ProviderError("key gone", "no_api_key")
 
@@ -457,18 +489,19 @@ class FallbackChainTest(unittest.TestCase):
     def test_the_free_family_is_never_skipped_for_being_unlisted(self):
         # /v1/models does not list automaticai/free even when the token is
         # granted it; the preflight must still let the chain reach it.
-        gateway = FakeGateway({CHAIN[3]: self.GOOD}, listed=CHAIN[:3])
+        gateway = FakeGateway({CHAIN[5]: self.GOOD}, listed=CHAIN[:5])
         gateway.answers.update({name: self.title.TitlePassError("down", reason_code="provider_unreachable")
-                                for name in CHAIN[:3]})
+                                for name in CHAIN[:5]})
         result = self.run_title(gateway)
         self.assertEqual(result["evidence"]["model"], "automaticai/free")
 
     def test_an_unreadable_catalog_does_not_block_the_chain(self):
         class NoCatalog(FakeGateway):
-            def __call__(self, url, *, key, model, timeout, payload=None):
+            def __call__(self, url, *, key, model, timeout, payload=None, response_headers=None):
                 if payload is None:
                     raise self.owner.title.TitlePassError("no /models", reason_code="provider_http_error")
-                return super().__call__(url, key=key, model=model, timeout=timeout, payload=payload)
+                return super().__call__(url, key=key, model=model, timeout=timeout, payload=payload,
+                                        response_headers=response_headers)
 
         gateway = NoCatalog({CHAIN[0]: self.GOOD})
         gateway.owner = self
@@ -479,7 +512,9 @@ class FallbackChainTest(unittest.TestCase):
             CHAIN[0]: self.title._http_failure(_http_error(500), url="u", model=CHAIN[0]),
             CHAIN[1]: self.title._http_failure(_http_error(429), url="u", model=CHAIN[1]),
             CHAIN[2]: self.title.TitlePassError("slow", reason_code="timeout"),
-            CHAIN[3]: self.title.TitlePassError("junk", reason_code="provider_bad_response")})
+            CHAIN[3]: self.title.TitlePassError("down", reason_code="provider_unreachable"),
+            CHAIN[4]: self.title._http_failure(_http_error(503), url="u", model=CHAIN[4]),
+            CHAIN[5]: self.title.TitlePassError("junk", reason_code="provider_bad_response")})
         with self.assertRaises(self.title.ProviderError) as caught:
             self.run_title(mixed)
         self.assertEqual(caught.exception.reason_code, "provider_http_error")
