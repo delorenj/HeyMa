@@ -99,3 +99,48 @@ unknown primary (400) and `hypercharm/*` (503) and were served by
 real items was not done: completed items already carry title, summary and
 classification (the passes preserve them without a model call), and a failing
 gateway would only record a failed attempt.
+
+## Addendum 2026-10-22 (12:20Z): live outage, GLM routes in the chain
+
+At 11:50Z every chain member answered 503 on the live gateway: `auto/fast` picked
+the channel-less `hypercharm/glm-5.3`, `hypercharm/*` had no channel in group
+`aai-personal` (AAI-61), and `automaticai/free` picked the channel-less
+`nvidia-free/kimi-k3`. Explicit `automaticai/personal/glm-5.3-flash` and
+`personal/glm-5.3` answered 200. The only failure since 11:00Z was item
+`53760477d56588dd` (title-slug and classification, both `provider_http_error`).
+
+**Done (HeyMa, no gateway or token change).**
+
+- Chain is now `auto/fast`, `personal/glm-5.3-flash`, `personal/glm-5.3`,
+  `hypercharm/glm-5.3`, `hypercharm/minimax-m3`, `automaticai/free` everywhere
+  (pass YAMLs, bin defaults, `bin/wax`, docs, tests). Hyper and free remain fallbacks.
+- One monotonic deadline per pass run (runner timeout via `WAX_PASS_TIMEOUT_S`,
+  less a 10s reserve); per-request timeout is the remaining budget minus 1s under
+  a wall-clock limit. `timeout_s` 270 -> 390 (ticketable 1500 -> 1800).
+- `http.client.HTTPException` (IncompleteRead, BadStatusLine, RemoteDisconnected)
+  no longer kills title-slug/classification with a traceback: it maps to
+  `provider_bad_response`/`provider_unreachable` and falls through (local fake
+  server tests send a short body and a garbled status line).
+- Provenance: evidence and the note's `wax.passes` block carry `served_by` (the
+  response `model`), `route` and the auto decision header; failed router members
+  record the route they picked. An Anthropic `served_by`/`route` fails closed as
+  `anthropic_model_served`, with no fall-through, and the runner refuses it again.
+- A total chain failure takes its reason code from the first member actually
+  asked; `missing_model` only when every member was skipped.
+- `transcript-standard` v5 and `doc-standard` v6 imported (dry-run on a ledger
+  copy first; only `WAX_TITLE_MODEL_FALLBACKS` and `timeout_s` changed).
+- New `wax ep replan <item> [--apply]`: a minted plan never migrates, so the
+  failed item (minted under v4) could not recover under the fixed chain until its
+  plan was explicitly moved. Refused for completed items, changed pass sets, or
+  passes that already finished under the old definition. Applied to
+  `53760477d56588dd`, then `wax ep sweep`: classification and title-slug completed,
+  `served_by = glm-5.3-flash` (route `personal/glm-5.3-flash`, `auto/fast`
+  fell through on 429), item `complete`.
+- `wax doctor` gained `inference chain serves`: a live walk of the chain that
+  reports which member serves and what the gateway says served it.
+
+**Observed afterwards (token-ops).** By 12:20Z `auto/fast` answered 429 instead of
+503, and the token's `/v1/models` listing no longer showed `hypercharm/*` (3
+routes listed: `auto/fast`, `personal/glm-5.3`, `personal/glm-5.3-flash`;
+`automaticai/free` answered a 1-token request). Wax skips unlisted members and
+the chain still lands on GLM. The token scope was not touched from HeyMa.
