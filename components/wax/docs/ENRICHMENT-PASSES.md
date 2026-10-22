@@ -44,6 +44,42 @@ through the explicit retry paths). Automatic runs skip a pass already
 completed at the same `version` and the same definition; increasing
 `version` causes the new definition to run once.
 
+## Model chains for chat passes
+
+Operator order, 2026-10-22: **no Anthropic models for Wax inference.** A chat
+pass (`title-slug`, `classification`, `ticketable`) names an ordered list: the
+primary (`WAX_TITLE_MODEL` / `WAX_TICKETS_MODEL`), then the comma-separated
+`*_MODEL_FALLBACKS`. Today: `automaticai/auto/fast`, `automaticai/hypercharm/glm-5.3`,
+`automaticai/hypercharm/minimax-m3`, `automaticai/free`. Implemented once, in
+`wax.provider.run_chain`, and used by all three passes.
+
+| Failure | Next member? |
+|---|---|
+| 429, 402, 5xx, unreachable, timeout | yes |
+| unknown model (`model_not_found`, `missing_model`), 400 bad request | yes |
+| 403 "This token has no access to model" (outside the token's scope) | yes |
+| empty or unparseable content | yes |
+| `no_api_key`, 401, any other 403 | **no** (the key is shared by every member) |
+
+`title-slug`/`classification` read `/v1/models` once and skip a member the token
+cannot see (recorded as `missing_model`, no request). Router family names the
+gateway never lists (`automaticai/free`) are never skipped for being unlisted.
+`ticketable` runs the chain per window and relies on the 403 for scope.
+
+Provenance: the result's `evidence` is `{model, chain, fallbacks:[{model,
+reason_code, status}]}` (stored with the pass row), and a successful run writes
+`model` (and `fell_through` when a member failed) into the note's
+`wax.passes.<slug>` block. When the whole chain fails the pass exits with the
+PRIMARY's reason code (`provider_rate_limited` if every member was rate limited)
+and the detail lists every attempt as `model=reason/status`.
+
+Sizing: per-request timeout x chain length must stay under `timeout_s`
+(`title-slug`/`classification`: 60s x 4 = 240s < 270s; `ticketable`: 120s x 4 x
+3 windows = 1440s < 1500s). A test enforces it. Compiled pipelines freeze pass
+env, so re-import the n8n release exports after changing a chain. The token
+scope is `deploy/provision-inference` (see AGENTS.md). Kimi stays out of the
+chain until gateway bug AAI-55 closes.
+
 ## Registry contract
 
 ```yaml
@@ -55,10 +91,12 @@ auto: true
 requires: []
 after: []
 clobber: []
-timeout_s: 180
+timeout_s: 270   # 4 chain members x 60s request timeout, plus the catalog lookup
 frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
 env:
   WAX_TITLE_MODEL: automaticai/auto/fast
+  WAX_TITLE_MODEL_FALLBACKS: automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
+  WAX_TITLE_REQUEST_TIMEOUT_S: "60"
 command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]
 ```
 
@@ -266,7 +304,7 @@ executables are `config/passes.d/{project-extraction,ticketable}.yaml` and
 | Pass | Owns | How |
 |---|---|---|
 | `project-extraction` | `project-ids` (pjangler ids, most probable first; `[]` = ran, none) and `projects` (names, index-aligned) | Candidates come from the pjangler registry (`GET $PJ_REGISTRY_URL/v1/registry`, default `http://127.0.0.1:8764`) plus the spoken forms and one-line descriptions in `config/project-aliases.yaml`, which fills the registry's empty descriptions. Decided by TypeSafe's Jev (`jev-1.13.0`, through the fleet Jev ingress): one `noul` question per project in a single request, a project is kept when P(true) is at least `WAX_PROJECT_MIN_P` (0.6), or `WAX_PROJECT_MIN_P_LONG` (0.75) for transcripts over 30K characters, where scores saturate. |
-| `ticketable` | `ticketable`: a list of `{project_id, description, transcript}`; `[]` = ran, none | `requires: [title-slug, project-extraction]`, so `transcript` is the final filename. Extracted through the gateway route `automaticai/auto/fast` (`WAX_TICKETS_*`, the `heyma-wax-inference` token) with a strict JSON schema whose `project_id` is an enum of the note's `project-ids`. Declares `emits: [intake.detected]` and returns one event per distinct ticket, keyed by a hash of `(project_id, description)`; the event's `intake_id` is `<item>:<first 12 hex of that key>`. If the note has no `project-ids` it reports `skipped` / `no_project`. |
+| `ticketable` | `ticketable`: a list of `{project_id, description, transcript}`; `[]` = ran, none | `requires: [title-slug, project-extraction]`, so `transcript` is the final filename. Extracted through the model chain `automaticai/auto/fast` -> Hyper -> `automaticai/free` (`WAX_TICKETS_MODEL` / `WAX_TICKETS_MODEL_FALLBACKS`, the `heyma-wax-inference` token) with a strict JSON schema whose `project_id` is an enum of the note's `project-ids`. Declares `emits: [intake.detected]` and returns one event per distinct ticket, keyed by a hash of `(project_id, description)`; the event's `intake_id` is `<item>:<first 12 hex of that key>`. If the note has no `project-ids` it reports `skipped` / `no_project`. |
 
 The runner publishes each ticket as `bloodbank.audio.intake.detected` after
 `transcription.completed` (schema:

@@ -46,3 +46,56 @@ were cleared.
 | 15 | The `heyma-obsidian-review` token expires on 2027-01-20. | Operator | Rotate it beforehand: `python3 ops/gateway-tokens.py rotate heyma-obsidian-review`, then update the repo secret. |
 | 16 | Unrelated, left untouched: the `wax doctor` "outbox drained" check FAILs on a row about 21 days old. `~/code/HeyMa` is a stale second checkout, mid-rebase with a UU conflict in `components/wax/bin/waxd`, holding a20976d. The OpenRouter vault item `yydsybdlpernq5j5tcf42hmtsi` is unused by HeyMa. | Operator | Drain or inspect the outbox, decide whether to finish or delete `~/code/HeyMa`, and retire the vault item. |
 | 17 | `~/code/DeLoDocs` is not a git repository, so the DeLoDocs copy of this record cannot be committed. | Operator | `git init` DeLoDocs with a remote, or accept it as an uncommitted mirror. |
+
+## Addendum 2026-10-22 (later): no Anthropic models, and a fallback chain
+
+Operator order: "wax inference: DO NOT use anthropic models. Fail a test if
+anything points to sonnet/haiku/etc. Add hyper crush and free models as fallbacks."
+
+**Done (HeyMa).**
+
+- `heyma-wax-inference` (token 66) re-scoped through `deploy/provision-inference`
+  to `auto/fast`, `personal/glm-5.3-flash`, `personal/glm-5.3`,
+  `hypercharm/glm-5.3`, `hypercharm/minimax-m3` and `automaticai/free`. The
+  Damien Haiku, Damien Sonnet and personal Sonnet routes are gone, as is
+  `hypercharm/kimi-k3` (Kimi, AAI-55). Read back with `gateway-tokens.py status`.
+  Earlier today's recovered runs were served by `damien/claude-haiku-4.5`; that
+  can no longer happen.
+- Every chat pass tries `auto/fast`, `hypercharm/glm-5.3`, `hypercharm/minimax-m3`,
+  `automaticai/free` (`wax.provider.run_chain`; evidence and the note's
+  `wax.passes` block name the serving model). See AGENTS.md and
+  `components/wax/docs/ENRICHMENT-PASSES.md`.
+- `chat_pass_routing_test.py` fails on any Anthropic model value (YAML env, bin
+  and library defaults, doctor rows, provision-inference, pipelines, n8n exports,
+  frozen definitions). It fails on the previous provision-inference.
+- `transcript-standard` v4 and `doc-standard` v5 re-imported from the n8n release
+  exports; the dry-run diff showed only the fallback/timeout env and the version.
+- `wax doctor` shows the chain, probes each member against `/v1/models`
+  (User-Agent `HeyMa-Wax/1.0`), and FAILs if the token scope grants an Anthropic
+  route.
+
+**Open: gateway bugs (owner: token-ops, Peter Griffin; not fixable from HeyMa).**
+Found with the new scope; the chain falls through them but cannot succeed while
+they stand. The `peter-griffin` session was not reachable from the HeyMa agent,
+so this table is the handoff.
+
+| # | Bug | Evidence |
+|---|---|---|
+| 18 | `automaticai/hypercharm/*` routes have no channel on the live gateway. | Explicit `hypercharm/glm-5.3` and `hypercharm/minimax-m3` answer 503 `model_not_found`, "No available channel ... under group aai-personal". The catalog and `/v1/models` list them. |
+| 19 | `auto/fast` picks the channel-less metered Hyper member over a healthy subscription member and does not walk past it. | 3 of 3 `auto/fast` requests: 503 for `hypercharm/glm-5.3`, while `personal/glm-5.3-flash`, called explicitly, answers 200. |
+| 20 | `automaticai/free` picks channel-less members, including a Kimi one. | 503 "No available channel for model automaticai/nvidia-free/kimi-k3". |
+| 21 | `automaticai/free` is granted to the token but never listed by `/v1/models`. | Wax special-cases it (`VIRTUAL_MODELS`); a listing that reflects the grant would be cleaner. |
+| 22 | `ops/AUTO-ROUTER.md` still says "never a metered route". | Stale after f533cae0. |
+
+Until 18-20 close, the live chain fails end to end (every member 503) and a pass
+exits `provider_http_error` with all four attempts listed. A temporary rung such
+as `automaticai/personal/glm-5.3-flash` (works today, non-Anthropic) is an
+operator decision; it was not added.
+
+**Live proof of the fall-through** (pass script on a copy in /tmp, primary
+`automaticai/nope/none`): `title-slug` and `classification` each fell through the
+unknown primary (400) and `hypercharm/*` (503) and were served by
+`automaticai/personal/glm-5.3-flash`, evidence naming it. `wax ep run` against
+real items was not done: completed items already carry title, summary and
+classification (the passes preserve them without a model call), and a failing
+gateway would only record a failed attempt.

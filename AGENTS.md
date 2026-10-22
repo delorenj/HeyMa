@@ -119,13 +119,28 @@ is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
 `classification`, `diarization`, `clipboard-copy`, `title-slug`. Every chat
 pass (`classification`, `title-slug`, and `ticketable`) calls the AutomaticAI
-gateway's `automaticai/auto/fast` route (the titles/summaries role) at
-`https://api.automaticai.io/v1`. It uses the scoped `heyma-wax-inference` token
-(`op://`, never a file), which covers that route and its subscription member
-routes only: no OpenRouter, free-pool, or metered route. Re-scope that token
-with `components/wax/deploy/provision-inference`. Implemented but currently
-disabled: `project-extraction` (pjangler project ids via TypeSafe Jev) and
-`ticketable` (tasks per project).
+gateway at `https://api.automaticai.io/v1` on the scoped `heyma-wax-inference`
+token (`op://`, never a file), and tries an ordered **model chain**
+(`wax.provider.run_chain`): `automaticai/auto/fast`, then
+`automaticai/hypercharm/glm-5.3`, `automaticai/hypercharm/minimax-m3` (metered
+Hyper), then `automaticai/free`. The chain lives in each pass YAML env
+(`WAX_TITLE_MODEL` + `WAX_TITLE_MODEL_FALLBACKS`, `WAX_TICKETS_*`) with matching
+bin defaults. It moves on for provider-side failures only (429, 402, 5xx,
+unreachable, timeout, unknown model, 400, a 403 that means "outside the token's
+scope", empty or unparseable content) and never for `no_api_key` or a rejected
+key. The result's `evidence` names the serving model and each failed member; the
+note's `wax.passes.<slug>` block records `model` and `fell_through`. **No
+Anthropic model, anywhere, by operator order (2026-10-22)**: `chat_pass_routing_test`
+fails on any claude/sonnet/haiku/opus/fable/anthropic model in pass env, bin and
+library defaults, the doctor rows, `deploy/provision-inference`, authored
+pipelines, n8n exports and frozen definitions. Kimi stays out until gateway bug
+AAI-55 closes. The token's scope is owned by
+`components/wax/deploy/provision-inference` (the SSOT; it skips routes the
+gateway catalog lacks, so re-run it after a gateway deploy). Compiled pipelines
+freeze pass env, so after changing a chain re-import the n8n release exports
+(`wax pipeline import ... --name transcript-standard|doc-standard`). Implemented
+but currently disabled: `project-extraction` (pjangler project ids via TypeSafe
+Jev) and `ticketable` (tasks per project).
 `wax ep sweep` retries the ones whose latest attempt failed; the waxd worker also
 sweeps on a timer (`WAX_SWEEP_INTERVAL_S`, default 900s), and a pass that
 exhausts its attempts emits `bloodbank.audio.task.exhausted` (the dead-letter
