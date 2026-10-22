@@ -249,13 +249,15 @@ class TrayIconTest(unittest.TestCase):
                 self.assertLogs(self.tray.log, "INFO") as logs:
             subject.set("red", "tip", True, flash="yellow")
             frames = []
-            for _ in range(4):
+            for _ in range(3):
                 subject._blink()
                 frames.append(self.shown(subject))
-            # The 1 Hz update must render the current phase, not snap back to red.
+            # Mid-flash (yellow phase), the 1 Hz update must render the current
+            # phase, not snap back to the steady red.
             subject.set("red", "tip", True, flash="yellow")
-            self.assertEqual(self.shown(subject), frames[-1])
-        self.assertEqual(frames, [self.tray.ICONS["yellow"], self.tray.ICONS["red"]] * 2)
+            self.assertEqual(self.shown(subject), self.tray.ICONS["yellow"])
+        self.assertEqual(frames, [self.tray.ICONS["yellow"], self.tray.ICONS["red"],
+                                  self.tray.ICONS["yellow"]])
         self.assertEqual(len(logs.records), 1)
 
     def test_silence_ending_restores_the_steady_icon(self):

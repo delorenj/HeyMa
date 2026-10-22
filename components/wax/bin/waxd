@@ -53,6 +53,11 @@ LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
 # scroll out of a journal window unmentioned.
 LOG_REPEAT_S = 300.0
 
+# The icon flashes on every silencedetect period, but a meeting's pauses run
+# 5-30 s (68 of them in one 2.7 h capture), so only silence that outlasts any
+# pause is worth a journal line saying the mic may be muted.
+SILENCE_WARN_S = 60.0
+
 
 def _configure_logging() -> None:
     """The ONE handler configuration for the whole component (contract B).
@@ -107,6 +112,7 @@ class Daemon:
         self._silence_monitor_rid: Optional[str] = None
         self._silence_monitor_file = None
         self._is_silent = False
+        self._silent_since = 0.0
         self.tray = tray_process.TrayProcess()
         self.stopped = threading.Event()
         self._serve_socket()
@@ -181,8 +187,10 @@ class Daemon:
             log_path = paths.LOGS / rid / "encoder.log"
             if log_path.exists():
                 try:
+                    # Read from the top, not EOF: silencedetect prints
+                    # silence_start once per stretch, so a waxd restarted
+                    # mid-capture must replay the log to know it is muted now.
                     self._silence_monitor_file = open(log_path, "r", errors="replace")
-                    self._silence_monitor_file.seek(0, os.SEEK_END)
                 except OSError:
                     self._silence_monitor_file = None
             else:
@@ -192,6 +200,8 @@ class Daemon:
             try:
                 for line in self._silence_monitor_file.readlines():
                     if "silence_start" in line:
+                        if not self._is_silent:
+                            self._silent_since = time.monotonic()
                         self._is_silent = True
                     elif "silence_end" in line:
                         self._is_silent = False
@@ -200,9 +210,10 @@ class Daemon:
         # The tray child renders from state.json, not from this process, so the
         # fact has to ride in the snapshot for the icon to flash.
         stream["silent"] = self._is_silent
+        long_silence = self._is_silent and time.monotonic() - self._silent_since >= SILENCE_WARN_S
         self._condition("capture_silent",
-                        "encoder hears silence while recording — is the mic muted?"
-                        if self._is_silent else None, recovered="cleared")
+                        f"encoder has heard silence for {SILENCE_WARN_S:.0f}s+ while recording "
+                        "— is the mic muted?" if long_silence else None, recovered="cleared")
 
     def _tick(self) -> bool:
         try:
