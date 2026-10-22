@@ -9,11 +9,14 @@ auto: false
 requires: [title-slug, project-extraction]
 clobber: []
 emits: [intake.detected]
-timeout_s: 600
+# 3 windows x 4 chain members x 120s request timeout = 1440s worst case.
+timeout_s: 1500
 env:
   WAX_TICKETS_API_BASE: https://api.automaticai.io/v1
   WAX_TICKETS_MODEL: automaticai/auto/fast
+  # Ordered fallbacks: metered Hyper, then the free family. Never Anthropic.
+  WAX_TICKETS_MODEL_FALLBACKS: automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
   WAX_TICKETS_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
-  # Up to three 240K-char windows per transcript: 3 x 180s stays under timeout_s.
-  WAX_TICKETS_REQUEST_TIMEOUT_S: "180"
+  # Up to three 240K-char windows per transcript, each down a 4-member chain.
+  WAX_TICKETS_REQUEST_TIMEOUT_S: "120"
 command: ["{component_root}/config/passes.d/bin/ticketable", "{md_path}", "{item_id}"]

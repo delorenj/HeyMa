@@ -5,10 +5,13 @@ capabilities: [document]   # grounded text classification; no audio needed
 enabled: true
 auto: true
 requires: []
-timeout_s: 180
+# 4 chain members x 60s request timeout = 240s, plus the 10s catalog lookup.
+timeout_s: 270
 env:
   WAX_TITLE_API_BASE: https://api.automaticai.io/v1
   WAX_TITLE_MODEL: automaticai/auto/fast
+  # Ordered fallbacks: metered Hyper, then the free family. Never Anthropic.
+  WAX_TITLE_MODEL_FALLBACKS: automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
   WAX_TITLE_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
-  WAX_TITLE_REQUEST_TIMEOUT_S: "120"
+  WAX_TITLE_REQUEST_TIMEOUT_S: "60"
 command: ["{component_root}/config/passes.d/bin/classification", "{md_path}", "{item_id}"]

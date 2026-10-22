@@ -41,6 +41,9 @@ _ERROR_BODY_LIMIT = 64 * 1024
 # The runner's own pattern (passes._REASON_LINE): lowercase and underscores
 # only. A code with a digit in it would not be recognised at all.
 _REASON = re.compile(r"[a-z_]+")
+# The gateway's 403 for a model outside the token's scope ("This token has no
+# access to model X"). A 403 without this marker is a statement about the key.
+_MODEL_OUT_OF_SCOPE = re.compile(r"token has no access to model|no access to model")
 _MODEL_MISSING = re.compile(r"model\b.{0,160}\b(?:does not exist|not found|is not a valid model)", re.DOTALL)
 
 # Which reference produced each key resolved in this process. A 401 is always
@@ -152,6 +155,8 @@ def _marker(body: str) -> Optional[str]:
         return "max_tokens_exceeded"
     if "model_not_found" in lowered or _MODEL_MISSING.search(lowered):
         return "model_not_found"
+    if _MODEL_OUT_OF_SCOPE.search(lowered):
+        return "model_out_of_scope"
     return None
 
 
@@ -165,6 +170,9 @@ def _http_error(exc: urllib.error.HTTPError, url: str, key: str) -> ProviderErro
         body = ""
     detail_code = _marker(body)
     where = f"HTTP {status} from {url}" + (f" ({detail_code})" if detail_code else "")
+    if status == 403 and detail_code == "model_out_of_scope":
+        return ProviderError(f"{where}: the model is outside the key's scope",
+                             "provider_auth_rejected", status=status, detail_code=detail_code)
     if status in (401, 403):
         # OpenRouter answers a management/provisioning key with the same
         # `401 User not found.` it gives a revoked one (wax title-slug lost a
@@ -196,16 +204,61 @@ def post_json(url: str, payload: dict[str, Any], *, key: str, timeout: float,
     `response_headers`, when given, is filled with the success response's
     headers (a provider may carry its request id there rather than in the body).
     """
+    return _request_json(url, payload, key=key, timeout=timeout, headers=headers,
+                         user_agent=user_agent, response_headers=response_headers)
+
+
+def get_json(url: str, *, key: str, timeout: float,
+             user_agent: str = USER_AGENT) -> dict[str, Any]:
+    """GET one JSON object, with the same error classification as post_json."""
+    return _request_json(url, None, key=key, timeout=timeout, headers=None, user_agent=user_agent)
+
+
+def list_model_ids(base: str, key: str, *, timeout: float = 10.0) -> Optional[set[str]]:
+    """The model ids this key can see at `base`, or None when the catalog is unreadable.
+
+    None is not evidence that a model is gone: not every OpenAI-compatible
+    provider serves /models, so an unreadable catalog never vetoes a member.
+    """
+    try:
+        payload = get_json(base.rstrip("/") + "/models", key=key, timeout=timeout)
+    except ProviderError as exc:
+        note(f"note: model catalog unreadable ({exc.reason_code}); chain members are not pre-checked")
+        return None
+    entries = payload.get("data")
+    ids = {str(e.get("id")) for e in entries or [] if isinstance(e, dict) and e.get("id")}
+    if not ids:
+        note("note: the model catalog was empty; chain members are not pre-checked")
+        return None
+    return ids
+
+
+# Router family names the gateway grants per token but never lists in /v1/models
+# (observed 2026-10-22: a token scoped to `automaticai/free` does not see it in
+# the listing). A catalog check must not read that absence as "not served".
+VIRTUAL_MODELS = frozenset({"automaticai/free"})
+
+
+def is_listed(model: str, ids: set[str]) -> bool:
+    """OpenRouter routing suffixes (:nitro, :floor) never appear in a catalog."""
+    return model in VIRTUAL_MODELS or model in ids or model.split(":", 1)[0] in ids
+
+
+def _request_json(url: str, payload: Optional[dict[str, Any]], *, key: str, timeout: float,
+                  headers: Optional[dict[str, str]], user_agent: str,
+                  response_headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
     request_headers = {
         "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": user_agent,
     }
+    if payload is not None:
+        request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
     try:
-        request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                         headers=request_headers, method="POST")
+        request = urllib.request.Request(
+            url, data=None if payload is None else json.dumps(payload).encode("utf-8"),
+            headers=request_headers, method="GET" if payload is None else "POST")
     except ValueError as exc:
         raise ProviderError(f"invalid provider URL {url!r}: {exc}", "run_error") from None
     try:
@@ -302,6 +355,122 @@ def chat_json(*, base: str, model: str, key: str, system: str, user: str,
             raise ProviderError(f"{model} hit max_tokens={max_tokens} before finishing its JSON",
                                 "provider_bad_response", detail_code="output_truncated") from None
         raise
+
+
+# -- model fallback chains ----------------------------------------------------
+#
+# A chat pass names an ordered list of models: the primary, then fallbacks.
+# 2026-10-22: the gateway's Hyper channel answered 503 "No available channel"
+# while the free family and the subscription fast tier were healthy; a pass
+# with one model name has nowhere to go, and its retry budget burns on the
+# same dead route. The chain moves on only when the failure is about THIS
+# model or THIS provider, never when it is about the caller.
+
+# Reason codes that are about the route, not about us: try the next member.
+FALLTHROUGH_REASONS = frozenset({
+    "provider_rate_limited",    # 429
+    "provider_quota_exceeded",  # 402
+    "provider_http_error",      # 5xx and any other status
+    "provider_unreachable",
+    "timeout",
+    "missing_model",            # a name the catalog does not serve
+    "model_not_found",
+    "provider_bad_request",     # 400: e.g. a member that rejects the temperature
+    "provider_bad_response",    # unparseable or empty content
+})
+
+
+def split_models(raw: str) -> list[str]:
+    """A comma-separated model list, in order, without blanks or repeats."""
+    out: list[str] = []
+    for part in (raw or "").split(","):
+        name = part.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def model_chain(primary_var: str, fallbacks_var: str, *, default_primary: str,
+                default_fallbacks: str) -> list[str]:
+    """[primary, *fallbacks] from the pass env, each falling back to its default.
+
+    An explicitly empty fallbacks variable means "no fallbacks": a deliberate
+    single-model pass (the fallback-path proof also relies on setting a bad
+    primary and keeping the defaults).
+    """
+    primary = os.environ.get(primary_var, "").strip() or default_primary
+    raw = os.environ.get(fallbacks_var)
+    fallbacks = split_models(default_fallbacks if raw is None else raw)
+    return split_models(",".join([primary, *fallbacks]))
+
+
+def falls_through(exc: BaseException) -> bool:
+    """Whether the next chain member should be tried after this failure."""
+    code = getattr(exc, "reason_code", "")
+    if code in FALLTHROUGH_REASONS:
+        return True
+    # A 403 that only says the model is outside the token's scope is about the
+    # model. Any other 401/403 is about the key, and every member shares it.
+    return code == "provider_auth_rejected" and getattr(exc, "detail_code", None) == "model_out_of_scope"
+
+
+class ChainFailed(ProviderError):
+    """Every chain member failed (or one failed in a way no member can fix).
+
+    reason_code is the PRIMARY's class, except that a chain which was rate
+    limited end to end says so. `attempts` lists every member tried.
+    """
+
+    def __init__(self, attempts: list[dict[str, Any]], *, reason_code: str,
+                 status: Optional[int] = None, detail_code: Optional[str] = None) -> None:
+        super().__init__("no model in the chain answered: " + describe_attempts(attempts),
+                         reason_code, status=status, detail_code=detail_code)
+        self.attempts = attempts
+
+
+def describe_attempts(attempts: list[dict[str, Any]]) -> str:
+    """One short line per run: `model=reason(status)`; never a body."""
+    parts = []
+    for item in attempts:
+        status = f"/{item['status']}" if item.get("status") else ""
+        parts.append(f"{item['model']}={item['reason_code']}{status}")
+    return "; ".join(parts)
+
+
+def run_chain(models: list[str], call, *, listed=None) -> tuple[Any, str, list[dict[str, Any]]]:
+    """Run `call(model)` down `models`; return (value, serving model, failed attempts).
+
+    `listed(model)` False skips a member without a request, recorded as
+    missing_model: the token cannot see it, so asking would only earn a 403.
+    A failure that does not fall through (no_api_key, a rejected key) stops the
+    chain at once, so a bad credential is not retried N times.
+    """
+    attempts: list[dict[str, Any]] = []
+    for model in models:
+        if listed is not None and not listed(model):
+            attempts.append({"model": model, "reason_code": "missing_model",
+                             "detail": "not listed for this token"})
+            continue
+        try:
+            return call(model), model, attempts
+        except ProviderError as exc:
+            attempts.append({"model": model, "reason_code": exc.reason_code,
+                             **({"status": exc.status} if exc.status else {}),
+                             "detail": str(exc)[:200]})
+            if not falls_through(exc):
+                raise ChainFailed(attempts, reason_code=exc.reason_code, status=exc.status,
+                                  detail_code=exc.detail_code) from exc
+    codes = [item["reason_code"] for item in attempts]
+    reason = ("provider_rate_limited" if codes and set(codes) == {"provider_rate_limited"}
+              else (codes[0] if codes else "missing_model"))
+    first = attempts[0] if attempts else {}
+    raise ChainFailed(attempts, reason_code=reason, status=first.get("status"))
+
+
+def evidence_for(models: list[str], served: str, attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """The pass evidence: who served, the chain, and why earlier members did not."""
+    return {"model": served, "chain": models,
+            "fallbacks": [{k: v for k, v in item.items() if k != "detail"} for item in attempts]}
 
 
 def document_text(body: str) -> str:

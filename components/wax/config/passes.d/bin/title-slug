@@ -46,6 +46,9 @@ COMPONENT_ROOT = next(
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 from wax import frontmatter  # noqa: E402
+from wax import provider as chat_provider  # noqa: E402
+
+ProviderError = chat_provider.ProviderError
 
 
 MAX_CONTEXT_CHARS = 24_000
@@ -58,8 +61,13 @@ MAX_OUTPUT_TOKENS = 2_048
 # env block; the defaults exist so the pass still runs from a bare shell.
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
 DEFAULT_MODEL = "automaticai/auto/fast"
+# Tried in order after DEFAULT_MODEL (wax.provider.run_chain): the metered Hyper
+# routes, then the free family. The operator order of 2026-10-22: nothing
+# Anthropic, ever; chat_pass_routing_test fails if one appears.
+DEFAULT_MODEL_FALLBACKS = "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free"
 DEFAULT_API_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
-DEFAULT_REQUEST_TIMEOUT_S = 120.0
+# 4 chain members x 60s = 240s, plus the 10s catalog lookup, under timeout_s 270.
+DEFAULT_REQUEST_TIMEOUT_S = 60.0
 
 # Preflight is a cheap catalog lookup; it must never be the reason a run is slow.
 PREFLIGHT_TIMEOUT_S = 10.0
@@ -90,12 +98,15 @@ _NOTES: list[str] = []
 _KEY_SOURCE = "unresolved"
 
 
-class TitlePassError(RuntimeError):
-    """A pass failure carrying the contract-D classification for the runner."""
+class TitlePassError(chat_provider.ProviderError):
+    """A pass failure carrying the contract-D classification for the runner.
 
-    def __init__(self, message: str, *, reason_code: str = "run_error") -> None:
-        super().__init__(message)
-        self.reason_code = reason_code
+    A ProviderError, so the shared model chain can read its status and marker.
+    """
+
+    def __init__(self, message: str, *, reason_code: str = "run_error",
+                 status: Optional[int] = None, detail_code: Optional[str] = None) -> None:
+        super().__init__(message, reason_code, status=status, detail_code=detail_code)
 
 
 def note(message: str) -> None:
@@ -182,9 +193,13 @@ def _http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> Title
         body = ""
     detail = f"HTTP {exc.code} from {url}: {body[:300] or exc.reason}"
     lowered = body.lower()
-    if exc.code in (400, 404) and (model.lower() in lowered or "not a valid model" in lowered):
+    marker = chat_provider._marker(body)
+    if exc.code in (400, 404) and ((model and model.lower() in lowered) or "not a valid model" in lowered):
         return TitlePassError(f"{detail} -- model {model!r} is not served here",
-                              reason_code="missing_model")
+                              reason_code="missing_model", status=exc.code, detail_code=marker)
+    if exc.code == 403 and marker == "model_out_of_scope":
+        return TitlePassError(f"{detail} -- model {model!r} is outside the key's scope",
+                              reason_code="provider_auth_rejected", status=exc.code, detail_code=marker)
     if exc.code in (401, 403):
         # OpenRouter answers a *management/provisioning* key with the same
         # `401 User not found.` it gives a revoked one, so the body alone cannot
@@ -194,8 +209,11 @@ def _http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> Title
             f"{detail} -- key from {_KEY_SOURCE} was rejected; confirm it is an "
             f"inference key, not a management/provisioning key: "
             f"GET {api_base_of(url)}/key returns is_provisioning_key=false",
-            reason_code="provider_auth_rejected")
-    return TitlePassError(detail, reason_code="provider_http_error")
+            reason_code="provider_auth_rejected", status=exc.code, detail_code=marker)
+    # Status classes match wax.provider, so the model chain reads both alike.
+    reason = {402: "provider_quota_exceeded", 429: "provider_rate_limited",
+              400: "provider_bad_request"}.get(exc.code, "provider_http_error")
+    return TitlePassError(detail, reason_code=reason, status=exc.code, detail_code=marker)
 
 
 def api_base_of(url: str) -> str:
@@ -244,36 +262,58 @@ def _api_request(url: str, *, key: str, model: str, timeout: float,
                              reason_code="provider_bad_response") from exc
 
 
-def preflight_model(*, api_base: str, model: str, api_key: str) -> None:
-    """Confirm the model exists before shipping 24k chars at it.
+def served_ids(*, api_base: str, api_key: str) -> Optional[set[str]]:
+    """The model ids the key can see, or None when the catalog is unreadable.
 
     A deleted model is the failure that started all of this, and catching it on
-    a 10s catalog GET costs nothing. Nothing is cached: the whole point is to
-    observe the provider's state on this run.
+    a 10s catalog GET costs nothing. Nothing is cached: the point is to observe
+    the provider's state on this run. Not every OpenAI-compatible provider
+    exposes /models, and an unreadable catalog is not evidence the model is
+    gone, so None never blocks anything.
     """
     url = f"{api_base}/models"
     try:
-        payload = _api_request(url, key=api_key, model=model, timeout=PREFLIGHT_TIMEOUT_S)
+        payload = _api_request(url, key=api_key, model="", timeout=PREFLIGHT_TIMEOUT_S)
     except TitlePassError as exc:
-        if exc.reason_code == "missing_model":
-            raise
-        # Not every OpenAI-compatible provider exposes /models, and an unreadable
-        # catalog is not evidence the model is gone. Never block on it.
         note(f"note: model preflight skipped ({exc})")
-        return
+        return None
     entries = payload.get("data") if isinstance(payload, dict) else None
     ids = {str(entry.get("id")) for entry in (entries or []) if isinstance(entry, dict)}
     if not ids:
         note(f"note: {url} listed no models; preflight skipped")
-        return
-    # OpenRouter honours routing suffixes (:nitro, :floor, :online) that never
-    # appear in the catalog, so a bare-id match still counts. Preflight must
-    # never veto a model the provider would happily have served.
-    if model in ids or model.split(":", 1)[0] in ids:
-        return
-    raise TitlePassError(
-        f"model {model!r} is not among the {len(ids)} models served by {url}",
-        reason_code="missing_model")
+        return None
+    return ids
+
+
+def preflight_model(*, api_base: str, model: str, api_key: str) -> None:
+    """Confirm one model is listed before shipping 24k chars at it."""
+    ids = served_ids(api_base=api_base, api_key=api_key)
+    if ids is not None and not chat_provider.is_listed(model, ids):
+        raise TitlePassError(
+            f"model {model!r} is not among the {len(ids)} models served by {api_base}/models",
+            reason_code="missing_model")
+
+
+def model_chain() -> list[str]:
+    return chat_provider.model_chain("WAX_TITLE_MODEL", "WAX_TITLE_MODEL_FALLBACKS",
+                                     default_primary=DEFAULT_MODEL,
+                                     default_fallbacks=DEFAULT_MODEL_FALLBACKS)
+
+
+def run_model_chain(call, *, api_base: str, api_key: str) -> tuple[Any, dict[str, Any]]:
+    """Run `call(model)` down the chain: (value, evidence naming the serving model).
+
+    The chain is preflighted against the catalog ONCE: a member the key cannot
+    see is skipped (recorded as missing_model), never a reason to stop, so a
+    primary that left the catalog costs nothing but its entry in the evidence.
+    """
+    models = model_chain()
+    ids = served_ids(api_base=api_base, api_key=api_key)
+    listed = None if ids is None else (lambda model: chat_provider.is_listed(model, ids))
+    value, served, attempts = chat_provider.run_chain(models, call, listed=listed)
+    for item in attempts:
+        note(f"note: {item['model']} did not serve ({item['reason_code']}); fell through")
+    return value, chat_provider.evidence_for(models, served, attempts)
 
 
 def _parse_json_content(content: str) -> dict[str, Any]:
@@ -319,8 +359,6 @@ the supplied transcript. Do not infer names or facts that are not present.
     if existing_summary:
         prompt += f"\nPreserve this existing summary exactly: {existing_summary}\n"
     prompt += "\nTRANSCRIPT:\n" + transcript_context(body)
-
-    preflight_model(api_base=api_base, model=model, api_key=api_key)
 
     payload = _api_request(
         f"{api_base}/chat/completions",
@@ -381,28 +419,31 @@ def build_result(md: Path) -> dict[str, Any]:
     existing_title = str(fm.get("title") or "").strip()
     existing_summary = str(fm.get("summary") or "").strip()
     existing_slug = str(fm.get("title-slug") or "").strip()
+    evidence: Optional[dict[str, Any]] = None
     if existing_title and existing_summary:
         enriched = {"title": existing_title, "summary": existing_summary}
     else:
         api_base = os.environ.get("WAX_TITLE_API_BASE", DEFAULT_API_BASE).strip().rstrip("/")
-        model = os.environ.get("WAX_TITLE_MODEL", DEFAULT_MODEL).strip()
         api_key = resolve_api_key(
             primary_ref=os.environ.get("WAX_TITLE_API_KEY_OP", DEFAULT_API_KEY_OP).strip(),
         )
-        enriched = hosted_enrichment(
-            body,
-            model=model,
-            api_base=api_base,
-            api_key=api_key,
-            timeout=_request_timeout(),
-            existing_title=existing_title,
-            existing_summary=existing_summary,
-        )
+        timeout = _request_timeout()
+        enriched, evidence = run_model_chain(
+            lambda member: hosted_enrichment(
+                body,
+                model=member,
+                api_base=api_base,
+                api_key=api_key,
+                timeout=timeout,
+                existing_title=existing_title,
+                existing_summary=existing_summary,
+            ),
+            api_base=api_base, api_key=api_key)
         # Enrichment never clobbers grounded values a person or prior pass set.
         enriched["title"] = existing_title or enriched["title"]
         enriched["summary"] = existing_summary or enriched["summary"]
     slug = existing_slug or slugify(enriched["title"])
-    return {
+    result: dict[str, Any] = {
         "wax_ep_version": 1,
         "frontmatter": {
             "title": enriched["title"],
@@ -412,6 +453,9 @@ def build_result(md: Path) -> dict[str, Any]:
         "transcript": {"slug": slug},
         "link_audio": True,
     }
+    if evidence:
+        result["evidence"] = evidence
+    return result
 
 
 def _fail(reason_code: str, detail: str) -> int:
@@ -433,7 +477,7 @@ def main() -> int:
         return _fail("run_error", f"not a transcript file: {md}")
     try:
         result = build_result(md)
-    except TitlePassError as exc:
+    except chat_provider.ProviderError as exc:
         return _fail(exc.reason_code, str(exc))
     print(json.dumps(result, ensure_ascii=False))
     _flush_notes()

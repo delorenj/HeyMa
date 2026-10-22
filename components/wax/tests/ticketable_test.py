@@ -91,7 +91,7 @@ class TicketableTest(unittest.TestCase):
         self.root = Path(directory.name)
         aliases = self.root / "aliases.yaml"
         aliases.write_text(ALIASES)
-        env = patch.dict(os.environ, {"WAX_PROJECT_ALIASES": str(aliases), "WAX_TICKETS_MODEL": "",
+        env = patch.dict(os.environ, {"WAX_PROJECT_ALIASES": str(aliases), "WAX_TICKETS_MODEL": "", "WAX_TICKETS_MODEL_FALLBACKS": "",
                                       "WAX_TICKETS_API_BASE": "", "WAX_TICKETS_REQUEST_TIMEOUT_S": ""})
         env.start()
         self.addCleanup(env.stop)
@@ -139,14 +139,15 @@ class TicketableTest(unittest.TestCase):
             "project_id": "gruvato", "project_name": "gruvato", "description": WAITLIST, "transcript": NAME,
             "intake_id": f"{ITEM}:{key_of('gruvato', WAITLIST)[:12]}", "index": 1, "count": 2}})
         self.assertEqual((second["data"]["project_name"], second["data"]["index"]), ("Bloodbank", 2))
-        self.assertEqual(result["evidence"], {"model": TK.DEFAULT_MODEL, "windows": 1, "truncated": False,
+        self.assertEqual(result["evidence"], {"model": TK.DEFAULT_MODEL, "chain": [TK.DEFAULT_MODEL],
+                                              "fallbacks": [], "windows": 1, "truncated": False,
                                               "registry": "ok", "dropped": {}, "shortened": 0})
 
     def test_request_is_a_strict_schema_whose_project_is_an_enum_of_the_note_projects(self):
         _, _, _, chat = self.run_main(self.note(), tickets())
         call = chat.calls[0]
         self.assertEqual((call["base"], call["model"], call["key"]), (TK.DEFAULT_API_BASE, TK.DEFAULT_MODEL, "test-key"))
-        self.assertEqual((call["max_tokens"], call["temperature"], call["timeout"]), (8192, 0.1, 180.0))
+        self.assertEqual((call["max_tokens"], call["temperature"], call["timeout"]), (8192, 0.1, 120.0))
         schema = call["schema"]
         items = schema["properties"]["tickets"]["items"]
         self.assertEqual(items["properties"]["project_id"]["enum"], ["gruvato", "bb"])

@@ -1126,7 +1126,17 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     if not ok:
         note_entry["reason_code"] = failure
         note_entry["detail"] = err[:300]
-    elif state == "skipped":
+    else:
+        # Chat passes report which model served and which chain members did
+        # not; the note carries it so "who wrote this title" never needs the ledger.
+        evidence = pass_result.get("evidence") if isinstance(pass_result, dict) else None
+        if isinstance(evidence, dict) and isinstance(evidence.get("model"), str):
+            note_entry["model"] = evidence["model"][:120]
+            skipped = [f"{item.get('model')}={item.get('reason_code')}"
+                       for item in evidence.get("fallbacks") or [] if isinstance(item, dict)]
+            if skipped:
+                note_entry["fell_through"] = "; ".join(skipped)[:300]
+    if state == "skipped" and ok:
         # A pass-reported skip (no_project, ...) is the answer to "why are there
         # no tickets", and the ledger is not where anyone looks for it.
         note_entry["reason_code"] = failure

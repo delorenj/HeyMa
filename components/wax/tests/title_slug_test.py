@@ -24,6 +24,8 @@ class TitleSlugPassTest(unittest.TestCase):
             original = "---\nlanguage: en\n---\n# Transcript\nDiscussing modular enrichment passes.\n"
             md.write_text(original)
             with patch.object(TITLE_SLUG, "resolve_api_key", return_value="test-key"), patch.object(
+                TITLE_SLUG, "served_ids", return_value=None
+            ), patch.object(
                 TITLE_SLUG,
                 "hosted_enrichment",
                 return_value={
@@ -35,6 +37,7 @@ class TitleSlugPassTest(unittest.TestCase):
             self.assertEqual(result["wax_ep_version"], 1)
             self.assertEqual(result["transcript"]["slug"], "modular-transcript-enrichment")
             self.assertEqual(md.read_text(), original)
+            self.assertEqual(result["evidence"]["model"], TITLE_SLUG.DEFAULT_MODEL)
 
     def test_existing_grounded_title_and_summary_are_preserved(self):
         with tempfile.TemporaryDirectory() as directory:

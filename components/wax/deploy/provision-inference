@@ -1,41 +1,61 @@
 #!/usr/bin/python3
 """Mint or re-scope the `heyma-wax-inference` gateway token, reproducibly.
 
-The chat passes (title-slug, classification, ticketable) call
-`automaticai/auto/fast` on api.automaticai.io. The auto router intersects its
-candidate pool with the token's scope, so the token lists the auto name plus
-exactly the subscription member routes HeyMa may land on across the fast
-role's floor..ceiling rungs (1..3: fast tier, then strong tier):
+This file is the single source of truth for the token's scope. The chat passes
+(title-slug, classification, ticketable) call a model CHAIN on api.automaticai.io
+(see config/passes.d/*.yaml and wax.provider.run_chain):
 
-- personal z.ai GLM 5.3 Flash / GLM 5.3, personal + Damien Claude Sonnet 5.5,
-  Damien Claude Haiku 4.5.
-- Kimi routes are left out on purpose: they reject the passes' temperature
-  (`invalid temperature: only 1 is allowed`), and a target-side 400 does not
-  walk the router's chain, so a pass landing there would fail outright.
-- Intelliforia (team account) is left out: transcripts are personal.
-- No OpenRouter route, no free pool (free providers train on prompts), no
-  metered route.
+    automaticai/auto/fast               the router: fast tier, then strong tier
+    automaticai/hypercharm/glm-5.3      metered Hyper ("hyper crush")
+    automaticai/hypercharm/minimax-m3   metered Hyper
+    automaticai/free                    the free-model router family
 
-Idempotent: an existing consumer is re-scoped in place (key, op:// item and
-expiry preserved); a missing one is minted with no expiry. The tool saves the
-key in 1Password itself; nothing here reads or prints it. Dry run by default.
+and the token lists exactly the routes those names can land on:
+
+- personal z.ai GLM 5.3 Flash / GLM 5.3: the subscription members `auto/fast`
+  can reach (the router intersects its candidate pool with the token's scope).
+- hypercharm/glm-5.3 and hypercharm/minimax-m3: explicit routes, since the
+  chain names them directly. They are also strong-tier members of the auto pool.
+- automaticai/free: grants the family only, never an explicit free member.
+
+Operator order, 2026-10-22: "wax inference: DO NOT use anthropic models."
+Nothing claude / sonnet / haiku / opus / fable / anthropic is ever in this
+list (this script refuses to run if one appears, and chat_pass_routing_test
+fails). Also out, on purpose:
+
+- Kimi routes (personal/kimi-*, hypercharm/kimi-k3): they 400 on temperature
+  != 1 ("invalid temperature: only 1 is allowed"), gateway bug AAI-55. Re-add
+  them only once AAI-55 closes.
+- Every OpenRouter route, and the auto policy's own free rung (OpenRouter
+  `:free` only; AAI-56 says it is dead).
+- Intelliforia (team account): transcripts are personal.
+
+A route the gateway catalog does not (yet) carry is warned about and skipped,
+not an error, so this can be re-run after a gateway deploy. Idempotent: an
+existing consumer is re-scoped in place (key, op:// item and expiry
+preserved); a missing one is minted with no expiry. The tool saves the key in
+1Password itself; nothing here reads or prints it. Dry run by default.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 CONSUMER = "heyma-wax-inference"
 ROUTE = "automaticai/auto/fast"
+# Desired scope, in chain order. Every entry is a deliberate choice; see above.
 MEMBERS = [
     "automaticai/personal/glm-5.3-flash",
-    "automaticai/damien/claude-haiku-4.5",
     "automaticai/personal/glm-5.3",
-    "automaticai/personal/claude-sonnet-5.5",
-    "automaticai/damien/claude-sonnet-5.5",
+    "automaticai/hypercharm/glm-5.3",
+    "automaticai/hypercharm/minimax-m3",
+    # Not "automaticai/hypercharm/kimi-k3" / "personal/kimi-*": AAI-55.
+    "automaticai/free",
 ]
 MODELS = [ROUTE, *MEMBERS]
+FORBIDDEN = re.compile(r"claude|sonnet|haiku|opus|fable|anthropic|openrouter", re.IGNORECASE)
 # The gateway source moved to ~/code/client-portal/gateway; the stacks path is
 # a compatibility symlink kept for older checkouts.
 TOOLING = [
@@ -51,16 +71,44 @@ def tool() -> Path:
     raise RuntimeError("gateway token tooling is unavailable: " + ", ".join(map(str, TOOLING)))
 
 
+def catalog_names(tokens: Path) -> set:
+    """Every name the gateway can scope a token to, from its routes.json."""
+    doc = json.loads((tokens.resolve().parent / "routes.json").read_text())
+    names = {route["id"] for route in doc.get("routes") or []}
+    if doc.get("auto"):
+        names |= {"automaticai/auto", "automaticai/auto/orchestrator",
+                  "automaticai/auto/subagent", "automaticai/auto/fast"}
+    if doc.get("free"):
+        names.add("automaticai/free")
+    return names
+
+
+def plan(desired: list, available: set) -> tuple:
+    """(models to scope, routes skipped because the catalog lacks them)."""
+    banned = [name for name in desired if FORBIDDEN.search(name)]
+    if banned:
+        raise RuntimeError(f"refusing to scope forbidden routes: {', '.join(banned)}")
+    return ([m for m in desired if m in available], [m for m in desired if m not in available])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--apply", action="store_true", help="change the gateway (default: dry run)")
     args = parser.parse_args()
     tokens = tool()
+    models, skipped = plan(MODELS, catalog_names(tokens))
+    for name in skipped:
+        print(f"warning: {name} is not in the gateway catalog; skipped "
+              f"(re-run after the gateway deploy that adds it)", file=sys.stderr)
+    if ROUTE not in models:
+        print(f"error: {ROUTE} is not in the gateway catalog; refusing to scope without the primary",
+              file=sys.stderr)
+        return 1
     status = subprocess.run(["python3", str(tokens), "status", CONSUMER],
                             check=True, stdout=subprocess.PIPE, text=True)
     existing = json.loads(status.stdout).get("tokens") or []
     verb = "scope" if existing else "mint"
-    command = ["python3", str(tokens), verb, CONSUMER, "--models", *MODELS]
+    command = ["python3", str(tokens), verb, CONSUMER, "--models", *models]
     if verb == "mint":
         command += ["--days", "-1"]
     if not args.apply:

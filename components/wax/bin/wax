@@ -30,7 +30,7 @@ COMPONENT_ROOT = next(
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 from wax import (archive, catalog, capture, component, config, documents, events, finalize,
-                 ledger, migrate, natsclient, passes, paths, pipelines, reconcile, sanity,
+                 ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
                  sentinel, state, transcribe_adapter, worker)  # noqa: E402
 
 
@@ -111,6 +111,10 @@ JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential"
 # these mirror the bin defaults in config/passes.d/bin/{title-slug,ticketable}.
 TITLE_API_BASE_DEFAULT = "https://api.automaticai.io/v1"
 TITLE_MODEL_DEFAULT = "automaticai/auto/fast"
+# Ordered fallbacks after the primary: metered Hyper, then the free family.
+# Operator order 2026-10-22: no Anthropic model anywhere (chat_pass_routing_test).
+TITLE_MODEL_FALLBACKS_DEFAULT = "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free"
+ANTHROPIC_RE = re.compile(r"claude|sonnet|haiku|opus|fable|anthropic", re.IGNORECASE)
 TITLE_KEY_OP_DEFAULT = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
 # api.automaticai.io sits behind Cloudflare, which answers urllib's default
 # User-Agent with "403 error code: 1010" before the gateway sees the request.
@@ -265,8 +269,10 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_LOG_LEVEL", "bin/waxd (the one handler, contract B)", "INFO"),
     ("WAX_TITLE_API_BASE", "passes.d/bin/title-slug, classification", TITLE_API_BASE_DEFAULT),
     ("WAX_TITLE_MODEL", "passes.d/bin/title-slug, classification", TITLE_MODEL_DEFAULT),
+    ("WAX_TITLE_MODEL_FALLBACKS", "passes.d/bin/title-slug, classification (comma-separated, in order)",
+     TITLE_MODEL_FALLBACKS_DEFAULT),
     ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug, classification (gateway token)", TITLE_KEY_OP_DEFAULT),
-    ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug", "120"),
+    ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug (per chain member)", "60"),
     ("WAX_TITLE_API_KEY", "passes.d/bin/title-slug (direct key; prefer op://)", "<unset>"),
     ("WAX_JEV_URL", "wax/jev.py, passes.d/bin/project-extraction (Jev ingress systemone endpoint)",
      JEV_URL_DEFAULT),
@@ -283,9 +289,11 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_PROJECT_ALIASES", "wax/pjregistry.py", "<component>/config/project-aliases.yaml"),
     ("WAX_TICKETS_API_BASE", "passes.d/bin/ticketable", TITLE_API_BASE_DEFAULT),
     ("WAX_TICKETS_MODEL", "passes.d/bin/ticketable", TITLE_MODEL_DEFAULT),
+    ("WAX_TICKETS_MODEL_FALLBACKS", "passes.d/bin/ticketable (comma-separated, in order)",
+     TITLE_MODEL_FALLBACKS_DEFAULT),
     ("WAX_TICKETS_API_KEY_OP", "passes.d/bin/ticketable (gateway token)", TITLE_KEY_OP_DEFAULT),
     ("WAX_TICKETS_API_KEY", "passes.d/bin/ticketable (direct key; prefer op://)", "<unset>"),
-    ("WAX_TICKETS_REQUEST_TIMEOUT_S", "passes.d/bin/ticketable", "180"),
+    ("WAX_TICKETS_REQUEST_TIMEOUT_S", "passes.d/bin/ticketable (per chain member)", "120"),
     ("OP_SERVICE_ACCOUNT_TOKEN", "`op read` inside title-slug", "<unset>"),
     ("TRANSCRIBE_DIR", "bin/transcribe", "<dirname(realpath(transcribe))/..>"),
     ("DIARIZATION_VENV", "bin/transcribe", "<TRANSCRIBE_DIR>/.venv-diarization"),
@@ -374,6 +382,23 @@ def _get_json(url: str, *, token: str) -> tuple[Optional[Any], str]:
         return None, f"HTTP {e.code}: {body or e.reason}"
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
         return None, f"{type(e).__name__}: {e}"
+
+
+def _chat_probe(api_base: str, token: str, model: str) -> tuple[Optional[Any], str, int]:
+    """One 1-token chat request: (body, error, status). status 0 means unreachable."""
+    body = json.dumps({"model": model, "max_tokens": 1,
+                       "messages": [{"role": "user", "content": "ok"}]}).encode()
+    request = urllib.request.Request(
+        f"{api_base}/chat/completions", data=body, method="POST",
+        headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT,
+                 "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
+            return None, "", response.status
+    except urllib.error.HTTPError as e:
+        return None, f"HTTP {e.code}", e.code
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return None, f"{type(e).__name__}: {e}", 0
 
 
 def _get_json_direct(url: str, *, timeout: float = PJ_TIMEOUT_S) -> tuple[Optional[Any], str]:
@@ -802,6 +827,63 @@ def probe_all() -> list[dict[str, Any]]:
                            "— this is the exact shape of the 2026-08-15 outage",
                            f"set WAX_TITLE_MODEL in config/passes.d/title-slug.yaml to a model "
                            f"{api_base} actually serves"))
+
+    # -- inference model chain ------------------------------------------------
+    fallbacks_raw = _title("WAX_TITLE_MODEL_FALLBACKS", TITLE_MODEL_FALLBACKS_DEFAULT)
+    chain = list(dict.fromkeys(m.strip() for m in [model, *fallbacks_raw.split(",")] if m.strip()))
+    tickets_primary = (yenv["WAX_TICKETS_MODEL"][1] if "WAX_TICKETS_MODEL" in yenv else TITLE_MODEL_DEFAULT).strip()
+    tickets_fallbacks = (yenv["WAX_TICKETS_MODEL_FALLBACKS"][1] if "WAX_TICKETS_MODEL_FALLBACKS" in yenv
+                         else TITLE_MODEL_FALLBACKS_DEFAULT)
+    tickets_chain = list(dict.fromkeys(m.strip() for m in [tickets_primary, *tickets_fallbacks.split(",")]
+                                       if m.strip()))
+    banned = [m for m in dict.fromkeys([*chain, *tickets_chain]) if ANTHROPIC_RE.search(m)]
+    add(_probe("inference chain", FAIL if banned else PASS,
+               ("Anthropic model(s) in the chain: " + ", ".join(banned)) if banned
+               else " -> ".join(chain),
+               "remove them from WAX_TITLE_MODEL / WAX_TITLE_MODEL_FALLBACKS in the pass yaml "
+               "(operator order 2026-10-22: no Anthropic models)" if banned else ""))
+    add(_probe("ticketable chain", PASS if tickets_chain == chain else WARN,
+               " -> ".join(tickets_chain) + ("" if tickets_chain == chain else "  (differs from the title chain)")))
+    if key:
+        listing, err = _get_json(f"{api_base}/models", token=key)
+        seen_entries = listing.get("data") if isinstance(listing, dict) else None
+        seen = {str(e.get("id")) for e in (seen_entries or []) if isinstance(e, dict)}
+        if not seen:
+            add(_probe("inference chain visible", FAIL, f"{api_base}/models: {err or 'listed no models'}",
+                       f"curl -H 'User-Agent: {USER_AGENT}' -H 'Authorization: Bearer $KEY' {api_base}/models"))
+        else:
+            for index, member in enumerate(chain):
+                role = "primary" if index == 0 else f"fallback {index}"
+                if member in provider.VIRTUAL_MODELS and member not in seen:
+                    # A granted router family is not listed; only a request can
+                    # tell "not granted" (403) from "granted but not serving".
+                    _, _, probe_status = _chat_probe(api_base, key, member)
+                    if probe_status == 200:
+                        add(_probe(f"inference {role}", PASS,
+                                   f"{member} answered a 1-token request (virtual family; /models never lists it)"))
+                    elif probe_status == 403:
+                        add(_probe(f"inference {role}", FAIL if index == 0 else WARN,
+                                   f"{member} is NOT granted to this token (HTTP 403)",
+                                   "python3 deploy/provision-inference --apply"))
+                    else:
+                        add(_probe(f"inference {role}", FAIL if index == 0 else WARN,
+                                   f"{member} is granted but did not serve a 1-token request (HTTP {probe_status}); "
+                                   "gateway-side, and the chain falls through it",
+                                   "report to the gateway owner (token-ops); not a Wax fault"))
+                    continue
+                visible = member in seen or member.split(":", 1)[0] in seen
+                add(_probe(f"inference {role}", PASS if visible else (FAIL if index == 0 else WARN),
+                           f"{member} listed by {api_base}/models for this token (User-Agent {USER_AGENT})"
+                           if visible else
+                           f"{member} is NOT listed for this token; the chain skips it",
+                           "" if visible else
+                           "python3 deploy/provision-inference --apply   # the SSOT for the token scope "
+                           "(skips routes the gateway catalog lacks; re-run after a gateway deploy)"))
+            leaked = sorted(m for m in seen if ANTHROPIC_RE.search(m))
+            add(_probe("inference token scope", FAIL if leaked else PASS,
+                       ("the token still grants Anthropic route(s): " + ", ".join(leaked)) if leaked
+                       else f"no Anthropic route among the {len(seen)} listed for this token",
+                       "python3 deploy/provision-inference --apply" if leaked else ""))
 
     # -- project-extraction dependencies ------------------------------------
     probe_project_extraction(add, repo=repo, effective=effective, yenv=yenv)

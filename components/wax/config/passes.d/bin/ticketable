@@ -64,9 +64,12 @@ MAX_OUTPUT_TOKENS = 8_192
 
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
 DEFAULT_MODEL = "automaticai/auto/fast"
+# Tried in order after DEFAULT_MODEL (see wax.provider.run_chain): the metered
+# Hyper routes, then the free family. Nothing Anthropic, ever.
+DEFAULT_MODEL_FALLBACKS = "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free"
 DEFAULT_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
 KEY_ENV = "WAX_TICKETS_API_KEY"
-DEFAULT_REQUEST_TIMEOUT_S = 180.0
+DEFAULT_REQUEST_TIMEOUT_S = 120.0
 
 SYSTEM_PROMPT = """\
 You extract ticketable work from one transcript of a private voice memo or meeting. A project \
@@ -196,8 +199,13 @@ def response_schema(ids: list[str]) -> dict[str, Any]:
 
 
 def extract(text: str, *, fm: dict[str, Any], ids: list[str],
-            projects: list[dict[str, str]]) -> tuple[list[Any], int, bool, str]:
-    """Raw model tickets over the transcript's windows: (tickets, windows, truncated, model)."""
+            projects: list[dict[str, str]]) -> tuple[list[Any], int, bool, dict[str, Any]]:
+    """Raw model tickets over the transcript's windows: (tickets, windows, truncated, model evidence).
+
+    Each window runs the model chain on its own, so one window that had to fall
+    back does not drag the others off the primary. The evidence names the model
+    that served the first window, every distinct server, and every failed attempt.
+    """
     parts = provider.windows(text, WINDOW_CHARS, WINDOW_OVERLAP) if len(text) > SINGLE_CALL_MAX_CHARS else [text]
     truncated = len(parts) > MAX_WINDOWS
     if truncated:
@@ -205,12 +213,15 @@ def extract(text: str, *, fm: dict[str, Any], ids: list[str],
         provider.note(f"note: transcript is {len(text)} chars; ticketed the first {MAX_WINDOWS} of "
                       f"{len(parts)} windows ({covered} chars); work after that is not extracted")
         parts = parts[:MAX_WINDOWS]
-    model = os.environ.get("WAX_TICKETS_MODEL", "").strip() or DEFAULT_MODEL
+    models = provider.model_chain("WAX_TICKETS_MODEL", "WAX_TICKETS_MODEL_FALLBACKS",
+                                  default_primary=DEFAULT_MODEL, default_fallbacks=DEFAULT_MODEL_FALLBACKS)
     base = (os.environ.get("WAX_TICKETS_API_BASE", "").strip() or DEFAULT_API_BASE).rstrip("/")
     key = provider.resolve_key(env_var=KEY_ENV,
                                op_ref=os.environ.get("WAX_TICKETS_API_KEY_OP", DEFAULT_KEY_OP).strip())
     timeout = provider.env_number("WAX_TICKETS_REQUEST_TIMEOUT_S", DEFAULT_REQUEST_TIMEOUT_S, minimum=1.0)
     raw: list[Any] = []
+    served: list[str] = []
+    failed: list[dict[str, Any]] = []
     for index, part in enumerate(parts, 1):
         user = json.dumps({
             "title": str(fm.get("title") or ""),
@@ -219,14 +230,24 @@ def extract(text: str, *, fm: dict[str, Any], ids: list[str],
             "window": f"{index}/{len(parts)}",
             "transcript": part,
         }, ensure_ascii=False)
-        answer = provider.chat_json(base=base, model=model, key=key, system=SYSTEM_PROMPT, user=user,
-                                    schema=response_schema(ids), schema_name="ticketable_tasks",
-                                    max_tokens=MAX_OUTPUT_TOKENS, timeout=timeout, temperature=0.1)
-        tickets = answer.get("tickets")
-        if not isinstance(tickets, list):
-            raise provider.ProviderError(f"{model} answered without a tickets list", "provider_bad_response")
+
+        def ask(model: str) -> list[Any]:
+            answer = provider.chat_json(base=base, model=model, key=key, system=SYSTEM_PROMPT, user=user,
+                                        schema=response_schema(ids), schema_name="ticketable_tasks",
+                                        max_tokens=MAX_OUTPUT_TOKENS, timeout=timeout, temperature=0.1)
+            tickets = answer.get("tickets")
+            if not isinstance(tickets, list):
+                raise provider.ProviderError(f"{model} answered without a tickets list", "provider_bad_response")
+            return tickets
+
+        tickets, model, attempts = provider.run_chain(models, ask)
         raw.extend(tickets)
-    return raw, len(parts), truncated, model
+        served.append(model)
+        failed.extend(attempts)
+    evidence = provider.evidence_for(models, served[0], failed)
+    if len(set(served)) > 1:
+        evidence["served"] = list(dict.fromkeys(served))
+    return raw, len(parts), truncated, evidence
 
 
 def shorten(description: str) -> tuple[str, bool]:
@@ -320,14 +341,14 @@ def build_result(md: Path, *, transcript: str, item_id: str = "") -> dict[str, A
                 "frontmatter": {"ticketable": []}}
 
     projects, registry = candidate_info(fm, ids)
-    raw, windows, truncated, model = extract(text, fm=fm, ids=ids, projects=projects)
+    raw, windows, truncated, model_evidence = extract(text, fm=fm, ids=ids, projects=projects)
     tickets, dropped, shortened = normalize(raw, ids)
     names = {p["project_id"]: p["name"] for p in projects}
     return {
         "wax_ep_version": 1,
         "frontmatter": {"ticketable": [{**ticket, "transcript": transcript} for ticket in tickets]},
         "events": ticket_events(tickets, names, transcript=transcript, item_id=item_id),
-        "evidence": {"model": model, "windows": windows, "truncated": truncated,
+        "evidence": {**model_evidence, "windows": windows, "truncated": truncated,
                      "registry": registry, "dropped": dropped, "shortened": shortened},
     }
 
