@@ -441,5 +441,74 @@ class CompiledPlanAuthorityTest(ChainCase):
         self.assertEqual(self.pass_row("dependent")["version"], 1)
 
 
+class SweepSpendsOneAttemptTest(ChainCase):
+    """One sweep (or one non-sweep re-run) spends at most ONE attempt per (item, slug).
+
+    Regression: items 126d791b0a40654e / 9916aa1c94507b0b -- a provider outage
+    burned all three attempts of a chat pass within seconds. The sweep's target
+    loop retried each failed pass, then its follow-up run_auto() retried every
+    failed pass again, and the scheduled sweep fired right after the first
+    failure with no spacing at all.
+    """
+
+    def _age_rows(self, seconds):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(
+            timespec="milliseconds").replace("+00:00", "Z")
+        ledger.connect().execute("UPDATE passes SET updated_at=? WHERE item_id=?", (old, self.item))
+
+    def test_a_sweep_spends_one_attempt_per_failed_pass(self):
+        from wax import worker
+        self.add_pass("classification", fails=True)
+        self.add_pass("title-slug", fails=True)
+        passes.run_auto(self.item)
+        self.assertEqual((self.pass_row("classification")["attempt"], self.pass_row("title-slug")["attempt"]), (1, 1))
+        swept = worker.sweep_failed_passes()
+        self.assertEqual(swept["candidates"], 2)
+        self.assertEqual((self.pass_row("classification")["attempt"], self.pass_row("title-slug")["attempt"]), (2, 2),
+                         "the follow-up run_auto must not retry what the target loop just retried")
+        self.assertIsNone(self.pass_row("classification")["exhausted_at"])
+
+    def test_three_ticks_exhaust_in_exactly_three_attempts(self):
+        from wax import worker
+        self.add_pass("title-slug", fails=True)
+        passes.run_auto(self.item)
+        for _ in range(2):
+            worker.sweep_failed_passes()
+        self.assertEqual(self.pass_row("title-slug")["attempt"], 3)
+        self.assertEqual(worker.sweep_failed_passes()["candidates"], 0)
+        self.assertEqual(self.pass_row("title-slug")["attempt"], 3)
+
+    def test_min_age_spaces_attempts(self):
+        from wax import worker
+        self.add_pass("title-slug", fails=True)
+        passes.run_auto(self.item)
+        # Just failed: a scheduled sweep (spacing = its interval) leaves it alone.
+        swept = worker.sweep_failed_passes(min_age_s=900)
+        self.assertEqual(swept["candidates"], 0)
+        self.assertEqual(self.pass_row("title-slug")["attempt"], 1)
+        # The operator's on-demand sweep (no spacing) is not held back.
+        self.assertEqual(worker.sweep_failed_passes()["candidates"], 1)
+        self.assertEqual(self.pass_row("title-slug")["attempt"], 2)
+        # Once the last attempt is older than the spacing, it is eligible again.
+        self._age_rows(901)
+        self.assertEqual(worker.sweep_failed_passes(min_age_s=900)["candidates"], 1)
+        self.assertEqual(self.pass_row("title-slug")["attempt"], 3)
+
+    def test_followup_walk_does_not_retry_a_failed_pass_inside_the_spacing(self):
+        from wax import worker
+        self.add_pass("classification", fails=True)
+        self.add_pass("title-slug", fails=True)
+        passes.run_auto(self.item)
+        # classification is old enough to sweep; title-slug failed a moment ago.
+        ledger.connect().execute(
+            "UPDATE passes SET updated_at='2000-01-01T00:00:00.000Z' WHERE item_id=? AND ep_slug='classification'",
+            (self.item,))
+        swept = worker.sweep_failed_passes(min_age_s=900)
+        self.assertEqual([t["ep_slug"] for t in swept["targets"]], ["classification"])
+        self.assertEqual(self.pass_row("classification")["attempt"], 2)
+        self.assertEqual(self.pass_row("title-slug")["attempt"], 1, "title-slug keeps its spacing")
+
+
 if __name__ == "__main__":
     unittest.main()

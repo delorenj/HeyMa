@@ -626,7 +626,14 @@ def diarization_health() -> dict[str, Any]:
     }
 
 
-def failed_passes_for_sweep(max_attempts: int) -> list[tuple[str, str, int]]:
+def _age_cutoff(min_age_s: float) -> str:
+    """ISO-8601 'Z' timestamp (the format `passes.updated_at` is stored in) `min_age_s` ago."""
+    from datetime import datetime, timedelta, timezone
+    when = datetime.now(timezone.utc) - timedelta(seconds=max(0.0, float(min_age_s or 0.0)))
+    return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def failed_passes_for_sweep(max_attempts: int, min_age_s: float = 0.0) -> list[tuple[str, str, int]]:
     """Stranded failed passes worth re-driving, as (item_id, slug, next_attempt).
 
     The third element is the attempt number the caller should hand to
@@ -639,6 +646,12 @@ def failed_passes_for_sweep(max_attempts: int) -> list[tuple[str, str, int]]:
     it again. Gated on `enabled` so a retired pass is never resurrected, and
     joined to transcripts because a pass has nothing to operate on until the
     markdown exists.
+
+    `min_age_s` is the minimum spacing between attempts: a row whose last
+    attempt is younger than that is not a candidate yet. The scheduled sweep
+    passes WAX_SWEEP_INTERVAL_S so a provider outage cannot spend a pass's whole
+    budget in the seconds after its first failure; the on-demand `wax ep sweep`
+    leaves it 0 (an operator asking for a retry now means now).
     """
     try:
         slugs = sorted(_enabled_pass_versions())
@@ -658,8 +671,9 @@ def failed_passes_for_sweep(max_attempts: int) -> list[tuple[str, str, int]]:
         "SELECT p.item_id, p.ep_slug, p.attempt FROM passes p JOIN transcripts t USING(item_id) "
         f"WHERE p.state='failed' AND p.ep_slug IN ({placeholders}) "
         "AND (p.attempt < ? OR p.reason_code='dependency_failed') "
+        "AND p.updated_at <= ? "
         "ORDER BY p.updated_at",
-        (*slugs, max_attempts),
+        (*slugs, max_attempts, _age_cutoff(min_age_s)),
     ).fetchall()
     return [(row["item_id"], row["ep_slug"], int(row["attempt"] or 0) + 1) for row in rows]
 

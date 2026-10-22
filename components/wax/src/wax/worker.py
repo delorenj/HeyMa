@@ -670,7 +670,8 @@ def retry_failed_passes(item_id: str, slugs: tuple[str, ...]) -> dict[str, Any]:
 
 
 def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
-                        slug: Optional[str] = None, limit: int = 0) -> dict[str, Any]:
+                        slug: Optional[str] = None, limit: int = 0,
+                        min_age_s: float = 0.0) -> dict[str, Any]:
     """Re-drive stranded enrichment passes, dead-letter the exhausted, finalize.
 
     Shared by the worker's scheduled sweep and `wax ep sweep` (which keeps the
@@ -681,6 +682,14 @@ def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
     definitions and dependency versions — the live registry moved on is drift
     to report, not a new graph to run mid-item. Plan-less items (legacy
     history) keep the live-registry path.
+
+    A sweep spends at most ONE attempt per (item, slug). The follow-up
+    `run_auto` that picks up un-run dependents used to re-run every failed
+    pass again straight after the target loop had, so one sweep consumed two
+    attempts and a 3-attempt budget burned in seconds. `min_age_s` is the
+    minimum spacing since a pass's last attempt (the scheduled sweep passes
+    its interval; passes younger than that are neither targets nor re-run by
+    the follow-up walk).
     """
     def _stored_plan(item_id: str) -> dict[str, dict[str, Any]]:
         row = ledger.connect().execute(
@@ -694,7 +703,7 @@ def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
         return plan if isinstance(plan, dict) else {}
 
     fired = passes.sweep_exhaustions(max_attempts)
-    targets = ledger.failed_passes_for_sweep(max_attempts)
+    targets = ledger.failed_passes_for_sweep(max_attempts, min_age_s)
     if slug:
         targets = [t for t in targets if t[1] == slug]
     if limit > 0:
@@ -709,6 +718,9 @@ def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
         return out
     plans: dict[str, dict[str, dict[str, Any]]] = {}
     results = []
+    # Per item, slugs the follow-up run_auto must NOT re-run: a real (non-gate)
+    # failure from the target loop has spent this tick's attempt.
+    held: dict[str, set[str]] = {}
     for item_id, ep_slug, attempt in targets:
         try:
             # The attempt from the ledger is already incremented (its contract),
@@ -725,13 +737,24 @@ def sweep_failed_passes(*, max_attempts: int = passes.DEFAULT_MAX_ATTEMPTS,
         except passes.PassError as e:
             results.append({"item_id": item_id, "ep_slug": ep_slug, "state": "failed",
                             "error": str(e), "reason_code": "run_error"})
+        last = results[-1]
+        if last.get("state") == "failed" and last.get("reason_code") != "dependency_failed":
+            held.setdefault(item_id, set()).add(ep_slug)
+    # A failed row younger than the spacing was never eligible; the follow-up
+    # walk must not run it either.
+    cutoff = ledger._age_cutoff(min_age_s) if min_age_s > 0 else None
     publications: dict[str, Any] = {}
     completions: dict[str, Any] = {}
     for item_id in dict.fromkeys(item for item, _, _ in targets):
         plan = ledger.connect().execute(
             "SELECT 1 FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
         if plan:
-            passes.run_auto(item_id)
+            hold = set(held.get(item_id, ()))
+            if cutoff is not None:
+                hold.update(row["ep_slug"] for row in ledger.connect().execute(
+                    "SELECT ep_slug FROM passes WHERE item_id=? AND state='failed' "
+                    "AND updated_at > ?", (item_id, cutoff)).fetchall())
+            passes.run_auto(item_id, hold=frozenset(hold))
         publications[item_id] = finalize.publish_pass_events(item_id)
         completions[item_id] = finalize.finalize(item_id)
     out["publications"] = publications
@@ -826,7 +849,7 @@ class Worker(threading.Thread):
             self._last_sweep = now
             self._set_busy("sweep")
             try:
-                swept = sweep_failed_passes()
+                swept = sweep_failed_passes(min_age_s=SWEEP_INTERVAL_S)
                 if swept.get("candidates") or swept.get("exhausted"):
                     log.info("scheduled sweep: %s candidate(s), %d exhaustion notice(s)",
                              swept["candidates"], len(swept.get("exhausted") or []))

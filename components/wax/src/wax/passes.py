@@ -1205,7 +1205,14 @@ def _plan_provenance(item_id: str) -> dict[str, Any]:
 
 
 @serialized
-def run_auto(item_id: str) -> list[dict[str, Any]]:
+def run_auto(item_id: str, *, hold: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    """Walk the item's plan, running every pass that is not completed/skipped.
+
+    `hold` names slugs this walk must leave alone even though they are failed:
+    a caller that already spent (or deliberately deferred) a pass's attempt in
+    this tick uses it so the same walk cannot spend a second one. Held rows
+    still count for dependency gating -- they are simply not re-run.
+    """
     definitions = ensure_plan(item_id)
     provenance = _plan_provenance(item_id)
     # A plan is FROZEN: dependency gating replays against the plan's stored
@@ -1225,6 +1232,11 @@ def run_auto(item_id: str) -> list[dict[str, Any]]:
                 and prior.get("definition_id") in (None, operations.definition_id(ep))):
             out.append({"item_id": item_id, "ep_slug": slug, "version": version,
                         "state": prior["state"], "skipped": "already completed at this version"})
+            continue
+        if slug in hold and prior and prior["state"] == "failed":
+            out.append({"item_id": item_id, "ep_slug": slug, "version": version,
+                        "state": "failed", "skipped": "held: attempt already spent or deferred this tick",
+                        "attempt": int(prior["attempt"] or 0)})
             continue
         attempt = int(prior["attempt"] or 0) + 1 if prior else 1
         try:
