@@ -217,6 +217,61 @@ class TrayIconTest(unittest.TestCase):
         )
         subject.on_open_transcript.assert_not_called()
 
+    def test_silent_recording_stays_red_and_flashes_yellow(self):
+        silent = {"stream": {"state": "recording", "silent": True}, "inbox": {"state": "ready"}}
+        colour, tooltip = self.tray.colour_for(silent)
+        self.assertEqual(colour, "red")
+        self.assertIn("mic muted", tooltip)
+        self.assertEqual(self.tray.flash_for(silent), "yellow")
+
+    def test_flash_needs_both_recording_and_silence(self):
+        for stream in ({"state": "recording", "silent": False},
+                       {"state": "recording"},
+                       {"state": "ready", "silent": True}):
+            with self.subTest(stream=stream):
+                snap = {"stream": stream, "inbox": {"state": "ready"}}
+                self.assertIsNone(self.tray.flash_for(snap))
+                self.assertNotIn("mic muted", self.tray.colour_for(snap)[1])
+
+    def blinking_tray(self):
+        subject = self.tray.Tray.__new__(self.tray.Tray)
+        subject.indicator = MagicMock()
+        subject._colour, subject._tip, subject._flash, subject._flash_on = None, "", None, False
+        return subject
+
+    def shown(self, subject):
+        return subject.indicator.set_icon_full.call_args[0][0]
+
+    def test_blink_alternates_without_logging_a_transition_per_frame(self):
+        subject = self.blinking_tray()
+        fake_glib = types.SimpleNamespace(idle_add=lambda fn: fn())
+        with patch.object(self.tray, "GLib", fake_glib), \
+                self.assertLogs(self.tray.log, "INFO") as logs:
+            subject.set("red", "tip", True, flash="yellow")
+            frames = []
+            for _ in range(4):
+                subject._blink()
+                frames.append(self.shown(subject))
+            # The 1 Hz update must render the current phase, not snap back to red.
+            subject.set("red", "tip", True, flash="yellow")
+            self.assertEqual(self.shown(subject), frames[-1])
+        self.assertEqual(frames, [self.tray.ICONS["yellow"], self.tray.ICONS["red"]] * 2)
+        self.assertEqual(len(logs.records), 1)
+
+    def test_silence_ending_restores_the_steady_icon(self):
+        subject = self.blinking_tray()
+        fake_glib = types.SimpleNamespace(idle_add=lambda fn: fn())
+        with patch.object(self.tray, "GLib", fake_glib):
+            subject.set("red", "tip", True, flash="yellow")
+            subject._blink()
+            self.assertEqual(self.shown(subject), self.tray.ICONS["yellow"])
+            subject.set("red", "tip", True)
+            self.assertEqual(self.shown(subject), self.tray.ICONS["red"])
+            subject.indicator.set_icon_full.reset_mock()
+            subject._blink()
+        subject.indicator.set_icon_full.assert_not_called()
+        self.assertFalse(subject._flash_on)
+
 
 class TrayProcessDisplayTest(unittest.TestCase):
     """waxd started by an autologin before the compositor published its display

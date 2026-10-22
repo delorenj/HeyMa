@@ -106,6 +106,7 @@ class Daemon:
         self.snapshot: dict = {}
         self._silence_monitor_rid: Optional[str] = None
         self._silence_monitor_file = None
+        self._is_silent = False
         self.tray = tray_process.TrayProcess()
         self.stopped = threading.Event()
         self._serve_socket()
@@ -160,19 +161,23 @@ class Daemon:
                 f" (still, {int(now - first_at)}s)" if repeat else "")
 
     def _check_silence(self, snap: dict) -> None:
-        recording = snap.get("stream", {}).get("state") == "recording"
+        stream = snap.get("stream") or {}
+        recording = stream.get("state") == "recording"
         if not recording:
             if self._silence_monitor_file:
                 self._silence_monitor_file.close()
                 self._silence_monitor_file = None
             self._silence_monitor_rid = None
+            self._is_silent = False
+            self._condition("capture_silent", None, recovered="cleared")
             return
 
-        rid = snap.get("stream", {}).get("rid")
+        rid = stream.get("rid")
         if rid and rid != self._silence_monitor_rid:
             if self._silence_monitor_file:
                 self._silence_monitor_file.close()
             self._silence_monitor_rid = rid
+            self._is_silent = False
             log_path = paths.LOGS / rid / "encoder.log"
             if log_path.exists():
                 try:
@@ -187,9 +192,17 @@ class Daemon:
             try:
                 for line in self._silence_monitor_file.readlines():
                     if "silence_start" in line:
-                        subprocess.Popen(["play", "-q", "-n", "synth", "0.1", "sine", "880", "pad", "0", "0.1", "repeat", "3", "vol", "0.5"])
+                        self._is_silent = True
+                    elif "silence_end" in line:
+                        self._is_silent = False
             except OSError:
                 pass
+        # The tray child renders from state.json, not from this process, so the
+        # fact has to ride in the snapshot for the icon to flash.
+        stream["silent"] = self._is_silent
+        self._condition("capture_silent",
+                        "encoder hears silence while recording — is the mic muted?"
+                        if self._is_silent else None, recovered="cleared")
 
     def _tick(self) -> bool:
         try:
@@ -235,6 +248,7 @@ class Daemon:
                  f"run `wax doctor` to see which dependency is missing")
                 if diar.get("degraded") else None,
                 recovered="cleared")
+        self._check_silence(snap)
         self.snapshot = snap
         active = (snap.get("inbox") or {}).get("active_item")
         stage = (snap.get("inbox") or {}).get("active_stage")
@@ -269,7 +283,6 @@ class Daemon:
         # "starting" is the one-tick gap before the child reports alive.
         self._condition("tray_unavailable", None if self.tray.available or self.tray.reason == "starting"
                         else self.tray.reason)
-        self._check_silence(snap)
         self._mirror(snap, colour)
         return True
 

@@ -65,8 +65,8 @@ class TrayProcess:
         if time.monotonic() < self.next_attempt:
             return
         if not _has_display():
-            # Into os.environ, not just the child's env: xdg-open and the
-            # silence alarm are waxd children that need the display too.
+            # Into os.environ, not just the child's env: xdg-open and
+            # notify-send are waxd children that need the display too.
             for key, value in session_env().items():
                 os.environ.setdefault(key, value)
         if not _has_display():
@@ -117,7 +117,8 @@ def main():
         try:
             snap = json.loads(paths.STATE_JSON.read_text())
             colour, tip = tray.colour_for(snap)
-            indicator.set(colour, tip, (snap.get("stream") or {}).get("state") == "recording")
+            indicator.set(colour, tip, (snap.get("stream") or {}).get("state") == "recording",
+                          flash=tray.flash_for(snap))
             indicator.set_queue(snap.get("tray_items") or [])
         except (OSError, ValueError):
             pass

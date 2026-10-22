@@ -197,6 +197,8 @@ def colour_for(snap: dict) -> tuple[str, str]:
         tip += f"\ndiarization degraded: last {undiarized} transcript(s) undiarized"
     if backlog > OUTBOX_BACKLOG_ALARM:
         tip += f"\nevent outbox backlog: {backlog} unpublished"
+    if s == "recording" and stream.get("silent"):
+        tip += "\nsilence: the encoder hears nothing — is the mic muted?"
 
     if s == "recording":
         return "red", tip
@@ -208,6 +210,19 @@ def colour_for(snap: dict) -> tuple[str, str]:
     if i == "stopped":
         return "yellow", tip
     return "green", tip
+
+
+def flash_for(snap: dict) -> str | None:
+    """The colour a recording icon alternates with, or None for a steady icon.
+
+    A muted mic records hours of nothing behind a steady red icon. waxd tails
+    the encoder's silencedetect and marks `stream.silent`; flashing toward
+    yellow keeps "you are recording" visible while saying the input is dead.
+    """
+    stream = snap.get("stream") or {}
+    if stream.get("state") == "recording" and stream.get("silent"):
+        return "yellow"
+    return None
 
 
 def notify_stage_failure(slug: str, reason_code: str, *, item: str = "",
@@ -241,6 +256,8 @@ class Tray:
         self.registered = False
         self._colour = None
         self._tip = ""
+        self._flash = None
+        self._flash_on = False
         self._queue_items = []
         self._queue_signature = None
         self._queue_rows = {}
@@ -248,6 +265,7 @@ class Tray:
         self._build()
         self._watch_bus()
         GLib.timeout_add(250, self._animate_queue)
+        GLib.timeout_add(500, self._blink)
 
     # -- construction ----------------------------------------------------
     def _menu(self) -> Gtk.Menu:
@@ -473,6 +491,20 @@ class Tray:
             row.set_label(queue_label(active, self._spinner_frame))
         return True
 
+    def _blink(self) -> bool:
+        """Swap a flashing icon between its colour and the flash colour."""
+        if not self._flash:
+            self._flash_on = False
+            return True
+        self._flash_on = not self._flash_on
+        if self.indicator is not None:
+            shown = self._flash if self._flash_on else self._colour
+            try:
+                self.indicator.set_icon_full(ICONS.get(shown, ICONS["green"]), self._tip)
+            except Exception:  # noqa: BLE001
+                self.registered = False
+        return True
+
     def _queue_right_click(self, _widget, event, item_id: str):
         if getattr(event, "button", 0) != 3:
             return False
@@ -502,19 +534,23 @@ class Tray:
         self._queue_items = [dict(x) for x in items]
         GLib.idle_add(lambda: (self._render_queue(), False)[1])
 
-    def set(self, colour: str, tooltip: str = "", recording: bool = False) -> None:
-        """Thread-safe icon update."""
+    def set(self, colour: str, tooltip: str = "", recording: bool = False,
+            flash: str | None = None) -> None:
+        """Thread-safe icon update. `flash` alternates the icon toward that colour."""
         if colour != self._colour:
             # Once per TRANSITION, never per tick — waxd calls this at 1 Hz. This
             # is the journal line whose absence let both outages run for a week
             # with zero waxd entries to grep for.
             log.info("tray %s: %s", colour, tooltip.replace("\n", " · "))
-        self._colour, self._tip = colour, tooltip
+        # The flash is not a transition: it rides beside the steady colour, so
+        # a muted mic does not log a line every half second.
+        self._colour, self._tip, self._flash = colour, tooltip, flash
 
         def apply():
             if self.indicator is not None:
+                shown = flash if flash and self._flash_on else colour
                 try:
-                    self.indicator.set_icon_full(ICONS.get(colour, ICONS["green"]), tooltip)
+                    self.indicator.set_icon_full(ICONS.get(shown, ICONS["green"]), tooltip)
                 except Exception:  # noqa: BLE001
                     self.registered = False
             if getattr(self, "item_status", None) is not None:
