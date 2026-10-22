@@ -26,6 +26,8 @@ fails). Also out, on purpose:
 - Kimi routes (personal/kimi-*, hypercharm/kimi-k3): they 400 on temperature
   != 1 ("invalid temperature: only 1 is allowed"), gateway bug AAI-55. Re-add
   them only once AAI-55 closes.
+- deepseek/deepseek-v4-pro and deepseek-flash are IN: metered DeepSeek direct,
+  the auto strong tier's backup for Hyper since AAI-61.
 - Every OpenRouter route, and the auto policy's own free rung (OpenRouter
   `:free` only; AAI-56 says it is dead).
 - Intelliforia (team account): transcripts are personal.
@@ -51,6 +53,10 @@ MEMBERS = [
     "automaticai/personal/glm-5.3",
     "automaticai/hypercharm/glm-5.3",
     "automaticai/hypercharm/minimax-m3",
+    # Metered DeepSeek direct backs Hyper in the auto strong tier (AAI-61,
+    # client-portal 181593b2); token-ops added these to the live scope.
+    "automaticai/deepseek/deepseek-v4-pro",
+    "automaticai/deepseek/deepseek-flash",
     # Not "automaticai/hypercharm/kimi-k3" / "personal/kimi-*": AAI-55.
     "automaticai/free",
 ]
