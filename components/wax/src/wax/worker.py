@@ -278,11 +278,31 @@ def park_duplicate(item_id: str, path: Path) -> dict[str, Any]:
     dest_dir = paths.ARCHIVE / "duplicates"
     dest_dir.mkdir(parents=True, exist_ok=True)
     moved = rename.move_noclobber(path, dest_dir / path.name)
-    ledger.connect().execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
-                             (str(moved), sentinel.utcnow(), item_id))
-    _set_state(item_id, "complete", cause="already_processed",
-               evidence=str(moved).replace(str(paths.AUDIO), "~/HeyMa"), subject=path.name)
-    return {"item_id": item_id, "parked_duplicate": str(moved)}
+    # items.path is the CANONICAL audio location (the archived original). The
+    # duplicate copy is evidence, never the item's identity: rewriting path here
+    # once pointed a finished item at archive/duplicates/.
+    row = ledger.connect().execute(
+        "SELECT md_path FROM transcripts WHERE item_id=?", (item_id,)).fetchone()
+    md_path = row["md_path"] if row and row["md_path"] else None
+    note = Path(md_path).name if md_path else None
+    dup = str(moved).replace(str(paths.AUDIO), "~/HeyMa")
+    evidence = f"duplicate={dup}" + (f" transcript={md_path}" if md_path else " transcript=none")
+    log.info("item %s re-dropped as %s -> parked %s (already_processed)%s", item_id, path.name,
+             dup, f"; transcript {note}" if note else "")
+    # complete->complete is a no-op for set_item_state (same-state transitions
+    # are swallowed), so the re-drop gets its own durable transitions row.
+    try:
+        ledger.record_transition("item", item_id, "complete", "complete",
+                                 "already_processed", evidence)
+    except Exception as e:  # noqa: BLE001 - the audio is already safely parked
+        log.warning("item %s: could not record already_processed transition: %s", item_id, e)
+    try:
+        desktop.notify("Wax: already transcribed",
+                       f"Already transcribed → {note or 'transcript not recorded'}\n{path.name}",
+                       urgency="normal")
+    except Exception as e:  # noqa: BLE001 - notification is best effort
+        log.warning("item %s: already_processed notification failed: %s", item_id, e)
+    return {"item_id": item_id, "parked_duplicate": str(moved), "transcript": md_path}
 
 
 @passes.serialized
