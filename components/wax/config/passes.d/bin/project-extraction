@@ -2,8 +2,8 @@
 """wax.ep.v1 project extraction: which pjangler projects a document talks about.
 
 Candidates are every project in the pjangler registry. The decision is
-TypeSafe's Jev (typesafe/jev-1.13), asked ONE `noul` question per project in a
-single request. Measured 2026-10-08 over 25 calls: one request with 35
+TypeSafe's Jev (jev-1.13.0, through the fleet Jev ingress at
+jev.delo.sh), asked ONE `noul` question per project in a single request. Measured 2026-10-08 over 25 calls: one request with 35
 questions costs ~$0.0003 for a 5K-char transcript and answers in 0.3-0.7s;
 accepting P >= 0.6 gave precision 0.94 and recall 0.94; a mortgage phone call
 scored at most 0.05 on every project. Jev's single-label `choice` is a
@@ -49,7 +49,9 @@ DEFAULT_MIN_P_LONG = 0.75
 MAX_PROJECTS = 8
 # Candidates below this are noise; above it they show a near miss in evidence.
 EVIDENCE_MIN_P = 0.2
-DEFAULT_KEY_OP = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
+# HeyMa's jev-litellm virtual key; never the ingress master key or the raw
+# TypeSafe key.
+DEFAULT_KEY_OP = "op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential"
 KEY_ENV = "WAX_JEV_API_KEY"
 
 # Deliberately free of examples: examples taken from real transcripts leaked
@@ -184,7 +186,11 @@ def build_result(md: Path) -> dict[str, Any]:
         },
         "evidence": {
             "model": ", ".join(sorted({d.model for d in decisions})),
-            "cost": round(sum(d.cost for d in decisions), 8),
+            # None when the provider reported no cost (the ingress never does;
+            # its spend log has it), rather than a fabricated 0.0.
+            "cost": (round(sum(d.cost for d in decisions), 8)
+                     if decisions and all(d.cost is not None for d in decisions) else None),
+            "input_tokens": sum(d.input_tokens for d in decisions),
             "windows": len(decisions),
             "threshold": threshold,
             "candidates": len(questions),

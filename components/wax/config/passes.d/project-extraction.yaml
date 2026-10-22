@@ -8,11 +8,14 @@ requires: []
 clobber: []
 timeout_s: 120
 env:
-  # Jev is called at OpenRouter directly: the AutomaticAI gateway has no
-  # decisions route. HeyMa's own inference key, $1/day cap.
-  WAX_JEV_URL: https://openrouter.ai/api/alpha/decisions
-  WAX_JEV_MODEL: typesafe/jev-1.13
-  WAX_JEV_API_KEY_OP: op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential
+  # Jev goes through the fleet's Jev ingress (jev-litellm, the LiteLLM
+  # TypeSafe pass-through); the AutomaticAI gateway has no decisions route.
+  # HeyMa's own virtual key (alias heyma-wax-project-extraction): $1/day
+  # budget, 120 rpm, per-request spend in the ingress's spend log. jev-1.13.0
+  # is pinned because the thresholds below were measured on it.
+  WAX_JEV_URL: https://jev.delo.sh/typesafe/v1/systemone
+  WAX_JEV_MODEL: jev-1.13.0
+  WAX_JEV_API_KEY_OP: op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential
   WAX_PROJECT_MIN_P: "0.6"
   WAX_PROJECT_MIN_P_LONG: "0.75"
 command: ["{component_root}/config/passes.d/bin/project-extraction", "{md_path}", "{item_id}"]

@@ -265,7 +265,7 @@ executables are `config/passes.d/{project-extraction,ticketable}.yaml` and
 
 | Pass | Owns | How |
 |---|---|---|
-| `project-extraction` | `project-ids` (pjangler ids, most probable first; `[]` = ran, none) and `projects` (names, index-aligned) | Candidates come from the pjangler registry (`GET $PJ_REGISTRY_URL/v1/registry`, default `http://127.0.0.1:8764`) plus the spoken forms and one-line descriptions in `config/project-aliases.yaml`, which fills the registry's empty descriptions. Decided by TypeSafe's Jev (`typesafe/jev-1.13`): one `noul` question per project in a single request, a project is kept when P(true) is at least `WAX_PROJECT_MIN_P` (0.6), or `WAX_PROJECT_MIN_P_LONG` (0.75) for transcripts over 30K characters, where scores saturate. |
+| `project-extraction` | `project-ids` (pjangler ids, most probable first; `[]` = ran, none) and `projects` (names, index-aligned) | Candidates come from the pjangler registry (`GET $PJ_REGISTRY_URL/v1/registry`, default `http://127.0.0.1:8764`) plus the spoken forms and one-line descriptions in `config/project-aliases.yaml`, which fills the registry's empty descriptions. Decided by TypeSafe's Jev (`jev-1.13.0`, through the fleet Jev ingress): one `noul` question per project in a single request, a project is kept when P(true) is at least `WAX_PROJECT_MIN_P` (0.6), or `WAX_PROJECT_MIN_P_LONG` (0.75) for transcripts over 30K characters, where scores saturate. |
 | `ticketable` | `ticketable`: a list of `{project_id, description, transcript}`; `[]` = ran, none | `requires: [title-slug, project-extraction]`, so `transcript` is the final filename. Extracted through the gateway route `automaticai/auto/fast` (`WAX_TICKETS_*`, the `heyma-wax-inference` token) with a strict JSON schema whose `project_id` is an enum of the note's `project-ids`. Declares `emits: [intake.detected]` and returns one event per distinct ticket, keyed by a hash of `(project_id, description)`; the event's `intake_id` is `<item>:<first 12 hex of that key>`. If the note has no `project-ids` it reports `skipped` / `no_project`. |
 
 The runner publishes each ticket as `bloodbank.audio.intake.detected` after
@@ -274,16 +274,41 @@ The runner publishes each ticket as `bloodbank.audio.intake.detected` after
 ntfy `audio` topic, and the project's PM triages it (`repo.intake.triaged`
 closes the loop through `data.intake_id`).
 
-**Jev is the one deliberate bypass of the AutomaticAI gateway.** The gateway has
-no decisions route, so `project-extraction` is configured to call
-`https://openrouter.ai/api/alpha/decisions` directly with HeyMa's own OpenRouter
-**inference** key. That OpenRouter account ran out of credits on 2026-10-21,
-and the fleet's other Jev callers moved to TypeSafe direct the same day. The
-pass is disabled and its re-target is a pending decision. It uses the key (`WAX_JEV_API_KEY_OP`, an `op://` reference, $1/day cap). A
-management key cannot do inference and answers 401 `User not found`, which
-looks like a dead account; `wax doctor`'s `jev api key` probe checks
-`is_provisioning_key` and the remaining budget. Never route the ticket model
-through that key or the Jev call through the gateway token.
+**Jev goes through the fleet's Jev ingress, not the AutomaticAI gateway.** The
+gateway has no decisions route. `project-extraction` posts to
+`https://jev.delo.sh/typesafe/v1/systemone` (`WAX_JEV_URL`): the jev-litellm
+LiteLLM proxy (`~/docker/stacks/ai/jev-litellm`), which forwards to TypeSafe's
+System One API with the TypeSafe credential injected server-side. HeyMa holds
+its own LiteLLM **virtual** key there (`WAX_JEV_API_KEY_OP`, an `op://`
+reference; alias `heyma-wax-project-extraction`, $1/day budget, 120 rpm).
+Never give the pass the ingress master key or the raw TypeSafe key, never
+route the ticket model through the Jev key, and never route the Jev call
+through the gateway token.
+
+The model is pinned to `jev-1.13.0` (`WAX_JEV_MODEL`) because the thresholds
+above were measured on 1.13; `jev-latest` resolved to `jev-1.14.0` on the
+ingress on 2026-10-22. OpenRouter's `typesafe/jev-1.13` spelling 400s on System
+One. The wire shape is OpenRouter's old `alpha/decisions` shape minus the body
+`id` and `usage.cost`: the request id comes from the `x-typesafe-request-id`
+response header, and the result's `evidence.cost` is `null` (with
+`evidence.input_tokens` recorded) because the cost is the ingress's to meter.
+Read it from LiteLLM's spend log:
+
+```bash
+docker exec jev-litellm-postgres psql -U litellm -d litellm -c \
+  "select \"startTime\", model, spend, prompt_tokens from \"LiteLLM_SpendLogs\"
+   where metadata->>'user_api_key_alias' = 'heyma-wax-project-extraction'
+   order by \"startTime\" desc limit 20;"
+```
+
+Until 2026-10-22 the pass called OpenRouter's `alpha/decisions` proxy directly;
+that account ran out of credits on 2026-10-21. The pass stays disabled until a
+calibration re-run on the ingress. To try it without touching a note, run the
+executable directly: it only prints the result it would apply.
+
+```bash
+components/wax/config/passes.d/bin/project-extraction ~/d/Transcripts/<note>.md
+```
 
 Re-running: a non-empty existing value (human or earlier run) is kept and
 reused without a provider call. To redo one, clear the key in the note, then
@@ -295,7 +320,10 @@ has a new content hash and is published as a new intake.
 (reachable, and HeyMa's frozen id `transcription-queue` is registered; when it
 is not, register it with `POST /v1/index` and the repo's `.project.json`, never
 `pj init --apply`, which rewrites the manifest and the `heyma-pm` agent key),
-`jev api key`, and `pass events enqueued`.
+`jev ingress` (the URL is the ingress, the model is not OpenRouter's spelling,
+and the TypeSafe pass-through answers), `jev api key` (a virtual key, not
+blocked, budget left; both probe free endpoints and run, as warnings, while
+the pass is disabled), and `pass events enqueued`.
 
 ## Document runs
 

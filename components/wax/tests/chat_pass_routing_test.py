@@ -8,8 +8,10 @@ the doctor's defaults against that route coming back, or against a pass
 reaching OpenRouter directly or picking up `OPENROUTER_API_KEY`.
 
 A chat pass is one whose YAML env declares a `*_API_BASE`. project-extraction
-(Jev, `WAX_JEV_*`) is not one: its OpenRouter decisions call is a separate,
-pending decision.
+(Jev, `WAX_JEV_*`) is not one: Jev has no gateway route, so it goes through
+the fleet's Jev ingress (jev-litellm at jev.delo.sh) instead. It sat on
+OpenRouter's alpha/decisions proxy until 2026-10-22, when that account was
+already dead; JevRoutingTest keeps it, and every other pass, off OpenRouter.
 """
 
 import re
@@ -24,6 +26,7 @@ COMPONENT_ROOT = next(
 )
 PASSES_DIR = COMPONENT_ROOT / "config" / "passes.d"
 GATEWAY = "https://api.automaticai.io/v1"
+JEV_INGRESS = "https://jev.delo.sh/typesafe/v1/systemone"
 # A module-level DEFAULT_* / *_DEFAULT string constant: what a pass or the
 # doctor uses when the YAML env does not say otherwise.
 DEFAULT_CONST = re.compile(r'^(?:DEFAULT_\w+|\w+_DEFAULT)\s*=\s*"([^"]*)"', re.MULTILINE)
@@ -95,6 +98,46 @@ class ChatPassRoutingTest(unittest.TestCase):
         self.assertTrue(_forbidden("automaticai/openrouter/google/gemini-3.7-flash"))
         self.assertTrue(_forbidden("https://openrouter.ai/api/v1"))
         self.assertEqual(_forbidden("automaticai/auto/fast"), "")
+
+
+class JevRoutingTest(unittest.TestCase):
+    """Jev (project-extraction) goes through the fleet Jev ingress, never OpenRouter."""
+
+    def test_no_pass_yaml_env_reaches_openrouter(self):
+        # Every pass, chat or not: an env value is what actually runs.
+        for path in sorted(PASSES_DIR.glob("*.yaml")):
+            env = (yaml.safe_load(path.read_text()) or {}).get("env") or {}
+            self.assertNotIn("OPENROUTER_API_KEY", env, path.name)
+            for key, value in env.items():
+                with self.subTest(pass_=path.stem, var=key):
+                    self.assertEqual(_forbidden(str(value)), "", f"{path.name} {key}={value}")
+
+    def test_project_extraction_yaml_targets_the_ingress(self):
+        env = yaml.safe_load((PASSES_DIR / "project-extraction.yaml").read_text())["env"]
+        self.assertEqual(env["WAX_JEV_URL"], JEV_INGRESS)
+        # OpenRouter's `typesafe/jev-*` spelling 400s on System One.
+        self.assertFalse(str(env["WAX_JEV_MODEL"]).startswith("typesafe/"), env["WAX_JEV_MODEL"])
+        self.assertTrue(str(env["WAX_JEV_API_KEY_OP"]).startswith("op://"))
+
+    def test_jev_defaults_never_reach_openrouter(self):
+        sources = {
+            "wax/jev.py": COMPONENT_ROOT / "src" / "wax" / "jev.py",
+            "bin/project-extraction": PASSES_DIR / "bin" / "project-extraction",
+            "bin/wax": COMPONENT_ROOT / "bin" / "wax",
+        }
+        for label, path in sources.items():
+            source = path.read_text()
+            with self.subTest(source=label):
+                self.assertNotIn("openrouter.ai/api/alpha/decisions", source)
+                self.assertNotIn("openrouter.ai/api/v1/key", source)
+                for value in DEFAULT_CONST.findall(source):
+                    self.assertEqual(_forbidden(value), "", f"{label}: {value}")
+                    self.assertFalse(value.startswith("typesafe/"), f"{label}: {value}")
+        from wax import jev
+        self.assertEqual(jev.DEFAULT_URL, JEV_INGRESS)
+        self.assertNotIn("openrouter", jev.DEFAULT_MODEL.lower())
+        # The decide() call site must not send OpenRouter attribution headers.
+        self.assertNotIn("HTTP-Referer", sources["wax/jev.py"].read_text())
 
 
 if __name__ == "__main__":

@@ -7,11 +7,17 @@ named questions; the binding limit is a ~32K-token total for state plus
 questions (measured 2026-10-08), rejected as a 400 whose body says
 `max_tokens_exceeded`.
 
-The decisions API lives at OpenRouter, not behind the AutomaticAI gateway:
-every gateway path for it 404s, and the gateway's own Jev classifier calls
-OpenRouter directly too. Callers therefore hold a dedicated OpenRouter
-inference key, which is the documented exception to "route through
-api.automaticai.io".
+Every Jev call goes through the fleet's Jev ingress, the jev-litellm proxy
+at https://jev.delo.sh/typesafe/v1/systemone (operator rule: no Jev caller
+bypasses a gateway). The AutomaticAI gateway has no decisions route, so this
+is the ingress Jev has instead; it injects the TypeSafe credential
+server-side, and each caller holds its own LiteLLM virtual key, which is where
+budget, rate limit and per-request spend are attributed and logged. The wire
+shape is TypeSafe System One's (identical to OpenRouter's retired
+alpha/decisions proxy) except that the body carries no `id` and no
+`usage.cost`: the request id comes from the `x-typesafe-request-id` response
+header, and cost is the ingress's to meter (LiteLLM spend logs), not ours to
+invent. OpenRouter's `typesafe/jev-*` model spelling 400s here.
 
 Answers are validated before anyone trusts them. Jev passes degrade silently
 by construction otherwise: a missing answer read as 0.0 is indistinguishable
@@ -26,8 +32,11 @@ from typing import Any, Callable, Mapping, Optional
 
 from . import provider
 
-DEFAULT_URL = "https://openrouter.ai/api/alpha/decisions"
-DEFAULT_MODEL = "typesafe/jev-1.13"
+DEFAULT_URL = "https://jev.delo.sh/typesafe/v1/systemone"
+# Pinned, not jev-latest: the pass's thresholds were measured on 1.13, and
+# jev-latest moved to jev-1.14.0 on the ingress on 2026-10-22.
+DEFAULT_MODEL = "jev-1.13.0"
+REQUEST_ID_HEADER = "x-typesafe-request-id"
 # Warm calls take 0.3-0.7s whatever the question count; the documented (not
 # reproduced) cold start is ~4s. 20s is generous without hiding an outage.
 DEFAULT_TIMEOUT_S = 20.0
@@ -60,11 +69,15 @@ def score(instructions: str, criteria: list[str]) -> dict[str, Any]:
 @dataclass(frozen=True)
 class Decision:
     answers: dict[str, dict[str, Any]]
-    # The dated build that answered (e.g. typesafe/jev-1.13-20260917). The
-    # alias moves under you, so provenance records this, not the request.
+    # The build that answered, as echoed (e.g. jev-1.13.0). An alias such as
+    # jev-latest moves under you, so provenance records this, not the request.
     model: str
-    cost: float
+    # USD as the provider reported it, or None when it did not (the ingress
+    # never does; its spend log has the figure). Never a made-up 0.0.
+    cost: Optional[float]
     request_id: str
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     def noul(self, name: str) -> float:
         return float(self.answers[name]["noul"])
@@ -114,7 +127,7 @@ def _validate(questions: Mapping[str, dict[str, Any]], response: dict[str, Any])
 
 def decide(state: dict[str, Any], questions: Mapping[str, dict[str, Any]], *, key: str,
            model: str = DEFAULT_MODEL, url: str = DEFAULT_URL, timeout: float = DEFAULT_TIMEOUT_S,
-           title: str = "HeyMa Wax", post: Optional[Callable[..., dict[str, Any]]] = None,
+           post: Optional[Callable[..., dict[str, Any]]] = None,
            attempts: int = DEFAULT_ATTEMPTS) -> Decision:
     """Ask every question about `state` in one request and validate every answer.
 
@@ -127,12 +140,11 @@ def decide(state: dict[str, Any], questions: Mapping[str, dict[str, Any]], *, ke
         raise provider.ProviderError("Jev needs at least one noul/choice/score question", "run_error")
     send = post or provider.post_json
     payload = {"model": model, "state": state, "questions": dict(questions)}
-    # OpenRouter attributes spend and rate limits to these headers; without
-    # them Wax is indistinguishable from every other holder of the key.
-    headers = {"X-Title": title, "HTTP-Referer": "https://delo.sh/wax"}
+    # Attribution is the virtual key itself; no vendor attribution headers.
     for attempt in range(1, max(1, attempts) + 1):
+        received: dict[str, str] = {}
         try:
-            response = send(url, payload, key=key, timeout=timeout, headers=headers)
+            response = send(url, payload, key=key, timeout=timeout, response_headers=received)
             break
         except provider.ProviderError as exc:
             if exc.reason_code == "provider_bad_request" and exc.detail_code == "max_tokens_exceeded":
@@ -150,7 +162,15 @@ def decide(state: dict[str, Any], questions: Mapping[str, dict[str, Any]], *, ke
     cost = usage.get("cost")
     echoed = response.get("model")
     request_id = response.get("id")
+    if not isinstance(request_id, str) or not request_id:
+        request_id = {k.lower(): v for k, v in received.items()}.get(REQUEST_ID_HEADER, "")
+
+    def tokens(name: str) -> int:
+        value = usage.get(name)
+        return int(value) if _number(value) and value >= 0 else 0
+
     return Decision(answers=answers,
                     model=echoed if isinstance(echoed, str) and echoed else model,
-                    cost=float(cost) if _number(cost) and cost >= 0 else 0.0,
-                    request_id=request_id if isinstance(request_id, str) else "")
+                    cost=float(cost) if _number(cost) and cost >= 0 else None,
+                    request_id=request_id if isinstance(request_id, str) else "",
+                    input_tokens=tokens("input_tokens"), output_tokens=tokens("output_tokens"))

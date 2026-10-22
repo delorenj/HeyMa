@@ -584,8 +584,10 @@ class DoctorProbeTest(PassEventsCase):
         self.requested = []
         self.snapshot = copy.deepcopy(self.SNAPSHOT)
         self.registry_up = True
-        self.key_payload = ({"data": {"is_provisioning_key": False, "limit_remaining": 0.5,
-                                      "label": "sk-or-v1-LABEL-LEAK"}}, "")
+        self.key_payload = ({"key": "KEY-HASH-LEAK",
+                             "info": {"key_alias": "heyma-wax-project-extraction", "spend": 0.01,
+                                      "max_budget": 1.0, "budget_duration": "1d", "blocked": None}}, "")
+        self.models_payload = ({"models": [{"name": "jev-latest"}, {"name": "jev-preview"}]}, "")
 
     def get_json_direct(self, url, **_):
         self.requested.append(url)
@@ -600,17 +602,19 @@ class DoctorProbeTest(PassEventsCase):
         with patch.object(passes, "registry", return_value=registry), \
                 patch.object(self.cli, "_get_json_direct", side_effect=self.get_json_direct), \
                 patch.object(self.cli, "_op_read", return_value=key) as op_read, \
-                patch.object(self.cli, "_get_json", return_value=self.key_payload) as get_json:
+                patch.object(self.cli, "_get_json", side_effect=self.get_json_fake) as get_json:
             self.cli.probe_project_extraction(found.append, repo=self.repo, effective={}, yenv={})
         self.op_read, self.get_json = op_read, get_json
         return {p["probe"]: p for p in found}
+
+    def get_json_fake(self, url, **_):
+        return self.models_payload if url.endswith("/typesafe/v1/models") else self.key_payload
 
     def test_registry_down_is_a_failure_only_when_the_pass_is_enabled(self):
         self.registry_up = False
         self.assertEqual(self.probe(enabled=True)["pjangler registry"]["status"], "fail")
         found = self.probe(enabled=False)
         self.assertEqual(found["pjangler registry"]["status"], "warn")
-        self.assertNotIn("jev api key", found)
 
     def test_unregistered_heyma_fails_with_the_index_fix_and_never_pj_init(self):
         del self.snapshot["projects"]["transcription-queue"]
@@ -640,23 +644,48 @@ class DoctorProbeTest(PassEventsCase):
         self.snapshot["__registry_status"]["transcription-queue"]["status"] = "invalid"
         self.assertEqual(self.probe()["pjangler registry"]["status"], "fail")
 
-    def test_jev_key_must_be_an_inference_key_with_budget_and_is_never_printed(self):
+    def test_jev_probes_the_ingress_with_a_virtual_key_and_never_prints_it(self):
         found = self.probe(env={"WAX_JEV_API_KEY_OP": "op://vault/item/field"})
+        self.assertEqual(found["jev ingress"]["status"], "pass")
         self.assertEqual(found["jev api key"]["status"], "pass")
+        self.assertIn("heyma-wax-project-extraction", found["jev api key"]["detail"])
         self.op_read.assert_called_once_with("op://vault/item/field")
-        self.assertEqual(self.get_json.call_args.args[0], "https://openrouter.ai/api/v1/key")
-        self.key_payload = ({"data": {"is_provisioning_key": True, "limit_remaining": None}}, "")
-        self.assertEqual(self.probe()["jev api key"]["status"], "fail")
-        self.key_payload = ({"data": {"is_provisioning_key": False, "limit_remaining": 0}}, "")
-        self.assertEqual(self.probe()["jev api key"]["status"], "fail")
-        self.key_payload = ({"data": {"is_provisioning_key": False, "limit_remaining": None}}, "")
-        self.assertEqual(self.probe()["jev api key"]["status"], "pass")
-        self.key_payload = (None, "HTTP 401: User not found.")
-        failed = self.probe()["jev api key"]
-        self.assertEqual(failed["status"], "fail")
-        for text in (json.dumps(self.probe()), json.dumps(failed)):
+        self.assertEqual([c.args[0] for c in self.get_json.call_args_list],
+                         ["https://jev.delo.sh/typesafe/v1/models", "https://jev.delo.sh/key/info"])
+        for text in (json.dumps(found),):
             self.assertNotIn("SECRET-KEY-VALUE", text)
-            self.assertNotIn("LABEL-LEAK", text)
+            self.assertNotIn("KEY-HASH-LEAK", text)
+
+    def test_jev_key_failures(self):
+        cases = {
+            # The master key authenticates but has no key-table row.
+            "master key": ((None, 'HTTP 404: {"error":{"message":"Key not found in database"}}'), "not a virtual key"),
+            "rejected": ((None, "HTTP 401: Authentication Error"), "rejected"),
+            "spent": (({"info": {"key_alias": "a", "spend": 1.0, "max_budget": 1.0}}, ""), "spent its budget"),
+            "blocked": (({"info": {"key_alias": "a", "spend": 0, "max_budget": 1.0, "blocked": True}}, ""), "blocked"),
+        }
+        for label, (payload, needle) in cases.items():
+            with self.subTest(label):
+                self.key_payload = payload
+                failed = self.probe()["jev api key"]
+                self.assertEqual(failed["status"], "fail")
+                self.assertIn(needle, failed["detail"])
+                self.assertEqual(self.probe(enabled=False)["jev api key"]["status"], "warn")
+        self.key_payload = ({"info": {"key_alias": "a", "spend": 0, "max_budget": None}}, "")
+        self.assertEqual(self.probe()["jev api key"]["status"], "pass")
+
+    def test_a_dead_pass_through_fails_the_ingress_probe(self):
+        self.models_payload = (None, "HTTP 404: Not Found")
+        self.assertEqual(self.probe()["jev ingress"]["status"], "fail")
+
+    def test_an_openrouter_url_or_model_spelling_is_refused_without_a_request(self):
+        for env in ({"WAX_JEV_URL": "https://openrouter.ai/api/alpha/decisions"},
+                    {"WAX_JEV_MODEL": "typesafe/jev-1.13"}):
+            with self.subTest(env=env):
+                found = self.probe(env=env)
+                self.assertEqual(found["jev ingress"]["status"], "fail")
+                self.assertNotIn("jev api key", found)
+                self.get_json.assert_not_called()
 
     def test_a_literal_jev_key_is_probed_in_preference_to_the_reference_and_warned_about(self):
         found = self.probe(env={"WAX_JEV_API_KEY": "LITERAL-KEY-VALUE"})
@@ -665,15 +694,16 @@ class DoctorProbeTest(PassEventsCase):
         self.assertEqual(self.get_json.call_args.kwargs["token"], "LITERAL-KEY-VALUE")
         self.assertNotIn("LITERAL-KEY-VALUE", json.dumps(found))
 
-    def test_unresolvable_jev_key_fails_without_calling_openrouter(self):
+    def test_unresolvable_jev_key_fails_without_calling_the_ingress(self):
         found = self.probe(key="")
         self.assertEqual(found["jev api key"]["status"], "fail")
         self.get_json.assert_not_called()
 
-    def test_jev_probe_is_skipped_when_the_pass_is_absent_or_disabled(self):
-        for enabled in (None, False):
-            self.assertNotIn("jev api key", self.probe(enabled=enabled))
+    def test_jev_probe_is_skipped_when_the_pass_is_absent_and_warns_when_disabled(self):
+        self.assertNotIn("jev api key", self.probe(enabled=None))
         self.get_json.assert_not_called()
+        self.key_payload = (None, "HTTP 401: Authentication Error")
+        self.assertEqual(self.probe(enabled=False)["jev api key"]["status"], "warn")
 
     def test_pending_pass_event_report_tracks_finalized_items_only(self):
         self.add_renamer()

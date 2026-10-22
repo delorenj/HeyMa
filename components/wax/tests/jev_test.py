@@ -5,13 +5,13 @@ from unittest.mock import patch
 
 from wax import jev, provider
 
-DATED_MODEL = "typesafe/jev-1.13-20260917"
+DATED_MODEL = "jev-1.13.0"
 
 
 def response(answers, **extra):
+    """What the jev-litellm ingress answers: no `id`, no `usage.cost`."""
     body = {"model": DATED_MODEL, "answers": answers,
-            "usage": {"input_tokens": 7527, "output_tokens": 639, "cost": 0.000316134},
-            "id": "gen-dec-1791496808-test", "provider": "TypeSafe"}
+            "usage": {"input_tokens": 7527, "output_tokens": 639}}
     body.update(extra)
     return body
 
@@ -19,16 +19,19 @@ def response(answers, **extra):
 class FakePost:
     """Stands in for provider.post_json and records every request."""
 
-    def __init__(self, *outcomes):
+    def __init__(self, *outcomes, response_headers=None):
         self.outcomes = list(outcomes)
         self.calls = []
+        self.response_headers = response_headers or {"X-TypeSafe-Request-Id": "req_test01"}
 
-    def __call__(self, url, payload, *, key, timeout, headers=None):
+    def __call__(self, url, payload, *, key, timeout, headers=None, response_headers=None):
         self.calls.append({"url": url, "payload": json.loads(json.dumps(payload)), "key": key,
                            "timeout": timeout, "headers": headers})
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        if response_headers is not None:
+            response_headers.update(self.response_headers)
         return outcome
 
 
@@ -68,23 +71,31 @@ class DecideTest(unittest.TestCase):
 
     def test_request_shape_and_provenance(self):
         post = FakePost(response(GOOD))
-        decision = jev.decide({"transcript": "body"}, QUESTIONS, key="k", post=post, title="HeyMa Wax test")
+        decision = jev.decide({"transcript": "body"}, QUESTIONS, key="k", post=post)
         call = post.calls[0]
-        self.assertEqual(call["url"], "https://openrouter.ai/api/alpha/decisions")
-        self.assertEqual(call["payload"], {"model": "typesafe/jev-1.13", "state": {"transcript": "body"},
+        self.assertEqual(call["url"], "https://jev.delo.sh/typesafe/v1/systemone")
+        self.assertEqual(call["payload"], {"model": "jev-1.13.0", "state": {"transcript": "body"},
                                            "questions": json.loads(json.dumps(QUESTIONS))})
-        self.assertEqual(call["headers"]["X-Title"], "HeyMa Wax test")
+        # Attribution is the virtual key; OpenRouter's X-Title/HTTP-Referer are gone.
+        self.assertFalse(call["headers"])
         self.assertEqual(call["timeout"], 20.0)
         self.assertEqual(decision.model, DATED_MODEL)
-        self.assertEqual(decision.request_id, "gen-dec-1791496808-test")
-        self.assertAlmostEqual(decision.cost, 0.000316134)
+        self.assertEqual(decision.request_id, "req_test01")
+        self.assertIsNone(decision.cost)
+        self.assertEqual((decision.input_tokens, decision.output_tokens), (7527, 639))
         self.assertEqual(decision.noul("bb"), 0.97)
         self.assertEqual(decision.answers["kind"]["choice"], "meeting")
 
+    def test_a_reported_cost_and_body_id_are_still_honoured(self):
+        post = FakePost(response(GOOD, id="gen-1", usage={"input_tokens": 1, "output_tokens": 2, "cost": 0.0003}))
+        decision = jev.decide({}, QUESTIONS, key="k", post=post)
+        self.assertEqual((decision.request_id, decision.cost), ("gen-1", 0.0003))
+
     def test_missing_provenance_falls_back_without_failing(self):
-        post = FakePost({"answers": {"bb": {"type": "noul", "noul": 0}}})
-        decision = jev.decide({}, {"bb": QUESTIONS["bb"]}, key="k", post=post, model="typesafe/jev-x")
-        self.assertEqual((decision.model, decision.cost, decision.request_id), ("typesafe/jev-x", 0.0, ""))
+        post = FakePost({"answers": {"bb": {"type": "noul", "noul": 0}}}, response_headers={"x-other": "1"})
+        decision = jev.decide({}, {"bb": QUESTIONS["bb"]}, key="k", post=post, model="jev-x")
+        self.assertEqual((decision.model, decision.cost, decision.request_id, decision.input_tokens),
+                         ("jev-x", None, "", 0))
 
     def test_every_malformed_answer_is_a_bad_response(self):
         cases = {

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -98,11 +99,13 @@ PJ_TIMEOUT_S = 5
 # pjangler's registry binds loopback only and has no auth; `localhost` can
 # resolve to ::1 first, where it is not listening.
 PJ_REGISTRY_DEFAULT = "http://127.0.0.1:8764"
-# HeyMa's own OpenRouter inference key. The Jev decisions API has no gateway
-# route (every candidate path 404s), so this is the documented exception to
-# routing LLM traffic through api.automaticai.io.
-JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
-JEV_KEY_URL = "https://openrouter.ai/api/v1/key"
+# Jev goes through the fleet's Jev ingress (jev-litellm, LiteLLM's TypeSafe
+# pass-through): the AutomaticAI gateway has no decisions route. HeyMa holds
+# its own LiteLLM virtual key there. These mirror wax.jev and
+# passes.d/bin/project-extraction.
+JEV_URL_DEFAULT = "https://jev.delo.sh/typesafe/v1/systemone"
+JEV_MODEL_DEFAULT = "jev-1.13.0"
+JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential"
 # Chat passes (title-slug, classification, ticketable) go through the
 # AutomaticAI gateway's auto/fast role on the scoped heyma-wax-inference token;
 # these mirror the bin defaults in config/passes.d/bin/{title-slug,ticketable}.
@@ -265,10 +268,11 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug, classification (gateway token)", TITLE_KEY_OP_DEFAULT),
     ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug", "120"),
     ("WAX_TITLE_API_KEY", "passes.d/bin/title-slug (direct key; prefer op://)", "<unset>"),
-    ("WAX_JEV_URL", "passes.d/bin/project-extraction (Jev decisions endpoint)",
-     "https://openrouter.ai/api/alpha/decisions"),
-    ("WAX_JEV_MODEL", "passes.d/bin/project-extraction", "typesafe/jev-1.13"),
-    ("WAX_JEV_API_KEY_OP", "passes.d/bin/project-extraction (OpenRouter INFERENCE key, never a management key)",
+    ("WAX_JEV_URL", "wax/jev.py, passes.d/bin/project-extraction (Jev ingress systemone endpoint)",
+     JEV_URL_DEFAULT),
+    ("WAX_JEV_MODEL", "wax/jev.py, passes.d/bin/project-extraction (pinned calibration build)",
+     JEV_MODEL_DEFAULT),
+    ("WAX_JEV_API_KEY_OP", "passes.d/bin/project-extraction (jev-litellm VIRTUAL key, never the master key)",
      JEV_KEY_OP_DEFAULT),
     ("WAX_JEV_API_KEY", "passes.d/bin/project-extraction (direct key; prefer op://)", "<unset>"),
     ("WAX_PROJECT_MIN_P", "passes.d/bin/project-extraction (noul threshold)", "0.6"),
@@ -452,9 +456,24 @@ def probe_project_extraction(add, *, repo: Path, effective: dict[str, str],
             else:
                 add(_probe("pjangler registry", PASS, f"{base}: {len(known)} project(s), {project_id!r} present"))
 
-    # -- Jev inference key ----------------------------------------------------
-    if not enabled:
+    # -- Jev ingress + virtual key --------------------------------------------
+    # Probed while the pass is disabled too (as WARN), so a re-enable is never
+    # the first time anyone learns the key or the ingress is broken. Both
+    # probes are free: no decision is requested.
+    if ep is None:
         return
+    url = setting("WAX_JEV_URL", JEV_URL_DEFAULT)
+    parsed = urllib.parse.urlsplit(url)
+    if "openrouter.ai" in parsed.netloc.lower() or parsed.scheme not in ("http", "https"):
+        add(_probe("jev ingress", bad, f"WAX_JEV_URL={url} is not the Jev ingress{unused}",
+                   f"set WAX_JEV_URL to {JEV_URL_DEFAULT}; OpenRouter's decisions proxy is retired"))
+        return
+    model = setting("WAX_JEV_MODEL", JEV_MODEL_DEFAULT)
+    if model.lower().startswith("typesafe/"):
+        add(_probe("jev ingress", bad, f"WAX_JEV_MODEL={model} is OpenRouter's spelling; System One 400s it{unused}",
+                   f"set WAX_JEV_MODEL to {JEV_MODEL_DEFAULT}"))
+        return
+    origin = f"{parsed.scheme}://{parsed.netloc}"
     # Resolution order is the pass's own (wax.provider.resolve_key): a literal
     # $WAX_JEV_API_KEY wins over the op:// reference.
     reference = setting("WAX_JEV_API_KEY_OP", JEV_KEY_OP_DEFAULT)
@@ -462,34 +481,52 @@ def probe_project_extraction(add, *, repo: Path, effective: dict[str, str],
     where = "WAX_JEV_API_KEY (a literal key in the environment)" if literal else reference
     key = literal or _op_read(reference)
     if not key:
-        add(_probe("jev api key", FAIL, f"{reference} did not resolve",
+        add(_probe("jev api key", bad, f"{reference} did not resolve{unused}",
                    f"op read {reference}   # then fix vault access or the field itself"))
         return
-    payload, err = _get_json(JEV_KEY_URL, token=key)
-    data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(data, dict):
-        add(_probe("jev api key", FAIL, f"{JEV_KEY_URL}: {err or 'no data object'}",
-                   "a 401 'User not found' means a dead key OR a management key; "
-                   "check is_provisioning_key before suspecting the account"))
-    elif data.get("is_provisioning_key") is not False:
-        # OpenRouter answers inference with 401 "User not found" for these, which
-        # reads like a closed account and sends the search to the wrong place.
-        add(_probe("jev api key", FAIL,
-                   f"{where} is a provisioning (management) key; it cannot do inference",
-                   "mint a per-consumer inference key and point WAX_JEV_API_KEY_OP at it"))
-    elif data.get("limit_remaining") is not None and not data["limit_remaining"] > 0:
-        add(_probe("jev api key", FAIL,
-                   f"{where} has no budget left (limit_remaining={data['limit_remaining']})",
-                   "wait for the daily reset or raise the key's limit in OpenRouter"))
+    # The pass-through answering at all proves the route exists (LiteLLM
+    # 1.94.0 has none: a bare 404) and that the ingress holds a working
+    # TypeSafe credential.
+    models, err = _get_json(f"{origin}/typesafe/v1/models", token=key)
+    listed = models.get("models") if isinstance(models, dict) else None
+    if not isinstance(listed, list) or not listed:
+        add(_probe("jev ingress", bad, f"{origin}/typesafe/v1/models: {err or 'no models listed'}{unused}",
+                   "cd ~/docker/stacks/ai/jev-litellm && mise run up && mise run probe"))
     else:
-        remaining = data.get("limit_remaining")
-        detail = f"{where}: inference key, " + ("no spend cap" if remaining is None
-                                                 else f"limit_remaining={remaining}")
-        if literal:
-            add(_probe("jev api key", WARN, detail + "; a literal key, not 1Password",
-                       f"move it into {reference} and drop WAX_JEV_API_KEY"))
+        add(_probe("jev ingress", PASS, f"{origin}: TypeSafe pass-through answers ({len(listed)} model alias(es))"))
+    payload, err = _get_json(f"{origin}/key/info", token=key)
+    info = payload.get("info") if isinstance(payload, dict) else None
+    if not isinstance(info, dict):
+        if err.startswith("HTTP 404"):
+            # The master key authenticates but is not a row in the key table.
+            detail = f"{where} is not a virtual key (the ingress master key?)"
+        elif err.startswith(("HTTP 401", "HTTP 403")):
+            detail = f"{where} was rejected by {origin} ({err.split(':')[0]})"
         else:
-            add(_probe("jev api key", PASS, detail))
+            detail = f"{origin}/key/info: {err or 'no info object'}"
+        add(_probe("jev api key", bad, detail + unused,
+                   "mint a HeyMa virtual key on jev-litellm (/key/generate with the master key), "
+                   "store it in 1Password and point WAX_JEV_API_KEY_OP at it"))
+        return
+    alias = info.get("key_alias") or "<no alias>"
+    spend, budget = info.get("spend"), info.get("max_budget")
+    if info.get("blocked"):
+        add(_probe("jev api key", bad, f"{where} ({alias}) is blocked on the ingress{unused}",
+                   "unblock it: POST /key/unblock on jev-litellm"))
+        return
+    if isinstance(budget, (int, float)) and isinstance(spend, (int, float)) and spend >= budget:
+        add(_probe("jev api key", bad,
+                   f"{where} ({alias}) has spent its budget ({spend:.6f}/{budget:g} USD){unused}",
+                   f"wait for the reset at {info.get('budget_reset_at') or '?'} or raise max_budget"))
+        return
+    detail = (f"{where}: virtual key {alias}, "
+              + ("no budget cap" if budget is None
+                 else f"spend {float(spend or 0):.6f}/{budget:g} USD per {info.get('budget_duration') or 'lifetime'}"))
+    if literal:
+        add(_probe("jev api key", WARN, detail + "; a literal key, not 1Password",
+                   f"move it into {reference} and drop WAX_JEV_API_KEY"))
+    else:
+        add(_probe("jev api key", PASS, detail))
 
 
 def pending_pass_event_report() -> list[tuple[str, str, int]]:

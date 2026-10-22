@@ -137,14 +137,19 @@ satisfy the Bloodbank schema — the runner validates, fail-closed); a completed
 pass's events publish as soon as its own `requires` subgraph completes
 (`finalize.publish_pass_events()`), not behind slow siblings, while the
 completion stays plan-gated as the summary fact. `ticketable` becomes one
-`bloodbank.audio.intake.detected` per ticket, relayed to ntfy `audio`. Jev is the
-one deliberate bypass of the AutomaticAI gateway (it has no decisions route):
-`project-extraction` is configured to call OpenRouter's Jev decisions API directly
-with HeyMa's own inference key (`op://`, never a management key). That OpenRouter
-account is out of credits and the fleet's other Jev callers moved to TypeSafe
-direct on 2026-10-21, so a re-target decision is pending before the pass is
-enabled again. `wax doctor` probes the registry, that key, the chat-pass route
-served to the gateway token, and unpublished pass events.
+`bloodbank.audio.intake.detected` per ticket, relayed to ntfy `audio`. Jev does
+not go through the AutomaticAI gateway (it has no decisions route); it goes
+through the fleet's Jev ingress instead, the jev-litellm LiteLLM proxy at
+`https://jev.delo.sh/typesafe/v1/systemone` (stack
+`~/docker/stacks/ai/jev-litellm`), which injects the TypeSafe credential
+server-side. `project-extraction` holds HeyMa's own virtual key there (alias
+`heyma-wax-project-extraction`, $1/day, `op://`; never the ingress master key
+or the raw TypeSafe key) and pins `jev-1.13.0`, the build its thresholds were
+measured on. Per-request spend is in the ingress's LiteLLM spend log, not the
+response. No pass is configured for OpenRouter. The pass stays disabled until a
+calibration re-run on the ingress. `wax doctor` probes the registry, the Jev
+ingress and that key, the chat-pass route served to the gateway token, and
+unpublished pass events.
 
 To add one, use the `create-enrichment-pass` skill; see
 `components/wax/docs/ENRICHMENT-PASSES.md`.

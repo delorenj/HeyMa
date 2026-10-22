@@ -24,7 +24,7 @@ SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 PE = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(PE)
 
-DATED_MODEL = "typesafe/jev-1.13-20260917"
+DATED_MODEL = "jev-1.13.0"
 
 
 def record(pid, name, description="", repo=None, **extra):
@@ -61,9 +61,10 @@ TRANSCRIPT = ("---\nwax-item-id: 5eea3d5cd205bb84\nclassification: meeting\n---\
 class FakeJev:
     """Stands in for jev.decide: one scripted outcome per call, every call recorded."""
 
-    def __init__(self, *outcomes):
+    def __init__(self, *outcomes, cost=0.0003):
         self.outcomes = list(outcomes)
         self.calls = []
+        self.cost = cost
 
     def __call__(self, state, questions, *, key, model, url, **_kwargs):
         self.calls.append({"state": state, "questions": questions, "key": key, "model": model, "url": url})
@@ -71,7 +72,8 @@ class FakeJev:
         if isinstance(outcome, Exception):
             raise outcome
         return jev.Decision(answers={pid: {"type": "noul", "noul": outcome.get(pid, 0.01)} for pid in questions},
-                            model=DATED_MODEL, cost=0.0003, request_id=f"gen-{len(self.calls)}")
+                            model=DATED_MODEL, cost=self.cost, request_id=f"gen-{len(self.calls)}",
+                            input_tokens=100)
 
 
 def too_large():
@@ -148,6 +150,15 @@ class ProjectExtractionTest(unittest.TestCase):
                 for absent in ("# Transcription:", "wax-item-id", "classification:", "tags:"):
                     self.assertNotIn(absent, sent["transcript"])
                 self.assertEqual((fake.calls[0]["model"], fake.calls[0]["url"]), (jev.DEFAULT_MODEL, jev.DEFAULT_URL))
+
+    def test_an_unreported_cost_is_recorded_as_unknown_not_zero(self):
+        # The ingress reports tokens but no cost; its spend log has the figure.
+        fake = FakeJev({"bb": 0.9}, cost=None)
+        fetch, key, decide = self.patched(fake)
+        with fetch, key, decide:
+            result = PE.build_result(self.note(TRANSCRIPT))
+        self.assertIsNone(result["evidence"]["cost"])
+        self.assertEqual(result["evidence"]["input_tokens"], 100)
 
     def test_one_question_per_candidate_with_hints_and_never_a_whole_record(self):
         _, fake, _ = self.build(self.note(TRANSCRIPT), {})

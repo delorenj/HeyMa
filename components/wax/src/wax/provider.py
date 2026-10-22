@@ -5,7 +5,7 @@ tests patch them by module attribute). Everything here exists because of a
 specific way those copies hurt once a second provider arrived:
 
 - A key in `$WAX_TITLE_API_KEY` wins for EVERY caller of that resolver, so a
-  Jev pass reusing it would silently send the gateway token to OpenRouter.
+  Jev pass reusing it would silently send the gateway token to the Jev ingress.
   Each pass here names its own env var and its own op:// reference.
 - "The model name appears in the error body" was the missing-model test. A
   Jev 400 echoes the whole request, model id included, so that test misreads
@@ -189,8 +189,13 @@ def _http_error(exc: urllib.error.HTTPError, url: str, key: str) -> ProviderErro
 
 def post_json(url: str, payload: dict[str, Any], *, key: str, timeout: float,
               headers: Optional[dict[str, str]] = None,
-              user_agent: str = USER_AGENT) -> dict[str, Any]:
-    """POST one JSON object and return the JSON object the provider answers with."""
+              user_agent: str = USER_AGENT,
+              response_headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """POST one JSON object and return the JSON object the provider answers with.
+
+    `response_headers`, when given, is filled with the success response's
+    headers (a provider may carry its request id there rather than in the body).
+    """
     request_headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -206,6 +211,8 @@ def post_json(url: str, payload: dict[str, Any], *, key: str, timeout: float,
     try:
         with _OPENER.open(request, timeout=timeout) as response:
             raw = response.read()
+            if response_headers is not None:
+                response_headers.update(response.headers.items())
     except urllib.error.HTTPError as exc:
         # MUST precede URLError, which it subclasses: catching the parent first
         # is precisely what once discarded the status that named a dead model.
