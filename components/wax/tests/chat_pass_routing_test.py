@@ -79,6 +79,18 @@ class ChatPassRoutingTest(unittest.TestCase):
         self.assertNotIn('"OPENROUTER_API_KEY"', (COMPONENT_ROOT / "bin" / "wax").read_text(),
                          "the doctor must not advertise OPENROUTER_API_KEY as a title-slug credential")
 
+    def test_asr_has_no_direct_groq_path(self):
+        # transcribe.py once carried a `--groq` branch posting audio straight to
+        # api.groq.com with a raw GROQ_API_KEY. Nothing called it; it was removed
+        # on 2026-10-22. ASR is local faster-whisper; a hosted route belongs on
+        # the gateway, never a direct vendor call.
+        repo_root = COMPONENT_ROOT.parents[1]
+        for rel in ("scripts/transcribe.py", "bin/transcribe"):
+            source = (repo_root / rel).read_text().lower()
+            with self.subTest(file=rel):
+                for needle in ("api.groq.com", "groq_api_key", "--groq"):
+                    self.assertNotIn(needle, source, f"{rel} reintroduced {needle}")
+
     def test_regression_check_catches_the_old_route(self):
         self.assertTrue(_forbidden("automaticai/openrouter/google/gemini-3.7-flash"))
         self.assertTrue(_forbidden("https://openrouter.ai/api/v1"))

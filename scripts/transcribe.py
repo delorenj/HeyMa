@@ -5,7 +5,6 @@ Usage:
     uv run python scripts/transcribe.py recording.mp3
     uv run python scripts/transcribe.py recording.mp3 -o transcript.md
     uv run python scripts/transcribe.py recording.mp3 --model large-v3
-    uv run python scripts/transcribe.py recording.mp3 --groq  # use Groq API instead
 """
 
 import argparse
@@ -506,59 +505,6 @@ def diarize_local(audio_path: str, requested_device: str = "cuda") -> tuple[list
         return [], None
 
 
-def transcribe_groq(audio_path: str, model: str, language: str | None) -> dict:
-    """Transcribe using Groq's Whisper API."""
-    import httpx
-
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        print("Error: GROQ_API_KEY environment variable not set", file=sys.stderr)
-        sys.exit(1)
-
-    groq_model = {
-        "large-v3": "whisper-large-v3",
-        "large-v3-turbo": "whisper-large-v3-turbo",
-        "distil": "distil-whisper-large-v3-en",
-    }.get(model, "whisper-large-v3-turbo")
-
-    with open(audio_path, "rb") as f:
-        files = {"file": (Path(audio_path).name, f, "audio/mpeg")}
-        data = {"model": groq_model, "response_format": "verbose_json"}
-        if language:
-            data["language"] = language
-
-        response = httpx.post(
-            "https://api.groq.com/openai/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            files=files,
-            data=data,
-            timeout=300,
-        )
-
-    if response.status_code != 200:
-        print(f"Groq API error ({response.status_code}): {response.text}", file=sys.stderr)
-        sys.exit(1)
-
-    result = response.json()
-    segments = []
-    for seg in result.get("segments", []):
-        segments.append({
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"].strip(),
-        })
-
-    return {
-        "text": result.get("text", "").strip(),
-        "segments": segments,
-        "language": result.get("language", "unknown"),
-        "language_probability": None,
-        "duration": result.get("duration"),
-        "model": groq_model,
-        "backend": "groq",
-    }
-
-
 def format_timestamp(seconds: float) -> str:
     """Format seconds as HH:MM:SS."""
     h = int(seconds // 3600)
@@ -666,7 +612,6 @@ def main():
     parser.add_argument("-o", "--output", help="Output markdown file (default: same name as input with .md)")
     parser.add_argument("-m", "--model", default="large-v3", help="Whisper model size: tiny, base, small, medium, large-v3 (default: large-v3)")
     parser.add_argument("-l", "--language", default=None, help="Language code (e.g., en). Auto-detected if omitted.")
-    parser.add_argument("--groq", action="store_true", help="Use Groq API instead of local model")
     parser.add_argument("--timestamps", action="store_true", help="Include segment timestamps in output")
     parser.add_argument(
         "--diarization",
@@ -697,7 +642,7 @@ def main():
     # Downstream (Wax) needs the request, not just the outcome: without it a
     # failed diarization is byte-identical to an honest single-speaker recording,
     # which is how both outages ran at 100% failure behind a green tray.
-    diarization_requested = bool(args.diarization and not args.groq)
+    diarization_requested = bool(args.diarization)
     diarization_device_requested = (
         args.diarization_device if diarization_requested else None
     )
@@ -717,13 +662,10 @@ def main():
         Path(_progress_file).write_text("")  # truncate
 
     log(f"Transcribing: {audio_path}")
-    log(f"Backend: {'groq' if args.groq else 'faster-whisper'} | Model: {args.model}")
+    log(f"Backend: faster-whisper | Model: {args.model}")
     report_progress("preparing", 0)
 
-    if args.groq:
-        result = transcribe_groq(audio_path, args.model, args.language)
-    else:
-        result = transcribe_local(audio_path, args.model, args.language, args.device)
+    result = transcribe_local(audio_path, args.model, args.language, args.device)
     if args.asr_output:
         import hashlib
         import tempfile
@@ -741,7 +683,7 @@ def main():
             os.fsync(handle.fileno())
             temporary = handle.name
         os.replace(temporary, artifact)
-    if args.diarization and not args.groq:
+    if args.diarization:
         diarization, diarization_device = diarize_local(audio_path, args.diarization_device)
     else:
         diarization = None

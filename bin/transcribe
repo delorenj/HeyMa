@@ -136,9 +136,8 @@ fast_lane_eligible() {
   # Only throwaway interactive runs (--ephemeral: Hermes voice notes, Holocene car memos). Wax's 60 s capture
   # segments are short too, and must never be quietly downgraded to a small CPU model while a voice note runs.
   [[ "$EPHEMERAL" == "true" ]] || return 1
-  # A caller that pinned a device or the Groq API asked for something specific: honour it, wait in line.
+  # A caller that pinned a device asked for something specific: honour it, wait in line.
   has_arg --device && return 1
-  has_arg --groq && return 1
   AUDIO_SECONDS="$(audio_seconds)"
   [[ -n "$AUDIO_SECONDS" ]] && ((AUDIO_SECONDS <= FAST_LANE_MAX_S))
 }
@@ -190,7 +189,6 @@ has_arg() {
 
 should_retry_on_cpu() {
   has_arg --device && return 1
-  has_arg --groq && return 1
   return 0
 }
 
@@ -241,13 +239,13 @@ PY
   # When it exists we AUTO-ENABLE speaker diarization so a bare `transcribe
   # <file>` (how the n8n pipeline invokes it) "just works". This is safe:
   # transcribe.py guards --diarization and emits explicit degraded/device
-  # evidence if the stage cannot run. We do NOT auto-add it for the Groq API
-  # path (no local diarization there) or if the caller already passed the flag.
+  # evidence if the stage cannot run. We do NOT auto-add it if the caller
+  # already passed the flag.
   # When the venv is absent we fall back to the main uv env and stay fast by
   # NOT diarizing (its deps are intentionally not installed).
   if [[ -x "$DIARIZATION_PYTHON" ]]; then
     runner=(nice -n 15 "$DIARIZATION_PYTHON")
-    if ! has_arg --diarization && ! has_arg --no-diarization && ! has_arg --groq; then
+    if ! has_arg --diarization && ! has_arg --no-diarization; then
       cmd_args+=("--diarization")
     fi
   else
@@ -276,10 +274,10 @@ run_remote_transcribe() {
     remote_args+=("--diarization-device" "$WAX_DIARIZATION_DEVICE")
   fi
   # Auto-enable diarization when the remote host has the diarization venv, matching
-  # the local path. Guarded the same way (not for --groq / already-passed).
+  # the local path. Guarded the same way (not when already passed).
   if ssh -q "$REMOTE" "test -x '${DIARIZATION_PYTHON}'"; then
     runner_cmd="'${DIARIZATION_PYTHON}'"
-    if ! has_arg --diarization && ! has_arg --no-diarization && ! has_arg --groq; then
+    if ! has_arg --diarization && ! has_arg --no-diarization; then
       remote_args+=("--diarization")
     fi
   fi
