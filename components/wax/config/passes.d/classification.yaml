@@ -8,7 +8,7 @@ requires: []
 timeout_s: 180
 env:
   WAX_TITLE_API_BASE: https://api.automaticai.io/v1
-  WAX_TITLE_MODEL: automaticai/openrouter/google/gemini-3.7-flash
+  WAX_TITLE_MODEL: automaticai/auto/fast
   WAX_TITLE_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
   WAX_TITLE_REQUEST_TIMEOUT_S: "120"
 command: ["{component_root}/config/passes.d/bin/classification", "{md_path}", "{item_id}"]

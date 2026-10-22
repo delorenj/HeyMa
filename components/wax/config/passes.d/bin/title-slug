@@ -5,9 +5,10 @@ Local inference is retired for this pass. `qwen3.6:latest` was deleted from the
 Ollama host on 2026-08-15 and every run 404'd for the next five days without one
 human-visible symptom, so the provider is now pure configuration: base URL, model
 id, and 1Password key path arrive as contract-C env injected from
-title-slug.yaml. OpenRouter, Pokee (https://api.pokee.ai/v1), and even a local
-Ollama all serve POST /chat/completions, so this stays a single code path and
-switching providers is a three-value edit in the YAML, never a code change.
+title-slug.yaml. The route is the AutomaticAI gateway's `automaticai/auto/fast`
+(titles/summaries role) on the scoped `heyma-wax-inference` token; any
+OpenAI-compatible POST /chat/completions works, so switching routes is a
+three-value edit in the YAML, never a code change.
 
 Context window is NOT a reason to pick one: transcript_context() truncates to
 MAX_CONTEXT_CHARS (24,000 chars, ~6k tokens) before anything leaves this process,
@@ -56,9 +57,8 @@ MAX_OUTPUT_TOKENS = 2_048
 # Provider defaults. Every one of these is overridable from title-slug.yaml's
 # env block; the defaults exist so the pass still runs from a bare shell.
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
-DEFAULT_MODEL = "automaticai/openrouter/google/gemini-3.7-flash"
+DEFAULT_MODEL = "automaticai/auto/fast"
 DEFAULT_API_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
-DEFAULT_API_KEY_OP_FALLBACK = ""
 DEFAULT_REQUEST_TIMEOUT_S = 120.0
 
 # Preflight is a cheap catalog lookup; it must never be the reason a run is slow.
@@ -145,8 +145,12 @@ def _op_read(reference: str) -> str:
     return proc.stdout.strip()
 
 
-def resolve_api_key(*, primary_ref: str, fallback_ref: str) -> str:
-    """First non-empty of: direct env, primary op://, fallback op://, ambient.
+def resolve_api_key(*, primary_ref: str, fallback_ref: str = "") -> str:
+    """First non-empty of: direct env, then the dedicated gateway op:// ref.
+
+    There is no fallback reference and no ambient provider key: the gateway
+    token is the only credential this pass sends. `fallback_ref` is accepted
+    and ignored so older callers keep working.
 
     No branch of this ever writes a key to disk, and nothing but the op://
     reference is allowed into a tracked file.
@@ -384,8 +388,6 @@ def build_result(md: Path) -> dict[str, Any]:
         model = os.environ.get("WAX_TITLE_MODEL", DEFAULT_MODEL).strip()
         api_key = resolve_api_key(
             primary_ref=os.environ.get("WAX_TITLE_API_KEY_OP", DEFAULT_API_KEY_OP).strip(),
-            fallback_ref=os.environ.get("WAX_TITLE_API_KEY_OP_FALLBACK",
-                                        DEFAULT_API_KEY_OP_FALLBACK).strip(),
         )
         enriched = hosted_enrichment(
             body,

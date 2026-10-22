@@ -12,7 +12,7 @@ emits: [intake.detected]
 timeout_s: 600
 env:
   WAX_TICKETS_API_BASE: https://api.automaticai.io/v1
-  WAX_TICKETS_MODEL: automaticai/openrouter/google/gemini-3.7-flash
+  WAX_TICKETS_MODEL: automaticai/auto/fast
   WAX_TICKETS_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
   # Up to three 240K-char windows per transcript: 3 x 180s stays under timeout_s.
   WAX_TICKETS_REQUEST_TIMEOUT_S: "180"

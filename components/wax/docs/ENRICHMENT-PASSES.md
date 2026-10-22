@@ -58,7 +58,7 @@ clobber: []
 timeout_s: 180
 frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
 env:
-  WAX_TITLE_MODEL: automaticai/openrouter/google/gemini-3.7-flash
+  WAX_TITLE_MODEL: automaticai/auto/fast
 command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]
 ```
 
@@ -266,7 +266,7 @@ executables are `config/passes.d/{project-extraction,ticketable}.yaml` and
 | Pass | Owns | How |
 |---|---|---|
 | `project-extraction` | `project-ids` (pjangler ids, most probable first; `[]` = ran, none) and `projects` (names, index-aligned) | Candidates come from the pjangler registry (`GET $PJ_REGISTRY_URL/v1/registry`, default `http://127.0.0.1:8764`) plus the spoken forms and one-line descriptions in `config/project-aliases.yaml`, which fills the registry's empty descriptions. Decided by TypeSafe's Jev (`typesafe/jev-1.13`): one `noul` question per project in a single request, a project is kept when P(true) is at least `WAX_PROJECT_MIN_P` (0.6), or `WAX_PROJECT_MIN_P_LONG` (0.75) for transcripts over 30K characters, where scores saturate. |
-| `ticketable` | `ticketable`: a list of `{project_id, description, transcript}`; `[]` = ran, none | `requires: [title-slug, project-extraction]`, so `transcript` is the final filename. Extracted through the gateway route `automaticai/openrouter/google/gemini-3.7-flash` (`WAX_TICKETS_*`) with a strict JSON schema whose `project_id` is an enum of the note's `project-ids`. Declares `emits: [intake.detected]` and returns one event per distinct ticket, keyed by a hash of `(project_id, description)`; the event's `intake_id` is `<item>:<first 12 hex of that key>`. If the note has no `project-ids` it reports `skipped` / `no_project`. |
+| `ticketable` | `ticketable`: a list of `{project_id, description, transcript}`; `[]` = ran, none | `requires: [title-slug, project-extraction]`, so `transcript` is the final filename. Extracted through the gateway route `automaticai/auto/fast` (`WAX_TICKETS_*`, the `heyma-wax-inference` token) with a strict JSON schema whose `project_id` is an enum of the note's `project-ids`. Declares `emits: [intake.detected]` and returns one event per distinct ticket, keyed by a hash of `(project_id, description)`; the event's `intake_id` is `<item>:<first 12 hex of that key>`. If the note has no `project-ids` it reports `skipped` / `no_project`. |
 
 The runner publishes each ticket as `bloodbank.audio.intake.detected` after
 `transcription.completed` (schema:
@@ -275,9 +275,11 @@ ntfy `audio` topic, and the project's PM triages it (`repo.intake.triaged`
 closes the loop through `data.intake_id`).
 
 **Jev is the one deliberate bypass of the AutomaticAI gateway.** The gateway has
-no decisions route, so `project-extraction` calls
+no decisions route, so `project-extraction` is configured to call
 `https://openrouter.ai/api/alpha/decisions` directly with HeyMa's own OpenRouter
-**inference** key (`WAX_JEV_API_KEY_OP`, an `op://` reference, $1/day cap). A
+**inference** key. That OpenRouter account ran out of credits on 2026-10-21,
+and the fleet's other Jev callers moved to TypeSafe direct the same day. The
+pass is disabled and its re-target is a pending decision. It uses the key (`WAX_JEV_API_KEY_OP`, an `op://` reference, $1/day cap). A
 management key cannot do inference and answers 401 `User not found`, which
 looks like a dead account; `wax doctor`'s `jev api key` probe checks
 `is_provisioning_key` and the remaining budget. Never route the ticket model

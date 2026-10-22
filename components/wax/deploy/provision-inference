@@ -1,19 +1,68 @@
 #!/usr/bin/python3
+"""Mint or re-scope the `heyma-wax-inference` gateway token, reproducibly.
+
+The chat passes (title-slug, classification, ticketable) call
+`automaticai/auto/fast` on api.automaticai.io. The auto router intersects its
+candidate pool with the token's scope, so the token lists the auto name plus
+exactly the subscription member routes HeyMa may land on across the fast
+role's floor..ceiling rungs (1..3: fast tier, then strong tier):
+
+- personal z.ai GLM 5.3 Flash / GLM 5.3, personal + Damien Claude Sonnet 5.5,
+  Damien Claude Haiku 4.5.
+- Kimi routes are left out on purpose: they reject the passes' temperature
+  (`invalid temperature: only 1 is allowed`), and a target-side 400 does not
+  walk the router's chain, so a pass landing there would fail outright.
+- Intelliforia (team account) is left out: transcripts are personal.
+- No OpenRouter route, no free pool (free providers train on prompts), no
+  metered route.
+
+Idempotent: an existing consumer is re-scoped in place (key, op:// item and
+expiry preserved); a missing one is minted with no expiry. The tool saves the
+key in 1Password itself; nothing here reads or prints it. Dry run by default.
+"""
 import argparse
+import json
 import subprocess
+import sys
 from pathlib import Path
 
-MODEL = "automaticai/openrouter/google/gemini-3.7-flash"
+CONSUMER = "heyma-wax-inference"
+ROUTE = "automaticai/auto/fast"
+MEMBERS = [
+    "automaticai/personal/glm-5.3-flash",
+    "automaticai/damien/claude-haiku-4.5",
+    "automaticai/personal/glm-5.3",
+    "automaticai/personal/claude-sonnet-5.5",
+    "automaticai/damien/claude-sonnet-5.5",
+]
+MODELS = [ROUTE, *MEMBERS]
+# The gateway source moved to ~/code/client-portal/gateway; the stacks path is
+# a compatibility symlink kept for older checkouts.
+TOOLING = [
+    Path.home() / "code/client-portal/gateway/ops/gateway-tokens.py",
+    Path.home() / "docker/stacks/ai/newapi/ops/gateway-tokens.py",
+]
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--apply", action="store_true")
+def tool() -> Path:
+    for candidate in TOOLING:
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError("gateway token tooling is unavailable: " + ", ".join(map(str, TOOLING)))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--apply", action="store_true", help="change the gateway (default: dry run)")
     args = parser.parse_args()
-    tooling = Path.home() / "docker/stacks/ai/newapi/ops/gateway-tokens.py"
-    if not tooling.is_file():
-        raise RuntimeError("gateway token tooling is unavailable")
-    command = ["python3", str(tooling), "mint", "heyma-wax-inference", "--models", MODEL, "--days", "-1"]
+    tokens = tool()
+    status = subprocess.run(["python3", str(tokens), "status", CONSUMER],
+                            check=True, stdout=subprocess.PIPE, text=True)
+    existing = json.loads(status.stdout).get("tokens") or []
+    verb = "scope" if existing else "mint"
+    command = ["python3", str(tokens), verb, CONSUMER, "--models", *MODELS]
+    if verb == "mint":
+        command += ["--days", "-1"]
     if not args.apply:
         command.append("--dry-run")
     subprocess.run(command, check=True)
@@ -21,4 +70,8 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        sys.exit(main())
+    except subprocess.CalledProcessError as exc:
+        # gateway-tokens.py already printed why (e.g. a login 429); no traceback.
+        sys.exit(exc.returncode or 1)

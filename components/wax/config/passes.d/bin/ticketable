@@ -63,7 +63,7 @@ MAX_PRESERVED_TICKETS = 50
 MAX_OUTPUT_TOKENS = 8_192
 
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
-DEFAULT_MODEL = "automaticai/openrouter/google/gemini-3.7-flash"
+DEFAULT_MODEL = "automaticai/auto/fast"
 DEFAULT_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
 KEY_ENV = "WAX_TICKETS_API_KEY"
 DEFAULT_REQUEST_TIMEOUT_S = 180.0

@@ -103,6 +103,16 @@ PJ_REGISTRY_DEFAULT = "http://127.0.0.1:8764"
 # routing LLM traffic through api.automaticai.io.
 JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"
 JEV_KEY_URL = "https://openrouter.ai/api/v1/key"
+# Chat passes (title-slug, classification, ticketable) go through the
+# AutomaticAI gateway's auto/fast role on the scoped heyma-wax-inference token;
+# these mirror the bin defaults in config/passes.d/bin/{title-slug,ticketable}.
+TITLE_API_BASE_DEFAULT = "https://api.automaticai.io/v1"
+TITLE_MODEL_DEFAULT = "automaticai/auto/fast"
+TITLE_KEY_OP_DEFAULT = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
+# api.automaticai.io sits behind Cloudflare, which answers urllib's default
+# User-Agent with "403 error code: 1010" before the gateway sees the request.
+# The passes send this one; the doctor must look like them.
+USER_AGENT = "HeyMa-Wax/1.0"
 # HeyMa's frozen canonical pjangler id (.project.json `project_id`); the repo
 # was called transcription-queue before it was HeyMa and the id never changed.
 HEYMA_PROJECT_ID = "transcription-queue"
@@ -250,14 +260,11 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_NATS_HOST", "wax/natsclient.py", "127.0.0.1"),
     ("WAX_NATS_PORT", "wax/natsclient.py", "4222"),
     ("WAX_LOG_LEVEL", "bin/waxd (the one handler, contract B)", "INFO"),
-    ("WAX_TITLE_API_BASE", "passes.d/bin/title-slug", "https://openrouter.ai/api/v1"),
-    ("WAX_TITLE_MODEL", "passes.d/bin/title-slug", "google/gemini-3.7-flash"),
-    ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug", "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential"),
-    ("WAX_TITLE_API_KEY_OP_FALLBACK", "passes.d/bin/title-slug",
-     "op://DeLoSecrets/OpenRouter/hermes"),
+    ("WAX_TITLE_API_BASE", "passes.d/bin/title-slug, classification", TITLE_API_BASE_DEFAULT),
+    ("WAX_TITLE_MODEL", "passes.d/bin/title-slug, classification", TITLE_MODEL_DEFAULT),
+    ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug, classification (gateway token)", TITLE_KEY_OP_DEFAULT),
     ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug", "120"),
     ("WAX_TITLE_API_KEY", "passes.d/bin/title-slug (direct key; prefer op://)", "<unset>"),
-    ("OPENROUTER_API_KEY", "passes.d/bin/title-slug (ambient last resort)", "<unset>"),
     ("WAX_JEV_URL", "passes.d/bin/project-extraction (Jev decisions endpoint)",
      "https://openrouter.ai/api/alpha/decisions"),
     ("WAX_JEV_MODEL", "passes.d/bin/project-extraction", "typesafe/jev-1.13"),
@@ -270,10 +277,9 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
      "<unset>"),
     ("PJ_REGISTRY_URL", "wax/pjregistry.py, bin/wax doctor", PJ_REGISTRY_DEFAULT),
     ("WAX_PROJECT_ALIASES", "wax/pjregistry.py", "<component>/config/project-aliases.yaml"),
-    ("WAX_TICKETS_API_BASE", "passes.d/bin/ticketable", "https://api.automaticai.io/v1"),
-    ("WAX_TICKETS_MODEL", "passes.d/bin/ticketable", "automaticai/openrouter/google/gemini-3.7-flash"),
-    ("WAX_TICKETS_API_KEY_OP", "passes.d/bin/ticketable",
-     "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"),
+    ("WAX_TICKETS_API_BASE", "passes.d/bin/ticketable", TITLE_API_BASE_DEFAULT),
+    ("WAX_TICKETS_MODEL", "passes.d/bin/ticketable", TITLE_MODEL_DEFAULT),
+    ("WAX_TICKETS_API_KEY_OP", "passes.d/bin/ticketable (gateway token)", TITLE_KEY_OP_DEFAULT),
     ("WAX_TICKETS_API_KEY", "passes.d/bin/ticketable (direct key; prefer op://)", "<unset>"),
     ("WAX_TICKETS_REQUEST_TIMEOUT_S", "passes.d/bin/ticketable", "180"),
     ("OP_SERVICE_ACCOUNT_TOKEN", "`op read` inside title-slug", "<unset>"),
@@ -348,7 +354,8 @@ def _op_read(reference: str) -> str:
 
 
 def _get_json(url: str, *, token: str) -> tuple[Optional[Any], str]:
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}",
+                                                  "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
             return json.loads(response.read().decode("utf-8", "replace")), ""
@@ -693,12 +700,12 @@ def probe_all() -> list[dict[str, Any]]:
     def _title(name: str, default: str) -> str:
         return (yenv[name][1] if name in yenv else effective.get(name) or default).strip()
 
-    api_base = _title("WAX_TITLE_API_BASE", "https://openrouter.ai/api/v1").rstrip("/")
-    model = _title("WAX_TITLE_MODEL", "google/gemini-3.7-flash")
-    primary = _title("WAX_TITLE_API_KEY_OP", "op://DeLoSecrets/yydsybdlpernq5j5tcf42hmtsi/credential")
-    fallback = _title("WAX_TITLE_API_KEY_OP_FALLBACK", "op://DeLoSecrets/OpenRouter/hermes")
-    # Resolution order is title-slug's own, evaluated once per reference so the
-    # probe costs two `op read` calls at most.
+    api_base = _title("WAX_TITLE_API_BASE", TITLE_API_BASE_DEFAULT).rstrip("/")
+    model = _title("WAX_TITLE_MODEL", TITLE_MODEL_DEFAULT)
+    primary = _title("WAX_TITLE_API_KEY_OP", TITLE_KEY_OP_DEFAULT)
+    # Resolution order is title-slug's own: a literal $WAX_TITLE_API_KEY, else
+    # the dedicated gateway token. There is no fallback reference and no
+    # ambient provider key.
     key_source = ""
     key = (effective.get("WAX_TITLE_API_KEY") or "").strip()
     if key:
@@ -712,25 +719,12 @@ def probe_all() -> list[dict[str, Any]]:
             key_source = primary
             add(_probe("title-slug api key", PASS, f"resolved from {primary}"))
         else:
-            key = _op_read(fallback)
-            if key:
-                key_source = fallback
-                # Loud on purpose: this works today and dies without warning the
-                # hour its real owner rotates it, with nothing naming wax as a
-                # consumer of the key that broke.
-                add(_probe("title-slug api key", WARN,
-                           f"BORROWED: {primary} does not exist, so every run rides {fallback}. "
-                           "It breaks the moment its owner rotates the key, and nothing will say why",
-                           "mint the dedicated field: op item edit 'OpenRouter' "
-                           "'wax[password]=<key>' --vault DeLoSecrets"))
-            else:
-                add(_probe("title-slug api key", FAIL,
-                           f"neither {primary} nor {fallback} resolved"
-                           + ("" if effective.get("OP_SERVICE_ACCOUNT_TOKEN")
-                              else "; OP_SERVICE_ACCOUNT_TOKEN is absent from the daemon "
-                                   "environment, so `op read` cannot work unattended"),
-                           f"op read {primary}   # then fix whichever of vault access "
-                           "or the field itself is missing"))
+            add(_probe("title-slug api key", FAIL,
+                       f"{primary} did not resolve"
+                       + ("" if effective.get("OP_SERVICE_ACCOUNT_TOKEN")
+                          else "; OP_SERVICE_ACCOUNT_TOKEN is absent from the daemon "
+                               "environment, so `op read` cannot work unattended"),
+                       f"op read {primary}   # then fix vault access or the field itself"))
 
     if not key:
         add(_probe("title-slug model served", FAIL,
@@ -746,10 +740,24 @@ def probe_all() -> list[dict[str, Any]]:
             # Same matching rule as title-slug's preflight_model(): OpenRouter
             # serves routing suffixes (:nitro, :floor) that never appear in the
             # catalog, so a bare-id match counts.
-            if model in ids or model.split(":", 1)[0] in ids:
+            row = next((e for e in entries or [] if isinstance(e, dict) and e.get("id") == model), {})
+            is_auto = bool((row.get("automaticai") or {}).get("auto")) if isinstance(row, dict) else False
+            members = sorted(i for i in ids if i != model and not i.startswith("automaticai/auto"))
+            if is_auto and not members:
+                # The listing is the token's scope. The router intersects its
+                # pool with that scope, so an auto row with no member route
+                # left is a 403 waiting to happen.
+                add(_probe("title-slug model served", FAIL,
+                           f"{model} is listed but the token is scoped to no member route it can land on "
+                           f"(key from {key_source})",
+                           "python3 ~/docker/stacks/ai/newapi/ops/gateway-tokens.py scope heyma-wax-inference "
+                           "--models <auto name + member routes>   # see components/wax/deploy/provision-inference"))
+            elif model in ids or model.split(":", 1)[0] in ids:
                 add(_probe("title-slug model served", PASS,
-                           f"{model} present among {len(ids)} models at {api_base} "
-                           f"(key from {key_source})"))
+                           f"{model} served to this token at {api_base}"
+                           + (f" (auto route; {len(members)} scoped member route(s): {', '.join(members)})"
+                              if is_auto else f" among {len(ids)} models")
+                           + f" (key from {key_source})"))
             else:
                 add(_probe("title-slug model served", FAIL,
                            f"{model!r} is NOT among the {len(ids)} models served by {api_base} "

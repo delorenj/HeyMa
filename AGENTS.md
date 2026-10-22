@@ -117,10 +117,15 @@ A failing pass never stops a sibling, except through `requires:` (ordering +
 gating; `after:` only orders): a dependent waits with `dependency_failed`. Failure
 is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
-`classification`, `diarization`, `clipboard-copy`, `title-slug` (hosted
-OpenAI-compatible endpoint; key from `op://`, never a file). Implemented but
-currently disabled: `project-extraction` (pjangler project ids via TypeSafe Jev)
-and `ticketable` (tasks per project).
+`classification`, `diarization`, `clipboard-copy`, `title-slug`. Every chat
+pass (`classification`, `title-slug`, and `ticketable`) calls the AutomaticAI
+gateway's `automaticai/auto/fast` route (the titles/summaries role) at
+`https://api.automaticai.io/v1`. It uses the scoped `heyma-wax-inference` token
+(`op://`, never a file), which covers that route and its subscription member
+routes only: no OpenRouter, free-pool, or metered route. Re-scope that token
+with `components/wax/deploy/provision-inference`. Implemented but currently
+disabled: `project-extraction` (pjangler project ids via TypeSafe Jev) and
+`ticketable` (tasks per project).
 `wax ep sweep` retries the ones whose latest attempt failed; the waxd worker also
 sweeps on a timer (`WAX_SWEEP_INTERVAL_S`, default 900s), and a pass that
 exhausts its attempts emits `bloodbank.audio.task.exhausted` (the dead-letter
@@ -134,9 +139,12 @@ pass's events publish as soon as its own `requires` subgraph completes
 completion stays plan-gated as the summary fact. `ticketable` becomes one
 `bloodbank.audio.intake.detected` per ticket, relayed to ntfy `audio`. Jev is the
 one deliberate bypass of the AutomaticAI gateway (it has no decisions route):
-`project-extraction` calls OpenRouter directly with HeyMa's own inference key
-(`op://`, never a management key). `wax doctor` probes the registry, that key,
-and unpublished pass events.
+`project-extraction` is configured to call OpenRouter's Jev decisions API directly
+with HeyMa's own inference key (`op://`, never a management key). That OpenRouter
+account is out of credits and the fleet's other Jev callers moved to TypeSafe
+direct on 2026-10-21, so a re-target decision is pending before the pass is
+enabled again. `wax doctor` probes the registry, that key, the chat-pass route
+served to the gateway token, and unpublished pass events.
 
 To add one, use the `create-enrichment-pass` skill; see
 `components/wax/docs/ENRICHMENT-PASSES.md`.
