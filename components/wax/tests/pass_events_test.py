@@ -718,5 +718,58 @@ class DoctorProbeTest(PassEventsCase):
         self.assertEqual(self.cli.pending_pass_event_report(), [])
 
 
+class OutboxUnpublishedDefinitionTest(unittest.TestCase):
+    """doctor and status must agree on what "unpublished" means: a row suppressed
+    on purpose (legacy_premature_completion) is not a stuck event."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.stack = ExitStack()
+        for name, value in {"VAR": root / "var", "DB": root / "var/wax.db"}.items():
+            self.stack.enter_context(patch.object(paths, name, value))
+        paths.VAR.mkdir(parents=True)
+        self.close()
+        self.cli = _load_cli()
+        events._ensure()
+
+    def close(self):
+        conn = getattr(ledger._local, "conn", None)
+        if conn:
+            conn.close()
+            del ledger._local.conn
+
+    def tearDown(self):
+        self.close()
+        self.stack.close()
+        self.temp.cleanup()
+
+    def insert(self, created_at, suppressed=None):
+        ledger.connect().execute(
+            "INSERT INTO outbox(subject, envelope, created_at, suppressed_reason) VALUES(?,?,?,?)",
+            (COMPLETED, '{"data": {"finalized": 1}}', created_at, suppressed))
+
+    def doctor_outbox(self):
+        found = []
+        self.cli.probe_outbox(found.append)
+        return found[0]
+
+    def test_suppressed_rows_are_not_unpublished_for_status_or_doctor(self):
+        self.insert("2026-09-30T00:00:00Z", "legacy_premature_completion")
+        self.assertEqual(events.backlog(), 0)
+        self.assertEqual(events.unpublished(), (0, None))
+        probe = self.doctor_outbox()
+        self.assertEqual(probe["status"], "pass")
+        self.assertEqual(probe["detail"], "outbox empty")
+
+    def test_a_genuinely_stale_row_still_fails_doctor_and_matches_status(self):
+        self.insert("2026-09-30T00:00:00Z", "legacy_premature_completion")
+        self.insert("2026-09-30T00:00:00Z")
+        self.assertEqual(events.backlog(), 1)
+        probe = self.doctor_outbox()
+        self.assertEqual(probe["status"], "fail")
+        self.assertTrue(probe["detail"].startswith("1 unpublished row(s)"))
+
+
 if __name__ == "__main__":
     unittest.main()

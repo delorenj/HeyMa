@@ -957,17 +957,7 @@ def probe_all() -> list[dict[str, Any]]:
     add(_probe("nats reachable", PASS if reachable else FAIL,
                f"{natsclient.HOST}:{natsclient.PORT}",
                "" if reachable else "start NATS; events queue in the outbox meanwhile (fail-open)"))
-    try:
-        rows = ledger.connect().execute(
-            "SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM outbox WHERE published_at IS NULL"
-        ).fetchone()
-        stale = _age_seconds(rows["oldest"]) if rows and rows["oldest"] else 0.0
-        add(_probe("outbox drained", PASS if stale <= OUTBOX_STALE_S else FAIL,
-                   f"{rows['n'] if rows else 0} unpublished row(s), oldest {int(stale)}s"
-                   if rows and rows["n"] else "outbox empty",
-                   "" if stale <= OUTBOX_STALE_S else "wax events drain"))
-    except Exception as e:  # noqa: BLE001
-        add(_probe("outbox drained", WARN, f"{type(e).__name__}: {e}"))
+    probe_outbox(add)
 
     # -- contract-A stage health -------------------------------------------
     # The two blocks that were unrepresentable during both outages. They are the
@@ -1079,6 +1069,20 @@ class _env_overlay:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = previous
+
+
+def probe_outbox(add) -> None:
+    """Outbox liveness, on the same definition of "unpublished" as `wax status`
+    (events.unpublished): rows deliberately suppressed are not owed to the bus."""
+    try:
+        n_unpublished, oldest = events.unpublished()
+        stale = _age_seconds(oldest) if oldest else 0.0
+        add(_probe("outbox drained", PASS if stale <= OUTBOX_STALE_S else FAIL,
+                   f"{n_unpublished} unpublished row(s), oldest {int(stale)}s"
+                   if n_unpublished else "outbox empty",
+                   "" if stale <= OUTBOX_STALE_S else "wax events drain"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("outbox drained", WARN, f"{type(e).__name__}: {e}"))
 
 
 def doctor(as_json: bool, quiet: bool) -> int:

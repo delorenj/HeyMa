@@ -174,10 +174,21 @@ def emit_ep_command(item_id: str, ep_slug: str, argv: list[str], attempt: int = 
 
 # ------------------------------------------------------------------ drain ----
 
-def backlog() -> int:
+# The one definition of "unpublished": not yet acked AND not deliberately
+# suppressed. status, doctor, drain and the tray all share it.
+UNPUBLISHED = "published_at IS NULL AND suppressed_reason IS NULL"
+
+
+def unpublished() -> tuple[int, Optional[str]]:
+    """(count, oldest created_at) of rows that are still owed to the bus."""
     _ensure()
-    return ledger.connect().execute(
-        "SELECT COUNT(*) AS n FROM outbox WHERE published_at IS NULL AND suppressed_reason IS NULL").fetchone()["n"]
+    row = ledger.connect().execute(
+        f"SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM outbox WHERE {UNPUBLISHED}").fetchone()
+    return row["n"], row["oldest"]
+
+
+def backlog() -> int:
+    return unpublished()[0]
 
 
 def drain(limit: int = 50) -> dict[str, Any]:
@@ -185,7 +196,7 @@ def drain(limit: int = 50) -> dict[str, Any]:
     _ensure()
     conn = ledger.connect()
     rows = conn.execute(
-        "SELECT id, subject, envelope FROM outbox WHERE published_at IS NULL AND suppressed_reason IS NULL ORDER BY id LIMIT ?",
+        f"SELECT id, subject, envelope FROM outbox WHERE {UNPUBLISHED} ORDER BY id LIMIT ?",
         (limit,),
     ).fetchall()
     if not rows:
