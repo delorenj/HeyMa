@@ -14,3 +14,7 @@ UMask=0077
 NoNewPrivileges=true
 LimitCORE=0
 Environment=PYTHONDONTWRITEBYTECODE=1
+# ~14s CPU every minute (~23% of a core, around the clock). It is a poller, so
+# let it use spare cycles only and never compete with interactive agents.
+Slice=batch.slice
+Nice=10
