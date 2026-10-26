@@ -120,7 +120,9 @@ bin/telnyx-s3-intake dry-run
 systemd-analyze --user verify components/telnyx-s3-intake/deploy/telnyx-s3-intake.service components/telnyx-s3-intake/deploy/telnyx-s3-intake.timer components/telnyx-s3-intake/deploy/telnyx-s3-intake-alert.service
 install -m 644 components/telnyx-s3-intake/deploy/telnyx-s3-intake*.service components/telnyx-s3-intake/deploy/telnyx-s3-intake.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now telnyx-s3-intake.timer
+# The poll cadence is owned by candybar (story 7.11), not this timer. Do not
+# enable telnyx-s3-intake.timer on reinstall: it would double-poll the S3 inbox.
+# Cutover and rollback: ~/code/33GOD/candybar/deploy/migration/ledger.yaml
 ```
 
 Dry-run performs only credential resolution, LIST, and HEAD; it creates no
