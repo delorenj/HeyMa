@@ -1,0 +1,74 @@
+#!/usr/bin/python3
+# Hotkey entry point for Wax. Bound to Ctrl+\ via GNOME custom keybinding
+# `custom3` ("Wax record toggle", binding '<Control>backslash'). The header used
+# to say Ctrl+Alt+Shift+R, which was the evdev design in WAX-DESIGN.md Phase 2 —
+# never built, never bound, and it cost real debugging time. Read the truth with:
+#   dconf read /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom3/binding
+# Kept as a tiny wrapper so the keybinding's command is a single absolute path
+# with no shell metacharacters — GNOME parses it with g_shell_parse_argv, which
+# does not run a shell.
+#
+# Every outcome — including refusals — raises a desktop notification. The tray
+# has landed since, but it reports the daemon's state, not this invocation's:
+# a hotkey that silently does nothing is how you end up believing you recorded
+# a meeting.
+#
+# Tracked here and symlinked from ~/.local/bin/wax-toggle. It runs the `wax`
+# beside its own resolved path, never a PATH lookup: the binding once called a
+# bare `wax rec toggle`, which gsd-media-keys resolved to /usr/bin/wax ->
+# /opt/wax, a root-owned copy frozen on 2026-09-03.
+
+import json
+import os
+import subprocess
+import sys
+
+WAX = os.path.join(os.path.dirname(os.path.realpath(__file__)), "wax")
+ICON = {"started": "media-record", "stopped": "media-playback-stop",
+        "refused": "dialog-warning", "error": "dialog-error"}
+
+
+def notify(title: str, body: str, kind: str, urgency: str = "normal") -> None:
+    subprocess.run(
+        ["notify-send", "-a", "Wax", "-i", ICON.get(kind, "media-record"),
+         "-u", urgency, "-h", "string:x-canonical-private-synchronous:wax",
+         title, body],
+        check=False,
+    )
+
+
+def main() -> int:
+    try:
+        r = subprocess.run([WAX, "--json", "rec", "toggle"],
+                           capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        notify("Wax: timed out", "toggle did not return within 180s", "error", "critical")
+        return 1
+
+    try:
+        out = json.loads(r.stdout)
+    except (json.JSONDecodeError, ValueError):
+        notify("Wax: failed", (r.stderr or r.stdout or "no output").strip()[:200],
+               "error", "critical")
+        return 1
+
+    action = out.get("action")
+    if action == "started":
+        notify("● Recording", out.get("target", ""), "started")
+    elif action == "stopped":
+        dur = out.get("duration_s") or 0
+        mins, secs = divmod(int(dur), 60)
+        name = (out.get("path") or "").rsplit("/", 1)[-1]
+        notify("■ Saved", f"{mins}m {secs}s → {name}", "stopped")
+    elif action == "refused":
+        notify(f"Wax: cannot record ({out.get('state')})",
+               out.get("evidence") or out.get("cause_code") or "", "refused", "critical")
+        return 2
+    else:
+        notify("Wax", json.dumps(out)[:200], "error", "critical")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

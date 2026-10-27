@@ -62,8 +62,10 @@ byte, so state is recomputable from disk by a cold process after a SIGKILL.
   and `waxd.service` pins `WAX_TRANSCRIBE` absolutely — PATH must never get to
   decide which code runs.
 - Record hotkey: **`Ctrl+\`** — a GNOME custom keybinding (`custom3`) calling
-  `~/.local/bin/wax-toggle` → `wax rec toggle`. The evdev design in
-  WAX-DESIGN.md was never built.
+  `~/.local/bin/wax-toggle`, a symlink to the tracked
+  `components/wax/bin/wax-toggle`, which runs the `wax` beside itself (never a
+  PATH lookup; `/usr/bin/wax` → `/opt/wax` is a stale 2026-09-03 copy). The
+  evdev design in WAX-DESIGN.md was never built.
 
 ## The `wax` CLI
 
