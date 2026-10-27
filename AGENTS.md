@@ -85,6 +85,7 @@ wax pipeline enable|disable|status   # historical worker toggle, unchanged
 wax pipeline list|compile|show|bindings   # versioned pipeline graphs (compile is explicit)
 wax pipeline import <export.json> [--name]  # compile an authored n8n workflow export
 wax documents list|scan|backfill|run|retry  # document registration/bindings/processing; retry re-arms exhausted receipts
+wax documents sweep-empty|sweep-untitled [--dry-run] [--json]  # the waxd hygiene jobs, now; notes go to <vault>/.trash
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 
@@ -207,6 +208,22 @@ new-arrivals-only (a missing folder never claims seeded) and the worker scans
 them on its own cadence (`WAX_DOCUMENT_SCAN_INTERVAL_S`, default 120s) with
 scan retries for failed arrivals; `wax documents backfill` is the explicit
 history tool.
+
+**Document hygiene** (`src/wax/hygiene.py`, run by the waxd worker): the vault's
+`Inbox/` (recursive, so `Inbox/Wax`) and `Sandbox/` (`WAX_DOC_HYGIENE_FOLDERS`,
+each must sit inside an Obsidian vault) are kept free of dead notes. Every
+`WAX_EMPTY_DOC_SWEEP_INTERVAL_S` (300s) empty notes are moved to the vault's
+`<vault>/.trash/` (never unlinked; nothing in the trash is overwritten), and
+`documents` rows whose file vanished become `gone`. Once per local date from
+`WAX_UNTITLED_SWEEP_HOUR` (3), empty `Untitled*.md` are trashed and the rest run
+through the manual `untitled-standard` pipeline (summarize, then title-slug)
+and are renamed to `<title-slug>.md`; an uncompiled pipeline touches nothing.
+Safety is not optional: `*.md` only, no dot-directories or dot-files, no
+symlinks, mtime older than `WAX_DOC_HYGIENE_MIN_AGE_S` (300s), emptiness
+re-checked under the document run lock right before the move, and unparseable
+frontmatter is never "empty". `trashed`/`gone` document rows no longer count in
+`passes.failed`. `wax doctor` has a "document hygiene" probe; the CLI forms run
+now and record nothing.
 
 **The control surface boundary**: Holocene's Wax tab is read-only and reads one
 thing — `wax catalog --json` through the Holocene API, which allowlist-projects

@@ -62,7 +62,7 @@ def chat_passes() -> dict[str, dict]:
 
 class ChatPassRoutingTest(unittest.TestCase):
     def test_the_known_chat_passes_are_covered(self):
-        self.assertTrue({"title-slug", "classification", "ticketable"} <= set(chat_passes()))
+        self.assertTrue({"title-slug", "classification", "ticketable", "summarize"} <= set(chat_passes()))
 
     def test_yaml_env_routes_through_the_gateway(self):
         for slug, doc in chat_passes().items():
@@ -254,10 +254,12 @@ class NoAnthropicModelsTest(unittest.TestCase):
                 frozen = pipelines.compiled()
                 self.assertIn("transcript-standard", frozen)
                 self.assertIn("doc-standard", frozen)
+                self.assertIn("untitled-standard", frozen)
                 models_seen = 0
                 for name, definition in frozen.items():
                     text = json.dumps(definition)
-                    models_seen += text.count("WAX_TITLE_MODEL") + text.count("WAX_TICKETS_MODEL")
+                    models_seen += (text.count("WAX_TITLE_MODEL") + text.count("WAX_TICKETS_MODEL")
+                                    + text.count("WAX_SUMMARY_MODEL"))
                     with self.subTest(pipeline=name):
                         self.assertEqual(ANTHROPIC.findall(text), [], f"{name} froze an Anthropic model")
                 self.assertGreater(models_seen, 0, "no frozen definition carried a model; the scan sees nothing")
@@ -366,6 +368,15 @@ class FallbackChainTest(unittest.TestCase):
         self.assertEqual([env["WAX_TICKETS_MODEL"], *env["WAX_TICKETS_MODEL_FALLBACKS"].split(",")], CHAIN)
         ticketable = load_script(PASSES_DIR / "bin" / "ticketable")
         self.assertEqual([ticketable.DEFAULT_MODEL, *ticketable.DEFAULT_MODEL_FALLBACKS.split(",")], CHAIN)
+        env = yaml.safe_load((PASSES_DIR / "summarize.yaml").read_text())["env"]
+        self.assertEqual([env["WAX_SUMMARY_MODEL"], *env["WAX_SUMMARY_MODEL_FALLBACKS"].split(",")], CHAIN)
+        summarize = load_script(PASSES_DIR / "bin" / "summarize")
+        self.assertEqual([summarize.DEFAULT_MODEL, *summarize.DEFAULT_MODEL_FALLBACKS.split(",")], CHAIN)
+        # The same gateway base and token reference as title-slug: one scoped credential.
+        title_env = yaml.safe_load((PASSES_DIR / "title-slug.yaml").read_text())["env"]
+        self.assertEqual(env["WAX_SUMMARY_API_BASE"], title_env["WAX_TITLE_API_BASE"])
+        self.assertEqual(env["WAX_SUMMARY_API_KEY_OP"], title_env["WAX_TITLE_API_KEY_OP"])
+        self.assertEqual(summarize.DEFAULT_KEY_OP, env["WAX_SUMMARY_API_KEY_OP"])
 
     def test_every_chain_fits_inside_its_pass_timeout(self):
         # The chain runs against a deadline of timeout_s less the reserve, so
@@ -382,6 +393,14 @@ class FallbackChainTest(unittest.TestCase):
                      + title.PREFLIGHT_TIMEOUT_S + title.OP_READ_TIMEOUT_S)
             self.assertLessEqual(worst, budget, f"{slug}: {worst}s worst case vs a {budget}s budget")
             self.assertEqual(float(doc["timeout_s"]), title.DEFAULT_PASS_TIMEOUT_S, slug)
+        doc = yaml.safe_load((PASSES_DIR / "summarize.yaml").read_text())
+        summarize = load_script(PASSES_DIR / "bin" / "summarize")
+        budget = float(doc["timeout_s"]) - provider.RESERVE_S
+        worst = (len(CHAIN) * float(doc["env"]["WAX_SUMMARY_REQUEST_TIMEOUT_S"])
+                 + summarize.PREFLIGHT_TIMEOUT_S + provider.OP_READ_TIMEOUT_S)
+        self.assertLessEqual(worst, budget, f"summarize: {worst}s worst case vs a {budget}s budget")
+        self.assertEqual(float(doc["timeout_s"]), summarize.DEFAULT_PASS_TIMEOUT_S)
+        self.assertEqual(float(doc["env"]["WAX_SUMMARY_REQUEST_TIMEOUT_S"]), summarize.DEFAULT_REQUEST_TIMEOUT_S)
         doc = yaml.safe_load((PASSES_DIR / "ticketable.yaml").read_text())
         ticketable = load_script(PASSES_DIR / "bin" / "ticketable")
         share = (float(doc["timeout_s"]) - provider.RESERVE_S) / ticketable.MAX_WINDOWS

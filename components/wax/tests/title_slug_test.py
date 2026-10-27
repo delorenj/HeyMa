@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -51,6 +52,36 @@ class TitleSlugPassTest(unittest.TestCase):
             model.assert_not_called()
             self.assertEqual(result["frontmatter"]["title"], "Human Title")
             self.assertEqual(result["transcript"]["slug"], "human-title")
+
+    def test_empty_document_is_skipped_but_empty_audio_transcript_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            md = Path(directory) / "note.md"
+            md.write_text("---\ntitle: t\n---\n\n  \n")
+            with patch.object(TITLE_SLUG, "hosted_enrichment") as model:
+                for key in ("doc-e3b0c44298fc1c14", "doc-e3b0c44298fc1c14@doc-standard-Wax-4a02b5d4cb30"):
+                    self.assertEqual(TITLE_SLUG.build_result(md, key),
+                                     {"wax_ep_version": 1, "state": "skipped", "reason_code": "empty_document"})
+                # Audio: an empty transcript means transcription broke.
+                for key in ("", "item-1", "20261027-rec"):
+                    with self.assertRaises(TITLE_SLUG.TitlePassError):
+                        TITLE_SLUG.build_result(md, key)
+            model.assert_not_called()
+
+    def test_main_passes_the_item_id_so_empty_documents_exit_zero_with_a_skip(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        with tempfile.TemporaryDirectory() as directory:
+            md = Path(directory) / "note.md"
+            md.write_text("")
+            for key, code in (("doc-abc", 0), ("item-1", 1)):
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(TITLE_SLUG.sys, "argv", ["title-slug", str(md), key]), \
+                        redirect_stdout(out), redirect_stderr(err):
+                    self.assertEqual(TITLE_SLUG.main(), code)
+                if code == 0:
+                    self.assertEqual(json.loads(out.getvalue())["reason_code"], "empty_document")
+                else:
+                    self.assertEqual(out.getvalue(), "")
 
     def test_hosted_enrichment_caps_provider_output_tokens(self):
         response = {

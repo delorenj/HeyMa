@@ -219,7 +219,9 @@ def connect() -> sqlite3.Connection:
         # content AT FIRST SIGHT (doc_id) tracked per binding, so the same
         # content under two pipelines keeps separate outcomes, and Wax's own
         # frontmatter writes (current_sha256) can never re-register a document
-        # it just enriched. state: pending|processing|processed|failed|seeded.
+        # it just enriched. state: pending|processing|processed|failed|seeded,
+        # plus the terminal trashed|gone (hygiene moved the file to the vault
+        # trash / the file vanished).
         shape = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
         if shape and "binding_id" not in shape:
             # Pre-binding layout (no production data ever ran it): keep the
@@ -391,6 +393,18 @@ def set_item_state(item_id: str, to_state: str, *, cause: str = "", evidence: st
 def generation() -> int:
     row = connect().execute("SELECT v FROM meta WHERE k='generation'").fetchone()
     return int(row["v"]) if row else 0
+
+
+def meta_get(key: str, default: Optional[str] = None) -> Optional[str]:
+    """One value from the ledger's key/value `meta` table, or `default`."""
+    row = connect().execute("SELECT v FROM meta WHERE k=?", (key,)).fetchone()
+    return row["v"] if row else default
+
+
+def meta_set(key: str, value: str) -> None:
+    """Upsert one `meta` value. Durable, so cadence survives a waxd restart."""
+    connect().execute("INSERT INTO meta(k,v) VALUES(?,?) "
+                      "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (key, str(value)))
 
 
 def bump_generation() -> int:
@@ -590,11 +604,25 @@ def _current_pass_gate() -> tuple[str, list[Any]]:
     return "(" + " OR ".join("(ep_slug=? AND version=?)" for _ in versions) + ")", params
 
 
+# A document whose file is gone (trashed by hygiene, or vanished) can never be
+# re-driven, so its failed pass rows are history, not a live failure. The key
+# arithmetic mirrors documents.doc_key: `doc-<sha16>@<binding>`, bare when
+# unbound. Spelled out in SQL (documents imports this module).
+_VANISHED_DOC_KEYS = (
+    "SELECT CASE WHEN binding_id='' THEN doc_id ELSE doc_id||'@'||binding_id END "
+    "FROM documents WHERE state IN ('trashed','gone')")
+
+
 def passes_failed() -> dict[str, Any]:
-    """Distinct items whose latest attempt of a current, enabled pass failed."""
+    """Distinct items whose latest attempt of a current, enabled pass failed.
+
+    Document keys whose file is trashed or gone are excluded: nothing can fix
+    them, and a phantom failure here keeps `wax status` red forever.
+    """
     gate, params = _current_pass_gate()
     rows = connect().execute(
-        f"SELECT DISTINCT item_id, ep_slug FROM passes WHERE state='failed' AND {gate}",
+        "SELECT DISTINCT item_id, ep_slug FROM passes "
+        f"WHERE state='failed' AND {gate} AND item_id NOT IN ({_VANISHED_DOC_KEYS})",
         params,
     ).fetchall()
     return {

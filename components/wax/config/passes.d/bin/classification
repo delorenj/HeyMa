@@ -15,8 +15,6 @@ CLASSES = {"monolog", "meeting", "other"}
 
 
 def enrich_document(body):
-    if not body.strip():
-        raise provider.TitlePassError("document has no body", reason_code="empty_document")
     # One budget for the key lookup, the catalog and every chain member.
     deadline = provider.chat_provider.pass_deadline(provider.DEFAULT_PASS_TIMEOUT_S)
     key = provider.resolve_api_key(primary_ref=os.environ.get("WAX_TITLE_API_KEY_OP", provider.DEFAULT_API_KEY_OP),
@@ -55,6 +53,9 @@ def enrich_document(body):
 
 def build_result(md):
     fm, body = provider.frontmatter.read(md)
+    if not body.strip():
+        # An empty note has nothing to classify; that is a skip, not a failure.
+        return {"wax_ep_version": 1, "state": "skipped", "reason_code": "empty_document"}
     if fm.get("classification"):
         if fm["classification"] not in CLASSES:
             raise provider.TitlePassError("existing classification is unsupported; preserving it", reason_code="invalid_classification")

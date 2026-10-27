@@ -47,8 +47,9 @@ completed at the same `version` and the same definition; increasing
 ## Model chains for chat passes
 
 Operator order, 2026-10-22: **no Anthropic models for Wax inference; Hyper and
-free are fallbacks.** A chat pass (`title-slug`, `classification`, `ticketable`)
-names an ordered list: the primary (`WAX_TITLE_MODEL` / `WAX_TICKETS_MODEL`),
+free are fallbacks.** A chat pass (`title-slug`, `classification`, `ticketable`, `summarize`)
+names an ordered list: the primary (`WAX_TITLE_MODEL` / `WAX_TICKETS_MODEL` /
+`WAX_SUMMARY_MODEL`),
 then the comma-separated `*_MODEL_FALLBACKS`. Today:
 
 1. `automaticai/auto/fast` (the router)
@@ -62,7 +63,7 @@ The explicit GLM routes sit right after the primary because on 2026-10-22 every
 other member answered 503 on the live gateway (auto/fast picked the
 channel-less `hypercharm/glm-5.3`, Hyper had no channel in `aai-personal`, free
 picked a channel-less Kimi) while explicit `personal/glm-5.3*` answered 200.
-Implemented once, in `wax.provider.run_chain`, and used by all three passes.
+Implemented once, in `wax.provider.run_chain`, and used by all four passes.
 
 | Failure | Next member? |
 |---|---|
@@ -74,7 +75,7 @@ Implemented once, in `wax.provider.run_chain`, and used by all three passes.
 | `no_api_key`, 401, any other 403 | **no** (the key is shared by every member) |
 | served by an Anthropic model (`anthropic_model_served`) | **no**: the pass fails closed |
 
-`title-slug`/`classification` read `/v1/models` once and skip a member the token
+`title-slug`/`classification`/`summarize` read `/v1/models` once and skip a member the token
 cannot see (recorded as `missing_model`, `skipped`, no request). Router family
 names the gateway never lists (`automaticai/free`) are never skipped for being
 unlisted. `ticketable` runs the chain per window and relies on the 403 for scope.
@@ -88,7 +89,7 @@ one monotonic deadline of that value less `RESERVE_S` (10s). Each request's
 timeout is `min(*_REQUEST_TIMEOUT_S, remaining - 1s)` under a SIGALRM wall-clock
 limit; a member with under 2s left is recorded as `deadline_exceeded` (skipped)
 instead of started. `ticketable`'s windows each get an equal share of what is
-left. Sizing: `title-slug`/`classification` `timeout_s: 390` fits all six
+left. Sizing: `title-slug`/`classification`/`summarize` `timeout_s: 390` fits all six
 members at 60s plus the 10s catalog and 5s op read (375s <= 380s);
 `ticketable` `timeout_s: 1800` gives each of 3 windows ~596s, room for the
 primary and both GLM routes at 120s. Tests enforce both.
@@ -410,6 +411,42 @@ is not, register it with `POST /v1/index` and the repo's `.project.json`, never
 and the TypeSafe pass-through answers), `jev api key` (a virtual key, not
 blocked, budget left; both probe free endpoints and run, as warnings, while
 the pass is disabled), and `pass events enqueued`.
+
+## summarize and the untitled-standard pipeline
+
+`summarize` (`config/passes.d/summarize.yaml`, `passes.d/bin/summarize`) gives a
+Markdown document a grounded summary in two places at once: the short `summary`
+frontmatter field (1-3 sentences) and a `## Summary` section of 3-6 bullets
+prepended to the body. It is `capabilities: [document]` only (an audio
+transcript gets its summary from `title-slug`), `auto: false`, `requires: []`,
+`clobber: []`, version 1.
+
+| | |
+|---|---|
+| Model | The same gateway, token and six-member chain as `title-slug`, under `WAX_SUMMARY_*` (`API_BASE`, `MODEL`, `MODEL_FALLBACKS`, `API_KEY_OP`, `REQUEST_TIMEOUT_S`). Strict JSON schema `{summary, bullets}`; `max_tokens` 1024; `timeout_s: 390`. A catalog preflight skips members the token cannot see. No Anthropic model, by operator order. |
+| Body edit | `body_mutation: compare-and-replace`. The result carries `body_replace: {sha256, text}` where `sha256` is the digest of the body exactly as `frontmatter.read` splits it (what the runner recomputes) and `text` is `## Summary\n\n- b1\n- b2\n\n` followed by that body. If the body changed while the pass ran, the runner refuses the replacement and the pass fails rather than overwrite a human edit. |
+| Idempotent | A Summary heading among the first five non-blank lines of the body means no `body_replace`; the heading plus an existing `summary` field means no model call at all. An existing `summary` is kept, never replaced. Unparseable frontmatter gets the field but no section (it would land above the broken block); `evidence.body` says why. |
+| Empty | A whitespace-only body is `skipped` / `empty_document`, not a failure. |
+| Long documents | At most the first 22,000 and last 10,000 characters are sent (`evidence.truncated`, plus a stderr note); the digest still covers the whole body. Frontmatter is never sent. |
+
+`config/pipelines.d/untitled-standard.yaml` chains it: `trigger: manual` with
+no folders (nothing scans it; invoke it by name), `failure_policy: halt`, passes
+`summarize` then `title-slug` with `requires: [summarize]`. `title-slug` keeps
+the summary this pass wrote and only produces the title and slug. A document
+run never renames, so renaming the note to `<title-slug>.md` is the caller's
+job (the nightly untitled sweep). `halt` is deliberate: a title with no summary
+behind it is not wanted, so a failed `summarize` stops the run and the note
+keeps its name; a skipped one (empty body) does not.
+
+```bash
+wax pipeline compile untitled-standard    # NOT bare `compile`: see below
+wax documents run untitled-standard ~/d/Inbox/Untitled.md
+```
+
+Compile it by name. A bare `wax pipeline compile` compiles every authored YAML,
+including `doc-standard.yaml`, and the live `doc-standard` is n8n-sourced: the
+YAML would replace it. The `n8n-nodes-heyma` package generates a `Wax Pass ·
+Summarize` node from the registry (`npm run nodes:passes`).
 
 ## Document runs
 

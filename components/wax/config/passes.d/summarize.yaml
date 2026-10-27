@@ -1,0 +1,26 @@
+slug: summarize
+version: 1
+description: Grounded summary for an untitled document, as a `## Summary` section at the top of the body and the short `summary` field.
+capabilities: [document]   # reads note text only; audio transcripts get their summary from title-slug
+enabled: true
+auto: false                # run by name: the untitled-standard pipeline, or `wax ep run`
+requires: []
+clobber: []
+# compare-and-replace authorizes the `body_replace` intent: the `## Summary`
+# section is prepended to the body, applied only while the body still hashes to
+# what the pass read (a human edit in between wins).
+body_mutation: compare-and-replace
+# 6 chain members x 60s request timeout = 360s, plus the 10s catalog lookup and
+# the 5s op read, inside 390s less the 10s reserve. The pass also runs the chain
+# against a deadline taken from this value (WAX_PASS_TIMEOUT_S), so the runner
+# never kills it before it reports every member.
+timeout_s: 390
+env:
+  WAX_SUMMARY_API_BASE: https://api.automaticai.io/v1
+  WAX_SUMMARY_MODEL: automaticai/auto/fast
+  # Ordered fallbacks: explicit subscription GLM, then metered Hyper, then the
+  # free family. Never Anthropic.
+  WAX_SUMMARY_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
+  WAX_SUMMARY_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
+  WAX_SUMMARY_REQUEST_TIMEOUT_S: "60"
+command: ["{component_root}/config/passes.d/bin/summarize", "{md_path}", "{item_id}"]

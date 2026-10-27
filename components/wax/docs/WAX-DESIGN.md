@@ -350,6 +350,32 @@ wax:
 
 **Pushback on "each EP is INDEPENDENT with no dependencies."** `frontmatter-enrichment/SKILL.md` declares typing + entity-routing as *hard preconditions*, and the skills form a declared 4-layer chain (folder-curator → domain-triage → frontmatter-enrichment → taxonomy-steward). `domain-curation` genuinely cannot produce sane output on an untyped file. Wax gives you independent **scheduling** (own timer, own lock, own state, own retry — a failing `wikification` never blocks `mem-ops`) plus an optional `requires:` list of frontmatter predicates for real data dependencies. Default is `[]`. If you want true unordered fan-out, set `requires: []` everywhere and accept that `domain-curation` will occasionally chew on untyped notes.
 
+### Document hygiene (empty notes, untitled notes)
+
+Obsidian drops an empty `Untitled.md` whenever someone presses "new note". Two waxd jobs (`src/wax/hygiene.py`, run by the worker thread, gated on `wax pipeline enable` like every other periodic job) keep `Inbox/` (recursive, so `Inbox/Wax` too) and `Sandbox/` of the vault free of them. The folders are `WAX_DOC_HYGIENE_FOLDERS` (`~/d/Inbox:~/d/Sandbox`); each is resolved to its real path and must sit inside an Obsidian vault (nearest ancestor holding `.obsidian/`). A folder with no vault, the vault root itself, or a dot-directory of its vault is refused and reported as an error; a folder that does not exist yet (`Sandbox/` until Obsidian makes it) is merely listed as missing.
+
+| Job | Cadence | Does |
+|---|---|---|
+| empty-note sweep | every `WAX_EMPTY_DOC_SWEEP_INTERVAL_S` (300 s), monotonic, first tick included; busy label `hygiene` | trashes empty notes; marks `documents` rows whose file vanished `gone` (only under a folder the sweep just accepted, only for a provable ENOENT on an absolute path, and only when missing on two consecutive sweeps) |
+| nightly untitled sweep | from local hour `WAX_UNTITLED_SWEEP_HOUR` (3), once per local date, date kept in `ledger.meta` `untitled_sweep_last_date` | trashes empty `Untitled*.md`; runs the manual `untitled-standard` pipeline (`summarize`, then `title-slug`) over the rest; renames each completed note to `<title-slug>.md` in its own folder |
+
+"Delete" never unlinks: the note moves to `<vault>/.trash/<path relative to the vault>` (Obsidian's own trash) with `rename.move_noclobber`, so the user can recover it and nothing already in the trash is overwritten. The vault is not a git repo; the trash is the only undo.
+
+Because these jobs move the user's notes, the rules live in one choke point (`inspect_note` + `trash_note` / `rename_note`) that the jobs, the CLI and the dry run all pass through:
+
+- `*.md` only; nothing under a dot-directory (`.trash`, `.obsidian`), no dot-files (Wax's own `.wax-ep-*` staging included); symlinks are never followed or moved (`O_NOFOLLOW`, a symlinked directory is not descended into, and the file's real parent must stay inside the swept folder).
+- **Age gate:** mtime older than `WAX_DOC_HYGIENE_MIN_AGE_S` (300 s). A note being typed into is not abandoned. A future mtime is not old.
+- **Empty** means a whitespace-only body and no non-blank frontmatter value outside `created, modified, updated, date, created_at, updated_at, id, aliases, tags, cssclasses, wax, wax-item-id`. Frontmatter that does not parse is **not** empty, nor is a file that is not UTF-8, is over 1 MiB, or carries any non-whitespace character (a zero-width space counts as content). Every doubt resolves to "content".
+- **Re-check right before the move**, under the run locks: emptiness and age are judged again, then the ledger rows at the path are confirmed unchanged. After the move the file's inode, size and mtime are compared with what was judged; a write that raced the move puts the note back.
+- **Lock:** every `documents` row at the path (any binding, matched by recorded path or real file) has its non-blocking `document_run_lock` taken, all or none. A note a live run owns is skipped. Rows become `trashed`.
+- **Never trust a scratch ledger:** the worker runs hygiene only when `paths.DB` is inside `paths.AUDIO` (the runtime root's own `var/`), so a test or a copied ledger can never drive a sweep of the real vault.
+
+Ledger consequences. `documents.state` gains two terminal values: `trashed` (hygiene moved the file) and `gone` (the file vanished). `ledger.passes_failed()` ignores failed pass rows behind either, which clears the phantom `doc-e3b0c44298fc1c14@doc-standard-Wax-...` failure that kept `wax status` red for a file nobody could fix. `_arrivals` ignores a trashed/gone row's path (a fresh `Untitled.md` at that path is judged on its bytes) except that a `gone` row whose file returns with its own bytes is revived (processed / failed / seeded, from its receipts) rather than re-run, and an explicit `wax documents run` may claim such a row. The nightly sweep adopts the unbound row already recorded for a note's bytes (`run_document(doc_id=)`), so retries share one identity, one receipt and one attempt bound. A rename re-points EVERY row at the old path (new path plus the file's current hash), so the Inbox/Wax binding does not take the renamed note for a new arrival.
+
+The nightly job isolates each note in its own try/except and writes the date only when the run completed. A run that could not finish (pipeline not compiled, a folder refused, the `WAX_UNTITLED_SWEEP_MAX` pipeline-run budget spent) records `last_error`/`complete: false`, leaves the date unset, and is retried no sooner than hourly; an uncompiled `untitled-standard` pipeline touches nothing at all. A failed note is left in place and its receipt attempt bound (3) decides further retries.
+
+Visibility. Each worker run stores a summary (`last_run_at`, `interval_s`, counts, `last_error`) in `ledger.meta` (`hygiene_empty_sweep`, `hygiene_untitled_sweep`) and logs counts at INFO when anything changed (DEBUG otherwise), plus one INFO line per note. `wax doctor` has a "document hygiene" probe: FAIL on a recorded `last_error`, or a last run older than 3x its interval while the pipeline is enabled and waxd is running (WARN instead if the worker is demonstrably busy with an item); WARN when the nightly date is more than 2 days old or the nightly sweep errored. CLI runs (`wax documents sweep-empty|sweep-untitled [--dry-run] [--json]`) execute now, ignore the hour and date gate, and record nothing, so a manual run can never make a dead worker look alive.
+
 ---
 
 ## Recording: hotkey + tray

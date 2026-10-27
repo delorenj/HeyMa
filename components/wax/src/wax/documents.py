@@ -31,6 +31,7 @@ row per (binding, doc, pipeline, compiled definition) — is what makes a
 duplicate arrival a no-op while a failed arrival stays retryable.
 """
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -39,7 +40,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from . import ledger, sentinel
 
@@ -54,6 +55,12 @@ DOC_SUFFIXES = {".md", ".markdown"}
 # observe its own output forever.
 IGNORED_SUFFIXES = {".tmp", ".partial", ".ogg.partial"}
 IGNORED_PREFIXES = (".wax-", ".")
+
+# Terminal document states written by hygiene (src/wax/hygiene.py): the note was
+# moved to the vault trash, or its file vanished. Both are history, not work: no
+# scan retries them, a path they once held is free again, and a failed pass left
+# behind by one is not a live failure (ledger.passes_failed).
+VANISHED_STATES = ("trashed", "gone")
 
 # A run that crashed mid-flight leaves `processing` behind; a claim older than
 # this is reclaimable by the next scan instead of wedging the binding forever.
@@ -142,6 +149,10 @@ def register(path: Path, *, binding_id: str = "", origin: str = "manual",
     scans never get here — a known path is not an arrival regardless of
     bytes (`_arrivals`); this is the explicit `wax documents run` path.
     """
+    # Rows hold absolute paths: a relative one means "relative to whoever typed
+    # it", and every later reader (waxd's hygiene sweeps among them) has a
+    # different cwd. normpath only; symlinks keep the spelling they were given.
+    path = Path(os.path.abspath(path))
     try:
         digest = sha256_file(path)
         size = path.stat().st_size
@@ -315,13 +326,17 @@ def claim_run(binding_id: str, doc_id: str, *, force: bool = False) -> bool:
     ``processing`` state seen under the lock belongs to a crashed holder, so
     the stale-timer does not apply. Without force, a claim older than
     STALE_RUN_S is reclaimable so a wedged row cannot park a document forever.
+    A ``trashed``/``gone`` row is claimable too: the only way to reach one is an
+    operator naming a file that is back on disk (``wax documents run``), and
+    scans never select those states.
     """
     conn = ledger.connect()
     now = sentinel.utcnow()
     stale_before = _iso_at(time.time() - STALE_RUN_S)
     cursor = conn.execute(
         "UPDATE documents SET state='processing', run_started_at=?, updated_at=? "
-        "WHERE binding_id=? AND doc_id=? AND (state IN ('pending','failed','seeded') "
+        "WHERE binding_id=? AND doc_id=? AND (state IN "
+        "('pending','failed','seeded','trashed','gone') "
         "OR (state='processing' AND run_started_at IS NOT NULL "
         "AND (run_started_at < ? OR ?)))",
         (now, now, binding_id, doc_id, stale_before, 1 if force else 0),
@@ -357,6 +372,168 @@ def note_own_write(binding_id: str, doc_id: str, path: Path) -> Optional[str]:
         (digest, sentinel.utcnow(), binding_id, doc_id),
     )
     return digest
+
+
+# ------------------------------------------------- hygiene ledger helpers ----
+
+def rows_for_path(path: Path) -> list[dict[str, Any]]:
+    """Every documents row (any binding, any state) recorded at this file.
+
+    Rows are matched on the recorded path OR on the same real file: a binding
+    stores the path it was configured with, a manual run the path it was
+    handed, and either may reach one file through a symlinked prefix.
+    """
+    real = os.path.realpath(path)
+    name = os.path.basename(str(path))
+    like = "%/" + re.sub(r"([\\%_])", r"\\\1", name)
+    rows = ledger.connect().execute(
+        "SELECT * FROM documents WHERE path=? OR path LIKE ? ESCAPE '\\'",
+        (str(path), like)).fetchall()
+    return [dict(r) for r in rows
+            if r["path"] == str(path) or os.path.realpath(r["path"]) == real]
+
+
+@contextlib.contextmanager
+def hold_run_locks(rows: list[dict[str, Any]]):
+    """Take every row's run lock, non-blocking and all-or-nothing.
+
+    Yields True when ALL are held (and keeps them until the block exits), False
+    when any is owned by a live run — in which case nothing stays held. The
+    flock is the exclusion authority, exactly as in run_document.
+    """
+    held: list[DocumentRunLock] = []
+    ok = True
+    try:
+        for binding_id, doc_id in sorted({(r["binding_id"], r["doc_id"]) for r in rows}):
+            lock = document_run_lock(binding_id, doc_id)
+            if not lock.acquire():
+                ok = False
+                break
+            held.append(lock)
+        yield ok
+    finally:
+        for lock in held:
+            lock.release()
+
+
+def mark_state(binding_id: str, doc_id: str, state: str) -> None:
+    """Move one document row to a (terminal) state without touching attempts."""
+    ledger.connect().execute(
+        "UPDATE documents SET state=?, run_started_at=NULL, updated_at=? "
+        "WHERE binding_id=? AND doc_id=?",
+        (state, sentinel.utcnow(), binding_id, doc_id))
+
+
+def repoint(binding_id: str, doc_id: str, path: Path, digest: Optional[str]) -> None:
+    """Record that a document's file moved: its new path and current bytes."""
+    ledger.connect().execute(
+        "UPDATE documents SET path=?, current_sha256=COALESCE(?, current_sha256), "
+        "updated_at=? WHERE binding_id=? AND doc_id=?",
+        (str(path), digest, sentinel.utcnow(), binding_id, doc_id))
+
+
+def _real_if_absent(path: str) -> str:
+    """The real spelling of a path that may not exist: the deepest existing
+    ancestor resolved, the missing tail appended (so a symlinked prefix such as
+    ``~/d`` compares equal to the swept folder's real path)."""
+    head = os.path.normpath(path)
+    tail: list[str] = []
+    while head not in ("", os.sep) and not os.path.lexists(head):
+        head, name = os.path.split(head)
+        tail.insert(0, name)
+    return os.path.join(os.path.realpath(head or os.sep), *tail)
+
+
+def file_absent(path: str, roots: Iterable[str]) -> bool:
+    """Whether a row's file is PROVABLY gone: absolute, lstat says ENOENT, and
+    the path lies under one of ``roots``.
+
+    ``roots`` are folders the caller has just verified are present (a mounted
+    vault, an existing directory), so an unmounted or missing tree can never
+    read as a pile of deleted notes. Anything else — a relative path (it would
+    be resolved against waxd's cwd, not the cwd it was typed in), a path
+    outside every root, an lstat failure other than "no such file" (EACCES, EIO,
+    a stale mount) — is UNKNOWN, and unknown is never absent.
+    """
+    if not os.path.isabs(path):
+        return False
+    try:
+        os.lstat(path)
+        return False
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        return False
+    real = _real_if_absent(path)
+    return any(real == root or real.startswith(root.rstrip(os.sep) + os.sep)
+               for root in roots)
+
+
+def missing_rows(roots: Iterable[str]) -> list[dict[str, Any]]:
+    """Live document rows whose file is provably absent under ``roots``."""
+    roots = list(roots)
+    if not roots:
+        return []
+    rows = ledger.connect().execute(
+        "SELECT * FROM documents WHERE state NOT IN ('trashed','gone')").fetchall()
+    return [dict(r) for r in rows if file_absent(r["path"], roots)]
+
+
+def mark_gone(binding_id: str, doc_id: str, roots: Iterable[str], *,
+              dry_run: bool = False) -> Optional[dict[str, Any]]:
+    """Mark one vanished document ``gone``, or return None when it should stay.
+
+    A row stays live forever otherwise (nothing in the ledger notices a deleted
+    or moved file), and a failed pass behind it reads as a failure nobody can
+    fix. Under the run lock — skipped when a live run holds it — the row is
+    READ AGAIN and judged by its current state and CURRENT path: a re-point
+    (a rename) that landed since the caller's snapshot saves it.
+    """
+    lock = document_run_lock(binding_id, doc_id)
+    if not lock.acquire():
+        return None
+    try:
+        row = ledger.connect().execute(
+            "SELECT * FROM documents WHERE binding_id=? AND doc_id=?",
+            (binding_id, doc_id)).fetchone()
+        if row is None or row["state"] in VANISHED_STATES:
+            return None
+        if not file_absent(row["path"], roots):
+            return None
+        if not dry_run:
+            mark_state(binding_id, doc_id, "gone")
+        return {"binding_id": binding_id, "doc_id": doc_id,
+                "path": row["path"], "previous_state": row["state"]}
+    finally:
+        lock.release()
+
+
+def _revive_gone(binding_id: str, path: Path, digest: str) -> bool:
+    """Bring back a ``gone`` row whose file reappeared at its path unchanged.
+
+    ``gone`` is a bookkeeping guess ("the file was missing when hygiene looked"),
+    so bytes equal to the row's first-sight or current hash prove the guess was
+    wrong. The state returns to what the row's receipts say it earned: completed
+    is ``processed``, a failed/halted attempt is ``failed`` (still retryable),
+    and a document no pipeline ever finished is ``seeded`` (known, not queued).
+    """
+    conn = ledger.connect()
+    revived = False
+    for row in conn.execute(
+            "SELECT * FROM documents WHERE binding_id=? AND path=? AND state='gone'",
+            (binding_id, str(path))).fetchall():
+        if digest not in (row["current_sha256"], row["sha256"]):
+            continue
+        states = {r["state"] for r in conn.execute(
+            "SELECT state FROM document_receipts WHERE binding_id=? AND doc_id=?",
+            (binding_id, row["doc_id"])).fetchall()}
+        state = ("processed" if "completed" in states
+                 else "failed" if states else "seeded")
+        conn.execute("UPDATE documents SET state=?, updated_at=? "
+                     "WHERE binding_id=? AND doc_id=?",
+                     (state, sentinel.utcnow(), binding_id, row["doc_id"]))
+        revived = True
+    return revived
 
 
 def receipt(binding_id: str, doc_id: str, pipeline: str, definition_id: str,
@@ -613,8 +790,11 @@ def _arrivals(binding: dict[str, Any]) -> list[Path]:
     folder = Path(binding["folder"])
     out = []
     for path in _iter_documents(folder):
+        # A trashed/gone row has written this path off: whatever sits there now
+        # is a different file (a fresh Untitled.md), judged on its bytes below.
         row = conn.execute(
-            "SELECT * FROM documents WHERE binding_id=? AND path=? ORDER BY updated_at DESC",
+            "SELECT * FROM documents WHERE binding_id=? AND path=? "
+            "AND state NOT IN ('trashed','gone') ORDER BY updated_at DESC",
             (binding["binding_id"], str(path))).fetchone()
         try:
             digest = sha256_file(path)
@@ -627,6 +807,8 @@ def _arrivals(binding: dict[str, Any]) -> list[Path]:
             # their own row in _scan_binding (and never consume a human
             # change — a moved digest supersedes the retry instead).
             continue
+        if _revive_gone(binding["binding_id"], path, digest):
+            continue  # the file was only missing for a while: still the same note
         if conn.execute(
                 "SELECT 1 FROM documents WHERE binding_id=? AND doc_id=?",
                 (binding["binding_id"], _doc_id(digest))).fetchone():
@@ -828,6 +1010,8 @@ def status(*, pipeline: Optional[str] = None) -> dict[str, Any]:
         binding["documents_unprocessed"] = counts.get("pending", 0) + counts.get("seeded", 0)
         binding["documents_failed"] = counts.get("failed", 0)
         binding["documents_processed"] = counts.get("processed", 0)
+        binding["documents_trashed"] = counts.get("trashed", 0)
+        binding["documents_gone"] = counts.get("gone", 0)
         binding["documents_exhausted"] = int(conn.execute(
             "SELECT COUNT(*) AS n FROM document_receipts WHERE binding_id=? "
             "AND exhausted_at IS NOT NULL", (binding["binding_id"],)).fetchone()["n"])

@@ -30,7 +30,7 @@ COMPONENT_ROOT = next(
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 from wax import (archive, catalog, capture, component, config, documents, events, finalize,
-                 ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
+                 hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
                  sentinel, state, transcribe_adapter, worker)  # noqa: E402
 
 
@@ -301,6 +301,26 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_TICKETS_API_KEY", "passes.d/bin/ticketable (direct key; prefer op://)", "<unset>"),
     ("WAX_TICKETS_REQUEST_TIMEOUT_S", "passes.d/bin/ticketable (per chain member, capped by the chain deadline)",
      "120"),
+    ("WAX_SUMMARY_API_BASE", "passes.d/bin/summarize", TITLE_API_BASE_DEFAULT),
+    ("WAX_SUMMARY_MODEL", "passes.d/bin/summarize", TITLE_MODEL_DEFAULT),
+    ("WAX_SUMMARY_MODEL_FALLBACKS", "passes.d/bin/summarize (comma-separated, in order)",
+     TITLE_MODEL_FALLBACKS_DEFAULT),
+    ("WAX_SUMMARY_API_KEY_OP", "passes.d/bin/summarize (gateway token)", TITLE_KEY_OP_DEFAULT),
+    ("WAX_SUMMARY_API_KEY", "passes.d/bin/summarize (direct key; prefer op://)", "<unset>"),
+    ("WAX_SUMMARY_REQUEST_TIMEOUT_S", "passes.d/bin/summarize (per chain member, capped by the chain deadline)",
+     "60"),
+    ("WAX_SWEEP_INTERVAL_S", "wax/worker.py (scheduled failed-pass sweep cadence)", "900"),
+    ("WAX_DOCUMENT_SCAN_INTERVAL_S", "wax/documents.py (worker's document-binding scan cadence)", "120"),
+    ("WAX_DOCUMENT_STALE_RUN_S", "wax/documents.py (age after which a `processing` claim is reclaimable)", "900"),
+    ("WAX_DOCUMENT_MAX_ATTEMPTS", "wax/documents.py (failed-arrival retries before the receipt is exhausted)", "3"),
+    ("WAX_DOC_HYGIENE_FOLDERS", "wax/hygiene.py (os.pathsep-separated vault folders the empty/untitled "
+     "sweeps may touch; each must sit inside an Obsidian vault)", hygiene.DEFAULT_FOLDERS),
+    ("WAX_DOC_HYGIENE_MIN_AGE_S", "wax/hygiene.py (a note must be unmodified this long before it is trashed)",
+     "300"),
+    ("WAX_EMPTY_DOC_SWEEP_INTERVAL_S", "wax/hygiene.py, wax/worker.py (empty-note sweep cadence)", "300"),
+    ("WAX_UNTITLED_SWEEP_HOUR", "wax/hygiene.py (local hour from which the nightly untitled sweep is due)", "3"),
+    ("WAX_UNTITLED_SWEEP_MAX", "wax/hygiene.py (pipeline runs the nightly untitled sweep starts per attempt)",
+     "50"),
     ("OP_SERVICE_ACCOUNT_TOKEN", "`op read` inside title-slug", "<unset>"),
     ("TRANSCRIBE_DIR", "bin/transcribe", "<dirname(realpath(transcribe))/..>"),
     ("DIARIZATION_VENV", "bin/transcribe", "<TRANSCRIBE_DIR>/.venv-diarization"),
@@ -1074,6 +1094,18 @@ def probe_all() -> list[dict[str, Any]]:
     except Exception as e:  # noqa: BLE001
         add(_probe("pass event schemas", WARN, f"{type(e).__name__}: {e}"))
 
+    # -- document hygiene -------------------------------------------------------
+    # The sweeps move the user's notes, so a silently dead one is worse than a
+    # loud one: the worker records every run's summary in ledger.meta, and this
+    # reads it back instead of trusting that a job exists.
+    try:
+        verdict = hygiene.health(pipeline_enabled=state.pipeline_enabled(),
+                                 waxd_running=pid is not None,
+                                 worker=documents.read_worker_heartbeat())
+        add(_probe("document hygiene", verdict["status"], verdict["detail"], verdict["fix"]))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("document hygiene", FAIL, f"{type(e).__name__}: {e}"))
+
     return out
 
 
@@ -1495,7 +1527,7 @@ def main() -> int:
                         parents=[common]).add_subparsers(dest="sub", required=True)
     dcl = dc.add_parser("list", parents=[common])
     dcl.add_argument("--binding", help="restrict to one binding id")
-    dcl.add_argument("--state", help="pending|processing|processed|failed|seeded")
+    dcl.add_argument("--state", help="pending|processing|processed|failed|seeded|trashed|gone")
     dcs = dc.add_parser("scan", parents=[common],
                         help="seed new bindings, then process new arrivals and retryable failures "
                              "(naming a pipeline runs it even while compiled enabled: false)")
@@ -1512,6 +1544,15 @@ def main() -> int:
                         help="re-arm exhausted document receipts (resets their attempt budget)")
     dcx.add_argument("pipeline", nargs="?", help="restrict to one pipeline (default: all)")
     dcx.add_argument("--doc", help="restrict to one document id (doc-<16hex>)")
+
+    dse = dc.add_parser("sweep-empty", parents=[common],
+                        help="trash empty notes (vault .trash) and write off vanished documents, "
+                             "now; the same job waxd runs on a timer")
+    dse.add_argument("--dry-run", action="store_true", help="report only; change nothing")
+    dsu = dc.add_parser("sweep-untitled", parents=[common],
+                        help="trash empty Untitled*.md, summarize + title + rename the rest, now "
+                             "(ignores the nightly hour/date gate and does not set it)")
+    dsu.add_argument("--dry-run", action="store_true", help="report only; change nothing")
 
     rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
     rc.add_argument("--rebuild", action="store_true")
@@ -1872,6 +1913,12 @@ def main() -> int:
             out = documents.retry_exhausted(pipeline=args.pipeline, doc_id=args.doc)
             _emit(out, J)
             return 0
+        if args.sub in ("sweep-empty", "sweep-untitled"):
+            sweep = (hygiene.sweep_empty if args.sub == "sweep-empty"
+                     else hygiene.sweep_untitled)
+            out = sweep(dry_run=args.dry_run)
+            _emit(out, J)
+            return 2 if out.get("last_error") else 0
         return 1
 
     if args.cmd == "reconcile":

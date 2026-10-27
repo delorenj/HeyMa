@@ -1,0 +1,20 @@
+name: untitled-standard
+version: 1
+description: >
+  Names an untitled Markdown note from its content: summarize writes a
+  `## Summary` section and the short summary field, then title-slug proposes a
+  title and its slug from that summary and the text. Invoked by name
+  (trigger: manual, no folders), never by a folder scan; the nightly untitled
+  sweep runs it per note and renames the file to `<title-slug>.md` itself,
+  because a document run never renames. failure_policy halt: a title with no
+  summary behind it is not wanted, so a failed summarize stops the run and the
+  note keeps its name. Compile this one explicitly
+  (`wax pipeline compile untitled-standard`); doc-standard is n8n-sourced and
+  compiling the whole directory would replace it.
+trigger: manual
+enabled: true
+failure_policy: halt
+passes:
+  - slug: summarize
+  - slug: title-slug
+    requires: [summarize]

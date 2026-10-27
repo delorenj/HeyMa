@@ -35,8 +35,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import (archive, config, desktop, documents, dropoff, finalize, ledger, passes, paths, procutil, rename, sanity,
-               sentinel, state, transcribe_adapter)
+from . import (archive, config, desktop, documents, dropoff, finalize, hygiene, ledger, passes, paths, procutil, rename,
+               sanity, sentinel, state, transcribe_adapter)
 
 # Contract B: name only, handler configured exactly once in bin/waxd. Before
 # this existed there was no `import logging` anywhere under src/wax, and 22 h of
@@ -794,6 +794,14 @@ class Worker(threading.Thread):
         # Same for document bindings: a file that arrived while waxd was down
         # deserves the first tick's scan, not a wait.
         self._last_doc_scan = 0.0
+        # Document hygiene: the interval sweep runs on the first tick too (an
+        # abandoned note does not wait on a restart). The nightly sweep's
+        # "already done today" lives in the ledger; this only paces RETRIES of
+        # an incomplete run so a standing misconfiguration cannot spin.
+        # -inf, not 0.0: time.monotonic() counts from BOOT, so 0.0 would hold
+        # the first sweep back until the machine had been up for the interval.
+        self._last_empty_sweep = float("-inf")
+        self._last_untitled_try = float("-inf")
         self._tick = 0
         self._busy: Optional[str] = None
         self._busy_since_monotonic: Optional[float] = None
@@ -838,6 +846,32 @@ class Worker(threading.Thread):
             log.info("document scan: %d processed, %d binding(s) refused",
                      scanned.get("processed", 0), len(scanned.get("refused") or []))
 
+    def _run_hygiene(self, kind: str) -> None:
+        """One document-hygiene job. Never raises: a hygiene fault must not become
+        an `inbox` worker_exception, but it is logged and left in the ledger for
+        `wax doctor` to turn red."""
+        if not hygiene.runtime_ledger_is_live():
+            log.debug("document hygiene skipped: %s is not the runtime root's ledger",
+                      paths.DB)
+            return
+        try:
+            if kind == "empty":
+                hygiene.sweep_empty(record=True)
+            else:
+                hygiene.sweep_untitled(nightly=True)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            log.exception("document hygiene (%s) failed: %s", kind, exc)
+            hygiene.record_failure(kind, exc)
+
+    @staticmethod
+    def _untitled_due() -> bool:
+        try:
+            return hygiene.untitled_due()
+        except Exception as exc:  # noqa: BLE001 - a ledger hiccup must not crash the tick
+            log.warning("nightly untitled sweep due-check failed: %s: %s",
+                        type(exc).__name__, exc)
+            return False
+
     def _tick_once(self) -> bool:
         """One loop iteration. Returns whether work happened (drain fast)."""
         self._tick += 1
@@ -860,6 +894,23 @@ class Worker(threading.Thread):
             self._set_busy("documents")
             try:
                 self._scan_documents()
+            finally:
+                self._set_busy(None)
+        # After the document scan on purpose: a note the binding has not yet
+        # registered would otherwise be renamed out from under its first scan.
+        if now - self._last_empty_sweep >= hygiene.EMPTY_SWEEP_INTERVAL_S:
+            self._last_empty_sweep = now
+            self._set_busy("hygiene")
+            try:
+                self._run_hygiene("empty")
+            finally:
+                self._set_busy(None)
+        if (now - self._last_untitled_try >= hygiene.UNTITLED_RETRY_S
+                and self._untitled_due()):
+            self._last_untitled_try = now
+            self._set_busy("hygiene")
+            try:
+                self._run_hygiene("untitled")
             finally:
                 self._set_busy(None)
         self._set_busy("inbox")

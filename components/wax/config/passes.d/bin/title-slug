@@ -460,9 +460,13 @@ def _request_timeout() -> float:
         return DEFAULT_REQUEST_TIMEOUT_S
 
 
-def build_result(md: Path) -> dict[str, Any]:
+def build_result(md: Path, item_id: str = "") -> dict[str, Any]:
     fm, body = frontmatter.read(md)
     if not body.strip():
+        # An empty DOCUMENT (key `doc-...`) has nothing to title: skip it. An
+        # empty AUDIO transcript means transcription broke, so it stays loud.
+        if item_id.startswith("doc-"):
+            return {"wax_ep_version": 1, "state": "skipped", "reason_code": "empty_document"}
         raise TitlePassError(f"transcript has no body: {md}")
     existing_title = str(fm.get("title") or "").strip()
     existing_summary = str(fm.get("summary") or "").strip()
@@ -530,7 +534,7 @@ def main() -> int:
     if not md.is_file():
         return _fail("run_error", f"not a transcript file: {md}")
     try:
-        result = build_result(md)
+        result = build_result(md, sys.argv[2] if len(sys.argv) > 2 else "")
     except chat_provider.ProviderError as exc:
         return _fail(exc.reason_code, str(exc))
     except Exception as exc:  # noqa: BLE001 - contract D: never a bare traceback

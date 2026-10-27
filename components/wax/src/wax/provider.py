@@ -290,6 +290,29 @@ def list_model_ids(base: str, key: str, *, timeout: float = 10.0) -> Optional[se
     return ids
 
 
+PREFLIGHT_TIMEOUT_S = 10.0
+
+
+def preflight_ids(base: str, key: str, deadline: "Deadline",
+                  cap: float = PREFLIGHT_TIMEOUT_S) -> Optional[set[str]]:
+    """list_model_ids inside the chain budget: the ids, or None (unreadable, or no time left).
+
+    The catalog lookup is cheap and must never be the reason a run is slow, so
+    it takes at most `cap` seconds and never more than the deadline has left.
+    A None never vetoes a chain member.
+    """
+    timeout = deadline.request_timeout(cap)
+    if timeout < MIN_REQUEST_S:
+        note("note: model preflight skipped (no time left in the chain budget)")
+        return None
+    try:
+        with wall_clock_limit(timeout + HARD_GRACE_S):
+            return list_model_ids(base, key, timeout=timeout)
+    except DeadlineExceeded as exc:
+        note(f"note: model preflight skipped ({exc})")
+        return None
+
+
 # Router family names the gateway grants per token but never lists in /v1/models
 # (observed 2026-10-22: a token scoped to `automaticai/free` does not see it in
 # the listing). A catalog check must not read that absence as "not served".

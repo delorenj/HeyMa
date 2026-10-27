@@ -57,6 +57,7 @@
 			"dist/nodes/WaxPassFrontmatterStamp/WaxPassFrontmatterStamp.node.js",
 			"dist/nodes/WaxPassMemOps/WaxPassMemOps.node.js",
 			"dist/nodes/WaxPassProjectExtraction/WaxPassProjectExtraction.node.js",
+			"dist/nodes/WaxPassSummarize/WaxPassSummarize.node.js",
 			"dist/nodes/WaxPassTicketable/WaxPassTicketable.node.js",
 			"dist/nodes/WaxPassTitleSlug/WaxPassTitleSlug.node.js",
 			"dist/nodes/WaxPassTranscriptionEnhance/WaxPassTranscriptionEnhance.node.js",
