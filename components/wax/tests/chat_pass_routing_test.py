@@ -112,7 +112,8 @@ class ChatPassRoutingTest(unittest.TestCase):
 # Operator order, 2026-10-22: "wax inference: DO NOT use anthropic models."
 # Nothing Wax sends to a model may name one: not a pass env value, not a bin or
 # library default, not the token scope, not the doctor's rows, not an authored
-# pipeline. Hyper ("hyper crush") and the free family are the fallbacks.
+# pipeline. Metered DeepSeek and the free family are the fallbacks (Hyper is
+# gateway-blocked until AAI-64).
 ANTHROPIC = re.compile(r"claude|sonnet|haiku|opus|fable|anthropic", re.IGNORECASE)
 PIPELINES_DIR = COMPONENT_ROOT / "config" / "pipelines.d"
 N8N_EXPORTS = sorted((COMPONENT_ROOT.parents[1] / "components" / "n8n-nodes-heyma" / "examples").glob("*.json"))

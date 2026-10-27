@@ -77,7 +77,7 @@
     },
     {
       "parameters": {
-        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN. Output 0 'continue' only orders: Stamp \u2192 Clipboard \u2192 Classify.\n\nOutput 1 'requires' gates: Title is wired from Classify's requires port, so a failed Classify leaves Title dependency-blocked instead of dropped.\n\nDiarize is deliberately unconnected: GPU-bound, independent of the chain. Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
+        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN. Output 0 'continue' only orders: Stamp \u2192 Clipboard \u2192 Classify.\n\nOutput 1 'requires' gates: Title is wired from Classify's requires port, so a failed Classify leaves Title dependency-blocked instead of dropped.\n\nClassify \u2192 Diarize is a continue edge (ordering only): Diarize skips a transcript classified as a monolog (its registry `when`), and still runs when Classify fails, since the field is then absent. Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
         "height": 320,
         "width": 400
       },
@@ -91,7 +91,19 @@
       ]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Classify": {
+      "main": [
+        [
+          {
+            "node": "Diarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   }

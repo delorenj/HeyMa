@@ -97,6 +97,9 @@ of Whisper's, so an ASR CPU retry must not move Sortformer off CUDA. The owned
 adapter is `components/wax/src/wax/diarization_sortformer.py`; rebuild a deleted
 or damaged runtime with `mise run wax:diarization:install`. `wax doctor` proves
 the path with a real Sortformer CUDA forward pass, not an import-only check.
+The `diarization` pass runs after `classification` and skips a transcript
+classified `monolog` (`when`, `condition_unmet`; operator order 2026-10-27). A
+meeting, other, or missing classification still diarizes.
 
 ## S3: backup-first, never-delete
 

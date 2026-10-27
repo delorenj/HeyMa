@@ -5,12 +5,18 @@ capabilities: [audio]      # needs the recording and its ledger rows
 enabled: true
 auto: true
 kind: diarization
-# No skip_when: the 2026-10-12 review found the classification gate pointed the
-# wrong way — diarization is the stage that answers speaker-count definitively,
-# and a misclassified meeting cost a permanently unattributed transcript while
-# a diarized monolog costs only GPU minutes. Diarize unconditionally; the
-# WAX_DIARIZATION env kill-switch (explicitly_disabled) is the only skip left.
+# Skip a transcript that classification calls a monolog (operator order,
+# 2026-10-27: a monolog must not be diarized). This reverses the 2026-10-12
+# review's "diarize unconditionally" (V2) only for that positive verdict: a
+# meeting, other, or a missing classification (failed, skipped, still unknown)
+# still diarizes, so a classifier outage never costs speaker attribution.
+# `after` (ordering only, never gating) makes the verdict visible before this
+# runs; a failed classification leaves the field absent and diarization runs.
+# The WAX_DIARIZATION env kill-switch (explicitly_disabled) still applies.
 requires: []
+after: [classification]
+when:
+  - {field: classification, not_equals: monolog}
 body_mutation: compare-and-replace
 clobber: [diarized, diarization-requested, diarization-device-requested, diarization-device]
 timeout_s: 86400
