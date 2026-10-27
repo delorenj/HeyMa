@@ -79,11 +79,15 @@ class WorkerHeartbeatTest(unittest.TestCase):
         ]
         for p in stack:
             p.start()
+            self.addCleanup(p.stop)
         self._runtime = stack
         w = worker.Worker()
         w.start()
-        self.addCleanup(w.stop)
+        # Cleanups run LIFO: stop, THEN join. The other way round the join
+        # timed out against a live thread, which then ticked into the next
+        # test and called its run_once mock.
         self.addCleanup(w.join, 3.0)
+        self.addCleanup(w.stop)
         return w
 
     def test_disabled_pipeline_still_beats(self):

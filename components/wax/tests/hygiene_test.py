@@ -871,10 +871,13 @@ class UntitledSweepTest(_Env):
 
         def spy(name, path, **kw):
             seen[Path(path).name] = frontmatter.read(Path(path))[0]
+            raw[Path(path).name] = Path(path).read_text()
             return fake(name, path, **kw)
 
+        raw: dict[str, str] = {}
         placeholder = self.note(self.inbox, "Untitled 5.md",
-                                "---\ntitle: Untitled 5\ntitle-slug: untitled-5\nkeep: me\n---\nBody.\n")
+                                "---\nmodified: 2026-10-09 01:22:51-04:00\ntitle: Untitled 5\n"
+                                "title-slug: untitled-5\nkeep: me\n---\nBody.\n")
         retired = self.note(self.inbox, "Untitled 6.md",
                             "---\ntitle: 'Transcription: 20261009-010221-rec.ogg'\n---\nBody.\n")
         chosen = self.note(self.inbox, "Untitled 7.md", "---\ntitle: My Real Title\n---\nBody.\n")
@@ -884,6 +887,9 @@ class UntitledSweepTest(_Env):
         self.assertNotIn("title", seen["Untitled 5.md"])
         self.assertNotIn("title-slug", seen["Untitled 5.md"])
         self.assertEqual(seen["Untitled 5.md"]["keep"], "me")
+        self.assertEqual(raw["Untitled 5.md"],
+                         "---\nmodified: 2026-10-09 01:22:51-04:00\nkeep: me\n---\nBody.\n",
+                         "only the placeholder lines are cut; no YAML round-trip")
         self.assertNotIn("title", seen["Untitled 6.md"])
         self.assertEqual(seen["Untitled 7.md"]["title"], "My Real Title")
         self.assertTrue((self.inbox / "five.md").is_file())

@@ -604,24 +604,60 @@ def placeholder_title(value: Any) -> bool:
     return bool(UNTITLED_RE.match(value) or PLACEHOLDER_TITLE_RE.match(value))
 
 
+def _without_keys(text: str, keys: frozenset) -> Optional[str]:
+    """The note with top-level frontmatter ``keys`` cut out as TEXT, or None.
+
+    Not a YAML round-trip: re-dumping rewrites every other value (a
+    ``2026-10-09 01:22:51-04:00`` comes back as ``2026-10-09 05:22:51``, the
+    offset silently lost). A key's continuation lines (indented, or ``- ``
+    items) go with it. The cut is verified by re-parsing: the result must be
+    exactly the old frontmatter minus those keys, or nothing is written.
+    """
+    fm, _ = frontmatter.split(text)
+    lines = text.split("\n")
+    end = next((i for i, line in enumerate(lines[1:], start=1)
+                if line.strip() == frontmatter.DELIM), None)
+    if not fm or end is None:
+        return None
+    kept: list[str] = []
+    dropping = False
+    for line in lines[1:end]:
+        key = re.match(r"^([^\s:#][^:]*?)\s*:(?:\s|$)", line)
+        if key:
+            dropping = key.group(1).strip("'\"") in keys
+        elif not (line[:1].isspace() or line.startswith("- ")):
+            dropping = False
+        if not dropping:
+            kept.append(line)
+    out = "\n".join([lines[0], *kept, *lines[end:]])
+    new_fm, _ = frontmatter.split(out)
+    if new_fm != {k: v for k, v in fm.items() if k not in keys}:
+        return None
+    return out
+
+
 def clear_placeholder_title(path: Path, folder: Folder) -> bool:
     """Drop a placeholder ``title`` (and the ``title-slug`` derived from it) so
     title-slug can propose a real one. Under the note's run locks, through a
     dot-staged copy and one atomic replace, and only if the file did not change
-    while being rewritten. Returns whether it rewrote the note."""
+    while being rewritten. Every other byte of the note is left as it was.
+    Returns whether it rewrote the note."""
     rows = documents.rows_for_path(path)
     with documents.hold_run_locks(rows) as held:
         if not held or static_verdict(path, folder) is not None:
             return False
         before = os.lstat(path)
         raw = path.read_bytes().decode("utf-8")
-        fm, body = frontmatter.split(raw)
+        fm, _ = frontmatter.split(raw)
         if not placeholder_title(fm.get("title")):
             return False
-        fm.pop("title", None)
-        fm.pop("title-slug", None)
+        out = _without_keys(raw, frozenset({"title", "title-slug"}))
+        if out is None:
+            log.warning("hygiene: could not cut the placeholder title out of %s cleanly; "
+                        "leaving it", path)
+            return False
         staged = path.with_name(f"{STAGING_PREFIX}hygiene-{path.name}")
-        staged.write_bytes(frontmatter.render(fm, body).encode("utf-8"))
+        staged.write_bytes(out.encode("utf-8"))
         after = os.lstat(path)
         if (after.st_ino, after.st_size, after.st_mtime_ns) != (
                 before.st_ino, before.st_size, before.st_mtime_ns):
