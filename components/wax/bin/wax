@@ -112,10 +112,10 @@ JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential"
 TITLE_API_BASE_DEFAULT = "https://api.automaticai.io/v1"
 TITLE_MODEL_DEFAULT = "automaticai/auto/fast"
 # Ordered fallbacks after the primary: explicit subscription GLM, then metered
-# Hyper, then the free family. Operator order 2026-10-22: no Anthropic model
-# anywhere (chat_pass_routing_test).
+# DeepSeek (Hyper is gateway-blocked, AAI-64), then the free family. Operator
+# order 2026-10-22: no Anthropic model anywhere (chat_pass_routing_test).
 TITLE_MODEL_FALLBACKS_DEFAULT = ("automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,"
-                                 "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,"
+                                 "automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,"
                                  "automaticai/free")
 ANTHROPIC_RE = re.compile(r"claude|sonnet|haiku|opus|fable|anthropic", re.IGNORECASE)
 TITLE_KEY_OP_DEFAULT = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"

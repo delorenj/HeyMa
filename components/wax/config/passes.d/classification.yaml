@@ -13,9 +13,9 @@ timeout_s: 390
 env:
   WAX_TITLE_API_BASE: https://api.automaticai.io/v1
   WAX_TITLE_MODEL: automaticai/auto/fast
-  # Ordered fallbacks: explicit subscription GLM, then metered Hyper, then the
+  # Ordered fallbacks: explicit subscription GLM, then metered DeepSeek, then the
   # free family. Never Anthropic.
-  WAX_TITLE_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
+  WAX_TITLE_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,automaticai/free
   WAX_TITLE_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
   WAX_TITLE_REQUEST_TIMEOUT_S: "60"
 command: ["{component_root}/config/passes.d/bin/classification", "{md_path}", "{item_id}"]

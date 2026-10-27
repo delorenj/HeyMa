@@ -63,13 +63,15 @@ MAX_OUTPUT_TOKENS = 2_048
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
 DEFAULT_MODEL = "automaticai/auto/fast"
 # Tried in order after DEFAULT_MODEL (wax.provider.run_chain): the explicit
-# subscription GLM routes, then the metered Hyper routes, then the free family.
+# subscription GLM routes, then the metered DeepSeek routes, then the free family.
 # The GLM routes sit right after the primary because on 2026-10-22 auto/fast,
 # Hyper and free all answered 503 (no channel) while explicit personal GLM
-# answered 200. Operator order of 2026-10-22: nothing Anthropic, ever; Hyper and
+# answered 200. Hyper has since been blocked by the gateway (AAI-64: subscription-only
+# funding unverified), so metered DeepSeek, its strong-tier backup, takes its
+# place. Operator order of 2026-10-22: nothing Anthropic, ever; DeepSeek and
 # free are fallbacks. chat_pass_routing_test fails if an Anthropic name appears.
 DEFAULT_MODEL_FALLBACKS = ("automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,"
-                           "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,"
+                           "automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,"
                            "automaticai/free")
 DEFAULT_API_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
 # Per request, and never past the chain deadline (wax.provider.Deadline).

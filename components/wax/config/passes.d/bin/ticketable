@@ -65,10 +65,11 @@ MAX_OUTPUT_TOKENS = 8_192
 DEFAULT_API_BASE = "https://api.automaticai.io/v1"
 DEFAULT_MODEL = "automaticai/auto/fast"
 # Tried in order after DEFAULT_MODEL (see wax.provider.run_chain): the explicit
-# subscription GLM routes, then the metered Hyper routes, then the free family.
-# Nothing Anthropic, ever; Hyper and free are fallbacks.
+# subscription GLM routes, then the metered DeepSeek routes, then the free family.
+# Nothing Anthropic, ever; DeepSeek and free are fallbacks. Hyper stays out
+# while the gateway blocks it (AAI-64: subscription-only funding unverified).
 DEFAULT_MODEL_FALLBACKS = ("automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,"
-                           "automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,"
+                           "automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,"
                            "automaticai/free")
 DEFAULT_KEY_OP = "op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference"
 KEY_ENV = "WAX_TICKETS_API_KEY"

@@ -55,8 +55,10 @@ then the comma-separated `*_MODEL_FALLBACKS`. Today:
 1. `automaticai/auto/fast` (the router)
 2. `automaticai/personal/glm-5.3-flash`, 3. `automaticai/personal/glm-5.3`
    (explicit subscription GLM)
-4. `automaticai/hypercharm/glm-5.3`, 5. `automaticai/hypercharm/minimax-m3`
-   (metered Hyper)
+4. `automaticai/deepseek/deepseek-flash`, 5. `automaticai/deepseek/deepseek-v4-pro`
+   (metered DeepSeek direct; it replaced metered Hyper on 2026-10-27 because
+   the gateway blocks every Hyper request until AAI-64 proves subscription-only
+   funding, so Hyper was skipped as `missing_model` on every pass)
 6. `automaticai/free` (the free router)
 
 The explicit GLM routes sit right after the primary because on 2026-10-22 every
@@ -144,7 +146,7 @@ timeout_s: 390   # 6 chain members x 60s + catalog + op read, inside 390s less t
 frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
 env:
   WAX_TITLE_MODEL: automaticai/auto/fast
-  WAX_TITLE_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
+  WAX_TITLE_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,automaticai/free
   WAX_TITLE_REQUEST_TIMEOUT_S: "60"
 command: ["{component_root}/config/passes.d/bin/title-slug", "{md_path}", "{item_id}"]
 ```

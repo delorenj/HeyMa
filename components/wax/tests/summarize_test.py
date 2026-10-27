@@ -39,7 +39,7 @@ SUM = importlib.util.module_from_spec(SPEC)
 LOADER.exec_module(SUM)
 
 CHAIN = ["automaticai/auto/fast", "automaticai/personal/glm-5.3-flash", "automaticai/personal/glm-5.3",
-         "automaticai/hypercharm/glm-5.3", "automaticai/hypercharm/minimax-m3", "automaticai/free"]
+         "automaticai/deepseek/deepseek-flash", "automaticai/deepseek/deepseek-v4-pro", "automaticai/free"]
 BODY = "Met with the vendor about the new rack. They quoted two weeks.\n\nDecision: order the 42U rack.\n"
 NOTE = f"---\ntags: [infra]\n---\n{BODY}"
 ANSWER = {"summary": "A vendor quoted two weeks for a rack and the 42U model was chosen.",

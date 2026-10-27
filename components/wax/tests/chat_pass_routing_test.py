@@ -208,10 +208,10 @@ class NoAnthropicModelsTest(unittest.TestCase):
 
     def test_provision_inference_skips_a_route_the_catalog_lacks(self):
         module = load_script(COMPONENT_ROOT / "deploy" / "provision-inference")
-        available = set(module.MODELS) - {"automaticai/hypercharm/minimax-m3"}
+        available = set(module.MODELS) - {"automaticai/deepseek/deepseek-v4-pro"}
         models, skipped = module.plan(module.MODELS, available)
-        self.assertEqual(skipped, ["automaticai/hypercharm/minimax-m3"])
-        self.assertNotIn("automaticai/hypercharm/minimax-m3", models)
+        self.assertEqual(skipped, ["automaticai/deepseek/deepseek-v4-pro"])
+        self.assertNotIn("automaticai/deepseek/deepseek-v4-pro", models)
         self.assertIn(module.ROUTE, models)
 
     def test_provision_inference_keeps_kimi_and_openrouter_out(self):
@@ -282,9 +282,10 @@ class NoAnthropicModelsTest(unittest.TestCase):
 # 2026-10-22, live outage: auto/fast picked the channel-less hypercharm/glm-5.3,
 # Hyper had no channel and free picked a channel-less Kimi, all 503; the
 # explicit subscription GLM routes answered 200. So they sit right after the
-# primary, and Hyper and free stay fallbacks.
+# primary. Since then the gateway blocks Hyper outright (AAI-64), so metered
+# DeepSeek takes its rung, and free stays the last fallback.
 CHAIN = ["automaticai/auto/fast", "automaticai/personal/glm-5.3-flash", "automaticai/personal/glm-5.3",
-         "automaticai/hypercharm/glm-5.3", "automaticai/hypercharm/minimax-m3", "automaticai/free"]
+         "automaticai/deepseek/deepseek-flash", "automaticai/deepseek/deepseek-v4-pro", "automaticai/free"]
 NOTE_TEXT = "---\nlanguage: en\n---\n# Transcript\nDiscussing a modular enrichment pass for audio.\n"
 
 

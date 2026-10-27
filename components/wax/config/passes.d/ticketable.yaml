@@ -16,9 +16,9 @@ timeout_s: 1800
 env:
   WAX_TICKETS_API_BASE: https://api.automaticai.io/v1
   WAX_TICKETS_MODEL: automaticai/auto/fast
-  # Ordered fallbacks: explicit subscription GLM, then metered Hyper, then the
+  # Ordered fallbacks: explicit subscription GLM, then metered DeepSeek, then the
   # free family. Never Anthropic.
-  WAX_TICKETS_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/hypercharm/glm-5.3,automaticai/hypercharm/minimax-m3,automaticai/free
+  WAX_TICKETS_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,automaticai/free
   WAX_TICKETS_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
   # Up to three 240K-char windows per transcript, each down a 6-member chain.
   WAX_TICKETS_REQUEST_TIMEOUT_S: "120"

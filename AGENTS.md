@@ -127,8 +127,9 @@ gateway at `https://api.automaticai.io/v1` on the scoped `heyma-wax-inference`
 token (`op://`, never a file), and tries an ordered **model chain**
 (`wax.provider.run_chain`): `automaticai/auto/fast`, then the explicit
 subscription routes `automaticai/personal/glm-5.3-flash` and
-`automaticai/personal/glm-5.3`, then `automaticai/hypercharm/glm-5.3`,
-`automaticai/hypercharm/minimax-m3` (metered Hyper), then `automaticai/free`.
+`automaticai/personal/glm-5.3`, then `automaticai/deepseek/deepseek-flash`,
+`automaticai/deepseek/deepseek-v4-pro` (metered DeepSeek; Hyper is out while the
+gateway blocks it, AAI-64), then `automaticai/free`.
 The chain lives in each pass YAML env (`WAX_TITLE_MODEL` +
 `WAX_TITLE_MODEL_FALLBACKS`, `WAX_TICKETS_*`) with matching bin defaults. It
 moves on for provider-side failures only (429, 402, 5xx, unreachable, timeout,

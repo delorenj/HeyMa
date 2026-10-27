@@ -5,17 +5,20 @@ This file is the single source of truth for the token's scope. The chat passes
 (title-slug, classification, ticketable) call a model CHAIN on api.automaticai.io
 (see config/passes.d/*.yaml and wax.provider.run_chain):
 
-    automaticai/auto/fast               the router: fast tier, then strong tier
-    automaticai/hypercharm/glm-5.3      metered Hyper ("hyper crush")
-    automaticai/hypercharm/minimax-m3   metered Hyper
-    automaticai/free                    the free-model router family
+    automaticai/auto/fast                   the router: fast tier, then strong tier
+    automaticai/personal/glm-5.3-flash      subscription z.ai GLM
+    automaticai/personal/glm-5.3            subscription z.ai GLM
+    automaticai/deepseek/deepseek-flash     metered DeepSeek direct
+    automaticai/deepseek/deepseek-v4-pro    metered DeepSeek direct
+    automaticai/free                        the free-model router family
 
 and the token lists exactly the routes those names can land on:
 
 - personal z.ai GLM 5.3 Flash / GLM 5.3: the subscription members `auto/fast`
   can reach (the router intersects its candidate pool with the token's scope).
-- hypercharm/glm-5.3 and hypercharm/minimax-m3: explicit routes, since the
-  chain names them directly. They are also strong-tier members of the auto pool.
+- deepseek/deepseek-flash and deepseek/deepseek-v4-pro: explicit routes, since
+  the chain names them directly. Metered DeepSeek direct is also the auto strong
+  tier's backup for Hyper (AAI-61), so auto/fast can land on them too.
 - automaticai/free: grants the family only, never an explicit free member.
 
 Operator order, 2026-10-22: "wax inference: DO NOT use anthropic models."
@@ -26,8 +29,11 @@ fails). Also out, on purpose:
 - Kimi routes (personal/kimi-*, hypercharm/kimi-k3): they 400 on temperature
   != 1 ("invalid temperature: only 1 is allowed"), gateway bug AAI-55. Re-add
   them only once AAI-55 closes.
-- deepseek/deepseek-v4-pro and deepseek-flash are IN: metered DeepSeek direct,
-  the auto strong tier's backup for Hyper since AAI-61.
+- Hyper (hypercharm/*): the gateway blocks every Hyper request while
+  subscription-only funding is unverified (AAI-64), hides the routes from
+  /v1/models, and the chain recorded them as `missing_model` on every pass.
+  Re-add hypercharm/glm-5.3 and hypercharm/minimax-m3 (scope AND chain) only
+  once AAI-64 closes.
 - Every OpenRouter route, and the auto policy's own free rung (OpenRouter
   `:free` only; AAI-56 says it is dead).
 - Intelliforia (team account): transcripts are personal.
@@ -51,12 +57,11 @@ ROUTE = "automaticai/auto/fast"
 MEMBERS = [
     "automaticai/personal/glm-5.3-flash",
     "automaticai/personal/glm-5.3",
-    "automaticai/hypercharm/glm-5.3",
-    "automaticai/hypercharm/minimax-m3",
     # Metered DeepSeek direct backs Hyper in the auto strong tier (AAI-61,
-    # client-portal 181593b2); token-ops added these to the live scope.
-    "automaticai/deepseek/deepseek-v4-pro",
+    # client-portal 181593b2) and replaces it in the chain while AAI-64 blocks
+    # Hyper. Not "automaticai/hypercharm/*" until AAI-64 closes.
     "automaticai/deepseek/deepseek-flash",
+    "automaticai/deepseek/deepseek-v4-pro",
     # Not "automaticai/hypercharm/kimi-k3" / "personal/kimi-*": AAI-55.
     "automaticai/free",
 ]
