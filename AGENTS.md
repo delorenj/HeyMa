@@ -100,7 +100,8 @@ mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:retry`, `wax:test`,
 `transcribe_adapter` only enqueue a SQLite snapshot and project best-effort
 behind a breaker; waxd's `wax-transcriptions` thread drains, reconciles and
 embeds (local Ollama `qwen3-embedding:8b`, pinned by digest, GPU-gated on the
-active item). An outage is `transcripts lagging|error` in `wax status` and seven
+active item, and unloaded from VRAM the moment an item starts so whisper keeps
+its 5 GB floor). An outage is `transcripts lagging|error` in `wax status` and seven
 `wax doctor` probes. Passwords are `op://` item-UUID references in the waxd
 unit (`deploy/provision-transcriptions` creates the items and roles; dry run by
 default); rollback is `WAX_TRANSCRIPTS=0`.

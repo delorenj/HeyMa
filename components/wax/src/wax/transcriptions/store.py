@@ -437,8 +437,21 @@ def extraction_for(snap: dict[str, Any]) -> extract.Extraction:
         vault_root=root, ledger_maps_note=bool(payload.get("ledger_maps_note")), tz=config.local_tz())
 
 
+def bound_statements(conn: Any) -> None:
+    """Cap every statement of the current transaction at the pass path's 5 s.
+
+    A snapshot is applied under the item's flock, and a pass blocks on that flock. The drain,
+    reconcile and `wax transcripts sync` run on connections opened with a 60 s statement_timeout
+    (for their own bulk reads), so without this a slow statement there could hold a pass for up to
+    60 s per statement instead of D.9's 5 s. Transaction-local: the connection's default returns
+    at COMMIT/ROLLBACK.
+    """
+    conn.execute("SELECT set_config('statement_timeout', %s, true)", (str(db.DEFAULT_STATEMENT_TIMEOUT_MS),))
+
+
 def apply_snapshot(conn: Any, snap: dict[str, Any]) -> Outcome:
     """Project one snapshot inside the caller's transaction (design D.4 steps 1-7)."""
+    bound_statements(conn)
     payload = snap.get("payload") or {}
     observed_at = _ts(snap.get("created_at")) or dt.datetime.now(dt.timezone.utc)
     facts = _facts(payload)
@@ -597,6 +610,7 @@ def _reject(conn: Any, snap: dict[str, Any], exc: Exception) -> None:
     if payload.get("producer_kind") == "pass":
         try:
             with conn.transaction():
+                bound_statements(conn)
                 failed = dict(snap, kind="pass_run")
                 facts = _facts(payload)
                 facts["detail"] = f"{note}"[:300]

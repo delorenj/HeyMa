@@ -192,6 +192,24 @@ def _sweep(conn: Any, *, dry_run: bool, limit: int, vault: Optional[Path]) -> di
                 if not held:
                     stats["skipped_busy"] += 1
                     return
+                # Decide only on what is true UNDER the flock. The note was read (and the pending set
+                # taken at sweep start) before the lock: a pass can finish in between, leaving its own
+                # snapshot queued (it must win: the projector owns that item) or projected (then the
+                # text read above is older than the head, and minting it as `reconcile` would roll the
+                # head back and leave two spurious versions in append-only history).
+                if outbox.has_pending(item_id):
+                    stats["skipped_busy"] += 1
+                    return
+                fresh = path.stat()
+                if (fresh.st_mtime_ns, fresh.st_size) != (st.st_mtime_ns, st.st_size):
+                    st = fresh
+                    text = read_note(path)
+                    fm, body = frontmatter.split(text)
+                    again = extract._text(fm.get(frontmatter.ITEM_KEY))
+                    again = again if again and extract.ITEM_ID_RE.match(again) else None
+                    if again != fm_item:
+                        stats["skipped_busy"] += 1      # its identity changed under us: next sweep
+                        return
             # a second copy of a Wax note: alias, never a version
             if fm_item:
                 ident = view["by_wax"].get(fm_item)

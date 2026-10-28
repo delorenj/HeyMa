@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional
 from . import config, db, embed, extract, gates, health, migrate, outbox, reconcile, search, store, versioning
 from .db import StoreUnavailable
 
-__all__ = ["StoreUnavailable", "record_transcription", "record_pass", "sync", "tick", "show", "history",
+__all__ = ["StoreUnavailable", "record_transcription", "record_pass", "sync", "tick", "yield_gpu", "show", "history",
            "config", "db", "embed", "extract", "gates", "health", "migrate", "outbox", "reconcile", "search",
            "store", "versioning"]
 
@@ -279,10 +279,12 @@ def tick(gpu_busy: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
             stats["embed"] = {"deferred": "gpu_busy", **embed.pending_counts(conn)}
         else:
             try:
-                stats["embed"] = embed.sweep(max_batches=8, conn=conn)
+                stats["embed"] = embed.sweep(max_batches=8, conn=conn, stop=gpu_busy)
             except embed.EmbedError as exc:
                 stats["embed_error"] = {"reason_code": exc.reason_code, "detail": str(exc)[:300]}
                 stats["embed"] = embed.pending_counts(conn)
+        if busy or (stats.get("embed") or {}).get("stopped"):
+            stats["gpu_yielded"] = yield_gpu()
     finally:
         conn.close()
         stats["seconds"] = round(time.time() - started, 2)
@@ -291,6 +293,24 @@ def tick(gpu_busy: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             pass
     return stats
+
+
+def yield_gpu() -> bool:
+    """Unload the embedding model from VRAM because Wax is transcribing or diarizing. Never raises.
+
+    `inbox.active_item` gates when the store may START embedding, but Ollama keeps the model
+    resident for `keep_alive` afterwards. On 2026-10-28 that resident 5.3 GB left 3,864 MB free,
+    under bin/transcribe's 5,000 MB floor (it then waits 30 s and falls back to CPU int8). waxd
+    calls this as soon as an item becomes active; the unload is a no-op when nothing is loaded.
+    """
+    if not config.enabled():
+        return False
+    try:
+        embed.OllamaEmbedder(timeout=5).unload()
+        return True
+    except Exception as exc:  # noqa: BLE001 - the GPU courtesy must never cost anything else
+        log.debug("transcriptions: embedder unload failed: %s: %s", type(exc).__name__, exc)
+        return False
 
 
 def _json(raw: Optional[str]) -> Any:

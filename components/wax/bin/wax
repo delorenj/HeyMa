@@ -355,7 +355,8 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_EMBED_URL", "wax/transcriptions/embed.py (local Ollama, qwen3-embedding:8b pinned by digest)",
      "http://localhost:11434"),
     ("WAX_EMBED_BATCH", "wax/transcriptions/embed.py (inputs per Ollama call, max 8)", "8"),
-    ("WAX_EMBED_KEEP_ALIVE", "wax/transcriptions/embed.py (Ollama keep_alive)", "30m"),
+    ("WAX_EMBED_KEEP_ALIVE", "wax/transcriptions/embed.py (Ollama keep_alive; short so the GPU goes back to "
+     "whisper, and waxd unloads it outright when an item starts)", "2m"),
     ("WAX_EMBED_TIMEOUT_S", "wax/transcriptions/embed.py (per Ollama request)", "60"),
 )
 

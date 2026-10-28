@@ -110,6 +110,15 @@ class OllamaEmbedder:
             raise EmbedError(f"ollama serves {MODEL_NAME} digest {digest[:12]}, the store pins "
                              f"{MODEL_DIGEST[:12]}; refusing to embed", "digest_mismatch")
 
+    def unload(self) -> None:
+        """Drop the model from VRAM now (`keep_alive: 0`); a 0.5 ms no-op when it is not loaded.
+
+        The GPU is shared with whisper (bin/transcribe needs 5,000 MB free or it waits 30 s and
+        falls back to CPU int8) and pyannote/Sortformer. A resident 5.3 GB embedder left 3.9 GB
+        free on 2026-10-28, so the store must give the VRAM back the moment Wax transcribes.
+        """
+        self._request("POST", "/api/generate", {"model": MODEL_NAME, "keep_alive": 0})
+
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         out: list[list[float]] = []
         for start in range(0, len(texts), self.batch):
@@ -170,6 +179,10 @@ def query_vector(conn: Any, query: str, *, embedder: Optional[OllamaEmbedder] = 
     if hit:
         return hit
     embedder = embedder or OllamaEmbedder()
+    # The same pinned-digest check the sweep makes. Without it a re-tagged model would embed the
+    # query in a different space than every stored vector, AND that vector would be cached under the
+    # active model_id for good. One local GET /api/tags (~1 ms) on a cache miss only.
+    embedder.check_digest()
     literal = halfvec_literal(embedder.embed([text])[0])
     if cache is None:
         cache = can_write_cache(conn)
@@ -239,12 +252,16 @@ def _eligible(rows: list[tuple], settled: Callable[[Optional[str]], bool], now: 
 
 def sweep(*, max_batches: int = 8, until_empty: bool = False, limit: int = 0, conn: Any = None,
           embedder: Optional[OllamaEmbedder] = None,
-          settled: Optional[Callable[[Optional[str]], bool]] = None) -> dict[str, Any]:
+          settled: Optional[Callable[[Optional[str]], bool]] = None,
+          stop: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
     """Embed pending chunk vectors (newest first), then doc vectors.
 
     Each batch is one Ollama call of <= 8 inputs and one transaction. Inputs
     already in the cache cost no call. `limit` caps the inputs embedded
-    (0 = no cap); `until_empty` ignores `max_batches`.
+    (0 = no cap); `until_empty` ignores `max_batches`. `stop()` is asked
+    before every batch (waxd passes its gpu_busy): once it says True the sweep
+    ends with `stopped: gpu_busy`, so a transcription that starts mid-sweep
+    never waits behind the rest of it.
     """
     own = conn is None
     if own:
@@ -260,8 +277,21 @@ def sweep(*, max_batches: int = 8, until_empty: bool = False, limit: int = 0, co
         model_id = model["model_id"]
         batch = embedder.batch
 
+        def halted() -> bool:
+            if stats.get("stopped"):
+                return True
+            try:
+                busy = bool(stop()) if stop else False
+            except Exception:  # noqa: BLE001 - an unreadable gate never stops the sweep
+                busy = False
+            if busy:
+                stats["stopped"] = "gpu_busy"
+            return busy
+
         def budget_left() -> bool:
             if limit and stats["embedded"] >= limit:
+                return False
+            if halted():
                 return False
             return until_empty or stats["batches"] < max_batches
 

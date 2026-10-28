@@ -139,6 +139,7 @@ class Daemon:
         return bool((self.snapshot.get("inbox") or {}).get("active_item"))
 
     def _transcriptions_loop(self):
+        yielded = False
         while not self.stopped.is_set():
             try:
                 transcriptions.tick(gpu_busy=self._gpu_busy)
@@ -149,7 +150,25 @@ class Daemon:
                 wait_s = transcriptions.config.tick_s()
             except Exception:  # noqa: BLE001
                 wait_s = 15.0
-            self.stopped.wait(wait_s)
+            # Wait out the tick in 1 s steps, watching the GPU gate: Ollama keeps the embedder resident
+            # for keep_alive after the last sweep, and whisper needs 5,000 MB free or it falls back to
+            # CPU after 30 s. Hand the VRAM back once per busy period, within a second of the item
+            # starting (design G.7).
+            deadline = time.monotonic() + wait_s
+            while not self.stopped.is_set():
+                try:
+                    busy = self._gpu_busy()
+                except Exception:  # noqa: BLE001
+                    busy = False
+                if busy and not yielded:
+                    transcriptions.yield_gpu()
+                    yielded = True
+                elif not busy:
+                    yielded = False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.stopped.wait(min(1.0, remaining))
 
     def run(self):
         while not self.stopped.wait(1):

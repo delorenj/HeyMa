@@ -718,7 +718,29 @@ class TranscriptionsStoreTest(unittest.TestCase):
         tick = transcriptions.tick(gpu_busy=lambda: True)
         self.assertEqual(tick["state"], "ok")
         self.assertEqual(tick["embed"]["deferred"], "gpu_busy")
+        self.assertIs(tick["gpu_yielded"], False)       # it asked Ollama (dead port here) to drop the model
         self.assertEqual(health.snapshot()["state"], "ok")
+
+    # -------------------------------------------------------------- review (2026-10-28, design G.7)
+
+    def test_14_every_snapshot_statement_is_bounded_at_5s_even_on_a_60s_connection(self):
+        with contextlib.closing(db.connect("app", statement_timeout_ms=60000, autocommit=True)) as c:
+            self.assertEqual(c.execute("SHOW statement_timeout").fetchone()[0], "1min")
+            with c.transaction():
+                store.bound_statements(c)
+                self.assertEqual(c.execute("SHOW statement_timeout").fetchone()[0], "5s")
+            self.assertEqual(c.execute("SHOW statement_timeout").fetchone()[0], "1min")   # transaction-local
+
+    def test_15_search_falls_back_to_lexical_on_a_digest_mismatch_and_caches_nothing(self):
+        class Retagged(FakeEmbedder):
+            def check_digest(self):
+                raise embed.EmbedError("ollama serves another digest", "digest_mismatch")
+
+        before = self.one("SELECT count(*) FROM tx.embedding_cache WHERE input_kind = 'query'")[0]
+        out = transcriptions.search.run("a query nobody has embedded yet about volcanoes", embedder=Retagged())
+        self.assertEqual(out["mode"], "lexical")
+        self.assertTrue(out["degraded"].startswith("digest_mismatch"))
+        self.assertEqual(self.one("SELECT count(*) FROM tx.embedding_cache WHERE input_kind = 'query'")[0], before)
 
 
 if __name__ == "__main__":

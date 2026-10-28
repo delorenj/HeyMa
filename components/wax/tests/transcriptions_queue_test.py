@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,6 +88,72 @@ class TryItemLockTest(TempLedger):
         with operations.item_lock(ITEM):
             with operations.try_item_lock(ITEM) as nested:
                 self.assertTrue(nested)
+
+
+class _Rows(list):
+    def fetchall(self):
+        return list(self)
+
+    def fetchone(self):
+        return self[0] if self else None
+
+
+class _ReconcileConn:
+    """Just enough of a psycopg connection for reconcile._sweep: one known identity, nothing else."""
+
+    def __init__(self, identity_row):
+        self.identity_row = identity_row
+
+    def execute(self, sql, params=None):
+        if "FROM tx.transcript t LEFT JOIN tx.transcript_current" in sql:
+            return _Rows([self.identity_row])
+        return _Rows()
+
+    @contextmanager
+    def transaction(self):
+        yield
+
+
+class ReconcileUnderLockTest(TempLedger):
+    """Reconcile reads the note, THEN takes the item flock. A pass that finishes in between must win."""
+
+    NOTE_B = NOTE.replace("hello there world", "hello there world, as the frontmatter-stamp pass left it")
+
+    def _sweep_with_a_pass_finishing_before_the_lock(self, *, leave_pending):
+        from wax.transcriptions import reconcile
+        st = self.md.stat()
+        identity = (7, self.md.name, st.st_mtime_ns - 1, st.st_size, ITEM, None, "a" * 64, "b" * 64, 3)
+        applied = []
+
+        @contextmanager
+        def racing_lock(item_id):
+            # The pass writes its note and queues (or projects) its own snapshot, then releases the item.
+            self.md.write_text(self.NOTE_B)
+            if leave_pending:
+                outbox.enqueue(item_id=ITEM, kind="version", idempotency_key="pass:race", md_path=str(self.md),
+                               note_text=self.NOTE_B, payload={"producer_kind": "pass"})
+            yield True
+
+        def fake_apply(conn, snap):
+            applied.append(snap)
+            return store.Outcome(decision="mint", transcript_id=7)
+
+        with patch.object(operations, "try_item_lock", racing_lock), \
+                patch.object(store, "apply_snapshot", side_effect=fake_apply):
+            stats = reconcile._sweep(_ReconcileConn(identity), dry_run=False, limit=1, vault=self.vault)
+        return stats, applied
+
+    def test_a_pass_projected_in_the_window_is_reread_never_rolled_back(self):
+        stats, applied = self._sweep_with_a_pass_finishing_before_the_lock(leave_pending=False)
+        self.assertEqual(len(applied), 1, stats)
+        self.assertEqual(applied[0]["note_text"], self.NOTE_B)        # what is on disk under the lock
+        new = self.md.stat()
+        self.assertEqual(applied[0]["payload"]["note_stat"], {"size": new.st_size, "mtime_ns": new.st_mtime_ns})
+
+    def test_a_snapshot_queued_in_the_window_leaves_the_item_to_the_projector(self):
+        stats, applied = self._sweep_with_a_pass_finishing_before_the_lock(leave_pending=True)
+        self.assertEqual(applied, [])
+        self.assertEqual(stats["skipped_busy"], 1)
 
 
 class CaptureQueueTest(TempLedger):

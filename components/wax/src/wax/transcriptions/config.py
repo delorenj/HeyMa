@@ -159,7 +159,10 @@ def embed_batch() -> int:
 
 
 def embed_keep_alive() -> str:
-    return value("WAX_EMBED_KEEP_ALIVE", "30m") or "30m"
+    # Short on purpose (design G.7): the 5.3 GB embedder shares the GPU with whisper, whose 5,000 MB
+    # free-VRAM floor it broke while resident for D.9's original 30m. 2m keeps it warm across
+    # back-to-back 15 s ticks and a run of searches, then hands the VRAM back.
+    return value("WAX_EMBED_KEEP_ALIVE", "2m") or "2m"
 
 
 def embed_timeout_s() -> float:

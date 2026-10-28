@@ -2,6 +2,7 @@ import json
 import math
 import threading
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from wax.transcriptions import embed
@@ -36,6 +37,9 @@ class FakeOllama:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 owner.requests.append(("POST", self.path, body))
+                if self.path == "/api/generate":
+                    self._send({"model": body["model"], "response": "", "done": True, "done_reason": "unload"})
+                    return
                 vectors = []
                 for text in body["input"]:
                     seed = sum(text.encode()) or 1
@@ -77,6 +81,8 @@ class FakeConn:
                                  embed.QUERY_INSTRUCTION))
         if "has_table_privilege" in sql:
             return self._Result((False,))
+        if "count(*)" in sql:
+            return self._Result((0, None))
         return self._Result(None)
 
 
@@ -125,6 +131,37 @@ class EmbedTest(unittest.TestCase):
                 embed.sweep(conn=FakeConn(), embedder=embedder)
         self.assertEqual(caught.exception.reason_code, "digest_mismatch")
         self.assertFalse([r for r in fake.requests if r[0] == "POST"])
+
+    def test_query_digest_mismatch_refuses_and_caches_nothing(self):
+        # A re-tagged model must not embed the query into a different space than the stored vectors,
+        # nor leave that vector cached under the active model_id.
+        with FakeOllama(digest="0" * 64) as fake:
+            conn = FakeConn()
+            with self.assertRaises(embed.EmbedError) as caught:
+                embed.query_vector(conn, "phone quality time", embedder=embed.OllamaEmbedder(fake.url), cache=True)
+        self.assertEqual(caught.exception.reason_code, "digest_mismatch")
+        self.assertFalse([r for r in fake.requests if r[0] == "POST"])
+        self.assertFalse(any("INSERT INTO" in sql for sql, _ in conn.statements))
+
+    def test_unload_asks_ollama_to_drop_the_model(self):
+        with FakeOllama() as fake:
+            embed.OllamaEmbedder(fake.url).unload()
+        self.assertEqual(fake.requests, [("POST", "/api/generate", {"model": "qwen3-embedding:8b", "keep_alive": 0})])
+
+    def test_sweep_stops_before_any_batch_when_the_gpu_is_busy(self):
+        with FakeOllama() as fake:
+            stats = embed.sweep(conn=FakeConn(), embedder=embed.OllamaEmbedder(fake.url), stop=lambda: True)
+        self.assertEqual(stats["stopped"], "gpu_busy")
+        self.assertEqual(stats["batches"], 0)
+        self.assertFalse([r for r in fake.requests if r[0] == "POST"])
+
+    def test_keep_alive_default_is_short(self):
+        # D.9's 30m kept 5.3 GB resident under whisper's 5,000 MB free-VRAM floor (design G.7).
+        from wax.transcriptions import config
+        with unittest.mock.patch.dict("os.environ", {}, clear=True), \
+                unittest.mock.patch.object(config, "UNIT_PATH", config.Path("/nonexistent/unit")):
+            self.assertEqual(config.embed_keep_alive(), "2m")
+            self.assertEqual(embed.OllamaEmbedder("http://127.0.0.1:9").keep_alive, "2m")
 
     def test_unreachable_ollama_is_an_embed_error(self):
         with self.assertRaises(embed.EmbedError) as caught:

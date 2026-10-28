@@ -338,6 +338,7 @@ class WaxdThreadTest(unittest.TestCase):
             return {"state": "ok"}
 
         with patch.object(waxd.transcriptions, "tick", side_effect=tick), \
+                patch.object(waxd.transcriptions, "yield_gpu", return_value=True) as yield_gpu, \
                 patch.object(waxd.transcriptions.config, "tick_s", return_value=0.01):
             thread = threading.Thread(target=daemon._transcriptions_loop)
             thread.start()
@@ -345,6 +346,42 @@ class WaxdThreadTest(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(seen, [True, True])
         self.assertNotIn("transcriptions_error", daemon._conditions)    # cleared by the good tick
+        # One busy period, one unload: the embedder's VRAM goes back to whisper (design G.7).
+        self.assertEqual(yield_gpu.call_count, 1)
+
+    def test_the_loop_unloads_the_embedder_within_a_second_of_an_item_starting(self):
+        waxd = _load_script(COMPONENT / "bin" / "waxd", "waxd_transcriptions_yield")
+        daemon = waxd.Daemon.__new__(waxd.Daemon)
+        daemon._conditions = {}
+        daemon.stopped = threading.Event()
+        daemon.snapshot = {"inbox": {"active_item": None}}
+        ticks = []
+        yielded = threading.Event()
+
+        def tick(gpu_busy):
+            ticks.append(gpu_busy())
+            return {"state": "ok"}
+
+        def on_yield():
+            yielded.set()
+            daemon.stopped.set()
+            return True
+
+        with patch.object(waxd.transcriptions, "tick", side_effect=tick), \
+                patch.object(waxd.transcriptions, "yield_gpu", side_effect=on_yield) as yield_gpu, \
+                patch.object(waxd.transcriptions.config, "tick_s", return_value=60.0):
+            thread = threading.Thread(target=daemon._transcriptions_loop)
+            thread.start()
+            time.sleep(0.3)
+            started = time.monotonic()
+            daemon.snapshot = {"inbox": {"active_item": "0123456789abcdef"}}    # whisper is about to load
+            self.assertTrue(yielded.wait(5))
+            waited = time.monotonic() - started
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(ticks, [False])            # mid-wait, not at the next 60 s tick
+        self.assertLess(waited, 2.5)
+        self.assertEqual(yield_gpu.call_count, 1)
 
 
 def _load_script(path: Path, name: str):
