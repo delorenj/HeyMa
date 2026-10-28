@@ -30,10 +30,16 @@ class WorkerEnrichmentTest(unittest.TestCase):
                     patch.object(worker.rename, "move_noclobber", return_value=parked), \
                     patch.object(worker.ledger, "connect", return_value=connection), \
                     patch.object(worker.finalize, "finalize", return_value={"finalized": False}), \
+                    patch.object(worker, "desktop") as desktop, \
                     patch.object(worker.ledger, "set_item_state") as set_state:
                 result = worker.process("item-id", audio)
 
             run_auto.assert_called_once_with("item-id")
+            # Visible means the desktop alarm fires, asserted on a mock: unpatched,
+            # every suite run raised a real "Wax: title-slug failed" toast and an
+            # error sound on the user's desktop.
+            desktop.ding.assert_called_with("failed")
+            self.assertEqual(desktop.notify_stage_failure.call_args.args[0], "title-slug")
             self.assertIn("enrich", claims)
             self.assertEqual(result["enrichment"], enrichment)
             self.assertEqual(result["parked"], str(parked))
