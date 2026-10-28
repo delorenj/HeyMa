@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wax import ledger, operations, paths
+from wax import ledger, operations, paths, sentinel
 from wax import transcriptions
 from wax.transcriptions import config, health, outbox, store
 
@@ -166,6 +166,9 @@ class HealthSnapshotTest(TempLedger):
     def test_states(self):
         self.assertEqual(health.snapshot()["state"], "disabled")
         with patch.dict(os.environ, {"WAX_TRANSCRIPTS_DSN": "postgresql://x@localhost/transcriptions"}):
+            # Configured but no waxd tick yet: nothing is draining, so not green.
+            self.assertEqual(health.snapshot()["state"], "lagging")
+            ledger.meta_set(health.LAST_TICK, json.dumps({"state": "ok", "at": sentinel.utcnow()}))
             self.assertEqual(health.snapshot()["state"], "ok")
             self.record()
             ledger.connect().execute("UPDATE transcript_snapshots SET created_at=?", ("2020-01-01T00:00:00.000Z",))
@@ -180,6 +183,20 @@ class HealthSnapshotTest(TempLedger):
             self.assertEqual(health.snapshot()["state"], "error")
         with patch.dict(os.environ, {"WAX_TRANSCRIPTS": "0"}):
             self.assertEqual(health.snapshot()["state"], "disabled")
+
+    def test_a_dead_or_stale_waxd_thread_is_not_green(self):
+        with patch.dict(os.environ, {"WAX_TRANSCRIPTS_DSN": "postgresql://x@localhost/transcriptions"}):
+            old = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 3000))
+            ledger.meta_set(health.LAST_TICK, json.dumps({"state": "ok", "at": old}))
+            snap = health.snapshot()
+            self.assertEqual(snap["state"], "lagging")
+            self.assertIn("is waxd running", snap["reason"])
+            # The unit gained a DSN after waxd started: waxd still ticks `disabled`.
+            ledger.meta_set(health.LAST_TICK, json.dumps({"state": "disabled", "reason": "no DSN",
+                                                          "at": sentinel.utcnow()}))
+            snap = health.snapshot()
+            self.assertEqual(snap["state"], "lagging")
+            self.assertIn("restart waxd", snap["reason"])
 
     def test_config_falls_back_to_the_installed_unit(self):
         unit = self.var / "waxd.service"

@@ -1520,8 +1520,11 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
      refused, never guessed.
    - **Status.** `tick()` writes `{"state": "unreachable", "error": …}` to `transcriptions.last_tick`
      when it cannot connect, and `health.snapshot()` then reads `lagging` even with an empty queue, so a
-     wrong DSN is not green between passes. It stays `lagging`, not `error` (status exit 2), until the
-     queue passes `WAX_TRANSCRIPTS_LAG_FAIL_S`; doctor's reachability probe FAILs immediately.
+     wrong DSN is not green between passes. With a DSN configured it also reads `lagging` when no tick
+     was ever recorded, when the last tick is older than max(600 s, 10 × tick), or when waxd's last tick
+     said `disabled` (the unit gained a DSN after waxd started: restart it). It stays `lagging`, not
+     `error` (status exit 2), until the queue passes `WAX_TRANSCRIPTS_LAG_FAIL_S`; doctor's
+     reachability probe FAILs immediately, with a provisioning fix when the unit still has placeholders.
    - **CLI.** An unknown `show`/`history` ref (`LookupError`) and a bad `--since` (`ValueError`) print
      `error: …` and exit 2 like `StoreUnavailable`; `show --raw` writes the exact bytes with no newline.
      `WAX_S3_ENDPOINT=https://s3.delo.sh` (equal to `mc alias delo`) in the unit also stops

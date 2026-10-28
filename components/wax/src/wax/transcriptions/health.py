@@ -79,6 +79,19 @@ def snapshot(now: Optional[dt.datetime] = None) -> dict[str, Any]:
         # The last waxd tick could not connect: nothing is projected or embedded right now, even
         # when the queue is still young or empty. Status must not read green over that.
         out.update(state="lagging", reason=f"store unreachable at last tick: {tick.get('error')}")
+    elif not tick.get("at"):
+        out.update(state="lagging", reason="no wax-transcriptions tick recorded yet (is waxd running this code?)")
+    elif tick.get("state") == "disabled":
+        # This process sees a DSN (env or installed unit) but waxd's last tick did not: the unit was
+        # changed after waxd started. Nothing drains or embeds until it restarts.
+        out.update(state="lagging", reason=f"waxd's last tick says disabled ({tick.get('reason')}); "
+                                           "systemctl --user restart waxd to apply the unit")
+    else:
+        tick_age = _age_s(tick.get("at"), now)
+        stale_after = max(config.LAG_WARN_S, 10 * config.tick_s())
+        if tick_age is not None and tick_age > stale_after:
+            out.update(state="lagging", reason=f"last wax-transcriptions tick was {int(tick_age)}s ago "
+                                               f"(> {int(stale_after)}s): is waxd running?")
     return out
 
 
@@ -128,7 +141,10 @@ def probes(*, conn: Any = None, embedder: Optional[embed.OllamaEmbedder] = None,
         if own:
             conn = db.connect("app", autocommit=True)
     except Exception as exc:  # noqa: BLE001
-        return [_probe("transcripts store", FAIL, f"{type(exc).__name__}: {exc}", "wax doctor; check postgresql@17-main")]
+        placeholder = db.UNIT_PLACEHOLDER in str(exc)
+        return [_probe("transcripts store", FAIL, f"{type(exc).__name__}: {exc}",
+                       "deploy/provision-transcriptions --apply; deploy/install-systemd-user" if placeholder
+                       else "check postgresql@17-main and the waxd unit's WAX_TRANSCRIPTS_* lines")]
     try:
         # 1. reachable + schema current
         try:
