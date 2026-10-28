@@ -1529,3 +1529,57 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
      `error: …` and exit 2 like `StoreUnavailable`; `show --raw` writes the exact bytes with no newline.
      `WAX_S3_ENDPOINT=https://s3.delo.sh` (equal to `mc alias delo`) in the unit also stops
      `finalize.audio_url` shelling out to `mc`.
+6. **Live deploy (2026-10-28, F step 1 applied, F.1 runbook run on the host; HeyMa `48e3571`..).**
+   - **Provisioned.** `provision-transcriptions --apply` created the DeLoSecrets DATABASE items
+     Owner `xgnmsebepsybgd627rtudh2iuq`, App `dncjuqof2przgk6me6ct6f2xma`, RO
+     `jdt6hd7awwzxd376agaszc7z3u`, the three LOGIN roles (no superuser/createdb), the database (owner
+     `transcriptions_owner`, CONNECT for app/ro only) and vector 0.8.0 + pg_trgm 1.6. All three roles
+     log in over TCP with their vault passwords; the server log holds no `CREATE/ALTER ROLE` text. A
+     second `--apply` reused all three items, found every role authenticating and re-issued only the
+     idempotent grants: no change. The unit carries the App and Owner UUIDs.
+   - **Before the unit is installed** the CLI can already reach the store with
+     `WAX_TRANSCRIPTS_UNIT_FILE=<repo>/components/wax/deploy/systemd/user/waxd.service`: config reads
+     only `Environment=` lines, and the template's `@…@` lines have no `=` and are ignored. That is
+     how `migrate` (2 files, re-run 0), the backfill and the embed ran before waxd was restarted.
+   - **Backfill numbers equal the G.4 rehearsal.** Dry run 7.8 s, real run 9.9 s: 862 identities and
+     862 `backfill` versions, 6 aliases, 11 ledger-only identities, 1,161 outbox + 18 ledger pass runs
+     (outbox completed 1,029 / failed 119 / skipped 13; ledger completed 2 / skipped 16), 0 errors;
+     all 862 versions restore byte-for-byte. `identities_with_wax_id` is **462**, not F.1's 449 + 11:
+     the `test`-origin fixtures `a-first.ogg.md` and `b-second.ogg.md` carry a `wax-item-id` with no
+     ledger row. Not drift.
+   - **Embedding.** Foreground `wax transcripts embed`: 935 Ollama calls, 7,463 inputs (7,156 distinct
+     chunk texts for 7,309 chunks, 307 distinct doc inputs for 315 doc vectors), 0 deferred, 731 s
+     (≈10 inputs/s; F.1 said 11–13 min). Nothing was transcribed meanwhile. `ANALYZE` as owner works
+     but prints harmless "permission denied to analyze pg_authid…" warnings for shared catalogs.
+     Size afterwards: 253 MB (`chunk_vector_current` 113 MB incl. its 56 MB HNSW, `embedding_cache`
+     41 MB). A `pg_dump -Fc` of it is 141 MB and takes 13 s.
+   - **C.5 is wrong at this size: the unfiltered vector leg is an exact scan, not HNSW.** pgvector
+     prices an HNSW scan's startup in proportion to `hnsw.ef_search`. At 7,309 chunks the canonical
+     ANN `EXPLAIN` at the default ef_search (40) names `chunk_vector_current_hnsw`, but under
+     `tx.search`'s own `ef_search = 200` an exact seq scan + top-N heapsort (cost 7,716) beats the
+     index (7,226 startup + per-row) for `LIMIT 200`; auto_explain of a live `tx.search` shows that
+     Seq Scan at 10.9 ms. It is exact and fast, and flips to HNSW by itself as the table grows. The
+     doctor probe still FAILs only on an unusable index; its detail now says which path search takes.
+   - **The keyword leg dominates common-word queries.** OR-semantics over "phone quality time with
+     the kids" matches 3,127 of 7,309 chunks, so the planner seq-scans `chunk_current` and ranks
+     every match (≈22 ms). The SQL function measures 9–35 ms in-process, not C.5's 10–20 ms.
+   - **Measured latency (warm Ollama).** In-process, one connection: a new query (embedding miss)
+     83–94 ms, a cached query 17.7–35.5 ms median, `--lexical` 8.6–26 ms. CLI end to end
+     (`wax transcripts search`, process start + `op read` + connect): 203–292 ms, not 0.5–1 s; the
+     service-account `op read` takes ≈60–70 ms here.
+   - **Live pass.** `wax ep run frontmatter-stamp 4c9f2d894fde1cc5` minted v2 (`frontmatter-stamp`,
+     changed duration-seconds/engine-model/word-count) through the CLI hook in the same second, with
+     `pass_run.outcome = version`; chunk ids unchanged, `embedding_cache` 7,464 → 7,464, and search
+     ranks the note #1 in all four legs at `version_no = 2`.
+   - **waxd.** Restarted at 07:09:58 EDT while stream, inbox and queue were idle; `/proc/<pid>/environ`
+     carries the five store variables and `OP_SERVICE_ACCOUNT_TOKEN`; `transcriptions.last_tick`
+     advances every 15 s with `state: ok`; no `transcriptions_error`. `wax doctor`: 43/43 pass.
+   - **A unit test dialed the real cluster.** `HealthSnapshotTest` used
+     `postgresql://x@localhost/transcriptions` and recorded a pass, so under `/usr/bin/python3` it
+     really connected (the server log had `password authentication failed for user "x"` at every pg
+     test run). It now uses `127.0.0.1:1`.
+   - **Backups.** `postgres-nightly-dump.sh` (`/etc/cron.daily/db-backup`) dumps every
+     `NOT datistemplate AND datallowconn` database as the postgres superuser over the socket, and that
+     list now includes `transcriptions` (the database-level REVOKE does not bind a superuser), so the
+     first `transcriptions_YYYYMMDD.dump` lands with the next cron.daily run. It is not in
+     `REQUIRED_DBS`, so a missing dump would not alert.
