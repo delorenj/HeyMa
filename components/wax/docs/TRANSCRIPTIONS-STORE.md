@@ -1493,3 +1493,36 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
      down one. Case 10's EXPLAIN sets `enable_seqscan = off` because the planner prefers a seq scan at
      ~30 rows. pathlib's `glob("*.md")` matches dotfiles, so reconcile excludes `.`-prefixed names
      (`.wax-ep-*.md`) explicitly.
+5. **Wiring findings (2026-10-28, stage F 13–19 + 21 + step 1 written, not applied).**
+   - **Hooks.** `_capture()` wraps the `is_document` check in its own `try` as well, so even a broken
+     documents table cannot reach a pass. The main-path call passes `pre_rename_md=md`; the note text is
+     read from `current_md` after `_write_pass_note`. `transcribe_adapter` hoists `processing_s`, which
+     also removes a bogus `__import__("time")` "model literal" from `chat_pass_routing_test`'s scan: the
+     suite reports 409 subtests where the baseline had 410, with no assertion lost.
+   - **Test isolation (new knob).** Every `passes.run` now captures, and config falls back to the
+     INSTALLED unit, which will carry the production DSN. Under `/usr/bin/python3` (it has psycopg) a
+     fixture could then be projected into the real append-only store. `WAX_TRANSCRIPTS_UNIT_FILE`
+     overrides the unit path, and `tests/conftest.py` sets it (inherited by `bin/wax` subprocesses) to a
+     nonexistent path, patches `config.UNIT_PATH` the same way, and drops inherited DSN/password vars.
+     Listed in `ENV_SPECS`.
+   - **Unit placeholders.** The committed waxd unit carries the D.9 lines with
+     `op://DeLoSecrets/REPLACE_WITH_{APP,OWNER}_ITEM_UUID/password` until the 1Password items exist
+     (none did on 2026-10-28). `db._password` refuses a placeholder reference with a provisioning hint
+     instead of a failing `op read` on every tick. `deploy/provision-transcriptions --apply` fills both
+     placeholders in the template; the unit still has to be committed and installed.
+   - **Provisioning.** Passwords reach psql as `\set` variables inside the stdin script (not `-v` on argv,
+     which `ps` shows), and the session sets `log_statement = 'none'` and `log_min_error_statement =
+     'panic'` first so no `CREATE/ALTER ROLE … PASSWORD` can reach the server log. "A second --apply
+     changes nothing" is implemented by testing each role's vault password over TCP first; only a role
+     that does not authenticate gets `ALTER ROLE`. Item passwords are `secrets.token_urlsafe(32)`, so the
+     items' concealed `dsn` field (which, unlike the unit, carries the password) needs no escaping. The
+     dry run exercises `op item create --dry-run` with the real template. Two items with one title are
+     refused, never guessed.
+   - **Status.** `tick()` writes `{"state": "unreachable", "error": …}` to `transcriptions.last_tick`
+     when it cannot connect, and `health.snapshot()` then reads `lagging` even with an empty queue, so a
+     wrong DSN is not green between passes. It stays `lagging`, not `error` (status exit 2), until the
+     queue passes `WAX_TRANSCRIPTS_LAG_FAIL_S`; doctor's reachability probe FAILs immediately.
+   - **CLI.** An unknown `show`/`history` ref (`LookupError`) and a bad `--since` (`ValueError`) print
+     `error: …` and exit 2 like `StoreUnavailable`; `show --raw` writes the exact bytes with no newline.
+     `WAX_S3_ENDPOINT=https://s3.delo.sh` (equal to `mc alias delo`) in the unit also stops
+     `finalize.audio_url` shelling out to `mc`.

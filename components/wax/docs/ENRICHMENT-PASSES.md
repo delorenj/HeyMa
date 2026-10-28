@@ -346,6 +346,43 @@ recovery indexes. Instead:
 The content ID remains the durable join key even if a person later renames the
 note again.
 
+## Every applied pass is a version (the transcriptions store)
+
+Each pass run on an audio transcript is recorded in the versioned
+`transcriptions` Postgres store (design of record:
+`docs/TRANSCRIPTIONS-STORE.md`; summary in `WAX-DESIGN.md`, "Transcriptions
+store"). A pass author does nothing to opt in; the runner does it:
+
+- **Completed or skipped** (a `when`/`skip_when` skip, or a pass-reported
+  `state: skipped`): the runner snapshots the note right after it writes the
+  note's own `wax.passes.<slug>` entry, including any `transcript.slug` rename,
+  and that snapshot becomes a new version keyed `pass:<command_id>` (a skip that
+  issued no command is keyed `skip:<item>:<slug>:v<version>:a<attempt>`).
+- **Failed** (including `dependency_failed`): a `pass_run` row only, never a
+  version. The note did not reach a new applied state.
+- **A re-run that changed nothing** (same slug, same pass version, same
+  content hash) mints no version; it records `pass_run.outcome = no_change`.
+  Changing only `wax.passes.*` timestamps is not a content change.
+- **Frontmatter-only passes cost zero embeddings.** Chunks are embedded from
+  the body text alone (`search_text`), so `frontmatter-stamp`,
+  `classification` and `clipboard-copy` reuse every chunk vector. `title-slug`
+  and anything else that changes `title`, `summary` or `tags` costs at most one
+  doc-vector embedding.
+- **`body_mutation` passes re-chunk.** A pass that changes the body
+  (`body_mutation: compare-and-replace`; today `summarize` and `diarization`)
+  swaps the head's chunks; only chunk texts not
+  already in the embedding cache are embedded, and only after the body has
+  settled (no body-mutating pass in the frozen plan is still non-terminal, or 6 h
+  have passed).
+- **It can never fail your pass.** Capture is a SQLite insert; projection into
+  Postgres is best-effort behind a 300 s breaker, and the waxd
+  `wax-transcriptions` thread drains anything left over. A store or Ollama
+  outage shows as `transcripts lagging|error` in `wax status`/`wax doctor`.
+
+Inspect the result with `wax transcripts history <item>` (every version and
+pass run) and `wax transcripts show <item> --version N --raw` (that version's
+exact note bytes). Documents (`doc-<sha16>@binding`) are not versioned.
+
 ## project-extraction and ticketable
 
 Two passes turn a transcript into pjangler-attributed tickets. Their YAMLs and

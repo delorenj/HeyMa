@@ -30,6 +30,7 @@ lives beside the code. All of it is one filesystem, which is what makes
 | `var/wax.db` | SQLite ledger: `items · backups · transcripts · passes · outbox · transitions` |
 | `var/{state.json,waxd.sock,waxd.lock}` | live mirror, raw status socket, singleton lock |
 | `~/d/Transcripts/` | where transcripts land (`WAX_VAULT`); really `~/code/DeLoDocs/Transcripts` |
+| Postgres `transcriptions` (schema `tx`, host cluster `localhost:5432`) | versioned transcript store: one append-only version per transcription / applied pass / backfill / vault edit, hybrid semantic + FTS search over the latest only. Code `components/wax/src/wax/transcriptions/`; design `components/wax/docs/TRANSCRIPTIONS-STORE.md`; capture queue `transcript_snapshots` in `var/wax.db` |
 | `components/n8n-nodes-heyma/` | private self-hosted n8n adapter; invokes the absolute Wax CLI and owns no pipeline state |
 
 Syncthing folder ID `audio`, displayed as **Transcription Inbox**, receives into
@@ -86,10 +87,23 @@ wax pipeline list|compile|show|bindings   # versioned pipeline graphs (compile i
 wax pipeline import <export.json> [--name]  # compile an authored n8n workflow export
 wax documents list|scan|backfill|run|retry  # document registration/bindings/processing; retry re-arms exhausted receipts
 wax documents sweep-empty|sweep-untitled [--dry-run] [--json]  # the waxd hygiene jobs, now; notes go to <vault>/.trash
+wax transcripts sync [--dry-run|--check|--embed]   # project queued snapshots + reconcile the vault into Postgres
+wax transcripts search <query> [--since --tag --classification --origin ... --lexical]  # latest versions only
+wax transcripts show <ref> [--version N] [--raw] | history <ref> | migrate [--dry-run] | embed [--limit N]
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 
-mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:retry`, `wax:test`, `wax:logs`.
+mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:retry`, `wax:test`, `wax:logs`,
+`wax:transcripts:sync|search|migrate`, `wax:test:pg` (real-Postgres store tests; skip without Docker).
+
+**The transcriptions store never fails a pass.** `passes.run` and
+`transcribe_adapter` only enqueue a SQLite snapshot and project best-effort
+behind a breaker; waxd's `wax-transcriptions` thread drains, reconciles and
+embeds (local Ollama `qwen3-embedding:8b`, pinned by digest, GPU-gated on the
+active item). An outage is `transcripts lagging|error` in `wax status` and seven
+`wax doctor` probes. Passwords are `op://` item-UUID references in the waxd
+unit (`deploy/provision-transcriptions` creates the items and roles; dry run by
+default); rollback is `WAX_TRANSCRIPTS=0`.
 
 Diarization is required and GPU-strict by default:
 `WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`. Its device is independent

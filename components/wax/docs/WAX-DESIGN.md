@@ -376,6 +376,31 @@ The nightly job isolates each note in its own try/except and writes the date onl
 
 Visibility. Each worker run stores a summary (`last_run_at`, `interval_s`, counts, `last_error`) in `ledger.meta` (`hygiene_empty_sweep`, `hygiene_untitled_sweep`) and logs counts at INFO when anything changed (DEBUG otherwise), plus one INFO line per note. `wax doctor` has a "document hygiene" probe: FAIL on a recorded `last_error`, or a last run older than 3x its interval while the pipeline is enabled and waxd is running (WARN instead if the worker is demonstrably busy with an item); WARN when the nightly date is more than 2 days old or the nightly sweep errored. CLI runs (`wax documents sweep-empty|sweep-untitled [--dry-run] [--json]`) execute now, ignore the hour and date gate, and record nothing, so a manual run can never make a dead worker look alive.
 
+### Transcriptions store (versioned, searchable)
+
+Full design of record: **`docs/TRANSCRIPTIONS-STORE.md`** (sections A–G; G records every place the build followed reality over the plan). This is the condensed version.
+
+**What it is.** A Postgres database `transcriptions` (schema `tx`) on the host cluster (`localhost:5432`, Postgres 17, pgvector 0.8.0, pg_trgm 1.6) holding every note in `WAX_VAULT` as one identity (`tx.transcript`) with an append-only list of versions (`tx.transcript_version`): one per transcription, per **applied** enrichment pass (completed or skipped), per backfill and per detected external edit. Failed runs land in `tx.pass_run` only. Documents (`doc-<sha16>@binding`) are out of scope. Notes without a Wax identity (Hermes STT, legacy clips) are identities too (`origin` = `wax | hermes-stt | legacy | test`). Each version stores `frontmatter_block` and a content-addressed body, so every version restores byte-for-byte (`wax transcripts show <ref> --version N --raw`); the vault has no git and Wax keeps no other prior snapshot.
+
+**Invariants live in the database.** A BEFORE INSERT trigger assigns `version_no` under `FOR UPDATE`; an AFTER INSERT trigger advances `transcript.current_version_id`; `transcript_current` (the materialized head) has a deferred composite FK to that pointer, so a projector bug fails at COMMIT. `transcript_version` and `transcript_body` reject UPDATE/DELETE by trigger and by grant. Roles: `transcriptions_owner` (migrations), `transcriptions_app` (waxd, the CLI), `transcriptions_ro` (outside readers). A re-run with the same pass, pass version and content mints nothing (`pass_run.outcome = no_change`).
+
+**Search reads only the head.** Chunks (`chunk_current`, CHUNKER_VERSION 1, ≤ 512 estimated tokens, speaker-turn aware) and their vectors (`chunk_vector_current`, `halfvec(2048)` from `qwen3-embedding:8b` on local Ollama, pinned by digest, HNSW `halfvec_ip_ops`) exist for the head body only and are swapped when the body changes. `tx.search()` fuses four legs with RRF in one SQL call: chunk vector, chunk FTS, doc vector (title + summary + tags) and doc lexical/trigram, with filters resolved on the small head tables first and an exact scan below 4,000 eligible chunks. History has no ANN index. The embedding input is the chunk's `search_text` only, so frontmatter-only passes (stamp, classification, title-slug) never re-embed a chunk; title-slug costs at most one doc embedding.
+
+**How Wax feeds it, without ever failing for it.**
+
+| Where | What |
+|---|---|
+| `passes.run` | `_capture()` after the note's own `wax.passes.<slug>` entry is written, at three sites: `dependency_failed`, the `when`/`skip_when` skip, and the main path (with the pre-rename path). Under the item flock. |
+| `transcribe_adapter.transcribe` | `record_transcription()` after the `transcripts` row and the `transcribed` state. |
+| both hooks | enqueue a full snapshot into SQLite `transcript_snapshots` (the durable record), then project synchronously only if a DSN is set and the breaker (`ledger.meta transcriptions.sync_breaker_until`, 300 s) is closed. Every exception is swallowed and logged. |
+| `waxd` thread `wax-transcriptions` | every `WAX_TRANSCRIPTS_TICK_S` (15 s): drain unprojected snapshots (skipping items whose flock is held), reconcile the vault every 600 s (backfill unknown notes, `reconcile` versions for Obsidian edits, aliases, vanished notes, outbox history import), then embed up to 8 batches unless `inbox.active_item` says the GPU is busy. Not in the Worker: it must run while the pipeline is disabled and must never delay the inbox. |
+
+A Postgres or Ollama outage is **lag**, never a pass or worker failure: snapshots wait in SQLite, `wax status` prints `transcripts lagging|error (queued N, embed pending M)` (error, and `status` exit 2, past `WAX_TRANSCRIPTS_LAG_FAIL_S` = 3600 s, an embed backlog older than 6 h, or a model digest mismatch), and `wax doctor` runs seven probes (reachable + schema current, projection drained, parity, `tx.check_invariants()`, embeddings current, Ollama digest, ANN plan uses `chunk_vector_current_hnsw`). Rollback is `WAX_TRANSCRIPTS=0` in the unit; nothing in the vault or ledger is ever written by the store, so there is nothing to undo.
+
+**Config and secrets.** `WAX_TRANSCRIPTS_*` and `WAX_EMBED_*` are read from the environment, then from the INSTALLED unit's `Environment=` lines, so the CLI and waxd share one source of truth (`WAX_TRANSCRIPTS_UNIT_FILE` overrides which unit; the test suite points it at nothing). DSNs are password-less; passwords are `op://DeLoSecrets/<item-uuid>/password` resolved by `op read` at runtime. `deploy/provision-transcriptions` (dry run by default) creates the three 1Password items, roles, database and extensions and fills the unit's `REPLACE_WITH_*_ITEM_UUID` placeholders; `wax transcripts migrate` applies the schema as the owner role.
+
+**Operate it.** `wax transcripts sync [--dry-run|--check|--embed]`, `search <query> [filters] [--lexical]`, `show <ref> [--version N] [--raw]`, `history <ref>`, `migrate [--dry-run]`, `embed [--limit N]`; mise `wax:transcripts:sync|search|migrate`, `wax:test:pg`. Backfill runbook: TRANSCRIPTIONS-STORE.md F.1.
+
 ---
 
 ## Recording: hotkey + tray
