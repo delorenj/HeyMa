@@ -1452,3 +1452,44 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
    add a dated bullet to this section. Do not silently diverge.
 3. **The research reports** that fed this design (lifecycle, corpus survey, infra probes) are summarized in
    sections 0 and A–C; the raw survey script lived in /tmp and is not part of the design of record.
+4. **Implementation findings (2026-10-28, stage F 2–12 + 20; verified against the real vault and a copy of
+   the ledger projected into a disposable `pgvector/pgvector:0.8.0-pg17`).**
+   - **Corpus numbers.** Origins over all 868 notes with ledger facts: wax 455 (449 canonical + 6 aliases),
+     hermes-stt 335, legacy 75, test 3. Chunks: 7,428 over every note, 7,309 over canonical searchable
+     notes; max token estimate 512. Single-chunk notes are 346 **plus 174 empty bodies** (H1 and legacy
+     header only), which get **zero** chunks rather than one empty chunk: 520 notes at ≤ 512 tokens
+     (C.1 said 517). `recorded_at` parses for 541 of 868 names (A said 490).
+   - **Backfill rehearsal (F.1 step 2/3 against the container).** 862 identities + 862 `backfill`
+     versions, 6 aliases, 11 ledger-only identities, 0 errors; all 862 versions restore byte-for-byte;
+     `check_invariants()` 0 rows. History: 1,185 outbox `task.completed|failed|skipped` events seen
+     (both families), 1,161 imported (24 belong to documents), plus 18 ledger-only `passes` rows;
+     F.1's "≈1,049" counted `.completed` only. Dry run 7.5 s, real run 9.3 s (not 1–2 min), re-run
+     0.0 s (862 unchanged). Real Ollama: 16 chunks in 2 calls (4.1 s incl. cold load), norms within
+     4e-5 of 1, hybrid search ranked the spouses note #1 in 0.09 s; the doctor ANN probe named
+     `chunk_vector_current_hnsw` on the real-size table.
+   - **Reconcile key.** `reconcile:v{head_version_no}:{content_sha}`, not `reconcile:{content_sha}`:
+     an edit A → B → A would otherwise collide with the first reconcile key and leave the head at B.
+   - **`recorded_at`.** Pattern 2 also accepts a space (`20260728 125905.m4a`, 6 notes); that is the
+     sixth pattern E.1 counts.
+   - **hermes-stt.** Hermes legacy notes carry their path in the `**Source**` bullet, not
+     `source-audio`, so the origin rule tests the coalesced `source_audio_original_path`.
+   - **Poison snapshots.** An `ExtractError` (invalid classification, NUL byte) marks the SQLite row
+     `rejected: …` (and records a `not_applied` `pass_run`) instead of wedging that item's queue;
+     `outbox.backlog()`/`health.snapshot()` count `rejected`. Any other projection error leaves the row
+     pending with `attempts`/`last_error`.
+   - **History merge.** The app role has no UPDATE on `pass_run`, so ledger `passes` evidence,
+     `definition_id` and `reason_code` are merged into the outbox row at insert time (same
+     `pass:{command_id}` key); ledger rows without an outbox event insert with `source='ledger'`.
+   - **Embed age.** `chunk_current` has no timestamp, so the 6 h override uses the first version that
+     carried the head body (`min(transcript_version.created_at)` for that `body_sha256`). No schema change.
+   - **`audio_https_url`.** Same formula as `finalize.audio_url`, but only from `WAX_S3_ENDPOINT` (env,
+     then the installed unit); the projector never falls back to `mc alias list`. NULL when unset.
+   - **Overlap.** Dropped when overlap + the next unit would pass `HARD_CAP` (an unsplit 452–512-token
+     turn): 30 of ~6.5k chunk boundaries in the vault. Elsewhere 6–60 tokens, mean 59.
+   - **New knob.** `WAX_TRANSCRIPTS_OWNER_PASSWORD` (direct override, mirrors `WAX_TRANSCRIPTS_PASSWORD`)
+     must join `ENV_SPECS` as redacted in step 16.
+   - **Tests.** E.2 case 12 uses `docker pause`/`unpause` rather than a stop: with `--rm` a stop deletes
+     the container and its random host port. A paused server fails `connect_timeout=2` exactly like a
+     down one. Case 10's EXPLAIN sets `enable_seqscan = off` because the planner prefers a seq scan at
+     ~30 rows. pathlib's `glob("*.md")` matches dotfiles, so reconcile excludes `.`-prefixed names
+     (`.wax-ep-*.md`) explicitly.

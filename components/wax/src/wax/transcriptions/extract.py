@@ -97,6 +97,8 @@ def _text(value: Any) -> Optional[str]:
 def _int(value: Any) -> Optional[int]:
     if isinstance(value, bool) or _empty(value):
         return None
+    if isinstance(value, int):
+        return value            # exact: st_mtime_ns does not survive a float round-trip
     try:
         number = float(value)
     except (TypeError, ValueError):

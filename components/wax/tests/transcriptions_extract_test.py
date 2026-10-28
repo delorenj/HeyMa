@@ -317,6 +317,10 @@ class HashTest(unittest.TestCase):
         speakers = {s["speaker_label"]: s for s in e.speakers}
         self.assertEqual(speakers["Speaker 2"]["first_start_s"], 69.0)
 
+    def test_note_stat_is_exact(self):
+        e = extract.from_note("words words words\n", "n.md", stat={"size": 18, "mtime_ns": 1761234567890123457})
+        self.assertEqual(e.identity["note_mtime_ns"], 1761234567890123457)
+
     def test_nul_byte_is_refused(self):
         with self.assertRaises(extract.ExtractError):
             extract.from_note("body\x00", "n.md")

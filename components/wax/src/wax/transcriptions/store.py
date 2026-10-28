@@ -555,6 +555,15 @@ def project_item(item_id: str, *, limit: int = 50, conn: Any = None) -> int:
     A snapshot the extractor rejects (an invalid classification) is marked
     `rejected:` instead, with a `not_applied` pass_run, so it cannot wedge the item.
     """
+    with operations.try_item_lock(item_id) as held:
+        # Re-entrant for a pass (it already holds the item); otherwise whoever
+        # holds the item (a running pass, the drain) projects it instead.
+        if not held:
+            return 0
+        return _project_locked(item_id, limit=limit, conn=conn)
+
+
+def _project_locked(item_id: str, *, limit: int, conn: Any) -> int:
     rows = outbox.pending(item_id, limit=limit)
     if not rows:
         return 0
