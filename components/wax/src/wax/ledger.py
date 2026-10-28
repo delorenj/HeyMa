@@ -836,6 +836,13 @@ def enrich(snap: dict[str, Any]) -> dict[str, Any]:
             snap["outbox_backlog"] = events.backlog()
         except Exception as e:  # noqa: BLE001
             snap["outbox_error"] = f"{type(e).__name__}: {e}"
+        # The versioned transcriptions store (docs/TRANSCRIPTIONS-STORE.md D.8). SQLite only: status
+        # never waits on Postgres. A store outage is lag here, never a pass or worker failure.
+        try:
+            from .transcriptions import health as transcriptions_health
+            snap["transcriptions"] = transcriptions_health.snapshot()
+        except Exception as e:  # noqa: BLE001
+            snap["transcriptions"] = {"state": "error", "reason": f"{type(e).__name__}: {e}"}
     except sqlite3.Error as e:
         snap["ledger_error"] = str(e)
     return snap

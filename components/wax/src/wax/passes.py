@@ -984,6 +984,22 @@ def _write_pass_note(md: Path, item_id: str, slug: str, entry: dict[str, Any]) -
     os.replace(tmp, md)
 
 
+def _capture(item_id: str, slug: str, **kw: Any) -> None:
+    """Version the note in the `transcriptions` store. Fail-open: never raises, never fails a pass.
+
+    Called under the item flock (`run` is `@serialized`) right after the note's
+    own `wax.passes.<slug>` entry is written, so the snapshot is the note as the
+    pass left it. Documents are out of scope (docs/TRANSCRIPTIONS-STORE.md B.0).
+    """
+    try:
+        if is_document(item_id):
+            return
+        from . import transcriptions
+        transcriptions.record_pass(item_id=item_id, slug=slug, **kw)
+    except Exception as exc:  # noqa: BLE001 - the store must never cost a pass
+        log.warning("transcriptions capture failed for %s/%s: %s: %s", item_id, slug, type(exc).__name__, exc)
+
+
 def _frozen_plan_entry(item_id: str, slug: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, int]]]:
     """(the plan's frozen definition of `slug`, the plan's pass versions) for an item, or (None, None) when the item
     has no plan or the plan does not name the pass (legacy history keeps the live-registry path, as in the sweep)."""
@@ -1065,6 +1081,9 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
                 })
             except OSError:
                 pass
+        _capture(item_id, slug, kind="pass_run", state="failed", md_path=md, pass_version=version,
+                 attempt=attempt, command_id=None, reason_code="dependency_failed", detail=detail,
+                 definition=ep, pass_result=None, changed_fields=[], duration_s=None)
         log.warning("%s dependency_failed for %s (attempt %d): %s", slug, item_id, attempt, detail)
         return {"item_id": item_id, "ep_slug": slug, "version": version, "state": "failed",
                 "attempt": attempt, "reason_code": "dependency_failed", "error": detail}
@@ -1120,6 +1139,9 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
             "state": "skipped", "version": int(ep["version"]), "reason_code": skip_reason,
             **({"detail": skip_detail} if skip_detail else {}),
         }}}})
+        _capture(item_id, slug, kind="version", state="skipped", md_path=md, pass_version=int(ep["version"]),
+                 attempt=attempt, command_id=None, reason_code=skip_reason, detail=skip_detail,
+                 definition=ep, pass_result=None, changed_fields=[], duration_s=None)
         return {"item_id": item_id, "ep_slug": slug, "state": "skipped", "reason_code": skip_reason,
                 **({"detail": skip_detail} if skip_detail else {})}
 
@@ -1249,6 +1271,10 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         _write_pass_note(current_md, item_id, slug, note_entry)
     except OSError:
         pass
+    _capture(item_id, slug, kind="version" if state in ("completed", "skipped") else "pass_run", state=state,
+             md_path=current_md, pass_version=version, attempt=attempt, command_id=cid, reason_code=failure,
+             detail=err if not ok else "", definition=ep, pass_result=pass_result,
+             changed_fields=changed_fields, duration_s=took, pre_rename_md=md)
 
     if ok:
         log.info("%s completed for %s in %ss (attempt %d, %d field(s) changed)",

@@ -21,6 +21,10 @@ from typing import Optional
 
 # Tests patch this; the default is where deploy/install-systemd-user installs it.
 UNIT_PATH = Path(os.path.expanduser("~/.config/systemd/user/waxd.service"))
+# Overrides UNIT_PATH. The test suite's conftest points it at a path that does not exist so that no
+# test (nor a `bin/wax` subprocess one spawns) can pick up the INSTALLED unit's DSN and project
+# fixtures into the real, append-only store.
+UNIT_FILE_ENV = "WAX_TRANSCRIPTS_UNIT_FILE"
 
 _lock = threading.Lock()
 _unit_cache: dict[str, object] = {}
@@ -28,9 +32,14 @@ _unit_cache: dict[str, object] = {}
 _OFF = {"0", "false", "no", "off"}
 
 
+def unit_path() -> Path:
+    override = os.environ.get(UNIT_FILE_ENV, "").strip()
+    return Path(os.path.expanduser(override)) if override else Path(UNIT_PATH)
+
+
 def _unit_env() -> dict[str, str]:
     """The installed unit's Environment= assignments, re-read when the file changes."""
-    path = Path(UNIT_PATH)
+    path = unit_path()
     try:
         st = path.stat()
     except OSError:

@@ -360,14 +360,22 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
         )
         import hashlib
         _, body = frontmatter.read(final)
+        processing_s = __import__("time").monotonic() - started
         ledger.connect().execute(
             "UPDATE transcripts SET asr_path=?,body_sha256=?,processing_seconds=?,diarized=?,engine_model=? WHERE item_id=?",
             (str(asr_path), hashlib.sha256(body.encode()).hexdigest(),
-             __import__("time").monotonic() - started, int(bool(meta.get("diarized"))),
+             processing_s, int(bool(meta.get("diarized"))),
              meta.get("model"), item_id),
         )
         ledger.set_item_state(item_id, "transcribed", cause="gate_passed",
                               evidence=f"ratio={verdict['duration_ratio']} -> {final.name}")
+        try:
+            from . import transcriptions
+            transcriptions.record_transcription(item_id=item_id, md_path=final, meta=meta, verdict=verdict,
+                                                asr_path=asr_path, attempt=attempt,
+                                                processing_seconds=processing_s)
+        except Exception as exc:  # noqa: BLE001 - the store must never cost a transcript
+            log.warning("transcriptions capture failed for %s: %s", item_id, exc)
 
     return {
         "item_id": item_id,

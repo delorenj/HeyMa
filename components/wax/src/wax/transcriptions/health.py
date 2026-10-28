@@ -75,6 +75,10 @@ def snapshot(now: Optional[dt.datetime] = None) -> dict[str, Any]:
         out.update(state="error", reason="; ".join(reasons))
     elif oldest is not None and oldest > config.LAG_WARN_S:
         out.update(state="lagging", reason=f"oldest queued snapshot is {int(oldest)}s old")
+    elif tick.get("state") == "unreachable":
+        # The last waxd tick could not connect: nothing is projected or embedded right now, even
+        # when the queue is still young or empty. Status must not read green over that.
+        out.update(state="lagging", reason=f"store unreachable at last tick: {tick.get('error')}")
     return out
 
 

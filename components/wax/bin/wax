@@ -31,7 +31,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 from wax import (archive, catalog, capture, component, config, documents, events, finalize,
                  hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
-                 sentinel, state, transcribe_adapter, worker)  # noqa: E402
+                 sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -328,6 +328,35 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("TRANSCRIBE_STASH_DIR", "bin/transcribe (S3-failure stash)", "~/audio/recovered"),
     ("TRANSCRIBE_S3_ALIAS", "bin/transcribe (backup destination)", archive.ALIAS),
     ("TRANSCRIBE_S3_BUCKET", "bin/transcribe (backup destination)", archive.BUCKET),
+    ("WAX_S3_ENDPOINT", "wax/finalize.py, wax/transcriptions (unsigned audio URL; finalize asks `mc alias` when "
+     "unset, the store leaves the URL NULL)", "<mc alias delo>"),
+    # The versioned `transcriptions` store (docs/TRANSCRIPTIONS-STORE.md D.9). Read from the
+    # environment, then from the INSTALLED unit's Environment= lines, so the CLI and waxd agree.
+    ("WAX_TRANSCRIPTS", "wax/transcriptions (0 disables capture and projection: the rollback switch)", "1"),
+    ("WAX_TRANSCRIPTS_DSN", "wax/transcriptions (password-less libpq URI, app role; NEVER a password in it)",
+     "<unset = capture only>"),
+    ("WAX_TRANSCRIPTS_PASSWORD_OP", "wax/transcriptions (op:// app-role password, resolved at runtime)",
+     "<unset>"),
+    ("WAX_TRANSCRIPTS_PASSWORD", "wax/transcriptions (direct app-role password; prefer op://)", "<unset>"),
+    ("WAX_TRANSCRIPTS_OWNER_DSN", "wax transcripts migrate (password-less URI, owner role)", "<unset>"),
+    ("WAX_TRANSCRIPTS_OWNER_PASSWORD_OP", "wax transcripts migrate (op:// owner-role password)", "<unset>"),
+    ("WAX_TRANSCRIPTS_OWNER_PASSWORD", "wax transcripts migrate (direct owner-role password; prefer op://)",
+     "<unset>"),
+    ("WAX_TRANSCRIPTS_UNIT_FILE", "wax/transcriptions/config.py (installed unit read as the fallback config; "
+     "the test suite points it at nothing)", "~/.config/systemd/user/waxd.service"),
+    ("WAX_TRANSCRIPTS_TICK_S", "bin/waxd wax-transcriptions thread (drain/reconcile/embed cadence)", "15"),
+    ("WAX_TRANSCRIPTS_RECONCILE_INTERVAL_S", "wax/transcriptions (vault reconcile cadence inside the tick)", "600"),
+    ("WAX_TRANSCRIPTS_SYNC_BREAKER_S", "wax/transcriptions (pass-path projection pause after a store failure)",
+     "300"),
+    ("WAX_TRANSCRIPTS_LAG_FAIL_S", "wax/transcriptions health (oldest queued snapshot age that reads `error`)",
+     "3600"),
+    ("WAX_TRANSCRIPTS_LOCAL_TZ", "wax/transcriptions (filename wall clocks, legacy **Date**, search dates)",
+     "America/New_York"),
+    ("WAX_EMBED_URL", "wax/transcriptions/embed.py (local Ollama, qwen3-embedding:8b pinned by digest)",
+     "http://localhost:11434"),
+    ("WAX_EMBED_BATCH", "wax/transcriptions/embed.py (inputs per Ollama call, max 8)", "8"),
+    ("WAX_EMBED_KEEP_ALIVE", "wax/transcriptions/embed.py (Ollama keep_alive)", "30m"),
+    ("WAX_EMBED_TIMEOUT_S", "wax/transcriptions/embed.py (per Ollama request)", "60"),
 )
 
 
@@ -1023,6 +1052,7 @@ def probe_all() -> list[dict[str, Any]]:
                f"{natsclient.HOST}:{natsclient.PORT}",
                "" if reachable else "start NATS; events queue in the outbox meanwhile (fail-open)"))
     probe_outbox(add)
+    probe_transcriptions(add)
 
     # -- contract-A stage health -------------------------------------------
     # The two blocks that were unrepresentable during both outages. They are the
@@ -1160,6 +1190,17 @@ def probe_outbox(add) -> None:
                    "" if stale <= OUTBOX_STALE_S else "wax events drain"))
     except Exception as e:  # noqa: BLE001
         add(_probe("outbox drained", WARN, f"{type(e).__name__}: {e}"))
+
+
+def probe_transcriptions(add) -> None:
+    """The versioned `transcriptions` store (docs/TRANSCRIPTIONS-STORE.md D.8): reachable + schema
+    current, projection drained, parity, invariants, embeddings current, the pinned Ollama digest,
+    and the ANN plan naming the HNSW index. A store outage never fails a pass, so this is where it shows."""
+    try:
+        for row in transcriptions.health.probes():
+            add(row)
+    except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
+        add(_probe("transcripts store", FAIL, f"{type(e).__name__}: {e}"))
 
 
 def doctor(as_json: bool, quiet: bool) -> int:
@@ -1364,6 +1405,10 @@ def status_unhealthy(snap: dict[str, Any]) -> bool:
         return True
     if snap.get("ledger_error") or snap.get("outbox_error") or snap.get("error"):
         return True
+    # The transcriptions store degrades by lagging, never by failing a pass, so `error` here is the
+    # only place a long outage or a model digest mismatch becomes visible. Green is not evidence.
+    if (snap.get("transcriptions") or {}).get("state") == "error":
+        return True
     return any((snap.get(machine) or {}).get("state") in ("error", "error-partial")
                for machine in ("stream", "inbox"))
 
@@ -1414,9 +1459,154 @@ def render_status(snap: dict[str, Any]) -> None:
         print(f"  {'outbox':<12} ERROR {snap.get('outbox_error', 'unknown')}")
     else:
         print(f"  {'outbox':<12} {backlog} unpublished")
+
+    tx = snap.get("transcriptions")
+    if tx is not None:
+        embed_pending = tx.get("embed_pending")
+        line = (f"  {'transcripts':<12} {tx.get('state', '?')} (queued {tx.get('queued', 0)}, "
+                f"embed pending {'?' if embed_pending is None else embed_pending})")
+        if tx.get("state") not in ("ok", None) and tx.get("reason"):
+            line += f"   {tx['reason']}"
+        if tx.get("state") in ("error", "lagging"):
+            line += "   -> wax doctor"
+        print(line)
     for key in ("ledger_error", "tray_queue_error", "error"):
         if snap.get(key):
             print(f"  {key:<12} {snap[key]}")
+
+
+def _tx_day(value: Any) -> str:
+    """YYYY-MM-DD in WAX_TRANSCRIPTS_LOCAL_TZ for an ISO timestamp, or '----------'."""
+    if not value:
+        return "-" * 10
+    try:
+        from datetime import datetime
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone(transcriptions.config.local_tz())
+        return stamp.strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return str(value)[:10]
+
+
+def _tx_clock(seconds: Any) -> str:
+    """mm:ss (minutes may pass 59), or '--:--'."""
+    try:
+        total = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return "--:--"
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def render_transcripts_search(out: dict[str, Any]) -> None:
+    results = out.get("results") or []
+    print(f"  {len(results)} result(s), mode {out.get('mode')}"
+          + (f"  (degraded: {out['degraded']})" if out.get("degraded") else ""))
+    for hit in results:
+        print(f"  {float(hit.get('score') or 0):.4f}  {_tx_day(hit.get('effective_at'))}  "
+              f"{(hit.get('classification') or '-'):<8} {_tx_clock(hit.get('audio_duration_s')):>6}  "
+              f"{hit.get('display_title') or '?'}  v{hit.get('version_no')}({hit.get('produced_by')})")
+        snippet = " ".join(str(hit.get("snippet") or "").split())
+        if snippet:
+            print(f"      {snippet[:300]}")
+        print(f"      {hit.get('note_path')}")
+
+
+def render_transcripts_show(out: dict[str, Any]) -> None:
+    identity = out.get("transcript") or {}
+    version = out.get("version") or {}
+    print(f"  #{identity.get('transcript_id')}  {identity.get('wax_item_id') or '-'}  {identity.get('origin')}  "
+          f"{_tx_day(identity.get('effective_at'))}  {_tx_clock(identity.get('audio_duration_s'))}")
+    print(f"  note     {identity.get('note_path')}"
+          + ("   (MISSING since " + str(identity['note_missing_at']) + ")" if identity.get("note_missing_at") else ""))
+    if identity.get("audio_s3_uri"):
+        print(f"  audio    {identity['audio_s3_uri']}")
+    if not version:
+        print("  no such version" if out.get("latest_version_no") else "  no version yet (ledger-only identity)")
+        return
+    print(f"  version  v{version.get('version_no')} of v{out.get('latest_version_no')}  "
+          f"{version.get('producer_kind')}/{version.get('produced_by')}  observed {version.get('observed_at')}")
+    print(f"  title    {version.get('title') or '-'}")
+    if version.get("classification") or version.get("tags"):
+        print(f"  class    {version.get('classification') or '-'}   tags {', '.join(version.get('tags') or []) or '-'}")
+    if version.get("summary"):
+        print(f"  summary  {version['summary']}")
+    print()
+    print(out.get("content") or "")
+
+
+def render_transcripts_history(out: dict[str, Any]) -> None:
+    identity = out.get("transcript") or {}
+    print(f"  #{identity.get('transcript_id')}  {identity.get('wax_item_id') or '-'}  {identity.get('note_relpath')}")
+    print("  versions")
+    for v in out.get("versions") or []:
+        print(f"    v{v.get('version_no'):<3} {str(v.get('observed_at'))[:19]}  "
+              f"{v.get('producer_kind')}/{v.get('produced_by')}"
+              + (f" v{v['pass_version']}" if v.get("pass_version") is not None else "")
+              + ("  BODY CHANGED" if v.get("body_changed") else "")
+              + (f"  {', '.join(v.get('changed_fields') or [])}" if v.get("changed_fields") else ""))
+    runs = out.get("pass_runs") or []
+    print(f"  pass runs ({len(runs)})")
+    for r in runs:
+        print(f"    {str(r.get('finished_at'))[:19]}  {r.get('slug')} v{r.get('pass_version')} a{r.get('attempt')}  "
+              f"{r.get('state')}" + (f" ({r['reason_code']})" if r.get("reason_code") else "")
+              + f"  -> {r.get('outcome') or '?'} [{r.get('source')}]")
+    moved = [p for p in out.get("paths") or [] if p.get("note_relpath") != identity.get("note_relpath")
+             or p.get("role") == "alias"]
+    for p in moved:
+        print(f"  path     {p.get('role')}: {p.get('note_relpath')}")
+
+
+def transcripts_command(args, J: bool) -> int:
+    """`wax transcripts …` (docs/TRANSCRIPTIONS-STORE.md D.7). StoreUnavailable is a RuntimeError,
+    so an unreachable store reaches the handler under __main__: `error: …`, exit 2."""
+    if args.sub == "sync":
+        out = transcriptions.sync(dry_run=args.dry_run, check=args.check, embed=args.embed, limit=args.limit)
+        _emit(out, J)
+        return 2 if out.get("drift") or out.get("errors") else 0
+    if args.sub == "search":
+        try:
+            out = transcriptions.search.run(
+                " ".join(args.query), limit=args.limit, since=args.since, until=args.until,
+                classifications=args.classification, tags=args.tag, projects=args.project, origins=args.origin,
+                min_duration=args.min_duration, max_duration=args.max_duration, min_words=args.min_words,
+                lexical=args.lexical)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        if J:
+            _emit(out, True)
+        else:
+            render_transcripts_search(out)
+        return 0
+    if args.sub in ("show", "history"):
+        try:
+            if args.sub == "show":
+                out = transcriptions.show(args.ref, version=args.version, raw=args.raw)
+            else:
+                out = transcriptions.history(args.ref)
+        except LookupError as e:
+            print(f"error: {e.args[0] if e.args else e}", file=sys.stderr)
+            return 2
+        if J:
+            _emit(out, True)
+        elif args.sub == "show" and args.raw:
+            if out.get("raw") is None:
+                print(f"error: {args.ref!r} has no version {args.version or '(latest)'}", file=sys.stderr)
+                return 2
+            sys.stdout.write(out["raw"])
+        elif args.sub == "show":
+            render_transcripts_show(out)
+        else:
+            render_transcripts_history(out)
+        return 0 if args.sub == "history" or out.get("version") else 2
+    if args.sub == "migrate":
+        _emit(transcriptions.migrate.apply(dry_run=args.dry_run), J)
+        return 0
+    if args.sub == "embed":
+        _emit(transcriptions.embed.sweep(until_empty=True, limit=args.limit), J)
+        return 0
+    return 1
 
 
 def main() -> int:
@@ -1553,6 +1743,38 @@ def main() -> int:
                         help="trash empty Untitled*.md, summarize + title + rename the rest, now "
                              "(ignores the nightly hour/date gate and does not set it)")
     dsu.add_argument("--dry-run", action="store_true", help="report only; change nothing")
+
+    trx = sub.add_parser("transcripts", help="versioned transcript store (Postgres `transcriptions`)",
+                         parents=[common]).add_subparsers(dest="sub", required=True)
+    tsy = trx.add_parser("sync", parents=[common],
+                         help="project queued snapshots, then reconcile vault + ledger (backfills unknown notes)")
+    tsy.add_argument("--dry-run", action="store_true", help="report what would change; write nothing")
+    tsy.add_argument("--check", action="store_true", help="parity report only; exit 2 on drift")
+    tsy.add_argument("--embed", action="store_true", help="also run the embed sweep until nothing is pending")
+    tsy.add_argument("--limit", type=int, default=0, help="reconcile at most N notes (0 = all)")
+    tse = trx.add_parser("search", parents=[common], help="hybrid semantic + keyword search over latest versions")
+    tse.add_argument("query", nargs="+")
+    tse.add_argument("-n", "--limit", type=int, default=10)
+    tse.add_argument("--since", help="ISO date/datetime (effective_at >=)")
+    tse.add_argument("--until", help="ISO date/datetime (effective_at <)")
+    tse.add_argument("--classification", action="append", choices=["monolog", "meeting", "other"])
+    tse.add_argument("--tag", action="append")
+    tse.add_argument("--project", action="append")
+    tse.add_argument("--origin", action="append", choices=["wax", "hermes-stt", "legacy"])
+    tse.add_argument("--min-duration", type=float, help="seconds")
+    tse.add_argument("--max-duration", type=float, help="seconds")
+    tse.add_argument("--min-words", type=int)
+    tse.add_argument("--lexical", action="store_true", help="no query embedding (keyword + title only)")
+    tsh = trx.add_parser("show", parents=[common], help="one transcript: identity + latest (or --version N)")
+    tsh.add_argument("ref", help="wax item id, #transcript_id, or note filename/path (fuzzy)")
+    tsh.add_argument("--version", type=int, help="version_no (default: latest)")
+    tsh.add_argument("--raw", action="store_true", help="print that version's exact note bytes")
+    thi = trx.add_parser("history", parents=[common], help="every version and pass run of one transcript")
+    thi.add_argument("ref", help="wax item id, #transcript_id, or note filename/path (fuzzy)")
+    tmi = trx.add_parser("migrate", parents=[common], help="apply pending schema migrations (owner role)")
+    tmi.add_argument("--dry-run", action="store_true")
+    tem = trx.add_parser("embed", parents=[common], help="embed pending chunk/doc vectors now")
+    tem.add_argument("--limit", type=int, default=0, help="embed at most N inputs (0 = until nothing is pending)")
 
     rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
     rc.add_argument("--rebuild", action="store_true")
@@ -1980,6 +2202,9 @@ def main() -> int:
         print(f"\n  manifest: {path}")
         print("  nothing was moved.")
         return 0
+
+    if args.cmd == "transcripts":
+        return transcripts_command(args, J)
 
     if args.cmd == "doctor":
         return doctor(J, args.quiet)

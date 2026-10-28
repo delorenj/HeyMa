@@ -251,7 +251,17 @@ def tick(gpu_busy: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
         return stats
     started = time.time()
     stats = {"state": "ok", "at": sentinel.utcnow()}
-    conn = db.connect("app", statement_timeout_ms=60000, autocommit=True)
+    try:
+        conn = db.connect("app", statement_timeout_ms=60000, autocommit=True)
+    except Exception as exc:
+        # Say so where `wax status` looks, then let waxd's condition log it once.
+        try:
+            ledger.meta_set(health.LAST_TICK, json.dumps({
+                "state": "unreachable", "at": stats["at"],
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}"}))
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     try:
         stats["projection"] = store.project_pending(limit=200, conn=conn)
         outbox.reset_breaker()      # the store answered: the sync path may try again

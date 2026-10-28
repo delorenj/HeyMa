@@ -31,7 +31,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 import signal
 
-from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, tray_process, transcribe_adapter, worker as worker_mod
+from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
 
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
@@ -121,12 +121,35 @@ class Daemon:
         self.worker = worker_mod.Worker()
         self.worker.start()
         threading.Thread(target=self._drain_loop, daemon=True, name="wax-outbox").start()
+        # The versioned `transcriptions` store (docs/TRANSCRIPTIONS-STORE.md D.5): drains snapshots the
+        # pass hooks could not project, reconciles the vault, and embeds. Its own thread, NOT the
+        # Worker: the Worker only ticks while the pipeline is enabled, and embedding must never delay
+        # the inbox drain. A Postgres or Ollama outage is lag in status/doctor, never a failure here.
+        threading.Thread(target=self._transcriptions_loop, daemon=True, name="wax-transcriptions").start()
         self._tick()
 
     def _drain_loop(self):
         while not self.stopped.is_set():
             self._drain()
             self.stopped.wait(10)
+
+    def _gpu_busy(self) -> bool:
+        # active_item covers transcription AND diarization: the claim stage includes `enrich`. Gating
+        # on it keeps the 5.7 GB embedder from competing with whisper and pyannote for the GPU.
+        return bool((self.snapshot.get("inbox") or {}).get("active_item"))
+
+    def _transcriptions_loop(self):
+        while not self.stopped.is_set():
+            try:
+                transcriptions.tick(gpu_busy=self._gpu_busy)
+                self._condition("transcriptions_error", None)
+            except Exception as e:  # noqa: BLE001 - the store must never take waxd down
+                self._condition("transcriptions_error", f"{type(e).__name__}: {e}")
+            try:
+                wait_s = transcriptions.config.tick_s()
+            except Exception:  # noqa: BLE001
+                wait_s = 15.0
+            self.stopped.wait(wait_s)
 
     def run(self):
         while not self.stopped.wait(1):
