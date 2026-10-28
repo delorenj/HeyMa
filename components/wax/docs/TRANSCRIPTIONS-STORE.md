@@ -1583,3 +1583,63 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
      list now includes `transcriptions` (the database-level REVOKE does not bind a superuser), so the
      first `transcriptions_YYYYMMDD.dump` lands with the next cron.daily run. It is not in
      `REQUIRED_DBS`, so a missing dump would not alert.
+7. **Adversarial review (2026-10-28, after the live deploy; diff `d6e53d3..`, live store and GPU).**
+   - **The resident embedder starved whisper (fixed).** Ollama keeps `qwen3-embedding:8b` resident for
+     `keep_alive` after its last call, and D.9's 30m did that after every sweep and every search. Measured at
+     07:28 EDT on the RTX 3090: 20,712 of 24,576 MiB used, the Ollama runner holding 5,296 MiB, **3,864 MiB
+     free**. `scripts/transcribe.py` needs `TRANSCRIBE_MIN_FREE_VRAM_MB` = 5,000 for large-v3, waits 30 s, then
+     transcribes on CPU int8; Sortformer diarization requires CUDA. The `inbox.active_item` gate (D.5) only
+     stopped NEW embeds. `POST /api/generate {"model": "qwen3-embedding:8b", "keep_alive": 0}` answers
+     `done_reason: unload` (2 ms; a 0.5 ms no-op when nothing is loaded, it never loads the model) and took
+     free VRAM to 8,712 MiB. Now: waxd's thread polls the gate every second between ticks and unloads once
+     per busy period (`transcriptions.yield_gpu()`); `tick()` unloads when it finds the gate busy; the sweep
+     re-asks the gate before every batch (`stopped: gpu_busy`); `WAX_EMBED_KEEP_ALIVE` defaults to **2m**
+     (warm across 15 s ticks and a run of searches; a cold load costs 2.4 s). `embedding_model.request_options`
+     in `0001_core` still says 30m: informational only, and an applied migration is immutable.
+   - **Query embeddings skipped the digest pin (fixed).** `embed.query_vector` embedded a cache miss without
+     `check_digest()`, so a re-tagged model would put the query in another space than every stored vector
+     and cache that vector under the active `model_id` for good. It now checks first (one ~1 ms local GET on a
+     miss only); a mismatch is `EmbedError(digest_mismatch)`, search answers `mode: lexical` with `degraded`,
+     and nothing is cached.
+   - **Reconcile decided outside the item flock (fixed).** `sweep()` read the note, and took the pending set
+     at sweep start, BEFORE `try_item_lock`. A pass finishing in between left either its own snapshot queued
+     (reconcile then minted the same content as `reconcile` ahead of it) or projected (reconcile then minted
+     the OLDER text it had read: the head rolled back until the next sweep, and append-only history kept two
+     spurious versions). Under the lock it now re-checks `outbox.has_pending(item)` and re-stats, re-reading
+     the note if it changed (and skipping if its `wax-item-id` changed).
+   - **60 s statements under the item flock (fixed).** The drain, reconcile and `wax transcripts sync` share
+     a 60 s `statement_timeout` connection while holding an item's flock, which a pass blocks on. Every
+     snapshot transaction now starts with `store.bound_statements()` (`set_config('statement_timeout', '5000',
+     true)`, transaction-local), so a pass never waits behind a statement longer than D.9's 5 s.
+   - **Verified, unchanged.** No psycopg import at module load: importing `wax.transcriptions`, `passes`,
+     `transcribe_adapter` and `ledger` under mise Python 3.14 leaves `psycopg` out of `sys.modules`. Every
+     `_capture` call-site argument is already bound on its path. Latest-only holds by construction (trigger
+     pointer under `FOR UPDATE`, deferred FKs, chunk swap and vector fill in the version's transaction,
+     per-item flock + seq order, `UNIQUE (transcript_id, idempotency_key)` re-delivery). Live, the
+     frontmatter-stamp v2 of `4c9f2d894fde1cc5` kept chunk ids 7442-7453 with their 07:09:20 vectors and no
+     `embedding_cache` row is newer than 07:09:32 except 5 queries. G.1 live: 0 chunks and 0 doc vectors
+     belong to `test` identities. Metadata: over all 868 notes every top-level frontmatter key maps to a
+     column, a child table or `vault_extra` (0 lossy coercions; 11 `wax.passes.<slug>` keys all exploded);
+     10 diverse notes (wax with passes, hermes-stt, legacy clips with labels/obsidian-note-status/
+     last_triage_pass/triage-pass/hitl-reason, classification, `modified`, no frontmatter) match their head
+     row column for column, `frontmatter` jsonb, pass states and tags: 0 diffs. Secrets: the diff, unit,
+     waxd environ, journal and server log carry only `op://` references (0 `CREATE/ALTER ROLE … PASSWORD`
+     lines); test containers use a random `secrets.token_hex` superuser password.
+   - **Plans (auto_explain, live, 7,309 chunks).** Unfiltered hybrid 36-41 ms: vector leg exact seq scan +
+     top-N (10 ms, G.6), chunk FTS seq scan for the common-word query (3,127 matches, 20 ms), doc legs seq
+     scans of 315/870 rows. Filtered small (`--since 2026-10-01`, 1,289 chunks): exact path via
+     `chunk_vector_current_transcript` + `BitmapAnd` of `chunk_current_tsv` GIN, 13 ms. Filtered large
+     (`--origin wax`, 6,067 chunks > `p_exact_below`): ANN path, still a seq scan at this size, 36 ms.
+     Lexical rare word: `chunk_current_tsv`, `transcript_current_doc_tsv` and `transcript_current_title_trgm`
+     all used, 2 ms. HNSW is unused today and the plans are cheaper without it.
+   - **Residual, not fixed.** A server that hangs AFTER accepting the connection (not a lock wait) would hold
+     a pass: `statement_timeout` is server-side and psycopg has no client read timeout. `transcript_snapshots`
+     keeps every captured `note_text` after projection (~25 KB a snapshot; the 1 Hz `backlog()` stays ~1 ms at
+     3,000 rows because a NULL `last_error` is read from the record header): prune projected rows' text if
+     `wax.db` growth matters. The embed fill can hit a transient FK error if a chunk swap commits mid-batch;
+     the next tick retries. Doctor reports `rejected` snapshots in its detail but still PASSes.
+   - **Live after the fix (HeyMa `ee504b3`).** waxd restarted at 07:44:03 EDT with stream, inbox and queue
+     idle; `transcriptions.last_tick` advances every 15 s (`ok`), 0 `transcriptions_error`; `wax status`
+     `transcripts ok (queued 0, embed pending 0)`; `yield_gpu()` → True with `/api/ps` empty. A cached CLI
+     search answers in 0.20 s, a new one in 1.49 s (cold load, digest checked) and Ollama then reports the
+     model expiring 2 min later, not 30.
