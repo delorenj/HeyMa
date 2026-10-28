@@ -1139,7 +1139,7 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
             "state": "skipped", "version": int(ep["version"]), "reason_code": skip_reason,
             **({"detail": skip_detail} if skip_detail else {}),
         }}}})
-        _capture(item_id, slug, kind="version", state="skipped", md_path=md, pass_version=int(ep["version"]),
+        _capture(item_id, slug, kind="pass_run", state="skipped", md_path=md, pass_version=int(ep["version"]),
                  attempt=attempt, command_id=None, reason_code=skip_reason, detail=skip_detail,
                  definition=ep, pass_result=None, changed_fields=[], duration_s=None)
         return {"item_id": item_id, "ep_slug": slug, "state": "skipped", "reason_code": skip_reason,
@@ -1271,7 +1271,7 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         _write_pass_note(current_md, item_id, slug, note_entry)
     except OSError:
         pass
-    _capture(item_id, slug, kind="version" if state in ("completed", "skipped") else "pass_run", state=state,
+    _capture(item_id, slug, kind="version" if state == "completed" else "pass_run", state=state,
              md_path=current_md, pass_version=version, attempt=attempt, command_id=cid, reason_code=failure,
              detail=err if not ok else "", definition=ep, pass_result=pass_result,
              changed_fields=changed_fields, duration_s=took, pre_rename_md=md)

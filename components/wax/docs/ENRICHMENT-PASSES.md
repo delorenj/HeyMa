@@ -353,13 +353,14 @@ Each pass run on an audio transcript is recorded in the versioned
 `docs/TRANSCRIPTIONS-STORE.md`; summary in `WAX-DESIGN.md`, "Transcriptions
 store"). A pass author does nothing to opt in; the runner does it:
 
-- **Completed or skipped** (a `when`/`skip_when` skip, or a pass-reported
-  `state: skipped`): the runner snapshots the note right after it writes the
+- **Completed:** the runner snapshots the note right after it writes the
   note's own `wax.passes.<slug>` entry, including any `transcript.slug` rename,
-  and that snapshot becomes a new version keyed `pass:<command_id>` (a skip that
-  issued no command is keyed `skip:<item>:<slug>:v<version>:a<attempt>`).
-- **Failed** (including `dependency_failed`): a `pass_run` row only, never a
-  version. The note did not reach a new applied state.
+  and that snapshot becomes a new version keyed `pass:<command_id>`.
+- **Skipped or failed** (a `when`/`skip_when` skip, a pass-reported
+  `state: skipped`, a failure, `dependency_failed`): pass history only, a
+  `pass_run` row and never a version. A skip that issued no command is keyed
+  `skip:<item>:<slug>:v<version>:a<attempt>`. If a pass-reported skip did change
+  the note, the next completed pass or the reconcile sweep versions that content.
 - **A re-run that changed nothing** (same slug, same pass version, same
   content hash) mints no version; it records `pass_run.outcome = no_change`.
   Changing only `wax.passes.*` timestamps is not a content change.

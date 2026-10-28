@@ -1,7 +1,8 @@
 """Version identity and the mint decision (design B.0, D.4 step 5). PURE.
 
-A version is one immutable row per applied pass (completed or skipped), per
-transcription, per backfill and per detected external edit. These helpers fix
+A version is one immutable row per completed pass, per transcription, per
+backfill and per detected external edit. Skipped and failed passes are pass
+history (`pass_run`) only. These helpers fix
 the idempotency keys and decide whether a snapshot mints a version.
 """
 

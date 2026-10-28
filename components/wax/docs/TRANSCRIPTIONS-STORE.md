@@ -1643,3 +1643,14 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
      `transcripts ok (queued 0, embed pending 0)`; `yield_gpu()` → True with `/api/ps` empty. A cached CLI
      search answers in 0.20 s, a new one in 1.49 s (cold load, digest checked) and Ollama then reports the
      model expiring 2 min later, not 30.
+8. **Skipped passes are pass history only (2026-10-28, operator decision; supersedes B.0 "What a version is").**
+   A version is minted only by transcription, a *completed* pass, backfill or reconcile. A `when`/`skip_when`
+   skip and a pass-reported `state: skipped` are captured as `kind='pass_run'` (`passes.py` both sites) and
+   project to `tx.pass_run` with `outcome='not_applied'`, `state='skipped'`, `version_id` NULL.
+   `store.apply_snapshot` also routes any queued `version` snapshot whose pass state is `skipped` to pass
+   history, so pre-change SQLite queue rows cannot mint one. If a pass-reported skip did edit the note, the
+   next completed pass or the reconcile sweep (`reconcile:` key) versions that content. Migration
+   `0003_skips_are_history.sql` removed the versions skipped passes had already minted live (one: a
+   diarization skip on a monolog, item `3c697cbb47e14690`), repointed heads, renumbered each affected
+   transcript's `version_no` contiguously and re-enabled the immutability trigger after firing the deferred
+   head FKs. PG tests 16–17 pin both behaviours.

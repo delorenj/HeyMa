@@ -158,7 +158,8 @@ def record_pass(*, item_id: str, slug: str, kind: str, state: str, md_path: Opti
                 attempt: int, command_id: Optional[str], reason_code: Optional[str], detail: str,
                 definition: Optional[dict], pass_result: Optional[dict], changed_fields: list[str],
                 duration_s: Optional[float], pre_rename_md: Optional[Path] = None) -> None:
-    """Version the note after a pass (kind='version') or record a failed run (kind='pass_run'). Never raises."""
+    """Version the note after a completed pass (kind='version') or record a skipped/failed run in pass
+    history only (kind='pass_run'). Never raises."""
     try:
         if not config.enabled() or not _is_audio_item(item_id):
             return

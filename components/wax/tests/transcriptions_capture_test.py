@@ -152,16 +152,16 @@ class PassCaptureTest(CaptureHarness):
         self.assertIsNone(snaps[0]["note_text"])
         self.assertEqual(json.loads(snaps[0]["payload"])["pass"]["reason_code"], "nonzero_exit")
 
-    def test_when_skip_enqueues_a_version_keyed_skip(self):
+    def test_when_skip_enqueues_a_pass_run_keyed_skip(self):
         self.shell_pass("diarization", stdout={"wax_ep_version": 1},
                         extra="when:\n  - field: classification\n    not_equals: monolog\n")
         result = passes.run(self.item, "diarization")
         self.assertEqual((result["state"], result["reason_code"]), ("skipped", "condition_unmet"))
         snaps = self.snapshots()
         self.assertEqual([(s["kind"], s["idempotency_key"]) for s in snaps],
-                         [("version", f"skip:{self.item}:diarization:v1:a1")])
-        self.assertEqual(snaps[0]["note_text"], self.md.read_text())
-        self.assertIn("condition_unmet", snaps[0]["note_text"])
+                         [("pass_run", f"skip:{self.item}:diarization:v1:a1")])
+        self.assertIsNone(snaps[0]["note_text"])
+        self.assertEqual(json.loads(snaps[0]["payload"])["pass"]["reason_code"], "condition_unmet")
 
     def test_dependency_failed_enqueues_a_depfail_pass_run(self):
         self.shell_pass("classification", stdout={"wax_ep_version": 1})

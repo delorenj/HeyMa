@@ -281,7 +281,7 @@ class TranscriptionsStoreTest(unittest.TestCase):
 
     def test_01_migrations(self):
         first = migrate.apply()
-        self.assertEqual(first["applied"], ["0001_core", "0002_search"])
+        self.assertEqual(first["applied"], ["0001_core", "0002_search", "0003_skips_are_history"])
         second = migrate.apply()
         self.assertEqual(second["applied"], [])
         with tempfile.TemporaryDirectory() as edited:
@@ -741,6 +741,55 @@ class TranscriptionsStoreTest(unittest.TestCase):
         self.assertEqual(out["mode"], "lexical")
         self.assertTrue(out["degraded"].startswith("digest_mismatch"))
         self.assertEqual(self.one("SELECT count(*) FROM tx.embedding_cache WHERE input_kind = 'query'")[0], before)
+
+    # -------------------------------------------------------------- skips are pass history only (G.8)
+
+    def test_16_a_skipped_pass_is_pass_history_never_a_version(self):
+        cls = type(self)
+        versions = self.one("SELECT count(*) FROM tx.transcript_version")[0]
+        head = self.head()
+        for kind, cid in (("pass_run", "00000000-0000-5000-8000-00000005c1p1"),
+                          ("version", "00000000-0000-5000-8000-00000005c1p2")):   # a pre-change queue row
+            self.record(cls.md, "summarize", kind=kind, state="skipped", cid=cid, reason="condition_unmet")
+            self.assertEqual(self.one("SELECT outcome, state, version_id FROM tx.pass_run WHERE idempotency_key = %s",
+                                      (f"pass:{cid}",)), ("not_applied", "skipped", None))
+        self.assertEqual(self.one("SELECT count(*) FROM tx.transcript_version")[0], versions)
+        self.assertEqual(self.head(), head)
+
+    def test_17_migration_0003_removes_legacy_skip_versions_and_renumbers(self):
+        cls = type(self)
+        cols = [r[0] for r in self.all(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'tx' "
+            "AND table_name = 'transcript_version' AND column_name NOT IN "
+            "('version_id', 'version_no', 'idempotency_key', 'produced_by', 'pass_state', 'created_at') "
+            "ORDER BY ordinal_position")]
+        listed = ", ".join(cols)
+        tid, prev_head = self.head()[0], self.head()[1]
+        prev_no = self.head()[3]
+        with contextlib.closing(self.app()) as c:
+            with c.transaction():
+                skip_id = c.execute(
+                    f"INSERT INTO tx.transcript_version (idempotency_key, produced_by, pass_state, {listed}) "
+                    f"SELECT 'legacy-skip', 'diarization', 'skipped', {listed} FROM tx.transcript_version "
+                    "WHERE version_id = %s RETURNING version_id", (prev_head,)).fetchone()[0]
+                c.execute("INSERT INTO tx.version_pass_state (version_id, slug, state) VALUES (%s, 'diarization', "
+                          "'skipped')", (skip_id,))
+                c.execute("UPDATE tx.transcript_current SET version_id = %s, version_no = %s, produced_by = "
+                          "'diarization' WHERE transcript_id = %s", (skip_id, prev_no + 1, tid))
+        self.assertEqual(self.head()[1:5], (skip_id, skip_id, prev_no + 1, "diarization"))
+        sql = (migrate.MIGRATIONS / "0003_skips_are_history.sql").read_text(encoding="utf-8")
+        with contextlib.closing(self.owner()) as c:
+            with c.transaction():
+                c.execute(sql)
+        self.assertEqual(self.head()[1:4], (prev_head, prev_head, prev_no))
+        self.assertEqual(self.one("SELECT count(*) FROM tx.transcript_version WHERE pass_state = 'skipped'")[0], 0)
+        nos = [r[0] for r in self.all("SELECT version_no FROM tx.transcript_version WHERE transcript_id = %s "
+                                      "ORDER BY version_no", (tid,))]
+        self.assertEqual(nos, list(range(1, len(nos) + 1)))
+        self.assertEqual(self.one("SELECT count(*) FROM tx.check_invariants()")[0], 0)
+        with contextlib.closing(self.owner()) as c:   # immutability is back on
+            with self.assertRaises(Exception):
+                c.execute("UPDATE tx.transcript_version SET title = 'x' WHERE version_id = %s", (prev_head,))
 
 
 if __name__ == "__main__":

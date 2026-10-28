@@ -455,7 +455,8 @@ def apply_snapshot(conn: Any, snap: dict[str, Any]) -> Outcome:
     payload = snap.get("payload") or {}
     observed_at = _ts(snap.get("created_at")) or dt.datetime.now(dt.timezone.utc)
     facts = _facts(payload)
-    if snap["kind"] == "pass_run":
+    # A skip is pass history, never a version, even when a pre-change queue row says 'version'.
+    if snap["kind"] == "pass_run" or (payload.get("pass") or {}).get("state") == "skipped":
         return _apply_pass_run(conn, snap, facts, observed_at)
 
     ext = extraction_for(snap)
@@ -525,7 +526,7 @@ def apply_snapshot(conn: Any, snap: dict[str, Any]) -> Outcome:
 
 
 def _apply_pass_run(conn: Any, snap: dict[str, Any], facts: dict[str, Any], observed_at: dt.datetime) -> Outcome:
-    """A failed pass: history only, never a version."""
+    """A skipped or failed pass: history only, never a version."""
     item_id = snap.get("item_id")
     payload = snap.get("payload") or {}
     identity = None
