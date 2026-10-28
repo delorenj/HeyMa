@@ -1,0 +1,191 @@
+"""Status and doctor data for the `transcriptions` store (design D.8).
+
+`snapshot()` is for `wax status` / `ledger.enrich`: it reads SQLite only (the
+queue, the last tick) so status never waits on Postgres. States:
+`disabled` (WAX_TRANSCRIPTS=0 or no DSN), `ok`, `lagging` (oldest queued >
+600 s) and `error` (oldest queued > WAX_TRANSCRIPTS_LAG_FAIL_S, an embed
+backlog older than 6 h, or a model digest mismatch). Green is not evidence.
+
+`probes()` is for `wax doctor`: seven checks against the live store, each a
+`{"probe", "status", "detail", "fix"?}` row in the shape `bin/wax` uses.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+from typing import Any, Optional
+
+from .. import ledger
+from . import config, db, embed, migrate, outbox
+
+PASS, WARN, FAIL = "pass", "warn", "fail"
+LAST_TICK = "transcriptions.last_tick"
+
+
+def _age_s(iso: Optional[str], now: Optional[dt.datetime] = None) -> Optional[float]:
+    if not iso:
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    return max(0.0, ((now or dt.datetime.now(dt.timezone.utc)) - stamp).total_seconds())
+
+
+def last_tick() -> dict[str, Any]:
+    try:
+        return json.loads(ledger.meta_get(LAST_TICK) or "{}")
+    except (TypeError, ValueError):
+        return {}
+
+
+def snapshot(now: Optional[dt.datetime] = None) -> dict[str, Any]:
+    """Queue + last tick, from SQLite only. Never raises."""
+    out: dict[str, Any] = {"state": "ok"}
+    try:
+        backlog = outbox.backlog()
+    except Exception as exc:  # noqa: BLE001
+        return {"state": "error", "reason": f"queue unreadable: {type(exc).__name__}: {exc}"}
+    tick = last_tick()
+    oldest = _age_s(backlog.get("oldest_created_at"), now)
+    out.update({"queued": backlog["queued"], "oldest_queued_s": None if oldest is None else int(oldest),
+                "rejected": backlog["rejected"], "last_tick": tick,
+                "embed_pending": (tick.get("embed") or {}).get("chunks_pending"),
+                "doc_pending": (tick.get("embed") or {}).get("docs_pending")})
+    if not config.enabled():
+        out.update(state="disabled", reason="WAX_TRANSCRIPTS=0")
+        return out
+    if not db.configured("app"):
+        out.update(state="disabled", reason="WAX_TRANSCRIPTS_DSN is unset (capture only)")
+        # Capture-only still queues; a growing queue with no DSN is expected, not an error.
+        return out
+    reasons = []
+    if oldest is not None and oldest > config.lag_fail_s():
+        reasons.append(f"oldest queued snapshot is {int(oldest)}s old (> {int(config.lag_fail_s())}s)")
+    embed_info = tick.get("embed") or {}
+    embed_age = _age_s(embed_info.get("oldest_pending_at"), now)
+    if embed_age is not None and embed_age > config.EMBED_FORCE_AFTER_S:
+        reasons.append(f"embed backlog is {int(embed_age)}s old (> {int(config.EMBED_FORCE_AFTER_S)}s)")
+    if (tick.get("embed_error") or {}).get("reason_code") in ("digest_mismatch", "model_registry_mismatch"):
+        reasons.append(f"model: {tick['embed_error'].get('detail')}")
+    if reasons:
+        out.update(state="error", reason="; ".join(reasons))
+    elif oldest is not None and oldest > config.LAG_WARN_S:
+        out.update(state="lagging", reason=f"oldest queued snapshot is {int(oldest)}s old")
+    return out
+
+
+def _probe(name: str, status: str, detail: str, fix: str = "") -> dict[str, Any]:
+    return {"probe": name, "status": status, "detail": detail, **({"fix": fix} if fix else {})}
+
+
+CANONICAL_ANN = ("EXPLAIN (FORMAT JSON) SELECT chunk_id FROM tx.chunk_vector_current "
+                 "ORDER BY embedding <#> %s::halfvec LIMIT 200")
+
+
+def _plan_names(plan: Any) -> set[str]:
+    names: set[str] = set()
+    stack = [plan]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if "Index Name" in node:
+                names.add(str(node["Index Name"]))
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return names
+
+
+def ann_uses_hnsw(conn: Any) -> tuple[bool, str]:
+    probe = embed.halfvec_literal([1.0] + [0.0] * (embed.DIMS - 1))
+    plan = conn.execute(CANONICAL_ANN, (probe,)).fetchone()[0]
+    if isinstance(plan, str):
+        plan = json.loads(plan)
+    names = _plan_names(plan)
+    return "chunk_vector_current_hnsw" in names, ", ".join(sorted(names)) or "no index"
+
+
+def probes(*, conn: Any = None, embedder: Optional[embed.OllamaEmbedder] = None,
+           now: Optional[dt.datetime] = None) -> list[dict[str, Any]]:
+    """The seven doctor probes (D.8). Never raises; a probe that cannot run reports why."""
+    out: list[dict[str, Any]] = []
+    add = out.append
+    if not config.enabled():
+        return [_probe("transcripts store", WARN, "disabled (WAX_TRANSCRIPTS=0)")]
+    if not db.configured("app") and conn is None:
+        return [_probe("transcripts store", WARN, "WAX_TRANSCRIPTS_DSN is unset: capture only, nothing is projected",
+                       "deploy/provision-transcriptions --apply, then set the waxd unit's DSN")]
+    own = conn is None
+    try:
+        if own:
+            conn = db.connect("app", autocommit=True)
+    except Exception as exc:  # noqa: BLE001
+        return [_probe("transcripts store", FAIL, f"{type(exc).__name__}: {exc}", "wax doctor; check postgresql@17-main")]
+    try:
+        # 1. reachable + schema current
+        try:
+            state = migrate.status(conn)
+            add(_probe("transcripts store", PASS if state["current"] else FAIL,
+                       f"schema at {state['applied'][-1] if state['applied'] else 'none'}"
+                       + ("" if state["current"] else f"; pending {state['pending']} changed {state['changed']}"),
+                       "" if state["current"] else "wax transcripts migrate"))
+        except Exception as exc:  # noqa: BLE001
+            add(_probe("transcripts store", FAIL, f"{type(exc).__name__}: {exc}"))
+        # 2. projection drained
+        backlog = outbox.backlog()
+        oldest = _age_s(backlog.get("oldest_created_at"), now)
+        drained = oldest is None or oldest <= config.lag_fail_s()
+        add(_probe("transcripts projection drained", PASS if drained else FAIL,
+                   f"{backlog['queued']} queued, oldest {int(oldest or 0)}s, {backlog['rejected']} rejected",
+                   "" if drained else "wax transcripts sync"))
+        # 3. parity: identities with wax ids vs canonical ledger notes
+        try:
+            wax_ids = {r[0] for r in conn.execute("SELECT wax_item_id FROM tx.transcript WHERE wax_item_id IS NOT NULL")}
+            ledger_ids = {r["item_id"] for r in ledger.connect().execute("SELECT item_id FROM transcripts")}
+            missing = len(ledger_ids - wax_ids)
+            add(_probe("transcripts parity", PASS if not missing else WARN,
+                       f"{len(wax_ids)} identities with a wax id; {missing} ledger transcript(s) without one",
+                       "" if not missing else "wax transcripts sync"))
+        except Exception as exc:  # noqa: BLE001
+            add(_probe("transcripts parity", WARN, f"{type(exc).__name__}: {exc}"))
+        # 4. invariants
+        try:
+            rows = conn.execute("SELECT check_name, transcript_id, detail FROM tx.check_invariants() LIMIT 5").fetchall()
+            add(_probe("transcripts invariants", PASS if not rows else FAIL,
+                       "tx.check_invariants() returned 0 rows" if not rows else
+                       "; ".join(f"{r[0]}#{r[1]} {r[2]}" for r in rows)))
+        except Exception as exc:  # noqa: BLE001
+            add(_probe("transcripts invariants", FAIL, f"{type(exc).__name__}: {exc}"))
+        # 5. embeddings current
+        try:
+            pending = embed.pending_counts(conn)
+            age = _age_s(pending.get("oldest_pending_at"), now)
+            fresh = age is None or age <= config.EMBED_STALE_WARN_S
+            add(_probe("transcripts embeddings current", PASS if fresh and not pending["docs_pending"] else WARN,
+                       f"{pending['chunks_pending']} chunk(s), {pending['docs_pending']} doc(s) pending"
+                       + (f", oldest {int(age)}s" if age is not None else ""),
+                       "" if fresh else "wax transcripts embed"))
+        except Exception as exc:  # noqa: BLE001
+            add(_probe("transcripts embeddings current", WARN, f"{type(exc).__name__}: {exc}"))
+        # 6. Ollama serves the pinned digest
+        try:
+            (embedder or embed.OllamaEmbedder()).check_digest()
+            add(_probe("transcripts embedder", PASS, f"{embed.MODEL_NAME} @ {embed.MODEL_DIGEST[:12]}"))
+        except embed.EmbedError as exc:
+            add(_probe("transcripts embedder", FAIL, f"{exc.reason_code}: {exc}",
+                       f"ollama pull {embed.MODEL_NAME} (digest must be {embed.MODEL_DIGEST[:12]})"))
+        # 7. the ANN query uses the HNSW index
+        try:
+            ok, names = ann_uses_hnsw(conn)
+            add(_probe("transcripts vector index", PASS if ok else FAIL,
+                       f"canonical ANN plan uses {names}", "" if ok else "ANALYZE as owner; check chunk_vector_current_hnsw"))
+        except Exception as exc:  # noqa: BLE001
+            add(_probe("transcripts vector index", FAIL, f"{type(exc).__name__}: {exc}"))
+    finally:
+        if own and conn is not None:
+            conn.close()
+    return out
