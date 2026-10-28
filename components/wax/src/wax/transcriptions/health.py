@@ -117,13 +117,31 @@ def _plan_names(plan: Any) -> set[str]:
     return names
 
 
-def ann_uses_hnsw(conn: Any) -> tuple[bool, str]:
+def _ann_plan(conn: Any) -> Any:
     probe = embed.halfvec_literal([1.0] + [0.0] * (embed.DIMS - 1))
     plan = conn.execute(CANONICAL_ANN, (probe,)).fetchone()[0]
-    if isinstance(plan, str):
-        plan = json.loads(plan)
-    names = _plan_names(plan)
+    return json.loads(plan) if isinstance(plan, str) else plan
+
+
+def ann_uses_hnsw(conn: Any) -> tuple[bool, str]:
+    names = _plan_names(_ann_plan(conn))
     return "chunk_vector_current_hnsw" in names, ", ".join(sorted(names)) or "no index"
+
+
+# tx.search runs with `SET hnsw.ef_search = 200`, and pgvector prices an HNSW scan's startup in
+# proportion to ef_search. On 2026-10-28, at 7,309 chunks, that made an exact seq scan + top-N sort
+# (cost 7,716) cheaper than the index (7,226 startup + per-row) for LIMIT 200, so the unfiltered
+# vector leg is exact until the table grows past the crossover. That is correct and ~11 ms; the
+# probe says which path search really takes instead of implying HNSW (design G.6).
+SEARCH_EF_SEARCH = 200
+
+
+def search_vector_path(conn: Any) -> str:
+    """'hnsw' or 'exact' for the canonical ANN query under tx.search's own ef_search."""
+    with conn.transaction():
+        conn.execute("SELECT set_config('hnsw.ef_search', %s, true)", (str(SEARCH_EF_SEARCH),))
+        names = _plan_names(_ann_plan(conn))
+    return "hnsw" if "chunk_vector_current_hnsw" in names else "exact"
 
 
 def probes(*, conn: Any = None, embedder: Optional[embed.OllamaEmbedder] = None,
@@ -201,8 +219,16 @@ def probes(*, conn: Any = None, embedder: Optional[embed.OllamaEmbedder] = None,
         # 7. the ANN query uses the HNSW index
         try:
             ok, names = ann_uses_hnsw(conn)
+            detail = f"canonical ANN plan uses {names}"
+            try:
+                path = search_vector_path(conn)
+                detail += ("; search (ef_search=%d) takes the HNSW index" if path == "hnsw" else
+                           "; search (ef_search=%d) plans an exact scan at this size, cheaper than HNSW"
+                           ) % SEARCH_EF_SEARCH
+            except Exception as exc:  # noqa: BLE001 - informational only
+                detail += f"; search path unknown ({type(exc).__name__})"
             add(_probe("transcripts vector index", PASS if ok else FAIL,
-                       f"canonical ANN plan uses {names}", "" if ok else "ANALYZE as owner; check chunk_vector_current_hnsw"))
+                       detail, "" if ok else "ANALYZE as owner; check chunk_vector_current_hnsw"))
         except Exception as exc:  # noqa: BLE001
             add(_probe("transcripts vector index", FAIL, f"{type(exc).__name__}: {exc}"))
     finally:

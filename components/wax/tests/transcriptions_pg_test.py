@@ -563,7 +563,11 @@ class TranscriptionsStoreTest(unittest.TestCase):
             with c.transaction():
                 c.execute("SET LOCAL enable_seqscan = off")   # a 30-row table: prove the index is usable
                 ok, names = health.ann_uses_hnsw(c)
+                self.assertEqual(health.search_vector_path(c), "hnsw")
         self.assertTrue(ok, names)
+        with contextlib.closing(self.app()) as c:
+            # At ~30 rows and tx.search's ef_search=200 the planner prefers the exact scan (G.6).
+            self.assertEqual(health.search_vector_path(c), "exact")
         shown = search.show(self.ITEM, version=1, raw=True)
         self.assertEqual(shown["version"]["version_no"], 1)
         self.assertTrue(shown["raw"].startswith("---\n"))
