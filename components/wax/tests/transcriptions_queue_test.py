@@ -165,7 +165,7 @@ class CaptureQueueTest(TempLedger):
 class HealthSnapshotTest(TempLedger):
     def test_states(self):
         self.assertEqual(health.snapshot()["state"], "disabled")
-        with patch.dict(os.environ, {"WAX_TRANSCRIPTS_DSN": "postgresql://x@localhost/transcriptions"}):
+        with patch.dict(os.environ, {"WAX_TRANSCRIPTS_DSN": "postgresql://x@127.0.0.1:1/transcriptions"}):
             # Configured but no waxd tick yet: nothing is draining, so not green.
             self.assertEqual(health.snapshot()["state"], "lagging")
             ledger.meta_set(health.LAST_TICK, json.dumps({"state": "ok", "at": sentinel.utcnow()}))
@@ -185,7 +185,7 @@ class HealthSnapshotTest(TempLedger):
             self.assertEqual(health.snapshot()["state"], "disabled")
 
     def test_a_dead_or_stale_waxd_thread_is_not_green(self):
-        with patch.dict(os.environ, {"WAX_TRANSCRIPTS_DSN": "postgresql://x@localhost/transcriptions"}):
+        with patch.dict(os.environ, {"WAX_TRANSCRIPTS_DSN": "postgresql://x@127.0.0.1:1/transcriptions"}):
             old = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 3000))
             ledger.meta_set(health.LAST_TICK, json.dumps({"state": "ok", "at": old}))
             snap = health.snapshot()
