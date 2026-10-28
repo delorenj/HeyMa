@@ -7,7 +7,9 @@ name = "heyma-wax"
 version = "0.1.0"
 description = "HeyMa recording and transcription pipeline component"
 requires-python = ">=3.11"
-dependencies = ["PyYAML>=6"]
+# Documentation of what the code imports. The runtime is /usr/bin/python3 with apt packages
+# (python3-psycopg 3.2.6 for the transcriptions store); nothing installs from this list.
+dependencies = ["PyYAML>=6", "jsonschema>=4.19", "psycopg[binary]>=3.2"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

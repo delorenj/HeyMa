@@ -32,6 +32,9 @@ _ROLES = {
 DEFAULT_STATEMENT_TIMEOUT_MS = 5000
 SEARCH_STATEMENT_TIMEOUT_MS = 10000
 CONNECT_TIMEOUT_S = 2
+# deploy/systemd/user/waxd.service ships op://DeLoSecrets/REPLACE_WITH_{APP,OWNER}_ITEM_UUID/password
+# until deploy/provision-transcriptions --apply fills in the real item UUIDs.
+UNIT_PLACEHOLDER = "REPLACE_WITH_"
 
 _lock = threading.Lock()
 _passwords: dict[tuple[str, str, str], Optional[str]] = {}
@@ -59,6 +62,11 @@ def _password(role: str) -> Optional[str]:
     direct = os.environ.get(env_var, "").strip()
     if not direct and not op_ref:
         return None          # libpq may still authenticate (peer, .pgpass, trust)
+    if not direct and UNIT_PLACEHOLDER in op_ref:
+        # The committed unit ships REPLACE_WITH_*_ITEM_UUID until provisioning fills it in. Say so,
+        # instead of a 5 s `op read` that fails with "item not found" on every tick.
+        raise StoreUnavailable(f"transcriptions {role} password is still the unit placeholder ({op_ref}); "
+                               "run deploy/provision-transcriptions --apply, then reinstall the unit")
     key = (role, env_var, op_ref)
     with _lock:
         if key in _passwords and not direct:

@@ -25,6 +25,18 @@ Environment=WAX_DIARIZATION_DEVICE=cuda
 # code runs. Rendered from the checkout that installs it, exactly like
 # ExecStart, so the pin relocates with the repo instead of naming one machine.
 Environment=@WAX_TRANSCRIBE_ENV@
+# The versioned `transcriptions` store (docs/TRANSCRIPTIONS-STORE.md D.9). The DSNs carry no
+# password; the passwords are op:// references by item UUID, resolved at runtime with `op read`
+# (OP_SERVICE_ACCOUNT_TOKEN is in waxd's environ). `wax` reads these same lines from the INSTALLED
+# unit, so the CLI and the daemon share one config and no credential file is ever written.
+# REPLACE_WITH_*_ITEM_UUID are placeholders until `deploy/provision-transcriptions --apply` creates
+# the 1Password items and fills them in; until then the store reports itself unconfigured in
+# `wax doctor` and passes are unaffected (capture still queues). Rollback: WAX_TRANSCRIPTS=0.
+Environment=WAX_TRANSCRIPTS_DSN=postgresql://transcriptions_app@localhost:5432/transcriptions?application_name=waxd
+Environment=WAX_TRANSCRIPTS_PASSWORD_OP=op://DeLoSecrets/REPLACE_WITH_APP_ITEM_UUID/password
+Environment=WAX_TRANSCRIPTS_OWNER_DSN=postgresql://transcriptions_owner@localhost:5432/transcriptions?application_name=wax-migrate
+Environment=WAX_TRANSCRIPTS_OWNER_PASSWORD_OP=op://DeLoSecrets/REPLACE_WITH_OWNER_ITEM_UUID/password
+Environment=WAX_S3_ENDPOINT=https://s3.delo.sh
 
 [Install]
 WantedBy=default.target

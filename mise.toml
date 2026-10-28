@@ -74,6 +74,25 @@ run = "'{{config_root}}/components/wax/deploy/install-diarization'"
 description = "Tail the waxd journal"
 run = "journalctl --user -u waxd.service -n 200 -f"
 
+# The versioned `transcriptions` Postgres store (components/wax/docs/TRANSCRIPTIONS-STORE.md).
+# Extra arguments pass through: `mise run wax:transcripts:search -- "phone with the kids" -n 3`.
+[tasks."wax:transcripts:sync"]
+description = "Project queued transcript snapshots, then reconcile the vault (flags: --dry-run --check --embed)"
+run = "'{{config_root}}/bin/wax' transcripts sync"
+
+[tasks."wax:transcripts:search"]
+description = "Hybrid semantic + keyword search over the latest transcript versions"
+run = "'{{config_root}}/bin/wax' transcripts search"
+
+[tasks."wax:transcripts:migrate"]
+description = "Apply pending transcriptions-store schema migrations (owner role)"
+run = "'{{config_root}}/bin/wax' transcripts migrate"
+
+[tasks."wax:test:pg"]
+description = "Real-Postgres transcriptions-store tests (system Python + disposable pgvector; skips without Docker)"
+dir = "{{config_root}}/components/wax"
+run = "/usr/bin/python3 -m pytest tests/transcriptions_pg_test.py -q"
+
 # >>> mise-versioning >>>  (managed block — do not edit by hand; re-run init to update)
 [tasks."version"]
 description = "Print the current version (vX.Y.Z)"

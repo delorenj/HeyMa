@@ -1,0 +1,344 @@
+#!/usr/bin/python3
+"""Provision the `transcriptions` Postgres store on the host cluster, reproducibly.
+
+Design of record: docs/TRANSCRIPTIONS-STORE.md (B.1 bootstrap, D.9 secrets, F step 1).
+
+What it owns, and nothing else:
+
+- Three 1Password DATABASE items in DeLoSecrets, shaped like "Candybar Postgres
+  Role" (type, server, port, database, username, password, dsn):
+      Transcriptions Postgres Owner   transcriptions_owner   `wax transcripts migrate`
+      Transcriptions Postgres App     transcriptions_app     waxd + the wax CLI
+      Transcriptions Postgres RO      transcriptions_ro      outside readers (Holocene, agents)
+  A missing item is created by piping a JSON template to `op item create
+  --vault DeLoSecrets -` on stdin, with a password generated in this process.
+  An existing item is reused; its password is read with `op read`.
+- The three LOGIN roles, the `transcriptions` database (owner
+  transcriptions_owner, template0, UTF8), CONNECT for app/ro only, the per-role
+  `search_path = tx, public`, and the `vector` + `pg_trgm` extensions (vector
+  is untrusted: superuser only). The SQL goes to `sudo -n -u postgres psql` on
+  STDIN; passwords travel inside that stream as psql variables, never in argv,
+  a file or the environment, and the session turns statement logging off first.
+- The two `REPLACE_WITH_*_ITEM_UUID` placeholders in
+  deploy/systemd/user/waxd.service, filled with the real item UUIDs (the
+  committed unit then carries op:// references by UUID, never a password).
+
+Idempotent: an existing role whose vault password already authenticates is left
+alone; one that does not gets `ALTER ROLE ... PASSWORD` from the vault; an
+existing database is never recreated; grants and extensions are IF NOT EXISTS /
+re-grantable no-ops. A second --apply changes nothing.
+
+Schema is NOT created here: that is `wax transcripts migrate` (owner role).
+The DSN host is always `localhost`, never postgres.delo.sh or a LAN address;
+pg_hba already has `host 127.0.0.1/32 scram-sha-256`.
+
+Dry run by default; --apply to change anything.
+"""
+
+import argparse
+import json
+import re
+import secrets
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+VAULT = "DeLoSecrets"
+DATABASE = "transcriptions"
+HOST = "localhost"
+PORT = 5432
+# key -> (role, 1Password item title, what uses it)
+ROLES = {
+    "owner": ("transcriptions_owner", "Transcriptions Postgres Owner", "wax transcripts migrate (schema owner)"),
+    "app": ("transcriptions_app", "Transcriptions Postgres App", "waxd and the wax CLI"),
+    "ro": ("transcriptions_ro", "Transcriptions Postgres RO", "read-only outside readers (Holocene, agents)"),
+}
+EXTENSIONS = ("vector", "pg_trgm")
+# The waxd unit template's placeholders, and which item fills each.
+UNIT_PLACEHOLDERS = {"app": "REPLACE_WITH_APP_ITEM_UUID", "owner": "REPLACE_WITH_OWNER_ITEM_UUID"}
+CMD_TIMEOUT_S = 60
+
+COMPONENT = next(parent for parent in Path(__file__).resolve().parents if (parent / "pyproject.toml").is_file())
+UNIT_TEMPLATE = COMPONENT / "deploy" / "systemd" / "user" / "waxd.service"
+
+
+class ProvisionError(RuntimeError):
+    pass
+
+
+def run(argv: list, *, stdin: Optional[str] = None, check: bool = True) -> subprocess.CompletedProcess:
+    """Run one command. Secrets only ever travel on stdin, never in argv."""
+    try:
+        proc = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=CMD_TIMEOUT_S)
+    except FileNotFoundError:
+        raise ProvisionError(f"{argv[0]} is not installed") from None
+    except subprocess.TimeoutExpired:
+        raise ProvisionError(f"{' '.join(argv[:3])} … timed out after {CMD_TIMEOUT_S}s") from None
+    if check and proc.returncode != 0:
+        why = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise ProvisionError(f"{' '.join(argv[:4])} … exited {proc.returncode}: {why[-1] if why else ''}")
+    return proc
+
+
+# ---------------------------------------------------------------- postgres (superuser, read side)
+
+def psql_query(sql: str, *, database: str = "postgres") -> list:
+    """Rows of one read-only query as the postgres superuser (peer auth through sudo -n)."""
+    proc = run(["sudo", "-n", "-u", "postgres", "psql", "-X", "-q", "-A", "-t", "-F", "\t",
+                "-v", "ON_ERROR_STOP=1", "-d", database], stdin=sql)
+    return [line.split("\t") for line in proc.stdout.splitlines() if line.strip()]
+
+
+def cluster_state() -> dict:
+    roles = {r[0] for r in psql_query("SELECT rolname FROM pg_roles WHERE rolname LIKE 'transcriptions\\_%';")}
+    database = bool(psql_query(f"SELECT 1 FROM pg_database WHERE datname = '{DATABASE}';"))
+    available = {r[0]: r[1] for r in psql_query(
+        "SELECT name, default_version FROM pg_available_extensions WHERE name IN ('vector', 'pg_trgm');")}
+    installed = {}
+    if database:
+        installed = {r[0]: r[1] for r in psql_query(
+            "SELECT extname, extversion FROM pg_extension WHERE extname IN ('vector', 'pg_trgm');",
+            database=DATABASE)}
+    return {"roles": roles, "database": database, "available": available, "installed": installed}
+
+
+def authenticates(role: str, password: str, database: str) -> Optional[bool]:
+    """Whether `password` logs `role` in over TCP (scram), or None when that cannot be tested here."""
+    try:
+        import psycopg  # noqa: PLC0415 - apt python3-psycopg on /usr/bin/python3
+    except ImportError:
+        return None
+    try:
+        psycopg.connect(host=HOST, port=PORT, dbname=database, user=role, password=password,
+                        connect_timeout=3).close()
+        return True
+    except psycopg.OperationalError:
+        return False
+
+
+# ---------------------------------------------------------------- 1Password
+
+def find_items() -> dict:
+    """title -> item id for the three DATABASE items. Two items with one title is refused:
+    a title-based reference to a duplicated name cannot resolve, and guessing would be worse."""
+    proc = run(["op", "item", "list", "--vault", VAULT, "--categories", "Database", "--format", "json"])
+    items = json.loads(proc.stdout or "[]")
+    found: dict = {}
+    for _key, (_role, title, _use) in ROLES.items():
+        matches = [i["id"] for i in items if i.get("title") == title]
+        if len(matches) > 1:
+            raise ProvisionError(f"{len(matches)} items titled {title!r} in {VAULT} ({', '.join(matches)}); "
+                                 "archive the extras so exactly one remains, then re-run")
+        if matches:
+            found[title] = matches[0]
+    return found
+
+
+def read_password(item_id: str) -> str:
+    password = run(["op", "read", f"op://{VAULT}/{item_id}/password"]).stdout.strip()
+    if not password:
+        raise ProvisionError(f"op://{VAULT}/{item_id}/password is empty")
+    return password
+
+
+def item_template(role: str, title: str, use: str, password: str) -> dict:
+    dsn = f"postgresql://{role}:{password}@{HOST}:{PORT}/{DATABASE}"
+    return {
+        "title": title,
+        "category": "DATABASE",
+        "fields": [
+            {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain",
+             "value": (f"Role {role} on the host cluster's `{DATABASE}` database (schema tx), used by {use}. "
+                       "Created by HeyMa components/wax/deploy/provision-transcriptions; design of record "
+                       "components/wax/docs/TRANSCRIPTIONS-STORE.md. Reference this item by UUID.")},
+            {"id": "database_type", "type": "MENU", "label": "type", "value": "postgresql"},
+            {"id": "hostname", "type": "STRING", "label": "server", "value": HOST},
+            {"id": "port", "type": "STRING", "label": "port", "value": str(PORT)},
+            {"id": "database", "type": "STRING", "label": "database", "value": DATABASE},
+            {"id": "username", "type": "STRING", "label": "username", "value": role},
+            {"id": "password", "type": "CONCEALED", "label": "password", "value": password},
+            {"type": "CONCEALED", "label": "dsn", "value": dsn},
+        ],
+    }
+
+
+def create_item(role: str, title: str, use: str, *, dry_run: bool) -> tuple:
+    """(item id or None on a dry run, password). The password exists only in this process and on stdin."""
+    password = secrets.token_urlsafe(32)      # URL-safe: the dsn field needs no escaping
+    argv = ["op", "item", "create", "--vault", VAULT, "--format", "json"]
+    if dry_run:
+        argv.append("--dry-run")
+    proc = run([*argv, "-"], stdin=json.dumps(item_template(role, title, use, password)))
+    if dry_run:
+        return None, password
+    item_id = (json.loads(proc.stdout or "{}") or {}).get("id")
+    if not item_id:
+        raise ProvisionError(f"op item create for {title!r} returned no id")
+    return item_id, password
+
+
+# ---------------------------------------------------------------- bootstrap SQL (superuser, on stdin)
+
+def psql_literal(value: str) -> str:
+    """A psql backslash-command argument in single quotes (backslash and quote escaped)."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def bootstrap_sql(actions: dict, passwords: dict, create_database: bool) -> str:
+    lines = [
+        # A CREATE/ALTER ROLE ... PASSWORD must never reach the server log, whatever log_statement says.
+        "SET log_statement = 'none';",
+        "SET log_min_duration_statement = -1;",
+        "SET log_min_error_statement = 'panic';",
+    ]
+    for key, action in actions.items():
+        role = ROLES[key][0]
+        if action in ("create", "alter"):
+            lines.append(f"\\set pw_{key} {psql_literal(passwords[key])}")
+        if action == "create":
+            lines.append(f"CREATE ROLE {role} LOGIN PASSWORD :'pw_{key}';")
+        elif action == "alter":
+            lines.append(f"ALTER ROLE {role} WITH LOGIN PASSWORD :'pw_{key}';")
+        if action in ("create", "alter"):
+            lines.append(f"\\unset pw_{key}")
+    if create_database:
+        lines.append(f"CREATE DATABASE {DATABASE} OWNER transcriptions_owner TEMPLATE template0 ENCODING 'UTF8';")
+    lines += [
+        f"REVOKE ALL ON DATABASE {DATABASE} FROM PUBLIC;",
+        f"GRANT CONNECT ON DATABASE {DATABASE} TO transcriptions_app, transcriptions_ro;",
+        f"ALTER ROLE transcriptions_owner IN DATABASE {DATABASE} SET search_path = tx, public;",
+        f"ALTER ROLE transcriptions_app   IN DATABASE {DATABASE} SET search_path = tx, public;",
+        f"ALTER ROLE transcriptions_ro    IN DATABASE {DATABASE} SET search_path = tx, public;",
+        f"\\connect {DATABASE}",
+        "SET log_statement = 'none';",
+        "CREATE EXTENSION IF NOT EXISTS vector;",
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm;",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------- unit template
+
+def fill_unit(uuids: dict, *, dry_run: bool) -> list:
+    """Replace the REPLACE_WITH_*_ITEM_UUID placeholders in the waxd unit template. Returns what changed."""
+    text = UNIT_TEMPLATE.read_text()
+    changed = []
+    for key, marker in UNIT_PLACEHOLDERS.items():
+        if marker in text and uuids.get(key):
+            text = text.replace(marker, uuids[key])
+            changed.append(f"{marker} -> {uuids[key]}")
+    if changed and not dry_run:
+        UNIT_TEMPLATE.write_text(text)
+    return changed
+
+
+def unit_references() -> dict:
+    """key -> item UUID the unit template already names (None while it is a placeholder)."""
+    text = UNIT_TEMPLATE.read_text()
+    out = {}
+    for key, var in (("app", "WAX_TRANSCRIPTS_PASSWORD_OP"), ("owner", "WAX_TRANSCRIPTS_OWNER_PASSWORD_OP")):
+        match = re.search(rf"^Environment={var}=op://{VAULT}/([^/\s]+)/password\s*$", text, re.MULTILINE)
+        value = match.group(1) if match else None
+        out[key] = None if not value or value.startswith("REPLACE_WITH_") else value
+    return out
+
+
+# ---------------------------------------------------------------- main
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--apply", action="store_true", help="create/alter for real (default: dry run)")
+    args = parser.parse_args()
+    dry_run = not args.apply
+    say = print
+    say(f"{'DRY RUN' if dry_run else 'APPLY'}: transcriptions store on {HOST}:{PORT} (vault {VAULT})")
+
+    state = cluster_state()
+    missing = [e for e in EXTENSIONS if e not in state["available"]]
+    if missing:
+        raise ProvisionError(f"extension(s) not available on this cluster: {', '.join(missing)}")
+    say(f"  cluster: vector {state['available']['vector']}, pg_trgm {state['available']['pg_trgm']} available; "
+        f"database {DATABASE} {'exists' if state['database'] else 'MISSING'}; "
+        f"roles present: {', '.join(sorted(state['roles'])) or 'none'}")
+
+    found = find_items()
+    pinned = unit_references()
+    uuids: dict = {}
+    passwords: dict = {}
+    for key, (role, title, use) in ROLES.items():
+        item_id = found.get(title)
+        if item_id:
+            uuids[key] = item_id
+            passwords[key] = read_password(item_id)
+            say(f"  item {title!r}: {item_id} (reused)")
+        else:
+            item_id, passwords[key] = create_item(role, title, use, dry_run=dry_run)
+            uuids[key] = item_id
+            say(f"  item {title!r}: " + (f"{item_id} (created)" if item_id else
+                                         "MISSING, would create (op item create --dry-run accepted the template)"))
+        if key in pinned and pinned[key] and item_id and pinned[key] != item_id:
+            raise ProvisionError(f"the waxd unit names op://{VAULT}/{pinned[key]} for {role} but the vault item "
+                                 f"is {item_id}; fix the unit by hand rather than guess which one is right")
+
+    actions: dict = {}
+    for key, (role, _title, _use) in ROLES.items():
+        if role not in state["roles"]:
+            actions[key] = "create"
+        elif authenticates(role, passwords[key], DATABASE if state["database"] else "postgres"):
+            actions[key] = "ok"
+        else:
+            actions[key] = "alter"      # exists, but the vault password does not (yet) log it in
+        say(f"  role {role}: " + {"create": "MISSING, " + ("would create" if dry_run else "creating"),
+                                  "alter": "exists; vault password does not authenticate, "
+                                           + ("would ALTER ROLE ... PASSWORD" if dry_run else "ALTER ROLE ... PASSWORD"),
+                                  "ok": "exists; vault password authenticates"}[actions[key]])
+    create_db = not state["database"]
+    if create_db:
+        say(f"  database {DATABASE}: {'would create' if dry_run else 'creating'} (owner transcriptions_owner)")
+    for ext in EXTENSIONS:
+        have = state["installed"].get(ext)
+        say(f"  extension {ext}: " + (f"installed {have}" if have else ("would create" if dry_run else "creating")))
+
+    if not dry_run:
+        run(["sudo", "-n", "-u", "postgres", "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", "postgres"],
+            stdin=bootstrap_sql(actions, passwords, create_db))
+        after = cluster_state()
+        problems = [r for r in (v[0] for v in ROLES.values()) if r not in after["roles"]]
+        problems += [e for e in EXTENSIONS if e not in after["installed"]]
+        if problems or not after["database"]:
+            raise ProvisionError(f"bootstrap ran but is incomplete: {problems or 'database missing'}")
+        for key, (role, _title, _use) in ROLES.items():
+            ok = authenticates(role, passwords[key], DATABASE)
+            if ok is False:
+                raise ProvisionError(f"{role} does not log in to {DATABASE} with its vault password")
+            say(f"  verified: {role} logs in to {DATABASE} with its vault password"
+                if ok else f"  {role}: login not testable here (no psycopg)")
+        say(f"  extensions: " + ", ".join(f"{k} {v}" for k, v in sorted(after["installed"].items())))
+
+    changed = fill_unit(uuids, dry_run=dry_run)
+    for line in changed:
+        say(f"  unit template: {'would replace' if dry_run else 'replaced'} {line}")
+
+    say("")
+    say("waxd.service Environment= (deploy/systemd/user/waxd.service):")
+    say(f"  WAX_TRANSCRIPTS_DSN=postgresql://transcriptions_app@{HOST}:{PORT}/{DATABASE}?application_name=waxd")
+    say(f"  WAX_TRANSCRIPTS_PASSWORD_OP=op://{VAULT}/{uuids.get('app') or '<app-item-uuid>'}/password")
+    say(f"  WAX_TRANSCRIPTS_OWNER_DSN=postgresql://transcriptions_owner@{HOST}:{PORT}/{DATABASE}"
+        "?application_name=wax-migrate")
+    say(f"  WAX_TRANSCRIPTS_OWNER_PASSWORD_OP=op://{VAULT}/{uuids.get('owner') or '<owner-item-uuid>'}/password")
+    say(f"  RO item for outside readers: op://{VAULT}/{uuids.get('ro') or '<ro-item-uuid>'}/password")
+    if dry_run:
+        say("\nnothing was changed; re-run with --apply")
+    else:
+        say("\nnext: commit the unit template; deploy/install-systemd-user; wax transcripts migrate;\n"
+            "      systemctl --user restart waxd; wax transcripts sync --dry-run --json (F.1 runbook)")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except ProvisionError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
