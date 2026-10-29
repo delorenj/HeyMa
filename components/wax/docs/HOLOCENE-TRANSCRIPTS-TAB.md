@@ -563,3 +563,38 @@ Every step lands on `main` and is pushed (standing rule). Repo roots: HeyMa = `~
 6. **No real `px harvest --publish` is run by the build.** Filing tickets on boards is the operator's call;
    the tab ships with the "Not harvested yet" state and the link-harvest ingest proven on fixtures.
 7. **Deviations are recorded here** as dated bullets, as in TRANSCRIPTIONS-STORE.md section G.
+8. **Data-plumbing stage, as built (2026-10-29, HeyMa `b9e06d3`, `c2e5bcc`).** Deviations from B and C, following reality:
+   - **The `/tmp` synthetic artifact is version 1**, which pilot's `readArtifact` (and so `link-harvest`) refuses. The
+     test fixture is instead pilot 0.4.2's own version-2 dry run of its synthetic test note
+     (`tests/fixtures/harvest/synthetic-sync.actionitems.json`); the cases mutate copies of it.
+   - **0005 adds** `artifact_bytes` + `artifact_mtime_ns` (the scan stats and skips an unchanged file without reading
+     it, as B.5 asks; the B.3 sketch had no column for that), an index on `artifact_path`, and a CHECK that
+     `transcript_id` and `match_method` are NULL together. **The view's test-ticket exclusion moved into the LEFT
+     JOIN**: with it in WHERE, an item filed only on a `--here` board vanished; now it reads "not filed".
+   - **The backstop also runs in the waxd tick** (on the reconcile cadence, ~600 s), not only in `wax transcripts
+     sync`, because nothing runs `sync` routinely. `WAX_HARVEST_DIR=0|off` turns it off. `sync --check` reports
+     `harvest: {artifacts, pending, invalid, unmatched_runs}`; a backlog is not drift (like pending snapshots).
+     Unmatched runs are re-matched on every link, so a harvest that beats Wax's projection links itself later.
+   - **`harvest.state` has a fourth value, `unfiled`**: a complete run with items but no filed ticket (C.2 named only
+     `none | harvested | no_items`). `ticket_count` counts the newest complete run's non-test tickets whose
+     `publish_status` is `published` or `adopted`; `item_count` is that run's items; `run_count` counts every
+     complete run.
+   - **`browse` contract details**: `--id N` returns `{schema, generated_at, store, row, tickets, pass_history}` and
+     ignores the hermes filter (an explicit id is never hidden); the list adds `truncated`; each row adds
+     `classification_source`; `title` is the display title (frontmatter title, else the note's filename stem);
+     `audio_available` means an S3 backup key is recorded. Under `--json` an unreachable store prints
+     `{store: {state: "unreachable", detail}, counts: {}, rows: [], projects: []}` on stdout as well as `error:` and
+     exit 2. `store.latest_migration` is the 4-digit prefix.
+   - **Not ingested yet: `previous_items`** (tickets filed from an earlier harvest of the same document that match
+     nothing in the re-harvest). They are real tickets; a follow-up should fold them in.
+   - **Body sha cross-check (B.4) done live:** pilot's `readDocument` over all 868 present notes gives the same body
+     sha256 as `tx.transcript_current` for 868/868 (455 wax, 335 hermes-stt, 75 legacy, 3 test). Five body shas are
+     shared by ten transcripts; those are never matched by body.
+   - **Python 3.14's argparse let a subparser's `--json` default overwrite a leading `wax --json`**; `bin/wax` now
+     honours `--json` anywhere. Live Wax runs `/usr/bin/python3` (3.13) and was unaffected, but Holocene spawns
+     exactly that argv.
+   - **Live:** 0004 and 0005 applied; `harvest.outputDir` set in `~/.config/pilot/config.json`; a real
+     `px harvest <note> --dry-run` (no publish) wrote `~/.local/share/pilot/harvest/<slug>/actionitems.json` and left
+     the note's bytes unchanged; `link-harvest --report` matched it to its transcript by `wax_item_id`, with zero
+     rows in `tx.transcript_tickets` and zero unmatched runs. The waxd unit carries the `ro` lines and waxd was
+     restarted idle; its first tick ran the backstop.

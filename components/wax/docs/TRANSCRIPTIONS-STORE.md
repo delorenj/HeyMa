@@ -1655,3 +1655,13 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
    diarization skip on a monolog, item `3c697cbb47e14690`), repointed heads, renumbered each affected
    transcript's `version_no` contiguously and re-enabled the immutability trigger after firing the deferred
    head FKs. PG tests 16–17 pin both behaviours.
+9. **Four-way classification, harvest links, the `ro` reader (2026-10-29, design of record
+   `docs/HOLOCENE-TRANSCRIPTS-TAB.md` A.4, B.3-B.7, C.2).** Migration `0004_classification_phone_call.sql` swaps the
+   `transcript_version.classification` CHECK to `monolog | meeting | phone_call | other`; the same tuple is
+   `wax.frontmatter.CLASSIFICATIONS`, which `extract.py`, `passes.py` and `wax transcripts search --classification`
+   share. Migration `0005_harvest_links.sql` adds `tx.harvest_run`, `harvest_item`, `harvest_ticket` and the
+   `tx.transcript_tickets` view, written only by `wax transcripts link-harvest` (and its backstop in `sync` and the
+   tick) as `transcriptions_app` from pilot's `actionitems.json` artifacts. `db.py` gains the `ro` role
+   (`WAX_TRANSCRIPTS_RO_DSN`, `WAX_TRANSCRIPTS_RO_PASSWORD_OP`, DeLoSecrets item "Transcriptions Postgres RO"), used
+   only by `wax transcripts browse`, the read-only JSON feed Holocene's Transcripts tab spawns; it never returns a
+   body, `note_path`, frontmatter or S3 URL. Deviations from the design are its section F.8.

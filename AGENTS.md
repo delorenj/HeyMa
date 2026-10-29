@@ -90,6 +90,8 @@ wax documents sweep-empty|sweep-untitled [--dry-run] [--json]  # the waxd hygien
 wax transcripts sync [--dry-run|--check|--embed]   # project queued snapshots + reconcile the vault into Postgres
 wax transcripts search <query> [--since --tag --classification --origin ... --lexical]  # latest versions only
 wax transcripts show <ref> [--version N] [--raw] | history <ref> | migrate [--dry-run] | embed [--limit N]
+wax transcripts link-harvest [PATH...] [--report] [--dry-run]  # px harvest artifacts -> tx.harvest_* (ticket links)
+wax --json transcripts browse [--view K] [--include-hermes] [--id N]  # Holocene's read-only feed (ro role, no bodies)
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 

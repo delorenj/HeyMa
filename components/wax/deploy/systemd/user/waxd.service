@@ -36,6 +36,11 @@ Environment=WAX_TRANSCRIPTS_DSN=postgresql://transcriptions_app@localhost:5432/t
 Environment=WAX_TRANSCRIPTS_PASSWORD_OP=op://DeLoSecrets/dncjuqof2przgk6me6ct6f2xma/password
 Environment=WAX_TRANSCRIPTS_OWNER_DSN=postgresql://transcriptions_owner@localhost:5432/transcriptions?application_name=wax-migrate
 Environment=WAX_TRANSCRIPTS_OWNER_PASSWORD_OP=op://DeLoSecrets/xgnmsebepsybgd627rtudh2iuq/password
+# SELECT-only reader for `wax transcripts browse`, which Holocene's Transcripts tab spawns
+# (docs/HOLOCENE-TRANSCRIPTS-TAB.md B.7, C.1). waxd never connects as it; the CLI reads these lines
+# from the installed unit. DeLoSecrets item "Transcriptions Postgres RO".
+Environment=WAX_TRANSCRIPTS_RO_DSN=postgresql://transcriptions_ro@localhost:5432/transcriptions?application_name=wax-browse
+Environment=WAX_TRANSCRIPTS_RO_PASSWORD_OP=op://DeLoSecrets/jdt6hd7awwzxd376agaszc7z3u/password
 Environment=WAX_S3_ENDPOINT=https://s3.delo.sh
 
 [Install]
