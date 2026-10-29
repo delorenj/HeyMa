@@ -18,3 +18,4 @@ passes:
   - classification
   - title-slug
   - diarization
+  - project-extraction

@@ -3,10 +3,9 @@ version: 2
 description: >
   Ordinary Markdown document enrichment over the dedicated inbox folder
   ~/d/Inbox/Wax (created empty; a binding never processes history). Enabled
-  passes with the document capability only: classification and title-slug
-  (frontmatter proposals; the audio rename contract does not apply to
-  documents). project-extraction stays out until it is enabled in the
-  registry. Compiled+enabled, the worker scans the binding on its own
+  passes with the document capability only: classification, title-slug and
+  project-extraction (frontmatter proposals; the audio rename contract does
+  not apply to documents). Compiled+enabled, the worker scans the binding on its own
   cadence; the first scan of an existing folder seeds files without
   processing them.
 trigger: documents
@@ -17,3 +16,4 @@ folders:
 passes:
   - classification
   - title-slug
+  - project-extraction
