@@ -621,3 +621,56 @@ Every step lands on `main` and is pushed (standing rule). Repo roots: HeyMa = `~
      Chromium. Project cards, phone calls, household rows and ticket states were checked there with the list and
      detail responses mocked, because live data has no projects, phone calls or harvests yet. Kind views, list and
      project modes and an expanded row were also checked on the live SSO route in the authenticated Kapture tab.
+9. **Classification v2, as built and applied (2026-10-29, HeyMa `ffc0054`).** Deviations from A.2-A.7, following reality:
+   - **Key:** virtual key alias `heyma-wax-classification` minted on the jev-litellm ingress ($0.50/day, 120 rpm; metadata
+     `pass: classification`), stored as DeLoSecrets item `lmtarsmlr35gqyydjsw245mvra` ("Jev LiteLLM virtual key - HeyMa Wax
+     classification"), referenced by that UUID in `classification.yaml` and as the script default. A Jev call costs about
+     $0.00004 per 1K input tokens (a 5K-char note is roughly $0.0001-0.0003).
+   - **`wax ep run ... --live` (new):** a finished item's plan is frozen at classification v1 (no `clobber`, chat env) and
+     `replan` refuses a completed plan, so a plain `wax ep run classification <item>` could neither change a value nor
+     record v2. `--live` runs the live registry definition for a FINISHED item (an unfinished plan is refused, because its
+     finalize would wedge in `passes_incomplete`); finalize of a finished item stays `unchanged`. The redo switch for the
+     script is the environment, not a flag the runner would have to pass: `WAX_CLASSIFICATION_RECLASSIFY=1 wax ep run
+     classification <item> --live` (the script also takes `--reclassify` / `--force-human` for dry runs). 313 of the 466
+     wax-origin items have no plan at all (they predate plans) and use the live registry either way.
+   - **Reclassify rule (F.5):** every v1 value is unmarked (v1 never wrote `classification-source`) and is overwritten; a
+     source that is not `jev-*` / `rule:*` is a human's and is kept. None was found. When Jev **abstains on a note that
+     already has a value, the old value stays** (the evidence records `kept`), so abstaining never erases what we knew.
+   - **Abstain** stores `classification-detail: unsorted` + `classification-confidence` + `classification-source` and no
+     `classification`; for an ordinary document (`doc-...`) it stores `other` + `unsorted` so `doc-standard`'s Title
+     (`when classification exists`) still runs. Rules write `classification-confidence: 1.0`.
+   - **Legacy 75 notes:** classified by the tracked one-off `deploy/run-document-pass classification [--apply]`, which runs
+     the pass as a document pass (`passes._apply_result(..., document=True)`, no ledger rows) over the store's `legacy`
+     notes. The 335 hermes-stt rows were not touched.
+   - **11 wax-origin rows have no note file** (deleted by the empty-note hygiene or the test runs; `tx.transcript` keeps the
+     row, `browse` hides it): the pass skips them as `empty_document` / unreadable, so they are in no count below.
+   - **Doc correction:** `wax transcripts search "" ...` is refused (`empty search query`); the phone_call check uses
+     `browse --view phone_call` and `search call --classification phone_call --lexical`.
+   - **Calibration (A.7).** 62 notes were hand-labelled by reading them (monolog 20, meeting 14, other 22, phone_call 6;
+     telnyx notes excluded because a rule decides them) BEFORE looking at Jev, sampled from the wax and legacy notes by v1
+     class plus phone-sounding text. Jev agreed on **50/62 = 81%** (monolog 18/20, meeting 13/14, other 17/22, phone_call
+     2/6, with 5 abstains counted as disagreement); on the 57 it decided, **50/57 = 88%**. On the 36-note balanced subset
+     (10 monolog, 10 meeting, 10 other, 6 phone_call) it agreed on 28/36 = 78% (monolog 10/10, meeting 9/10, other 7/10,
+     phone_call 2/6), against v1's 16/23 = 70% on the part of that subset that had a v1 value. Monolog agreement is 90%,
+     above A.7's 80% bar, so the speaker-count tie-break was NOT added. The phone_call misses are two household-sounding
+     family calls Jev read as `household` (0.77 / 0.97), a scam call it called `phone_call` at 0.95 but `is_phone` only 0.47
+     (abstained by the disagreement band, 0.5), and a call that scored 0.59. Four such cases do not justify moving a
+     threshold, so the **0.6 threshold and the 0.9 / 0.5 disagreement band stand**. Across all 530 live rows the
+     is_phone histogram agrees with `kind`: 40 of 46 `phone_call` verdicts have is_phone >= 0.5, and no `monolog` or
+     `household` verdict has is_phone > 0.9.
+   - **Dry-run diff (old v1 -> v2), 530 rows with a note file** (counts are the first full dry run; the apply re-asked Jev, so
+     abstains moved from 34 to 43 on jitter around the 0.6 line):
+
+     | v1 value (n) | monolog | meeting | phone_call | other/household | other/no_content | kept v1 (abstain) | unsorted |
+     |---|---|---|---|---|---|---|---|
+     | monolog (48) | 20 | 3 | **20** (all telnyx) | 1 | 2 | 2 | - |
+     | meeting (62) | 1 | 38 | 2 | **17** | - | 4 | - |
+     | other (37) | 3 | 1 | **17** (16 telnyx) | 3 | 12 | 1 | - |
+     | none, wax (308 with a file) | 64 | 95 | 19 | 76 | 21 | - | 33 |
+     | none, legacy (75) | 13 | 35 | 6 | 13 | 3 | - | 5 |
+
+     Reading it: the telnyx rule moved 36 notes v1 had called monolog or other to `phone_call`; 17 v1 meetings that are
+     family conversations became `other/household` (the A.1 intent: "family and home life" is not a business meeting).
+   - **Applied:** 455/455 existing wax-origin items by `wax ep run classification <item> --live` (all `completed`, about
+     0.9 s each), then 75/75 legacy notes by `deploy/run-document-pass classification --apply`, then `wax transcripts
+     sync`.

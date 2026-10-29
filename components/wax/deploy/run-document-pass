@@ -1,0 +1,109 @@
+#!/usr/bin/python3
+"""One-off: run a document pass over the store's `legacy` notes, which `wax ep run` cannot reach.
+
+Legacy notes (origin `legacy` in tx.transcript) predate Wax item ids: no `wax-item-id`, no ledger
+row, no pass history, so neither `wax ep run` nor a plan can address them. This applies ONE enabled
+document-capable pass to each note the way the runner applies a document run
+(`passes._apply_result(..., document=True)`: frontmatter proposals only, no transcript identity, no
+events, the same no-clobber/`clobber` rules) without touching the pass ledger.
+
+    deploy/run-document-pass classification                 # dry run: print what each note would get
+    deploy/run-document-pass classification --apply         # write the frontmatter
+    deploy/run-document-pass classification --apply --origin legacy --limit 5 [--reclassify]
+
+Candidates are read from the store as the read-only role (origin and note_path only), skipped when the
+note file is gone, and run one at a time (the Jev ingress allows 120 requests a minute per key).
+It is the procedure design HOLOCENE-TRANSCRIPTS-TAB.md A.6 step 4 and F.2 call for; afterwards run
+`wax transcripts sync` so the store projects the new frontmatter.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+COMPONENT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(COMPONENT_ROOT / "src"))
+
+from wax import frontmatter, passes  # noqa: E402
+from wax.transcriptions import db  # noqa: E402
+
+
+def candidates(origin: str) -> list[Path]:
+    conn = db.connect("ro", statement_timeout_ms=5000, autocommit=True)
+    try:
+        rows = conn.execute("SELECT note_path FROM tx.transcript WHERE origin = %s AND note_path IS NOT NULL "
+                            "ORDER BY note_path", (origin,)).fetchall()
+    finally:
+        conn.close()
+    return [Path(r[0] if not isinstance(r, dict) else r["note_path"]) for r in rows]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("slug", help="an enabled document-capable pass (e.g. classification)")
+    ap.add_argument("--origin", default="legacy")
+    ap.add_argument("--apply", action="store_true", help="write the frontmatter (default: dry run)")
+    ap.add_argument("--reclassify", action="store_true",
+                    help="set WAX_CLASSIFICATION_RECLASSIFY=1 for the pass (classification only)")
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--pace", type=float, default=0.5, help="seconds between notes (default 0.5)")
+    args = ap.parse_args()
+
+    ep = passes.registry().get(args.slug)
+    if ep is None or not ep.get("enabled"):
+        print(f"error: pass {args.slug!r} is unknown or disabled", file=sys.stderr)
+        return 2
+    if "document" not in (ep.get("capabilities") or []):
+        print(f"error: pass {args.slug!r} is not document-capable", file=sys.stderr)
+        return 2
+    env = dict(os.environ)
+    for key, value in (ep.get("env") or {}).items():
+        env[str(key)] = str(value)
+    if args.reclassify:
+        env["WAX_CLASSIFICATION_RECLASSIFY"] = "1"
+
+    todo = [p for p in candidates(args.origin) if p.is_file()]
+    if args.limit:
+        todo = todo[:args.limit]
+    tally = {"completed": 0, "skipped": 0, "failed": 0, "changed": 0}
+    for n, md in enumerate(todo, 1):
+        argv = [a.replace("{md_path}", str(md)).replace("{item_id}", f"legacy-{md.stem}")
+                .replace("{component_root}", str(COMPONENT_ROOT)).replace("{home}", str(Path.home()))
+                for a in ep["command"]]
+        run = subprocess.run(argv, capture_output=True, text=True, env=env,
+                             timeout=float(ep.get("timeout_s") or 120))
+        if run.returncode != 0:
+            tally["failed"] += 1
+            print(f"FAIL {md.name}: {(run.stderr or '').strip().splitlines()[:2]}")
+            continue
+        try:
+            result = passes._parse_result(run.stdout)
+        except Exception as exc:  # noqa: BLE001
+            tally["failed"] += 1
+            print(f"FAIL {md.name}: unparseable result ({exc})")
+            continue
+        if result.get("state") == "skipped":
+            tally["skipped"] += 1
+            print(f"skip {md.name}: {result.get('reason_code')}")
+            continue
+        proposal = result.get("frontmatter") or {}
+        before, _ = frontmatter.read(md)
+        if args.apply:
+            _, changed = passes._apply_result(f"legacy-{md.stem}", md, ep, result, document=True)
+            tally["changed"] += bool(changed)
+        else:
+            changed = [k for k, v in proposal.items() if before.get(k) != v]
+        tally["completed"] += 1
+        print(json.dumps({"note": md.name, "proposal": proposal, "changed": changed,
+                          "outcome": (result.get("evidence") or {}).get("outcome")}, ensure_ascii=False))
+        time.sleep(args.pace)
+    print(json.dumps({"origin": args.origin, "applied": args.apply, "notes": len(todo), **tally}))
+    return 0 if not tally["failed"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
