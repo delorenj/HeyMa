@@ -259,8 +259,14 @@ def store_run(conn: Any, parsed: dict[str, Any]) -> str:
     """Upsert one parsed artifact inside the caller's transaction: 'inserted' | 'replaced' |
     'refreshed' (same content, new stat) | 'unchanged'."""
     run = parsed["run"]
-    row = conn.execute("SELECT artifact_sha256, artifact_bytes, artifact_mtime_ns FROM tx.harvest_run "
-                       "WHERE harvest_id = %s FOR UPDATE", (run["harvest_id"],)).fetchone()
+    row = conn.execute("SELECT artifact_sha256, artifact_bytes, artifact_mtime_ns, artifact_path, updated_at "
+                       "FROM tx.harvest_run WHERE harvest_id = %s FOR UPDATE", (run["harvest_id"],)).fetchone()
+    if row is not None and row[3] != run["artifact_path"] and Path(row[3]).is_file():
+        # A second file claims a harvest_id whose recorded artifact is still on disk (a copy, a backup
+        # kept inside the scanned directory). Flipping between them on every scan would rewrite the
+        # run each tick, so the recorded file stays authoritative unless this one is strictly newer.
+        if row[0] == run["artifact_sha256"] or run["updated_at"] <= row[4]:
+            return "unchanged"
     if row is not None and row[0] == run["artifact_sha256"]:
         if (row[1], row[2]) == (run["artifact_bytes"], run["artifact_mtime_ns"]) or run["artifact_bytes"] is None:
             return "unchanged"

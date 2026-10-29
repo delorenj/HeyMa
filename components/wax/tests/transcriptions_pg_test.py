@@ -1045,6 +1045,36 @@ class TranscriptionsStoreTest(unittest.TestCase):
         phone = browse.run(view="phone_call")["rows"][0]
         self.assertEqual((phone["harvest"]["state"], phone["harvest"]["run_count"]), ("harvested", 2))
 
+    def test_22_a_second_file_with_the_same_harvest_id_does_not_flip_the_run_every_scan(self):
+        first, a = self._artifact("orig", lambda a: self._publish(a, "hv-twin0000001", wax_item_id="5555555555555555"))
+        self.assertEqual(harvest.link([first])["inserted"], 1)
+        twin = first.parent.parent / "copy" / "actionitems.json"
+        twin.parent.mkdir(exist_ok=True)
+        twin.write_bytes(first.read_bytes())
+        os.utime(twin, ns=(first.stat().st_atime_ns, first.stat().st_mtime_ns + 5_000_000_000))
+        path_of = lambda: self.one("SELECT artifact_path FROM tx.harvest_run WHERE harvest_id = 'hv-twin0000001'")[0]
+        for _ in range(3):
+            scanned = harvest.link()
+            self.assertEqual((scanned["refreshed"], scanned["replaced"]), (0, 0))
+            self.assertEqual(path_of(), str(first.resolve()))
+        # An older edit of the copy never replaces the recorded artifact either ...
+        stale = json.loads(twin.read_text())
+        stale["items"][0]["title"] = "An older copy that must not win"
+        stale["updated_at"] = "2020-01-01T00:00:00Z"
+        twin.write_text(json.dumps(stale))
+        self.assertEqual(harvest.link()["replaced"], 0)
+        self.assertNotEqual(self.one("SELECT title FROM tx.harvest_item WHERE harvest_id = 'hv-twin0000001' "
+                                     "AND ordinal = 1")[0], "An older copy that must not win")
+        # ... while a strictly newer one does, and a vanished recorded file hands the run over.
+        newer = json.loads(twin.read_text())
+        newer["updated_at"] = "2099-01-01T00:00:00Z"
+        newer["items"][0]["title"] = "The newer copy"
+        twin.write_text(json.dumps(newer))
+        self.assertEqual(harvest.link()["replaced"], 1)
+        first.unlink()
+        harvest.link()
+        self.assertEqual(path_of(), str(twin.resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()
