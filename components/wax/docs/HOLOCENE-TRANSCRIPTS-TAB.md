@@ -674,3 +674,36 @@ Every step lands on `main` and is pushed (standing rule). Repo roots: HeyMa = `~
    - **Applied:** 455/455 existing wax-origin items by `wax ep run classification <item> --live` (all `completed`, about
      0.9 s each), then 75/75 legacy notes by `deploy/run-document-pass classification --apply`, then `wax transcripts
      sync`.
+   - **Final live counts** (`wax --json transcripts browse`, hermes hidden, after the sync): monolog 102, meeting 175,
+     phone_call 62, other 148 (household 109, no_content 38, undetailed 1), unsorted 43 (all `classification-detail:
+     unsorted`: 34 wax + 9 legacy abstains), 530 rows in all, plus 335 hidden hermes-stt rows. All 36 telnyx notes are
+     `phone_call` (`classification-source: rule:telnyx`); 62 = 36 telnyx + 26 Jev. Sources: jev-1.13.0 468, rule:telnyx 36,
+     rule:floor 18, unmarked v1 values kept after an abstain 8. The `heyma-wax-classification` key spent $0.084 of its
+     $0.50 daily budget for the dry run, the apply, the retries and the calibration.
+10. **project-extraction enabled and backfilled (2026-10-29, HeyMa `b81e9d2` and after).**
+   - **Calibration re-run on the ingress** (`jev.delo.sh`, `jev-1.13.0`, key `heyma-wax-project-extraction`) over the 61
+     readable wax notes of the A.7 sample (dry run, nothing written; 46 registry projects, one request per note, about
+     $0.0005 each). 36 project assignments were accepted. Judged by reading: 27 had a literal name or alias in the text
+     and the other 9 were checked by context; about 33 of 36 are right (92%), the doubtful ones being weak semantic
+     matches (candystore on an event-architecture note, voxxy on an in-car voice app). Recall proxy: every note that
+     literally names a non-generic project (19 pairs) was assigned it. The only lexical hits NOT accepted were 13 legacy-
+     style `- **Source**: /home/.../HeyMa/inbox/...` header lines, which are not mentions. The docstring's thresholds
+     (0.6, 0.75 over 30K chars) stand; no change.
+   - **Enabled** (`enabled: true`, `auto: true`; a transcription pipeline compiles only automatic, enabled passes) and
+     added as the independent `Projects` node to `transcript-standard` and `doc-standard`; both re-imported (v9).
+   - **Deviation: an empty document is now a skip, not a failure.** project-extraction raised `empty_document` for a
+     silent recording (header line only); as an independent pass in the plan that would have kept every such recording
+     (a silent telnyx leg) from finalizing. It now returns `skipped` / `empty_document` like classification.
+   - **Backfill:** `wax ep run project-extraction <item>` over the 455 existing wax-origin items (439 completed, 16
+     skipped as empty), then the 75 legacy notes through `deploy/run-document-pass project-extraction --apply` (73
+     completed, 2 empty), then `wax transcripts sync`. A note that already had `project-ids` is kept unchanged.
+   - **Coverage:** 170 of 530 browse rows have non-empty `project_ids` (141 of 455 wax-origin = 31%, 29 of 75 legacy), by
+     class monolog 43/102, meeting 95/175, phone_call 3/62, other 20/148, unsorted 9/43. 38 distinct projects; the top are
+     james-brennan 52, intelliforia 51, bb 30, pjangler 27, 33god 19, client-portal 12, docker 12, momo 11, candystore 10,
+     tower-of-dumb-things 9, voxxy 9, holocene 8, slowburns 8, transcription-queue 8. The registry lists
+     `plane-and-simple` and `planeandsimple` as two ids; Jev assigns both to the same notes.
+   - **Precision spot check (F.4 / D.9): 20 random notes with ids, 31 assignments, read against the text:** 30 correct,
+     1 wrong (`tonnybox` on a voice-assistant note that never names it) = **97% by assignment, 19 of 20 notes fully right**.
+     Several correct ones are stray but literal mentions inside household recordings (a "James Brennan swarm", a "slow burns
+     repo" read out by an agent), which is what the question asks for. Spend: the project-extraction key used about $0.30
+     of its $1.00 daily budget for calibration plus both backfills.

@@ -17,7 +17,8 @@ project's best window. Answers jitter by about +-0.06 between identical
 requests; the probabilities are kept as evidence for that reason.
 
 An existing non-empty `project-ids` (a human's or an earlier run's) is
-returned unchanged and no decision is requested. A registry or Jev failure
+returned unchanged and no decision is requested. A document with no text (a
+silent recording) is skipped as `empty_document`, not failed. A registry or Jev failure
 exits nonzero with a reason code. An empty list is only ever written when the
 decision succeeded and accepted nothing.
 
@@ -148,7 +149,9 @@ def build_result(md: Path) -> dict[str, Any]:
     fm, body = frontmatter.read(md)
     text = provider.document_text(body)
     if not text:
-        raise provider.ProviderError(f"document has no body: {md.name}", "empty_document")
+        # Nothing was said, so there is nothing to attribute: a skip, never a failure. A failing
+        # independent pass would keep an empty recording (a silent telnyx leg) from ever finalizing.
+        return {"wax_ep_version": 1, "state": "skipped", "reason_code": "empty_document"}
     ids = existing_ids(fm)
     if ids is not None:
         return preserved(fm, ids)

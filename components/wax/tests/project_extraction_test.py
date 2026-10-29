@@ -285,10 +285,14 @@ class ProjectExtractionTest(unittest.TestCase):
             self.assertEqual(PE.main([str(md)]), 1)
         self.assertEqual(stderr.getvalue().splitlines()[0], "reason_code=no_api_key")
 
-    def test_empty_document_fails(self):
-        code, stdout, stderr, fake = self.run_main(self.note("---\ntitle: t\n---\n\n# Transcription: a.ogg\n\n"))
-        self.assertEqual((code, stdout, fake.calls), (1, "", []))
-        self.assertEqual(stderr.splitlines()[0], "reason_code=empty_document")
+    def test_empty_document_is_a_skip_not_a_failure(self):
+        # A failing independent pass would keep a silent recording from ever finalizing.
+        for text in ("---\ntitle: t\n---\n\n# Transcription: a.ogg\n\n", "", "---\ntitle: t\n---\n"):
+            with self.subTest(text=text):
+                code, stdout, stderr, fake = self.run_main(self.note(text))
+                self.assertEqual((code, fake.calls), (0, []))
+                self.assertEqual(passes._parse_result(stdout),
+                                 {"wax_ep_version": 1, "state": "skipped", "reason_code": "empty_document"})
 
     def test_nothing_accepted_is_a_successful_empty_list_and_the_note_is_untouched(self):
         md = self.note(TRANSCRIPT)
@@ -310,8 +314,8 @@ class ProjectExtractionTest(unittest.TestCase):
 
         empty = self.note("---\ntitle: t\n---\n", "empty.md")
         done = subprocess.run([str(SCRIPT), str(empty), "item-1"], capture_output=True, text=True, env=env, timeout=60)
-        self.assertEqual(done.returncode, 1)
-        self.assertEqual(passes._split_reason(done.stderr)[0], "empty_document")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(passes._parse_result(done.stdout)["reason_code"], "empty_document")
 
     def test_enabled_in_the_registry_and_in_both_standard_release_graphs(self):
         # Enabled 2026-10-29 after the ingress calibration re-run (design F.10). A transcription
