@@ -196,5 +196,5 @@ wax catalog --json | jq '."pipelines"'
 ```
 
 Only enabled, document-capable passes run on documents: today that is
-`classification` and `title-slug`. `project-extraction` stays out of
-`doc-standard` until it is enabled in the registry.
+`classification`, `title-slug` and `project-extraction` (enabled and added to both
+standard pipelines on 2026-10-29).

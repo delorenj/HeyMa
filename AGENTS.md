@@ -141,7 +141,7 @@ A failing pass never stops a sibling, except through `requires:` (ordering +
 gating; `after:` only orders): a dependent waits with `dependency_failed`. Failure
 is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
-`classification`, `diarization`, `clipboard-copy`, `title-slug`.
+`classification`, `diarization`, `clipboard-copy`, `title-slug`, `project-extraction`.
 `classification` (v2) is four-way (`monolog`, `meeting`, `phone_call`, `other`): a
 telnyx rule, a floor rule, then Jev on its own virtual key (alias
 `heyma-wax-classification`); see `docs/ENRICHMENT-PASSES.md`. Every chat
@@ -175,9 +175,9 @@ gateway catalog lacks, so re-run it after a gateway deploy). Compiled pipelines
 freeze pass env, so after changing a chain re-import the n8n release exports
 (`wax pipeline import ... --name transcript-standard|doc-standard`); an
 unfinished item minted under the old chain moves only by
-`wax ep replan <item> --apply`, then `wax ep run`. Implemented
-but currently disabled: `project-extraction` (pjangler project ids via TypeSafe
-Jev) and `ticketable` (tasks per project).
+`wax ep replan <item> --apply`, then `wax ep run`. `project-extraction` (pjangler project ids via TypeSafe
+Jev, enabled 2026-10-29) is in both standard pipelines. Implemented
+but currently disabled: `ticketable` (tasks per project).
 `wax ep sweep` retries the ones whose latest attempt failed; the waxd worker also
 sweeps on a timer (`WAX_SWEEP_INTERVAL_S`, default 900s), and a pass that
 exhausts its attempts emits `bloodbank.audio.task.exhausted` (the dead-letter
@@ -195,11 +195,11 @@ through the fleet's Jev ingress instead, the jev-litellm LiteLLM proxy at
 `https://jev.delo.sh/typesafe/v1/systemone` (stack
 `~/docker/stacks/ai/jev-litellm`), which injects the TypeSafe credential
 server-side. `project-extraction` holds HeyMa's own virtual key there (alias
-`heyma-wax-project-extraction`, $1/day, `op://`; never the ingress master key
-or the raw TypeSafe key) and pins `jev-1.13.0`, the build its thresholds were
+`heyma-wax-project-extraction`, $1/day, `op://`) and `classification` another
+(`heyma-wax-classification`, $0.50/day); never the ingress master key
+or the raw TypeSafe key. Both pin `jev-1.13.0`, the build their thresholds were
 measured on. Per-request spend is in the ingress's LiteLLM spend log, not the
-response. No pass is configured for OpenRouter. The pass stays disabled until a
-calibration re-run on the ingress. `wax doctor` probes the registry, the Jev
+response. No pass is configured for OpenRouter. `wax doctor` probes the registry, the Jev
 ingress and that key, the chat-pass route served to the gateway token, and
 unpublished pass events.
 

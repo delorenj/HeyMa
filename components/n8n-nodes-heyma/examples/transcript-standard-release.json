@@ -76,8 +76,19 @@
       ]
     },
     {
+      "parameters": {},
+      "id": "wax-tr-projects",
+      "name": "Projects",
+      "type": "n8n-nodes-heyma.wax-pass-project-extraction",
+      "typeVersion": 1,
+      "position": [
+        200,
+        60
+      ]
+    },
+    {
       "parameters": {
-        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN. Output 0 'continue' only orders: Stamp \u2192 Clipboard \u2192 Classify.\n\nOutput 1 'requires' gates: Title is wired from Classify's requires port, so a failed Classify leaves Title dependency-blocked instead of dropped.\n\nClassify (v2, Jev) stores monolog, meeting, phone_call or other, or abstains and stores none (the note shows as Unsorted). Classify \u2192 Diarize is a continue edge (ordering only): Diarize skips a transcript classified as a monolog (its registry `when`), and still runs for a meeting, phone call, other, an abstain, or when Classify fails, since the field is then absent. Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
+        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN. Output 0 'continue' only orders: Stamp \u2192 Clipboard \u2192 Classify.\n\nOutput 1 'requires' gates: Title is wired from Classify's requires port, so a failed Classify leaves Title dependency-blocked instead of dropped.\n\nClassify (v2, Jev) stores monolog, meeting, phone_call or other, or abstains and stores none (the note shows as Unsorted). Classify \u2192 Diarize is a continue edge (ordering only): Diarize skips a transcript classified as a monolog (its registry `when`), and still runs for a meeting, phone call, other, an abstain, or when Classify fails, since the field is then absent. Projects (project-extraction, Jev over the pjangler registry) is independent and keeps an existing project-ids. Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
         "height": 320,
         "width": 400
       },

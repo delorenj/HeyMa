@@ -469,9 +469,11 @@ docker exec jev-litellm-postgres psql -U litellm -d litellm -c \
 ```
 
 Until 2026-10-22 the pass called OpenRouter's `alpha/decisions` proxy directly;
-that account ran out of credits on 2026-10-21. The pass stays disabled until a
-calibration re-run on the ingress. To try it without touching a note, run the
-executable directly: it only prints the result it would apply.
+that account ran out of credits on 2026-10-21. It was re-calibrated on the ingress
+and **enabled on 2026-10-29** (`enabled: true`, `auto: true`; design
+`HOLOCENE-TRANSCRIPTS-TAB.md` F.10), and joined `transcript-standard` and
+`doc-standard` as the independent `Projects` node. To try it without touching a
+note, run the executable directly: it only prints the result it would apply.
 
 ```bash
 components/wax/config/passes.d/bin/project-extraction ~/d/Transcripts/<note>.md
@@ -489,8 +491,8 @@ is not, register it with `POST /v1/index` and the repo's `.project.json`, never
 `pj init --apply`, which rewrites the manifest and the `heyma-pm` agent key),
 `jev ingress` (the URL is the ingress, the model is not OpenRouter's spelling,
 and the TypeSafe pass-through answers), `jev api key` (a virtual key, not
-blocked, budget left; both probe free endpoints and run, as warnings, while
-the pass is disabled), and `pass events enqueued`.
+blocked, budget left; both probe free endpoints; project-extraction's key only,
+classification's `heyma-wax-classification` key is not probed), and `pass events enqueued`.
 
 ## summarize and the untitled-standard pipeline
 

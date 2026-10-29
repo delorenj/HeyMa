@@ -51,8 +51,19 @@
       ]
     },
     {
+      "parameters": {},
+      "id": "wax-doc-projects",
+      "name": "Projects",
+      "type": "n8n-nodes-heyma.wax-pass-project-extraction",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        80
+      ]
+    },
+    {
       "parameters": {
-        "content": "## Wax Documents Standard\n\nBoth ports are stock MAIN. Output 0 'continue' only orders; output 1 'requires' gates: Title is wired from Classify's requires port, so Title waits for \u2014 and is blocked by the failure of \u2014 Classify.\n\nClassify (v2) may abstain on a document; it then stores `other`, so Title still runs.\n\nThis workflow is an AUTHORING artifact. `wax pipeline import` compiles it into a frozen, versioned pipeline; n8n never executes it.",
+        "content": "## Wax Documents Standard\n\nBoth ports are stock MAIN. Output 0 'continue' only orders; output 1 'requires' gates: Title is wired from Classify's requires port, so Title waits for \u2014 and is blocked by the failure of \u2014 Classify.\n\nProjects (project-extraction) is an independent pass: it keeps a note's existing project-ids and otherwise asks Jev which pjangler projects the note talks about.\n\nClassify (v2) may abstain on a document; it then stores `other`, so Title still runs.\n\nThis workflow is an AUTHORING artifact. `wax pipeline import` compiles it into a frozen, versioned pipeline; n8n never executes it.",
         "height": 300,
         "width": 380
       },
