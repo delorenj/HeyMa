@@ -29,7 +29,7 @@ COMPONENT_ROOT = next(
 )
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
-from wax import (archive, catalog, capture, component, config, documents, events, finalize,
+from wax import (archive, catalog, capture, component, config, documents, events, finalize, frontmatter,
                  hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
                  sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
 
@@ -342,6 +342,12 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_TRANSCRIPTS_OWNER_PASSWORD_OP", "wax transcripts migrate (op:// owner-role password)", "<unset>"),
     ("WAX_TRANSCRIPTS_OWNER_PASSWORD", "wax transcripts migrate (direct owner-role password; prefer op://)",
      "<unset>"),
+    ("WAX_TRANSCRIPTS_RO_DSN", "wax transcripts browse (password-less URI, SELECT-only role Holocene reads through)",
+     "<unset>"),
+    ("WAX_TRANSCRIPTS_RO_PASSWORD_OP", "wax transcripts browse (op:// ro-role password)", "<unset>"),
+    ("WAX_TRANSCRIPTS_RO_PASSWORD", "wax transcripts browse (direct ro-role password; prefer op://)", "<unset>"),
+    ("WAX_HARVEST_DIR", "wax/transcriptions/harvest.py (px harvest artifacts link-harvest, sync and the tick "
+     "scan; 0/off disables the backstop)", "~/.local/share/pilot/harvest"),
     ("WAX_TRANSCRIPTS_UNIT_FILE", "wax/transcriptions/config.py (installed unit read as the fallback config; "
      "the test suite points it at nothing)", "~/.config/systemd/user/waxd.service"),
     ("WAX_TRANSCRIPTS_TICK_S", "bin/waxd wax-transcriptions thread (drain/reconcile/embed cadence)", "15"),
@@ -1558,6 +1564,100 @@ def render_transcripts_history(out: dict[str, Any]) -> None:
         print(f"  path     {p.get('role')}: {p.get('note_relpath')}")
 
 
+def render_link_harvest(out: dict[str, Any]) -> None:
+    where = out.get("dir") or "explicit paths"
+    print(f"  {out.get('files', 0)} artifact file(s) in {where}"
+          + (f" ({out['dir_state']})" if out.get("dir_state") not in (None, "ok") else "")
+          + ("  [dry run: nothing kept]" if out.get("dry_run") else ""))
+    if out.get("state") == "not_migrated":
+        print("  the store has no harvest tables yet: run `wax transcripts migrate`")
+        return
+    print(f"  inserted {out.get('inserted', 0)}  replaced {out.get('replaced', 0)}  refreshed {out.get('refreshed', 0)}"
+          f"  unchanged {out.get('unchanged', 0)}  newly matched {out.get('relinked', 0)}")
+    for bad in out.get("invalid") or []:
+        print(f"  invalid  {bad.get('path')}: {bad.get('reason')}")
+    for warning in out.get("warnings") or []:
+        print(f"  warning  {warning}")
+    for err in out.get("errors") or []:
+        print(f"  ERROR    {err.get('path')}: {err.get('error')}")
+    report = out.get("report")
+    if report:
+        print(f"  stored   {report['runs']} run(s) {report['runs_by_status']}  matched {report['runs_by_match']}")
+        print(f"           {report['items']} item(s), {report['tickets']} ticket(s) ({report['test_tickets']} test), "
+              f"{report['transcripts_with_runs']} transcript(s) harvested, {report['visible_rows']} visible row(s)")
+        print(f"  unmatched ({len(report['unmatched'])})")
+        for run in report["unmatched"]:
+            print(f"    {run['harvest_id']}  {run['status']:<8} {run.get('wax_item_id') or '-':<16}  "
+                  f"{run.get('document_path') or '?'}")
+
+
+def render_transcripts_browse(out: dict[str, Any]) -> None:
+    def line(row: dict[str, Any]) -> str:
+        h = row.get("harvest") or {}
+        mark = {"harvested": f"{h.get('ticket_count')} ticket(s)", "no_items": "harvested, no items",
+                "unfiled": f"{h.get('item_count')} item(s) unfiled"}.get(h.get("state"), "")
+        return (f"  #{row.get('transcript_id'):<5} {_tx_day(row.get('effective_at'))}  "
+                f"{(row.get('classification') or 'unsorted'):<10} {_tx_clock(row.get('duration_s')):>6}  "
+                f"{row.get('title') or '?'}" + (f"  [{mark}]" if mark else "")
+                + (f"  ({', '.join(row['projects'])})" if row.get("projects") else ""))
+    if "row" in out:
+        row = out["row"]
+        print(line(row))
+        if row.get("summary"):
+            print(f"      {row['summary']}")
+        tickets = out.get("tickets") or []
+        print(f"  tickets ({len(tickets)})")
+        for t in tickets:
+            print(f"    {t.get('ticket_ref') or '-':<10} {t.get('publish_status') or 'not filed':<11} "
+                  f"{t.get('gate_state'):<5} {t.get('title')}" + (f"  {t['ticket_url']}" if t.get("ticket_url") else ""))
+        history = out.get("pass_history") or []
+        print(f"  passes ({len(history)})")
+        for p in history:
+            print(f"    {str(p.get('finished_at'))[:19]}  {p.get('slug')} v{p.get('pass_version')}  {p.get('state')}")
+        return
+    counts = out.get("counts") or {}
+    print("  " + "  ".join(f"{k} {counts.get(k, 0)}" for k in ("monolog", "meeting", "phone_call", "other",
+                                                                "unsorted", "hidden_hermes")))
+    for row in out.get("rows") or []:
+        print(line(row))
+    if out.get("truncated"):
+        print("  (truncated: raise --limit)")
+
+
+def transcripts_browse(args, J: bool) -> int:
+    """`wax transcripts browse`: read-only, as transcriptions_ro (HOLOCENE-TRANSCRIPTS-TAB.md C.2). An
+    unreachable store prints the `unreachable` payload under --json AND `error:` with exit 2."""
+    browse = transcriptions.browse
+    try:
+        if args.id is not None:
+            out = browse.detail(args.id)
+        else:
+            out = browse.run(view=args.view, include_hermes=args.include_hermes, limit=args.limit, since=args.since,
+                             until=args.until, project=args.project)
+    except (LookupError, ValueError) as e:
+        print(f"error: {e.args[0] if e.args else e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 - only store failures are turned into a payload
+        if not transcriptions.db.is_outage(e) and not _is_pg_error(e):
+            raise
+        if J:
+            _emit(browse.unreachable(f"{type(e).__name__}: {e}"), True)
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if J:
+        _emit(out, True)
+    else:
+        render_transcripts_browse(out)
+    return 0
+
+
+def _is_pg_error(exc: BaseException) -> bool:
+    try:
+        return isinstance(exc, transcriptions.db.psycopg().Error)
+    except transcriptions.StoreUnavailable:
+        return False
+
+
 def transcripts_command(args, J: bool) -> int:
     """`wax transcripts …` (docs/TRANSCRIPTIONS-STORE.md D.7). StoreUnavailable is a RuntimeError,
     so an unreachable store reaches the handler under __main__: `error: …`, exit 2."""
@@ -1601,6 +1701,15 @@ def transcripts_command(args, J: bool) -> int:
         else:
             render_transcripts_history(out)
         return 0 if args.sub == "history" or out.get("version") else 2
+    if args.sub == "link-harvest":
+        out = transcriptions.harvest.link(args.paths or None, dry_run=args.dry_run, report=args.report)
+        if J:
+            _emit(out, True)
+        else:
+            render_link_harvest(out)
+        return 2 if out.get("errors") or (args.paths and out.get("invalid")) else 0
+    if args.sub == "browse":
+        return transcripts_browse(args, J)
     if args.sub == "migrate":
         _emit(transcriptions.migrate.apply(dry_run=args.dry_run), J)
         return 0
@@ -1758,7 +1867,7 @@ def main() -> int:
     tse.add_argument("-n", "--limit", type=int, default=10)
     tse.add_argument("--since", help="ISO date/datetime (effective_at >=)")
     tse.add_argument("--until", help="ISO date/datetime (effective_at <)")
-    tse.add_argument("--classification", action="append", choices=["monolog", "meeting", "other"])
+    tse.add_argument("--classification", action="append", choices=list(frontmatter.CLASSIFICATIONS))
     tse.add_argument("--tag", action="append")
     tse.add_argument("--project", action="append")
     tse.add_argument("--origin", action="append", choices=["wax", "hermes-stt", "legacy"])
@@ -1776,6 +1885,22 @@ def main() -> int:
     tmi.add_argument("--dry-run", action="store_true")
     tem = trx.add_parser("embed", parents=[common], help="embed pending chunk/doc vectors now")
     tem.add_argument("--limit", type=int, default=0, help="embed at most N inputs (0 = until nothing is pending)")
+    tlh = trx.add_parser("link-harvest", parents=[common],
+                         help="ingest px harvest artifacts: which tickets each transcript produced")
+    tlh.add_argument("paths", nargs="*", metavar="PATH",
+                     help="artifact files or directories (default: $WAX_HARVEST_DIR, ~/.local/share/pilot/harvest)")
+    tlh.add_argument("--report", action="store_true", help="also list stored runs and every unmatched run")
+    tlh.add_argument("--dry-run", action="store_true", help="read and match, then roll every write back")
+    tbr = trx.add_parser("browse", parents=[common],
+                         help="read-only listing for Holocene's Transcripts tab (ro role; never a body or path)")
+    tbr.add_argument("--view", choices=list(transcriptions.browse.VIEWS), default="all")
+    tbr.add_argument("--include-hermes", action="store_true", help="also list hermes-stt voice commands")
+    tbr.add_argument("--limit", type=int, default=transcriptions.browse.DEFAULT_LIMIT,
+                     help=f"rows (max {transcriptions.browse.MAX_LIMIT})")
+    tbr.add_argument("--since", help="ISO date/datetime (effective_at >=)")
+    tbr.add_argument("--until", help="ISO date/datetime (effective_at <)")
+    tbr.add_argument("--project", help="only rows whose project_ids include this id")
+    tbr.add_argument("--id", type=int, help="one transcript with its tickets and pass history (the detail call)")
 
     rc = sub.add_parser("reconcile", help="rebuild the ledger from durable sources", parents=[common])
     rc.add_argument("--rebuild", action="store_true")
@@ -1803,7 +1928,9 @@ def main() -> int:
     doc.add_argument("--quiet", action="store_true", help="print nothing; exit code only")
 
     args = ap.parse_args()
-    J = args.json
+    # Python 3.14's argparse lets a subparser's `--json` default (False) overwrite a leading `wax --json …`;
+    # the comment above promises any position, and Holocene spawns `wax --json transcripts browse`.
+    J = bool(args.json) or "--json" in sys.argv[1:]
 
     if args.cmd == "rec":
         if args.sub == "toggle":

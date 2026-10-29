@@ -34,9 +34,10 @@ except ImportError:  # mise Python has no psycopg: the whole module skips
 
 from wax import frontmatter, ledger, paths, sentinel
 from wax import transcriptions
-from wax.transcriptions import config, db, embed, health, migrate, outbox, reconcile, search, store
+from wax.transcriptions import browse, config, db, embed, harvest, health, migrate, outbox, reconcile, search, store
 
 IMAGE = "pgvector/pgvector:0.8.0-pg17"
+HARVEST_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "harvest" / "synthetic-sync.actionitems.json"
 STATE: dict = {}
 
 
@@ -203,7 +204,10 @@ class TranscriptionsStoreTest(unittest.TestCase):
             "WAX_TRANSCRIPTS_PASSWORD": STATE["pw"]["app"],
             "WAX_TRANSCRIPTS_OWNER_DSN": f"postgresql://transcriptions_owner@127.0.0.1:{port}/transcriptions",
             "WAX_TRANSCRIPTS_OWNER_PASSWORD": STATE["pw"]["owner"],
+            "WAX_TRANSCRIPTS_RO_DSN": f"postgresql://transcriptions_ro@127.0.0.1:{port}/transcriptions",
+            "WAX_TRANSCRIPTS_RO_PASSWORD": STATE["pw"]["ro"],
             "WAX_EMBED_URL": "http://127.0.0.1:9",
+            "WAX_HARVEST_DIR": str(root / "harvest"),
         })
         _close_ledger()
         cls.patches = [patch.object(paths, "VAR", cls.var), patch.object(paths, "DB", cls.var / "wax.db"),
@@ -281,7 +285,8 @@ class TranscriptionsStoreTest(unittest.TestCase):
 
     def test_01_migrations(self):
         first = migrate.apply()
-        self.assertEqual(first["applied"], ["0001_core", "0002_search", "0003_skips_are_history"])
+        self.assertEqual(first["applied"], ["0001_core", "0002_search", "0003_skips_are_history",
+                                            "0004_classification_phone_call", "0005_harvest_links"])
         second = migrate.apply()
         self.assertEqual(second["applied"], [])
         with tempfile.TemporaryDirectory() as edited:
@@ -790,6 +795,255 @@ class TranscriptionsStoreTest(unittest.TestCase):
         with contextlib.closing(self.owner()) as c:   # immutability is back on
             with self.assertRaises(Exception):
                 c.execute("UPDATE tx.transcript_version SET title = 'x' WHERE version_id = %s", (prev_head,))
+
+    # -------------------------------------------------------------- four-way classification (0004)
+
+    def _backfill(self, name, text):
+        """A note projected the way reconcile backfills one (no ledger row): legacy, hermes or test origin."""
+        md = self.vault / name
+        md.write_text(text)
+        with contextlib.closing(self.app()) as c:
+            with c.transaction():
+                store.apply_snapshot(c, {"seq": None, "item_id": None, "kind": "version", "idempotency_key": "",
+                                         "md_path": str(md), "note_text": text, "created_at": sentinel.utcnow(),
+                                         "payload": {"producer_kind": "backfill", "produced_by": "backfill",
+                                                     "item_is_wax": False}})
+        return self.one("SELECT transcript_id FROM tx.transcript WHERE note_relpath = %s", (name,))[0]
+
+    def test_18_phone_call_is_a_stored_classification_and_an_unknown_one_is_refused(self):
+        cls = type(self)
+        md = self.vault / "20261029-090000-telnyx-call.md"
+        fm = {"captured": "2026-10-29T09:00:00-04:00", "classification": "phone_call", "title": "Pharmacy Callback",
+              "classification-detail": None, "classification-confidence": 0.9731,
+              "classification-source": "rule:telnyx", "project-ids": ["pilot"], "projects": ["Pilot"],
+              "wax-item-id": "5555555555555555", "audio-duration-seconds": 41.0,
+              "wax": {"audio_duration_s": 41.0, "source_audio": "telnyx-call-leg.ogg"}}
+        body = "# Transcription: telnyx-call-leg.ogg\n\n**Speaker 1 (00:00):** hi this is the pharmacy calling " \
+               "back about your prescription refill please call us back\n"
+        write_note(md, fm, body)
+        self.ledger_rows("5555555555555555", md)
+        transcriptions.record_transcription(item_id="5555555555555555", md_path=md, meta={}, verdict={},
+                                            asr_path=self.var / "x", attempt=1, processing_seconds=1.0)
+        self.assertEqual(outbox.pending("5555555555555555"), [])
+        row = self.one("SELECT t.transcript_id, c.classification FROM tx.transcript t "
+                       "JOIN tx.transcript_current c USING (transcript_id) WHERE t.wax_item_id = '5555555555555555'")
+        self.assertEqual(row[1], "phone_call")
+        cls.phone_tid = row[0]
+        head = self.one("SELECT current_version_id FROM tx.transcript WHERE transcript_id = %s", (row[0],))[0]
+        cols = [r[0] for r in self.all(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'tx' "
+            "AND table_name = 'transcript_version' AND column_name NOT IN "
+            "('version_id', 'version_no', 'idempotency_key', 'classification', 'created_at') ORDER BY ordinal_position")]
+        listed = ", ".join(cols)
+        with contextlib.closing(self.app()) as c:
+            with self.assertRaises(pg_errors.CheckViolation):
+                with c.transaction():
+                    c.execute(f"INSERT INTO tx.transcript_version (idempotency_key, classification, {listed}) "
+                              f"SELECT 'bad-class', 'voicemail', {listed} FROM tx.transcript_version "
+                              "WHERE version_id = %s", (head,))
+        self.assertEqual(self.one("SELECT count(*) FROM tx.check_invariants()")[0], 0)
+
+    # -------------------------------------------------------------- harvest links (0005, B.3-B.5)
+
+    def _artifact(self, name, mutate):
+        a = json.loads(HARVEST_FIXTURE.read_text())
+        mutate(a)
+        path = Path(os.environ["WAX_HARVEST_DIR"]) / name / "actionitems.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(a, indent=2))
+        return path, a
+
+    @staticmethod
+    def _publish(a, harvest_id, *, wax_item_id=None, body_sha256=None):
+        a.update(status="complete", harvest_id=harvest_id)
+        a["document"].update(wax_item_id=wax_item_id, body_sha256=body_sha256)
+        items = a["items"]
+        items[0]["publish"] = {"plane:board-1": {"status": "published", "provider": "plane", "project": "pilot",
+                                                 "board": "board-1", "ref": "PX-123", "lane": "Todo",
+                                                 "url": "https://plane.delo.sh/33god/browse/PX-123/",
+                                                 "at": "2026-10-29T11:00:00Z", "here": False}}
+        items[1]["publish"] = {"plane:test-board": {"status": "published", "provider": "plane", "board": "test-board",
+                                                    "ref": "TEST-21", "lane": "Todo", "here": True,
+                                                    "url": "https://plane.delo.sh/33god/browse/TEST-21/"}}
+        items[3]["gate"] = {"state": "held", "reasons": []}
+
+    def test_19_link_harvest_matches_dedups_and_excludes_dry_runs_and_test_tickets(self):
+        cls = type(self)
+        # Fresh notes: test_11's sweep of another vault marked the earlier ones' notes missing.
+        self._extra_transcript("7777777777777777", "monolog-g.md", classification="monolog", tags=["work"],
+                               captured="2026-10-27T08:00:00-04:00", title="Morning Plan",
+                               body_topic="planning the morning alone before the standup and the school run")
+        self._extra_transcript("8888888888888888", "other-h.md", classification="other", tags=[],
+                               captured="2026-10-26T18:00:00-04:00", title="Kitchen Chat",
+                               body_topic="who is taking the recycling out and what we are cooking tomorrow")
+        monolog_tid = self.one("SELECT transcript_id FROM tx.transcript WHERE wax_item_id = '7777777777777777'")[0]
+        other_tid, other_body = self.one(
+            "SELECT t.transcript_id, c.body_sha256 FROM tx.transcript t JOIN tx.transcript_current c "
+            "USING (transcript_id) WHERE t.wax_item_id = '8888888888888888'")
+        dup_text = "---\ntitle: Duplicate Body\n---\nthe very same words recorded twice on two different days\n"
+        dup_a = self._backfill("dup-a.md", dup_text)
+        self._backfill("dup-b.md", dup_text.replace("Duplicate Body", "Duplicate Body Again"))
+        dup_body = self.one("SELECT body_sha256 FROM tx.transcript_current WHERE transcript_id = %s", (dup_a,))[0]
+
+        self._artifact("dry", lambda a: a["document"].update(wax_item_id="7777777777777777"))
+        body, _ = self._artifact("body", lambda a: self._publish(a, "hv-body000001", body_sha256=other_body))
+        self._artifact("ambiguous", lambda a: self._publish(a, "hv-ambig00001", body_sha256=dup_body))
+        self._artifact("later", lambda a: self._publish(a, "hv-later00001", wax_item_id="6666666666666666"))
+        self._artifact("v1", lambda a: a.update(version=1, harvest_id="hv-version1"))
+
+        first = harvest.link(report=True)
+        self.assertEqual(first["errors"], [])
+        self.assertEqual((first["inserted"], first["files"]), (4, 5))
+        self.assertEqual([i["path"].rsplit("/", 2)[-2] for i in first["invalid"]], ["v1"])
+        runs = dict(self.all("SELECT harvest_id, transcript_id FROM tx.harvest_run"))
+        self.assertEqual(runs["hv-8c7d55405a73"], monolog_tid)            # the dry run, matched by wax item id
+        self.assertEqual(runs["hv-body000001"], other_tid)                # matched by the head body
+        self.assertIsNone(runs["hv-ambig00001"])                          # two heads share it: never guessed
+        self.assertIsNone(runs["hv-later00001"])                          # no such transcript yet
+        self.assertEqual(self.one("SELECT match_method FROM tx.harvest_run WHERE harvest_id = 'hv-body000001'")[0],
+                         "body_sha256")
+        self.assertEqual({u["harvest_id"] for u in first["report"]["unmatched"]}, {"hv-ambig00001", "hv-later00001"})
+        self.assertEqual(first["report"]["runs_by_status"], {"complete": 3, "dry-run": 1})
+        # The view: no dry-run rows; the --here-only item stays, as not filed.
+        self.assertEqual(self.one("SELECT count(*) FROM tx.transcript_tickets WHERE transcript_id = %s",
+                                  (monolog_tid,))[0], 0)
+        rows = self.all("SELECT item_id, gate_state, publish_status, ticket_ref FROM tx.transcript_tickets "
+                        "WHERE transcript_id = %s ORDER BY ordinal", (other_tid,))
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(rows[0][2:], ("published", "PX-123"))
+        self.assertEqual(rows[1][2:], (None, None))
+        self.assertEqual(rows[3][1], "held")
+        self.assertEqual(self.one("SELECT count(*) FROM tx.harvest_ticket WHERE is_test AND harvest_id = %s",
+                                  ("hv-body000001",))[0], 1)
+
+        again = harvest.link()
+        self.assertEqual((again["unchanged"], again["inserted"], again["replaced"]), (4, 0, 0))   # stat skip
+        explicit = harvest.link([body])
+        self.assertEqual((explicit["unchanged"], explicit["inserted"]), (1, 0))                  # sha skip
+
+        def retitle(a):
+            self._publish(a, "hv-body000001", body_sha256=other_body)
+            a["items"][0]["title"] = "Send Tom the signed renewal quote by Friday"
+            a["items"][2]["publish"] = {"trello:int-board": {"status": "failed", "reasons": ["HTTP 400"]}}
+            del a["items"][4]
+        self._artifact("body", retitle)
+        changed = harvest.link()
+        self.assertEqual((changed["replaced"], changed["unchanged"]), (1, 3))
+        self.assertEqual(self.one("SELECT item_count FROM tx.harvest_run WHERE harvest_id = 'hv-body000001'")[0], 4)
+        self.assertEqual(self.one("SELECT title FROM tx.harvest_item WHERE harvest_id = 'hv-body000001' "
+                                  "AND ordinal = 1")[0], "Send Tom the signed renewal quote by Friday")
+        self.assertEqual(self.one("SELECT provider, board_id, publish_status FROM tx.harvest_ticket "
+                                  "WHERE harvest_id = 'hv-body000001' AND publish_status = 'failed'"),
+                         ("trello", "int-board", "failed"))
+        self.assertEqual(self.one("SELECT transcript_id FROM tx.harvest_run WHERE harvest_id = 'hv-body000001'")[0],
+                         other_tid, "a replaced run is matched again")
+
+        self._extra_transcript("6666666666666666", "later-f.md", classification="meeting", tags=[],
+                               captured="2026-10-28T10:00:00-04:00", title="Later Meeting",
+                               body_topic="the meeting that was harvested before wax had projected it")
+        relinked = harvest.link()
+        self.assertEqual(relinked["relinked"], 1)
+        self.assertIsNotNone(self.one("SELECT transcript_id FROM tx.harvest_run WHERE harvest_id = 'hv-later00001'")[0])
+
+        rehearsal, _ = self._artifact("rehearsal", lambda a: self._publish(a, "hv-rehearse01",
+                                                                            wax_item_id="7777777777777777"))
+        trial = harvest.link(dry_run=True)
+        self.assertEqual((trial["inserted"], trial["dry_run"]), (1, True))
+        self.assertEqual(self.one("SELECT count(*) FROM tx.harvest_run WHERE harvest_id = 'hv-rehearse01'")[0], 0)
+        rehearsal.unlink()
+        cls.monolog_tid, cls.other_tid = monolog_tid, other_tid
+
+    def test_20_browse_reads_as_ro_and_returns_only_the_contract(self):
+        cls = type(self)
+        hermes_tid = self._backfill("hermes-2.md", "---\nsource-audio: /tmp/hermes-local-stt-y/hermes-desktop-voice-2.wav"
+                                                   "\n---\n# Transcription: h2.wav\n\nturn the kitchen lights off\n")
+        self.assertEqual(self.one("SELECT origin FROM tx.transcript WHERE transcript_id = %s", (hermes_tid,))[0],
+                         "hermes-stt")
+        with contextlib.closing(db.connect("ro", autocommit=True)) as ro:
+            with self.assertRaises(pg_errors.InsufficientPrivilege):
+                ro.execute("DELETE FROM tx.harvest_run")
+        listing = browse.run()
+        self.assertEqual(listing["schema"], 1)
+        self.assertEqual(listing["store"], {"state": "ok", "latest_migration": "0005"})
+        self.assertEqual(set(listing["counts"]), set(browse.COUNT_KEYS))
+        expected = dict(self.all(
+            "SELECT CASE WHEN c.classification IN ('monolog', 'meeting', 'phone_call', 'other') "
+            "THEN c.classification ELSE 'unsorted' END, count(*) FROM tx.transcript t "
+            "JOIN tx.transcript_current c USING (transcript_id) WHERE t.searchable AND t.note_missing_at IS NULL "
+            "AND t.origin <> 'hermes-stt' GROUP BY 1"))
+        self.assertEqual({k: v for k, v in listing["counts"].items() if k != "hidden_hermes" and v},
+                         {k: v for k, v in expected.items() if v})
+        self.assertGreaterEqual(listing["counts"]["hidden_hermes"], 1)
+        self.assertEqual(len(listing["rows"]), sum(expected.values()))
+        self.assertNotIn(hermes_tid, {r["transcript_id"] for r in listing["rows"]})
+        stamps = [r["effective_at"] for r in listing["rows"] if r["effective_at"]]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+        for row in listing["rows"]:
+            self.assertEqual(tuple(row), browse.ROW_FIELDS)
+            self.assertEqual(tuple(row["harvest"]), browse.HARVEST_FIELDS)
+        text = json.dumps(listing)
+        for forbidden in ('"content"', '"note_path"', '"frontmatter"', '"frontmatter_block"', "s3://", '"dsn"',
+                          "/vault/", "turn the kitchen"):
+            self.assertNotIn(forbidden, text)
+
+        phone = browse.run(view="phone_call")
+        self.assertEqual([r["transcript_id"] for r in phone["rows"]], [cls.phone_tid])
+        row = phone["rows"][0]
+        self.assertEqual((row["classification"], row["classification_source"], row["classification_confidence"],
+                          row["classification_detail"]), ("phone_call", "rule:telnyx", 0.973, None))
+        self.assertEqual((row["project_ids"], row["projects"], row["title"]), (["pilot"], ["Pilot"],
+                                                                                 "Pharmacy Callback"))
+        self.assertEqual(row["harvest"]["state"], "none")
+        self.assertEqual(phone["projects"], [{"project_id": "pilot", "name": "Pilot", "count": 1}])
+        self.assertEqual([r["transcript_id"] for r in browse.run(project="pilot")["rows"]], [cls.phone_tid])
+        self.assertTrue(all(r["classification"] == "monolog" for r in browse.run(view="monolog")["rows"]))
+        self.assertTrue(all(r["classification"] is None for r in browse.run(view="unsorted")["rows"]))
+        with_hermes = browse.run(include_hermes=True)
+        self.assertEqual(with_hermes["counts"]["hidden_hermes"], 0)
+        self.assertIn(hermes_tid, {r["transcript_id"] for r in with_hermes["rows"]})
+        capped = browse.run(limit=1)
+        self.assertEqual((len(capped["rows"]), capped["truncated"]), (1, True))
+        for bad in ({"view": "voicemail"}, {"limit": 0}, {"limit": browse.MAX_LIMIT + 1}):
+            with self.assertRaises(ValueError):
+                browse.run(**bad)
+
+        by_id = {r["transcript_id"]: r for r in listing["rows"]}
+        self.assertEqual(by_id[cls.other_tid]["harvest"]["state"], "harvested")
+        self.assertEqual(by_id[cls.other_tid]["harvest"]["ticket_count"], 1)       # PX-123; TEST-21 and failed don't count
+        self.assertEqual(by_id[cls.other_tid]["harvest"]["item_count"], 4)
+        self.assertEqual(by_id[cls.monolog_tid]["harvest"]["state"], "none")        # only a dry run
+        shown = browse.detail(cls.other_tid)
+        self.assertEqual(set(shown), {"schema", "generated_at", "store", "row", "tickets", "pass_history"})
+        self.assertEqual(tuple(shown["row"]), browse.ROW_FIELDS)
+        self.assertEqual([tuple(t) for t in shown["tickets"]][0], browse.TICKET_FIELDS)
+        self.assertEqual(len(shown["tickets"]), 4)
+        first = shown["tickets"][0]
+        self.assertEqual((first["ticket_ref"], first["publish_status"], first["provider"], first["lane"],
+                          first["harvested_at"], first["published_at"]),
+                         ("PX-123", "published", "plane", "Todo", "2026-10-29T10:41:44Z", "2026-10-29T11:00:00Z"))
+        self.assertTrue(all(tuple(p) == browse.PASS_FIELDS for p in browse.detail(self.head()[0])["pass_history"]))
+        self.assertTrue(browse.detail(self.head()[0])["pass_history"])
+        self.assertEqual(browse.detail(hermes_tid)["row"]["origin"], "hermes-stt")    # an explicit id is never hidden
+        with self.assertRaises(LookupError):
+            browse.detail(987654321)
+        with contextlib.closing(browse._connect(None)[0]) as c:
+            self.assertEqual(c.execute("SHOW statement_timeout").fetchone()[0], "5s")
+            self.assertEqual(c.execute("SELECT current_user").fetchone()[0], "transcriptions_ro")
+
+    def test_21_sync_and_parity_take_in_a_hand_run_harvest(self):
+        before = reconcile.parity()["harvest"]
+        self.assertEqual((before["state"], before["pending"], before["invalid"]), ("ok", 0, 1))
+        self._artifact("hand-run", lambda a: self._publish(a, "hv-handrun0001", wax_item_id="5555555555555555"))
+        self.assertEqual(reconcile.parity()["harvest"]["pending"], 1)
+        with contextlib.closing(self.app()) as c:
+            ticked = transcriptions._harvest_backstop(c)
+        self.assertEqual((ticked["state"], ticked["inserted"], ticked["invalid"], ticked["errors"]), ("ok", 1, 1, 0))
+        self.assertEqual(reconcile.parity()["harvest"]["pending"], 0)
+        self._artifact("hand-run-2", lambda a: self._publish(a, "hv-handrun0002", wax_item_id="5555555555555555"))
+        synced = transcriptions.sync()
+        self.assertEqual(synced["harvest"]["inserted"], 1)
+        phone = browse.run(view="phone_call")["rows"][0]
+        self.assertEqual((phone["harvest"]["state"], phone["harvest"]["run_count"]), ("harvested", 2))
 
 
 if __name__ == "__main__":

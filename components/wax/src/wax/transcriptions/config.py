@@ -114,6 +114,15 @@ def owner_password_op() -> Optional[str]:
     return value("WAX_TRANSCRIPTS_OWNER_PASSWORD_OP")
 
 
+def ro_dsn() -> Optional[str]:
+    """Password-less URI for transcriptions_ro: `wax transcripts browse` (Holocene's reader) only."""
+    return value("WAX_TRANSCRIPTS_RO_DSN")
+
+
+def ro_password_op() -> Optional[str]:
+    return value("WAX_TRANSCRIPTS_RO_PASSWORD_OP")
+
+
 def tick_s() -> float:
     return _number("WAX_TRANSCRIPTS_TICK_S", 15.0, minimum=1.0)
 

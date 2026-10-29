@@ -21,6 +21,9 @@ from pathlib import Path
 NO_UNIT = "/nonexistent/wax-test-suite/waxd.service"
 
 os.environ["WAX_TRANSCRIPTS_UNIT_FILE"] = NO_UNIT
+# The harvest-link backstop (sync, tick) scans pilot's real output directory by default; a test that
+# wants it sets its own directory.
+os.environ["WAX_HARVEST_DIR"] = "off"
 for _name in list(os.environ):
     if _name.startswith("WAX_TRANSCRIPTS_") and ("DSN" in _name or "PASSWORD" in _name):
         os.environ.pop(_name, None)

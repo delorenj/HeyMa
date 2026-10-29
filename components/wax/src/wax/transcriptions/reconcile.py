@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .. import frontmatter, ledger, operations, paths, sentinel
-from . import db, embed, extract, outbox, store, versioning
+from . import db, embed, extract, harvest, outbox, store, versioning
 
 log = logging.getLogger("wax.transcriptions.reconcile")
 
@@ -510,6 +510,9 @@ def parity(*, conn: Any = None, vault: Optional[Path] = None) -> dict[str, Any]:
             "doc_pending": pending["docs_pending"],
             "invariant_violations": one("SELECT count(*) FROM tx.check_invariants()"),
             "pending_snapshots": outbox.backlog()["queued"],
+            # Harvest links (HOLOCENE-TRANSCRIPTS-TAB.md B.5): artifacts on disk not yet taken in. Like
+            # pending snapshots, a backlog is reported, not drift: the next sync or tick ingests it.
+            "harvest": harvest.parity(conn),
         }
         out["drift"] = bool(
             out["heads_with_note"] != out["identities_with_note"]

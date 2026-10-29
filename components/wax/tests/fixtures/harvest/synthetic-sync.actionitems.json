@@ -1,0 +1,729 @@
+{
+  "kind": "px.harvest.actionitems",
+  "version": 2,
+  "harvest_id": "hv-8c7d55405a73",
+  "status": "dry-run",
+  "created_at": "2026-10-29T10:41:44Z",
+  "updated_at": "2026-10-29T10:41:44Z",
+  "tool": {
+    "name": "pilot",
+    "version": "0.4.2"
+  },
+  "document": {
+    "path": "/home/delorenj/code/33GOD/pilot/test/fixtures/harvest/20261021-090000-synthetic-sync.md",
+    "paths_seen": [
+      "/home/delorenj/code/33GOD/pilot/test/fixtures/harvest/20261021-090000-synthetic-sync.md"
+    ],
+    "file_name": "20261021-090000-synthetic-sync.md",
+    "stem": "20261021-090000-synthetic-sync",
+    "slug": "synthetic-sync",
+    "slug_source": "title-slug",
+    "title": "Synthetic Sync",
+    "format": "wax-transcript",
+    "sha256": "a201673ff8a17327c7dd43edc57cefcf0c3119261bb388624e21565f8f07d997",
+    "body_sha256": "8c7d5582bc31145f4eaba61ddaa17d66f39cbb0e49e8098879256a5cd4795e25",
+    "bytes": 833,
+    "body_chars": 620,
+    "segments": 9,
+    "captured": "2026-10-21T09:00:00-04:00",
+    "reference_date": "2026-10-21",
+    "wax_item_id": "0123456789abcdef",
+    "upload": {
+      "skipped": "dry-run"
+    },
+    "s3": null,
+    "writeback": {
+      "status": "none",
+      "urls": [],
+      "sha256_after": null,
+      "at": null
+    }
+  },
+  "schema": {
+    "id": "action-items",
+    "version": 2,
+    "sha256": "32f302baf8ef9e5f84b83f1fa58e0f13fdd35521c3e78e1aedd4767db27930a1",
+    "path": "/home/delorenj/code/33GOD/pilot/schemas/default-harvest-schema.json"
+  },
+  "models": {
+    "propose": {
+      "provider": "automaticai-gateway",
+      "requested": "automaticai/personal/glm-5.3-flash",
+      "served_by": "glm-5.3-flash",
+      "route": null,
+      "fell_through": [],
+      "all_served_by": [
+        "glm-5.3-flash",
+        "glm-5.3"
+      ]
+    },
+    "check": {
+      "provider": "automaticai-gateway",
+      "requested": "automaticai/auto/fast",
+      "served_by": "gpt-6-sol",
+      "family_differs": true,
+      "failures": 0,
+      "fell_through": []
+    },
+    "support": {
+      "provider": "jev-litellm",
+      "url": "https://jev.delo.sh/typesafe/v1/systemone",
+      "model": "jev-1.13.0",
+      "echoed": "jev-1.13.0",
+      "question": "support-v2"
+    },
+    "classify": {
+      "provider": "jev-litellm",
+      "url": "https://jev.delo.sh/typesafe/v1/systemone",
+      "model": "jev-1.13.0",
+      "echoed": "jev-1.13.0"
+    },
+    "audit": {
+      "provider": "cloudflare-workers-ai",
+      "model": "@cf/cloudflare/clairic",
+      "echoed": "clairic",
+      "mode": "repair"
+    }
+  },
+  "registry": {
+    "url": "http://127.0.0.1:8764",
+    "fetched_at": "2026-10-29T10:41:44Z",
+    "candidates": 46,
+    "hints": {
+      "path": "/home/delorenj/.config/pilot/harvest/project-hints.json",
+      "present": true
+    }
+  },
+  "usage": {
+    "reading": {
+      "mode": "single-pass",
+      "estimated_tokens": 207,
+      "windows": 1,
+      "readers": 2
+    },
+    "propose": {
+      "calls": 7,
+      "prompt_tokens": 11073,
+      "completion_tokens": 20215,
+      "reasoning_tokens": 19019,
+      "seconds": 427.3
+    },
+    "clairic": {
+      "calls": 1,
+      "input_tokens": 4212,
+      "estimated_tokens": 1652,
+      "splits": 0,
+      "windows": 1
+    },
+    "check": {
+      "calls": 5,
+      "prompt_tokens": 13674,
+      "completion_tokens": 555,
+      "seconds": 27.5
+    },
+    "merge_judge": {
+      "asked": 4,
+      "same": 2,
+      "restates": 1,
+      "second_looks": 2,
+      "unjudged": 0,
+      "splits": 0,
+      "calls": 3,
+      "prompt_tokens": 2976,
+      "completion_tokens": 230,
+      "seconds": 17.2
+    },
+    "wall_ms": 324841,
+    "jev": {
+      "calls": 10,
+      "input_tokens": 42925,
+      "classify_calls": 5
+    }
+  },
+  "items": [
+    {
+      "id": "h-ba8cf792a194",
+      "category": "action",
+      "kind": "stated",
+      "status": "firm",
+      "proposer_family": "glm",
+      "title": "Send Tom a reply about the renewal quote by Friday",
+      "evidence": {
+        "spans": [
+          {
+            "quote": "I'll send Tom a reply about the renewal quote by Friday.",
+            "start": 206,
+            "end": 262,
+            "segment": 4,
+            "speaker": "Dana",
+            "timestamp": "00:20",
+            "body_line": 8,
+            "grounding": "exact"
+          },
+          {
+            "quote": "Action items: Dana sends Tom the quote, Priya books the venue, I'll update the deck.",
+            "start": 437,
+            "end": 521,
+            "segment": 7,
+            "speaker": "Dana",
+            "timestamp": "01:15",
+            "body_line": 14,
+            "grounding": "exact"
+          },
+          {
+            "quote": "Dana sends Tom the quote",
+            "start": 451,
+            "end": 475,
+            "segment": 7,
+            "speaker": "Dana",
+            "timestamp": "01:15",
+            "body_line": 14,
+            "grounding": "exact"
+          }
+        ],
+        "dropped": [],
+        "found_by": "propose",
+        "p_null": null
+      },
+      "attributes": {
+        "owner": {
+          "value": "Dana",
+          "start": 188,
+          "end": 205,
+          "grounding": "exact",
+          "basis": "label"
+        },
+        "due_text": {
+          "value": "Friday",
+          "start": 255,
+          "end": 261,
+          "grounding": "exact",
+          "date": null,
+          "date_basis": null
+        }
+      },
+      "attributes_dropped": [],
+      "support": {
+        "traced": {
+          "untraced": [],
+          "untraced_words": [],
+          "near_noise": false
+        },
+        "jev": {
+          "p": 0.97,
+          "request_id": "req_01a187402d0b7ebf8970091bbaab8bad",
+          "whole_transcript": true,
+          "around": null,
+          "coverage": 1
+        },
+        "check": {
+          "unsupported_parts": [],
+          "commitment": "firm",
+          "source": "participants",
+          "after": {
+            "outcome": "stands",
+            "quote": "",
+            "verified": false
+          },
+          "served_by": "gpt-6-sol"
+        }
+      },
+      "gate": {
+        "state": "clear",
+        "reasons": []
+      },
+      "also_at": [],
+      "possible_duplicates": [],
+      "classification": {
+        "status": "none",
+        "project": null,
+        "matched": [],
+        "threshold": 0.6,
+        "probabilities": {},
+        "near_misses": {},
+        "request_id": "req_01a1874050ab769e94d7ecca8a3a62e8"
+      },
+      "group": "general",
+      "override": null,
+      "lint": [],
+      "publish": {},
+      "merged_titles": [
+        "Send Tom a reply about the renewal quote"
+      ]
+    },
+    {
+      "id": "h-a3a2847ece66",
+      "category": "action",
+      "kind": "stated",
+      "status": "firm",
+      "proposer_family": "glm",
+      "title": "Rotate the staging key for Acme Widget before November 12",
+      "evidence": {
+        "spans": [
+          {
+            "quote": "For Acme Widget, can you rotate the staging key before November 12?",
+            "start": 281,
+            "end": 348,
+            "segment": 5,
+            "speaker": "Sam",
+            "timestamp": "00:41",
+            "body_line": 10,
+            "grounding": "exact"
+          }
+        ],
+        "dropped": [],
+        "found_by": "propose",
+        "p_null": null
+      },
+      "attributes": {
+        "due_text": {
+          "value": "before November 12",
+          "start": 329,
+          "end": 347,
+          "grounding": "exact",
+          "date": "2026-11-12",
+          "date_basis": "calendar date in text"
+        },
+        "project_hint": {
+          "value": "Acme Widget",
+          "start": 285,
+          "end": 296,
+          "grounding": "exact"
+        }
+      },
+      "attributes_dropped": [],
+      "support": {
+        "traced": {
+          "untraced": [],
+          "untraced_words": [],
+          "near_noise": false
+        },
+        "jev": {
+          "p": 0.77,
+          "request_id": "req_01a187402f477242bdb44cd8e9d9af8c",
+          "whole_transcript": true,
+          "around": null,
+          "coverage": 1
+        },
+        "check": {
+          "unsupported_parts": [],
+          "commitment": "firm",
+          "source": "participants",
+          "after": {
+            "outcome": "stands",
+            "quote": "",
+            "verified": false
+          },
+          "served_by": "gpt-6-sol"
+        }
+      },
+      "gate": {
+        "state": "clear",
+        "reasons": []
+      },
+      "also_at": [],
+      "possible_duplicates": [
+        {
+          "id": "h-a0a8e48b1b95",
+          "title": "Renew the Acme Widget licence if the vendor replies",
+          "overlap": 0.18
+        }
+      ],
+      "classification": {
+        "status": "none",
+        "project": null,
+        "matched": [],
+        "threshold": 0.6,
+        "probabilities": {},
+        "near_misses": {},
+        "request_id": "req_01a18740530073ccb46f46bca278cf49"
+      },
+      "group": "general",
+      "override": null,
+      "lint": [],
+      "publish": {}
+    },
+    {
+      "id": "h-a0a8e48b1b95",
+      "category": "action",
+      "kind": "stated",
+      "status": "firm",
+      "proposer_family": "glm",
+      "title": "Renew the Acme Widget licence if the vendor replies",
+      "evidence": {
+        "spans": [
+          {
+            "quote": "If the vendor replies, renew the widget licence.",
+            "start": 369,
+            "end": 417,
+            "segment": 6,
+            "speaker": "Priya",
+            "timestamp": "01:02",
+            "body_line": 12,
+            "grounding": "exact"
+          }
+        ],
+        "dropped": [],
+        "found_by": "propose",
+        "p_null": null
+      },
+      "attributes": {
+        "owner": {
+          "value": "Priya",
+          "start": 350,
+          "end": 368,
+          "grounding": "exact",
+          "basis": "label"
+        },
+        "project_hint": {
+          "value": "widget",
+          "start": 402,
+          "end": 408,
+          "grounding": "exact"
+        }
+      },
+      "attributes_dropped": [
+        {
+          "attribute": "project_hint",
+          "value": "Acme Widget"
+        }
+      ],
+      "support": {
+        "traced": {
+          "untraced": [],
+          "untraced_words": [
+            "Acme"
+          ],
+          "near_noise": false
+        },
+        "jev": {
+          "p": 0.82,
+          "request_id": "req_01a1874031a076e7bbc8f9eaa77218c9",
+          "whole_transcript": true,
+          "around": null,
+          "coverage": 1
+        },
+        "check": {
+          "unsupported_parts": [],
+          "commitment": "firm",
+          "source": "participants",
+          "after": {
+            "outcome": "stands",
+            "quote": "",
+            "verified": false
+          },
+          "served_by": "gpt-6-sol"
+        }
+      },
+      "gate": {
+        "state": "clear",
+        "reasons": []
+      },
+      "also_at": [],
+      "possible_duplicates": [
+        {
+          "id": "h-a3a2847ece66",
+          "title": "Rotate the staging key for Acme Widget before November 12",
+          "overlap": 0.18
+        }
+      ],
+      "classification": {
+        "status": "none",
+        "project": null,
+        "matched": [],
+        "threshold": 0.6,
+        "probabilities": {},
+        "near_misses": {},
+        "request_id": "req_01a18740555876429cfb5a7392791475"
+      },
+      "group": "general",
+      "override": null,
+      "lint": [],
+      "publish": {},
+      "title_before": "Renew the widget licence if the vendor replies",
+      "merged_titles": [
+        "Renew the Acme Widget licence once the vendor replies"
+      ]
+    },
+    {
+      "id": "h-eaf1959dabb7",
+      "category": "action",
+      "kind": "stated",
+      "status": "firm",
+      "proposer_family": "glm",
+      "title": "Book the venue",
+      "evidence": {
+        "spans": [
+          {
+            "quote": "Action items: Dana sends Tom the quote, Priya books the venue, I'll update the deck.",
+            "start": 437,
+            "end": 521,
+            "segment": 7,
+            "speaker": "Dana",
+            "timestamp": "01:15",
+            "body_line": 14,
+            "grounding": "exact"
+          }
+        ],
+        "dropped": [],
+        "found_by": "propose",
+        "p_null": null
+      },
+      "attributes": {
+        "owner": {
+          "value": "Priya",
+          "start": 477,
+          "end": 482,
+          "grounding": "exact",
+          "basis": "text"
+        }
+      },
+      "attributes_dropped": [],
+      "support": {
+        "traced": {
+          "untraced": [],
+          "untraced_words": [],
+          "near_noise": false
+        },
+        "jev": {
+          "p": 0.92,
+          "request_id": "req_01a1874033ff739b8b0850f15b68d09a",
+          "whole_transcript": true,
+          "around": null,
+          "coverage": 1
+        },
+        "check": {
+          "unsupported_parts": [],
+          "commitment": "firm",
+          "source": "participants",
+          "after": {
+            "outcome": "stands",
+            "quote": "",
+            "verified": false
+          },
+          "served_by": "gpt-6-sol"
+        }
+      },
+      "gate": {
+        "state": "clear",
+        "reasons": []
+      },
+      "also_at": [],
+      "possible_duplicates": [],
+      "classification": {
+        "status": "none",
+        "project": null,
+        "matched": [],
+        "threshold": 0.6,
+        "probabilities": {},
+        "near_misses": {},
+        "request_id": "req_01a1874057ab75f49b40d28bea26ca16"
+      },
+      "group": "general",
+      "override": null,
+      "lint": [],
+      "publish": {}
+    },
+    {
+      "id": "h-dbb20219c102",
+      "category": "action",
+      "kind": "stated",
+      "status": "firm",
+      "proposer_family": "glm",
+      "title": "Update the deck",
+      "evidence": {
+        "spans": [
+          {
+            "quote": "Action items: Dana sends Tom the quote, Priya books the venue, I'll update the deck.",
+            "start": 437,
+            "end": 521,
+            "segment": 7,
+            "speaker": "Dana",
+            "timestamp": "01:15",
+            "body_line": 14,
+            "grounding": "exact"
+          }
+        ],
+        "dropped": [],
+        "found_by": "propose",
+        "p_null": null
+      },
+      "attributes": {
+        "owner": {
+          "value": "Dana",
+          "start": 419,
+          "end": 436,
+          "grounding": "exact",
+          "basis": "label"
+        }
+      },
+      "attributes_dropped": [],
+      "support": {
+        "traced": {
+          "untraced": [],
+          "untraced_words": [],
+          "near_noise": false
+        },
+        "jev": {
+          "p": 0.89,
+          "request_id": "req_01a1874036507f87be0e926e012b8ce9",
+          "whole_transcript": true,
+          "around": null,
+          "coverage": 1
+        },
+        "check": {
+          "unsupported_parts": [],
+          "commitment": "firm",
+          "source": "participants",
+          "after": {
+            "outcome": "stands",
+            "quote": "",
+            "verified": false
+          },
+          "served_by": "gpt-6-sol"
+        }
+      },
+      "gate": {
+        "state": "clear",
+        "reasons": []
+      },
+      "also_at": [],
+      "possible_duplicates": [],
+      "classification": {
+        "status": "none",
+        "project": null,
+        "matched": [],
+        "threshold": 0.6,
+        "probabilities": {},
+        "near_misses": {},
+        "request_id": "req_01a187405a017802bf24e556d6ef518b"
+      },
+      "group": "general",
+      "override": null,
+      "lint": [],
+      "publish": {}
+    }
+  ],
+  "rejected": [],
+  "audit": {
+    "mode": "repair",
+    "status": "complete",
+    "flagged": 3,
+    "uncovered": [],
+    "repaired": 0
+  },
+  "gap": {
+    "rounds": [
+      {
+        "round": 1,
+        "requests": 1,
+        "hinted_turns": 0,
+        "proposed": 0,
+        "repeats": 0,
+        "added": 0,
+        "errors": []
+      }
+    ],
+    "added": 0,
+    "repeats_first_read": 2
+  },
+  "retitled": {
+    "linted": 0,
+    "rewritten": 0,
+    "error": null,
+    "respelled": {
+      "tried": 0,
+      "recovered": 0
+    },
+    "polished": {
+      "asked": 7,
+      "rewritten": 0,
+      "error": null
+    },
+    "standalone": {
+      "asked": 7,
+      "failing": 2,
+      "rewritten": 2,
+      "still_failing": 0,
+      "splits": 0,
+      "error": null
+    },
+    "names": {
+      "rewritten": 0
+    }
+  },
+  "merge": {
+    "before_check": {
+      "candidates": 7,
+      "pairs": 4,
+      "merged": 2
+    },
+    "after_check": {
+      "pairs": 1,
+      "merged": 0
+    },
+    "restates": 1,
+    "unjudged": 0,
+    "splits": 0,
+    "second_looks": 2,
+    "errors": [],
+    "verdicts": [
+      {
+        "a": "Send Tom a reply about the renewal quote by Friday",
+        "b": "Send Tom a reply about the renewal quote",
+        "overlap": 0.83,
+        "same": false,
+        "restates": "b"
+      },
+      {
+        "a": "Rotate the staging key for Acme Widget before November 12",
+        "b": "Renew the Acme Widget licence once the vendor replies",
+        "overlap": 0.17,
+        "same": false,
+        "second_look": true
+      },
+      {
+        "a": "Rotate the staging key for Acme Widget before November 12",
+        "b": "Renew the Acme Widget licence if the vendor replies",
+        "overlap": 0.18,
+        "same": false,
+        "second_look": true
+      },
+      {
+        "a": "Renew the Acme Widget licence once the vendor replies",
+        "b": "Renew the Acme Widget licence if the vendor replies",
+        "overlap": 0.86,
+        "same": true
+      },
+      {
+        "a": "Rotate the staging key for Acme Widget before November 12",
+        "b": "Renew the Acme Widget licence if the vendor replies",
+        "overlap": 0.18,
+        "same": false
+      }
+    ]
+  },
+  "previous_items": [],
+  "groups": {
+    "board": [],
+    "project": [],
+    "general": [
+      {
+        "items": [
+          "h-ba8cf792a194",
+          "h-a3a2847ece66",
+          "h-a0a8e48b1b95",
+          "h-eaf1959dabb7",
+          "h-dbb20219c102"
+        ],
+        "reasons": {
+          "h-ba8cf792a194": "none",
+          "h-a3a2847ece66": "none",
+          "h-a0a8e48b1b95": "none",
+          "h-eaf1959dabb7": "none",
+          "h-dbb20219c102": "none"
+        }
+      }
+    ]
+  }
+}

@@ -27,7 +27,11 @@ class StoreUnavailable(RuntimeError):
 _ROLES = {
     "app": (config.dsn, "WAX_TRANSCRIPTS_PASSWORD", config.password_op),
     "owner": (config.owner_dsn, "WAX_TRANSCRIPTS_OWNER_PASSWORD", config.owner_password_op),
+    # SELECT-only (0001 grants + default privileges). Used by `wax transcripts browse` alone, so a bug in
+    # the reader Holocene spawns cannot write (docs/HOLOCENE-TRANSCRIPTS-TAB.md B.7, C.1).
+    "ro": (config.ro_dsn, "WAX_TRANSCRIPTS_RO_PASSWORD", config.ro_password_op),
 }
+_DSN_ENV = {"app": "WAX_TRANSCRIPTS_DSN", "owner": "WAX_TRANSCRIPTS_OWNER_DSN", "ro": "WAX_TRANSCRIPTS_RO_DSN"}
 
 DEFAULT_STATEMENT_TIMEOUT_MS = 5000
 SEARCH_STATEMENT_TIMEOUT_MS = 10000
@@ -90,13 +94,12 @@ def forget_passwords() -> None:
 
 def connect(role: str = "app", *, statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
             autocommit: bool = False, dsn: Optional[str] = None) -> Any:
-    """Open one connection as `role` ('app' or 'owner'). Raises StoreUnavailable."""
+    """Open one connection as `role` ('app', 'owner' or 'ro'). Raises StoreUnavailable."""
     if role not in _ROLES:
         raise ValueError(f"unknown transcriptions role {role!r}")
     target = dsn or _ROLES[role][0]()
     if not target:
-        env_name = "WAX_TRANSCRIPTS_DSN" if role == "app" else "WAX_TRANSCRIPTS_OWNER_DSN"
-        raise StoreUnavailable(f"${env_name} is not configured (capture-only mode)")
+        raise StoreUnavailable(f"${_DSN_ENV[role]} is not configured (capture-only mode)")
     pg = psycopg()
     password = _password(role)
     kwargs: dict[str, Any] = {

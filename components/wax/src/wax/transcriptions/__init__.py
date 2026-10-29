@@ -25,12 +25,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import config, db, embed, extract, gates, health, migrate, outbox, reconcile, search, store, versioning
+from . import (browse, config, db, embed, extract, gates, harvest, health, migrate, outbox, reconcile, search,
+               store, versioning)
 from .db import StoreUnavailable
 
 __all__ = ["StoreUnavailable", "record_transcription", "record_pass", "sync", "tick", "yield_gpu", "show", "history",
-           "config", "db", "embed", "extract", "gates", "health", "migrate", "outbox", "reconcile", "search",
-           "store", "versioning"]
+           "browse", "config", "db", "embed", "extract", "gates", "harvest", "health", "migrate", "outbox",
+           "reconcile", "search", "store", "versioning"]
 
 log = logging.getLogger("wax.transcriptions")
 
@@ -232,6 +233,11 @@ def sync(*, dry_run: bool = False, check: bool = False, embed_all: bool = False,
         swept = reconcile.sweep(dry_run=dry_run, limit=limit, conn=conn)
         out["reconcile"] = swept
         out["errors"].extend(swept.get("errors") or [])
+        # The harvest-link backstop (HOLOCENE-TRANSCRIPTS-TAB.md B.5): px harvests run by hand land in
+        # $WAX_HARVEST_DIR; this takes them in. An unreadable artifact is reported, never an error.
+        linked = harvest.link(dry_run=dry_run, conn=conn)
+        out["harvest"] = {k: v for k, v in linked.items() if k != "errors"}
+        out["errors"].extend(linked.get("errors") or [])
         if embed_all and not dry_run:
             out["embed"] = embed.sweep(until_empty=True, conn=conn)
     finally:
@@ -271,6 +277,7 @@ def tick(gpu_busy: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
             swept = reconcile.sweep(conn=conn)
             stats["reconcile"] = {k: v for k, v in swept.items() if k != "errors"}
             stats["reconcile"]["errors"] = len(swept.get("errors") or [])
+            stats["harvest"] = _harvest_backstop(conn)
         busy = False
         try:
             busy = bool(gpu_busy()) if gpu_busy else False
@@ -294,6 +301,19 @@ def tick(gpu_busy: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             pass
     return stats
+
+
+def _harvest_backstop(conn: Any) -> dict[str, Any]:
+    """The tick's harvest-link backstop, on the reconcile cadence. Never raises: a harvest problem
+    must not cost the projection or the embed sweep."""
+    try:
+        linked = harvest.link(conn=conn)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("transcriptions: harvest link failed: %s: %s", type(exc).__name__, str(exc)[:300])
+        return {"state": "error", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    keep = ("state", "dir_state", "files", "unchanged", "inserted", "replaced", "refreshed", "relinked")
+    return {**{k: linked.get(k) for k in keep if k in linked},
+            "invalid": len(linked.get("invalid") or []), "errors": len(linked.get("errors") or [])}
 
 
 def yield_gpu() -> bool:
