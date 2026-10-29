@@ -598,3 +598,26 @@ Every step lands on `main` and is pushed (standing rule). Repo roots: HeyMa = `~
      the note's bytes unchanged; `link-harvest --report` matched it to its transcript by `wax_item_id`, with zero
      rows in `tx.transcript_tickets` and zero unmatched runs. The waxd unit carries the `ro` lines and waxd was
      restarted idle; its first tick ran the backstop.
+9. **Holocene Transcripts tab, as built (2026-10-29, holocene `ac111c0`, `6de6906`, `8051df3`).** Deviations from C and D:
+   - **The "Not harvested yet" state cannot show the note filename.** `browse` deliberately returns no `note_path`, so
+     the panel offers a copy button for `wax transcripts show <id>` (which prints the path) beside the
+     `px harvest <note> --publish` then `wax transcripts link-harvest` instructions.
+   - **`HubTabs` takes an optional `onSelect`.** The hub's Agents/Projects tabs used to be in-page buttons; as plain
+     links they would reload the page, so the hub passes `onSelect` to keep switching in place. Other surfaces are
+     plain links to `/?view=agents` and `/?view=projects`.
+   - **The listing is fetched once for all kinds** (`--limit 2000`, no `--view`), so the kind toggle, the grouping and
+     the search filter are client-side. Counts come from the CLI and ignore the toggle, as the contract says. With
+     "Show hermes voice commands" on, the hermes rows are mostly unsorted, so the Unsorted count jumps (383 to 718).
+   - **Search maps hits onto the loaded rows.** A hit whose row is not loaded (a hidden hermes row) is dropped. The
+     API allowlist for hits is `transcript_id, display_title, snippet, score, classification, effective_at, origin`;
+     the CLI's `note_path`, `audio_s3_uri` and `audio_https_url` never pass.
+   - **The API treats `store.state != "ok"` as a failure** (a DOWN source), even if the CLI exits 0, and maps the CLI's
+     `no transcript #N` error to a 404 on `/api/modules/transcripts/:id`.
+   - **By project** has an extra "All kinds" toggle (project mode only), a per-line kind chip when it is selected, and
+     shows a single "Unassigned" card plus a "No projects yet" note while no row has `project_ids`.
+   - **Badge colors:** ticket-count badges use `--cleared` (C.6 over C.5's "working").
+   - **Visual check:** the public route sits behind Google SSO and the Kapture window cannot go below about 500 px, so
+     the 390 px checks drove the container directly (`http://<holocene-web ip>:3001`, same build) with headless
+     Chromium. Project cards, phone calls, household rows and ticket states were checked there with the list and
+     detail responses mocked, because live data has no projects, phone calls or harvests yet. Kind views, list and
+     project modes and an expanded row were also checked on the live SSO route in the authenticated Kapture tab.
