@@ -158,6 +158,21 @@ class WhenConditionsTest(ChainCase):
         results = {r["ep_slug"]: r for r in passes.run_auto(self.item)}
         self.assertEqual(results["fanout"]["state"], "completed")
 
+    def test_phone_call_is_an_accepted_classification_and_an_unknown_one_fails(self):
+        # One allow-list (frontmatter.CLASSIFICATIONS) for the runner, the store and the CLI.
+        self.assertEqual(frontmatter.CLASSIFICATIONS, ("monolog", "meeting", "phone_call", "other"))
+        self.add_pass("classification", {"frontmatter": {"classification": "phone_call"}})
+        self.assertEqual(passes.run(self.item, "classification")["state"], "completed")
+        fm, _ = frontmatter.read(self.md)
+        self.assertEqual(fm["classification"], "phone_call")
+        self.add_pass("bad-class", {"frontmatter": {"classification": "voicemail"}})
+        result = passes.run(self.item, "bad-class")
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["reason_code"], "result_apply_failed")
+        self.assertIn("invalid classification", result["error"])
+        fm, _ = frontmatter.read(self.md)
+        self.assertEqual(fm["classification"], "phone_call")
+
     def test_legacy_skip_when_still_works(self):
         self.add_pass("producer", {"frontmatter": {"classification": "monolog"}})
         self.add_pass("diarize-ish", requires=["producer"],

@@ -228,6 +228,11 @@ class ListAndExtraTest(unittest.TestCase):
             extract.from_note("---\nclassification: Meeting\n---\nbody\n", "n.md")
         ok = extract.from_note("---\nclassification: ''\n---\nbody\n", "n.md")
         self.assertIsNone(ok.version["classification"])
+        with self.assertRaises(extract.ExtractError):
+            extract.from_note("---\nclassification: voicemail\n---\nbody\n", "n.md")
+        phone = extract.from_note("---\nclassification: phone_call\n---\nbody\n", "n.md")
+        self.assertEqual(phone.version["classification"], "phone_call")
+        self.assertIs(extract.CLASSIFICATIONS, frontmatter.CLASSIFICATIONS)
 
 
 class OriginTest(unittest.TestCase):

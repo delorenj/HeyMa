@@ -861,7 +861,7 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
     if forbidden:
         raise PassError(f"pass attempted to overwrite provenance/frontmatter ownership: {forbidden}")
     existing, _ = frontmatter.read(md)
-    if raw_updates.get("classification") not in (None, "monolog", "meeting", "other"):
+    if raw_updates.get("classification") not in (None, *frontmatter.CLASSIFICATIONS):
         raise PassError("invalid classification")
     allowed_clobbers = {str(key) for key in (ep.get("clobber") or [])}
     effective_updates = {

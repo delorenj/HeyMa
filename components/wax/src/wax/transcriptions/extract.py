@@ -33,7 +33,7 @@ from typing import Any, Optional
 from .. import frontmatter
 from . import chunking
 
-CLASSIFICATIONS = ("monolog", "meeting", "other")
+CLASSIFICATIONS = frontmatter.CLASSIFICATIONS   # one source: passes.py and bin/wax read the same tuple
 ITEM_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 UTC = dt.timezone.utc

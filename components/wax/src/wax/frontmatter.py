@@ -23,6 +23,10 @@ import yaml
 DELIM = "---"
 ITEM_KEY = "wax-item-id"
 WAX_KEY = "wax"
+# The one allow-list for a note's top-level `classification` (docs/HOLOCENE-TRANSCRIPTS-TAB.md A.1).
+# The pass runner (passes.py), the store extractor (transcriptions/extract.py), `wax transcripts search
+# --classification` and the Postgres CHECK (migration 0004) must agree; the first three import this.
+CLASSIFICATIONS = ("monolog", "meeting", "phone_call", "other")
 
 
 def split(text: str) -> tuple[dict[str, Any], str]:
