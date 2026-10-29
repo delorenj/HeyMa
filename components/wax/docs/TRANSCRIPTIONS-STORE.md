@@ -1581,8 +1581,9 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
    - **Backups.** `postgres-nightly-dump.sh` (`/etc/cron.daily/db-backup`) dumps every
      `NOT datistemplate AND datallowconn` database as the postgres superuser over the socket, and that
      list now includes `transcriptions` (the database-level REVOKE does not bind a superuser), so the
-     first `transcriptions_YYYYMMDD.dump` lands with the next cron.daily run. It is not in
-     `REQUIRED_DBS`, so a missing dump would not alert.
+     first `transcriptions_YYYYMMDD.dump` lands with the next cron.daily run. Since DeLoContainers
+     `b9edbee` (2026-10-28) it is in `REQUIRED_DBS`: a night where it is missing or dumps zero objects
+     fails and alerts ntfy `infra`.
 7. **Adversarial review (2026-10-28, after the live deploy; diff `d6e53d3..`, live store and GPU).**
    - **The resident embedder starved whisper (fixed).** Ollama keeps `qwen3-embedding:8b` resident for
      `keep_alive` after its last call, and D.9's 30m did that after every sweep and every search. Measured at
