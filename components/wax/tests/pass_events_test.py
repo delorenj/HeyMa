@@ -705,6 +705,44 @@ class DoctorProbeTest(PassEventsCase):
         self.key_payload = (None, "HTTP 401: Authentication Error")
         self.assertEqual(self.probe(enabled=False)["jev api key"]["status"], "warn")
 
+    def classification_probe(self, *, enabled=True, payload=None, key="SECRET-CLS-KEY", env=None):
+        registry = {"classification": {"slug": "classification", "enabled": enabled,
+                                       "env": env or {"WAX_JEV_API_KEY_OP": "op://vault/cls/credential"}}}
+        found = []
+        with patch.object(passes, "registry", return_value=registry), \
+                patch.object(self.cli, "_op_read", return_value=key) as op_read, \
+                patch.object(self.cli, "_get_json", return_value=payload or self.key_payload) as get_json:
+            self.cli.probe_classification_key(found.append, effective={}, yenv={})
+        self.op_read, self.get_json = op_read, get_json
+        return {p["probe"]: p for p in found}
+
+    def test_classification_key_is_probed_on_its_own_and_never_printed(self):
+        payload = ({"info": {"key_alias": "heyma-wax-classification", "spend": 0.08, "max_budget": 0.5,
+                             "budget_duration": "1d"}}, "")
+        found = self.classification_probe(payload=payload)["jev api key (classification)"]
+        self.assertEqual(found["status"], "pass")
+        self.assertIn("heyma-wax-classification", found["detail"])
+        self.op_read.assert_called_once_with("op://vault/cls/credential")
+        self.assertNotIn("SECRET-CLS-KEY", json.dumps(found))
+
+    def test_classification_key_failures_and_severity(self):
+        cases = {"spent": ({"info": {"key_alias": "a", "spend": 0.5, "max_budget": 0.5}}, "", "spent its budget"),
+                 "blocked": ({"info": {"key_alias": "a", "spend": 0, "max_budget": 0.5, "blocked": True}}, "",
+                             "blocked"),
+                 "rejected": (None, "HTTP 401: Authentication Error", "rejected")}
+        for label, (body, err, needle) in cases.items():
+            with self.subTest(label):
+                failed = self.classification_probe(payload=(body, err))["jev api key (classification)"]
+                self.assertEqual(failed["status"], "fail")
+                self.assertIn(needle, failed["detail"])
+                self.assertEqual(self.classification_probe(enabled=False, payload=(body, err))
+                                 ["jev api key (classification)"]["status"], "warn")
+        self.assertEqual(self.classification_probe(key="")["jev api key (classification)"]["status"], "fail")
+        found = []
+        with patch.object(passes, "registry", return_value={}):
+            self.cli.probe_classification_key(found.append, effective={}, yenv={})
+        self.assertEqual(found, [])
+
     def test_pending_pass_event_report_tracks_finalized_items_only(self):
         self.add_renamer()
         self.add_emitter([self.ticket("One", 1, 2), self.ticket("Two", 2, 2)])
