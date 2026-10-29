@@ -707,3 +707,22 @@ Every step lands on `main` and is pushed (standing rule). Repo roots: HeyMa = `~
      Several correct ones are stray but literal mentions inside household recordings (a "James Brennan swarm", a "slow burns
      repo" read out by an agent), which is what the question asks for. Spend: the project-extraction key used about $0.30
      of its $1.00 daily budget for calibration plus both backfills.
+12. **Adversarial review of the Holocene Transcripts stages (2026-10-29).** Findings, all fixed unless marked open:
+   - **Authored `config/pipelines.d/{transcript,doc}-standard.yaml` had drifted from the release exports** the live v9
+     pipelines were imported from: neither named `project-extraction`, so `wax pipeline compile` (no arguments)
+     would have dropped it from the plan authority. Both now list it; `tests/pipelines_authored_parity_test.py` pins
+     the YAML pass set to the exports. (medium)
+   - **`wax doctor` probed only project-extraction's Jev key.** A blocked or spent `heyma-wax-classification` key
+     ($0.50/day) fails every new recording's classification with a green doctor. `probe_classification_key` adds
+     `jev api key (classification)`. (medium; closes the F.10 follow-up)
+   - **link-harvest flip-flop:** two files with one `harvest_id` (a copy kept under `WAX_HARVEST_DIR`) rewrote the run,
+     or replaced its items, on every tick. The recorded file stays authoritative while it exists unless the other is
+     strictly newer; `test_22`. (low)
+   - **Holocene panel listed every run's tickets as one list** (a re-harvest showed items twice) and read the harvest
+     state from the up-to-15-s-old list row. It now shows the newest run, folds earlier ones under "Earlier harvests",
+     and reads the state from the fresh detail row. (low)
+   - **Open, by design or judgment:** notes with no `audio-duration-seconds` frontmatter skip the floor rule and a
+     near-empty one lands in Unsorted (abstain) rather than `other/no_content`; a few mixed or clinical recordings sit
+     near the 0.6 line (for example #1285, a child's developmental evaluation, is `household` at 0.63); a transcript
+     with several projects expands in every card it appears in (the open id is per transcript, not per card).
+
