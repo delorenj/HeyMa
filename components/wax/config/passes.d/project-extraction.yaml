@@ -14,7 +14,7 @@ env:
   # budget, 120 rpm, per-request spend in the ingress's spend log. jev-1.13.0
   # is pinned because the thresholds below were measured on it. Enabled
   # 2026-10-29 after a calibration re-run on the ingress (design
-  # HOLOCENE-TRANSCRIPTS-TAB.md F.10).
+  # HOLOCENE-TRANSCRIPTS-TAB.md F.11).
   WAX_JEV_URL: https://jev.delo.sh/typesafe/v1/systemone
   WAX_JEV_MODEL: jev-1.13.0
   WAX_JEV_API_KEY_OP: op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential

@@ -318,7 +318,7 @@ class ProjectExtractionTest(unittest.TestCase):
         self.assertEqual(passes._parse_result(done.stdout)["reason_code"], "empty_document")
 
     def test_enabled_in_the_registry_and_in_both_standard_release_graphs(self):
-        # Enabled 2026-10-29 after the ingress calibration re-run (design F.10). A transcription
+        # Enabled 2026-10-29 after the ingress calibration re-run (design F.11). A transcription
         # pipeline compiles only automatic, enabled passes, so both flags matter.
         import yaml
         doc = yaml.safe_load((COMPONENT_ROOT / "config" / "passes.d" / "project-extraction.yaml").read_text())

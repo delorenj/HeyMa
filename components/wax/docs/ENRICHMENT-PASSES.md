@@ -471,7 +471,7 @@ docker exec jev-litellm-postgres psql -U litellm -d litellm -c \
 Until 2026-10-22 the pass called OpenRouter's `alpha/decisions` proxy directly;
 that account ran out of credits on 2026-10-21. It was re-calibrated on the ingress
 and **enabled on 2026-10-29** (`enabled: true`, `auto: true`; design
-`HOLOCENE-TRANSCRIPTS-TAB.md` F.10), and joined `transcript-standard` and
+`HOLOCENE-TRANSCRIPTS-TAB.md` F.11), and joined `transcript-standard` and
 `doc-standard` as the independent `Projects` node. To try it without touching a
 note, run the executable directly: it only prints the result it would apply.
 

@@ -621,7 +621,7 @@ Every step lands on `main` and is pushed (standing rule). Repo roots: HeyMa = `~
      Chromium. Project cards, phone calls, household rows and ticket states were checked there with the list and
      detail responses mocked, because live data has no projects, phone calls or harvests yet. Kind views, list and
      project modes and an expanded row were also checked on the live SSO route in the authenticated Kapture tab.
-9. **Classification v2, as built and applied (2026-10-29, HeyMa `ffc0054`).** Deviations from A.2-A.7, following reality:
+10. **Classification v2, as built and applied (2026-10-29, HeyMa `ffc0054`).** Deviations from A.2-A.7, following reality:
    - **Key:** virtual key alias `heyma-wax-classification` minted on the jev-litellm ingress ($0.50/day, 120 rpm; metadata
      `pass: classification`), stored as DeLoSecrets item `lmtarsmlr35gqyydjsw245mvra` ("Jev LiteLLM virtual key - HeyMa Wax
      classification"), referenced by that UUID in `classification.yaml` and as the script default. A Jev call costs about
@@ -680,7 +680,7 @@ Every step lands on `main` and is pushed (standing rule). Repo roots: HeyMa = `~
      `phone_call` (`classification-source: rule:telnyx`); 62 = 36 telnyx + 26 Jev. Sources: jev-1.13.0 468, rule:telnyx 36,
      rule:floor 18, unmarked v1 values kept after an abstain 8. The `heyma-wax-classification` key spent $0.084 of its
      $0.50 daily budget for the dry run, the apply, the retries and the calibration.
-10. **project-extraction enabled and backfilled (2026-10-29, HeyMa `b81e9d2` and after).**
+11. **project-extraction enabled and backfilled (2026-10-29, HeyMa `b81e9d2` and after).**
    - **Calibration re-run on the ingress** (`jev.delo.sh`, `jev-1.13.0`, key `heyma-wax-project-extraction`) over the 61
      readable wax notes of the A.7 sample (dry run, nothing written; 46 registry projects, one request per note, about
      $0.0005 each). 36 project assignments were accepted. Judged by reading: 27 had a literal name or alias in the text
