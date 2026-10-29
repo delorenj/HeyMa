@@ -106,7 +106,7 @@ PJ_REGISTRY_DEFAULT = "http://127.0.0.1:8764"
 JEV_URL_DEFAULT = "https://jev.delo.sh/typesafe/v1/systemone"
 JEV_MODEL_DEFAULT = "jev-1.13.0"
 JEV_KEY_OP_DEFAULT = "op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential"
-# Chat passes (title-slug, classification, ticketable) go through the
+# Chat passes (title-slug, ticketable, summarize) go through the
 # AutomaticAI gateway's auto/fast role on the scoped heyma-wax-inference token;
 # these mirror the bin defaults in config/passes.d/bin/{title-slug,ticketable}.
 TITLE_API_BASE_DEFAULT = "https://api.automaticai.io/v1"
@@ -270,23 +270,26 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_NATS_HOST", "wax/natsclient.py", "127.0.0.1"),
     ("WAX_NATS_PORT", "wax/natsclient.py", "4222"),
     ("WAX_LOG_LEVEL", "bin/waxd (the one handler, contract B)", "INFO"),
-    ("WAX_TITLE_API_BASE", "passes.d/bin/title-slug, classification", TITLE_API_BASE_DEFAULT),
-    ("WAX_TITLE_MODEL", "passes.d/bin/title-slug, classification", TITLE_MODEL_DEFAULT),
-    ("WAX_TITLE_MODEL_FALLBACKS", "passes.d/bin/title-slug, classification (comma-separated, in order)",
+    ("WAX_TITLE_API_BASE", "passes.d/bin/title-slug", TITLE_API_BASE_DEFAULT),
+    ("WAX_TITLE_MODEL", "passes.d/bin/title-slug", TITLE_MODEL_DEFAULT),
+    ("WAX_TITLE_MODEL_FALLBACKS", "passes.d/bin/title-slug (comma-separated, in order)",
      TITLE_MODEL_FALLBACKS_DEFAULT),
-    ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug, classification (gateway token)", TITLE_KEY_OP_DEFAULT),
+    ("WAX_TITLE_API_KEY_OP", "passes.d/bin/title-slug (gateway token)", TITLE_KEY_OP_DEFAULT),
     ("WAX_TITLE_REQUEST_TIMEOUT_S", "passes.d/bin/title-slug (per chain member, capped by the chain deadline)",
      "60"),
     ("WAX_PASS_TIMEOUT_S", "set by wax/passes.py to the timeout_s it enforces; chat passes budget their chain "
      "against it", "<runner>"),
     ("WAX_TITLE_API_KEY", "passes.d/bin/title-slug (direct key; prefer op://)", "<unset>"),
-    ("WAX_JEV_URL", "wax/jev.py, passes.d/bin/project-extraction (Jev ingress systemone endpoint)",
+    ("WAX_JEV_URL", "wax/jev.py, passes.d/bin/project-extraction, classification (Jev ingress systemone endpoint)",
      JEV_URL_DEFAULT),
     ("WAX_JEV_MODEL", "wax/jev.py, passes.d/bin/project-extraction (pinned calibration build)",
      JEV_MODEL_DEFAULT),
     ("WAX_JEV_API_KEY_OP", "passes.d/bin/project-extraction (jev-litellm VIRTUAL key, never the master key)",
      JEV_KEY_OP_DEFAULT),
-    ("WAX_JEV_API_KEY", "passes.d/bin/project-extraction (direct key; prefer op://)", "<unset>"),
+    ("WAX_JEV_API_KEY", "passes.d/bin/project-extraction, classification (direct key; prefer op://)", "<unset>"),
+    ("WAX_CLASSIFICATION_MIN_P", "passes.d/bin/classification (accept the top Jev kind at this probability)", "0.6"),
+    ("WAX_CLASSIFICATION_RECLASSIFY", "passes.d/bin/classification (1 = redo a v1/rule/jev value; never a human's)",
+     "<unset>"),
     ("WAX_PROJECT_MIN_P", "passes.d/bin/project-extraction (noul threshold)", "0.6"),
     ("WAX_PROJECT_MIN_P_LONG", "passes.d/bin/project-extraction (threshold for transcripts > 30K chars)", "0.75"),
     ("PJ_PROJECT_REGISTRY", "wax/pjregistry.py, bin/wax doctor (wins over PJ_REGISTRY_URL, as in `pj`)",
@@ -1782,6 +1785,9 @@ def main() -> int:
     # number re-mints an already-issued command_id on purpose (replay/debug).
     epr.add_argument("--attempt", type=int, default=None,
                      help="force an attempt number (default: one past the last recorded)")
+    epr.add_argument("--live", action="store_true",
+                     help="run the LIVE registry's pass definition, not the item's frozen plan entry "
+                          "(finished items only; redoes a pass under a newer version)")
     eprp = ep.add_parser("replan", parents=[common],
                          help="move ONE unfinished item's plan onto the current authority (dry run "
                               "unless --apply); then `wax ep run` its failed passes")
@@ -2108,7 +2114,13 @@ def main() -> int:
                       "STALE were recorded against an older one.")
             return 0
         if args.sub == "run":
-            result = passes.run(args.item_id, args.slug, attempt=args.attempt)
+            try:
+                result = passes.run(args.item_id, args.slug, attempt=args.attempt, live=args.live)
+            except passes.PassError as e:
+                if not args.live:
+                    raise
+                print(f"refused: {e}", file=sys.stderr)
+                return 2
             result["pass_events"] = finalize.publish_pass_events(args.item_id)
             result["completion"] = finalize.finalize(args.item_id)
             _emit(result, J)

@@ -191,17 +191,11 @@ class TruncatedResponseTest(GatewayCase):
         self.assertEqual(evidence["auto"], "role=fast; rung=1; decision=test")
         self.assertEqual(evidence["fallbacks"], [{"model": SHORT, "reason_code": "provider_bad_response"}])
 
-    def test_classification_falls_through_a_short_body(self):
-        _Gateway.content = {"classification": "meeting"}
-        self.addCleanup(setattr, _Gateway, "content", GOOD_CONTENT)
-        done, _ = self.run_pass("classification", SHORT, GLM)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        result = json.loads(done.stdout.strip().splitlines()[-1])
-        self.assertEqual(result["frontmatter"], {"classification": "meeting"})
-        self.assertEqual(result["evidence"]["served_by"], "glm-5.3-flash")
+    # classification left the chat chain for Jev in v2 (2026-10-29): its provider failures are
+    # covered by classification_jev_test.py, not here.
 
     def test_a_chain_of_short_bodies_fails_with_reason_code_first(self):
-        for name in ("title-slug", "classification"):
+        for name in ("title-slug",):
             with self.subTest(name):
                 done, _ = self.run_pass(name, SHORT, GARBLED)
                 self.assertEqual(done.returncode, 1)
@@ -308,10 +302,6 @@ class AnthropicServedTest(GatewayCase):
         lines = done.stderr.splitlines()
         self.assertEqual(lines[0], "reason_code=anthropic_model_served", done.stderr)
         self.assertNotIn(f"{GLM}=", done.stderr, "the next member must not hide the regression")
-
-    def test_classification_fails_closed_too(self):
-        done, _ = self.run_pass("classification", SNEAKY, GLM)
-        self.assertEqual(done.stderr.splitlines()[0], "reason_code=anthropic_model_served", done.stderr)
 
     def test_the_shared_chat_json_refuses_it(self):
         with self.assertRaises(provider.ProviderError) as caught:

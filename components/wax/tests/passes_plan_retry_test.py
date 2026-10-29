@@ -96,6 +96,28 @@ class PlanFrozenManualRetryTest(unittest.TestCase):
             "SELECT definition_id FROM passes WHERE item_id=? AND ep_slug='diarization'", (self.item,)).fetchone()
         self.assertEqual(row["definition_id"], operations.definition_id(self.registry["diarization"]))
 
+    def test_live_redoes_a_pass_of_a_finished_item_under_the_live_definition(self):
+        # `wax ep run --live`: the classification v2 reclassification. A finished item's plan is history
+        # (replan refuses it), so the operator runs the LIVE definition; finalize stays unchanged.
+        self.assertEqual(passes.run(self.item, "diarization")["state"], "completed")
+        self.assertTrue(finalize.finalize(self.item)["finalized"])
+        live = {**self.planned, "version": 2}
+        self.registry = {"diarization": live}
+        result = passes.run(self.item, "diarization", live=True)
+        self.assertEqual(result["state"], "completed")
+        row = ledger.connect().execute(
+            "SELECT definition_id, version FROM passes WHERE item_id=? AND ep_slug='diarization'",
+            (self.item,)).fetchone()
+        self.assertEqual((row["definition_id"], row["version"]), (operations.definition_id(live), 2))
+        self.assertTrue(finalize.finalize(self.item)["unchanged"])
+
+    def test_live_refuses_an_unfinished_item(self):
+        with self.assertRaises(passes.PassError) as caught:
+            passes.run(self.item, "diarization", live=True)
+        self.assertIn("unfinished plan", str(caught.exception))
+        self.assertIsNone(ledger.connect().execute(
+            "SELECT 1 FROM passes WHERE item_id=? AND ep_slug='diarization'", (self.item,)).fetchone())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,8 @@ class DiarizationGateTest(unittest.TestCase):
         self.assertFalse(runs_for(when, {"classification": "monolog"}), "a monolog was diarized")
         self.assertTrue(runs_for(when, {"classification": "meeting"}))
         self.assertTrue(runs_for(when, {"classification": "other"}))
+        self.assertTrue(runs_for(when, {"classification": "phone_call"}), "a call leg is multi-party")
+        self.assertTrue(runs_for(when, {"classification-detail": "unsorted"}), "an abstain must still diarize")
         self.assertTrue(runs_for(when, {}), "a failed/absent classification must still diarize")
 
     def test_registry_skips_monologs_after_classification(self):

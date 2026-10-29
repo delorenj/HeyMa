@@ -47,7 +47,8 @@ completed at the same `version` and the same definition; increasing
 ## Model chains for chat passes
 
 Operator order, 2026-10-22: **no Anthropic models for Wax inference; Hyper and
-free are fallbacks.** A chat pass (`title-slug`, `classification`, `ticketable`, `summarize`)
+free are fallbacks.** A chat pass (`title-slug`, `ticketable`, `summarize`; `classification` left
+the chain for Jev in v2, 2026-10-29)
 names an ordered list: the primary (`WAX_TITLE_MODEL` / `WAX_TICKETS_MODEL` /
 `WAX_SUMMARY_MODEL`),
 then the comma-separated `*_MODEL_FALLBACKS`. Today:
@@ -77,7 +78,7 @@ Implemented once, in `wax.provider.run_chain`, and used by all four passes.
 | `no_api_key`, 401, any other 403 | **no** (the key is shared by every member) |
 | served by an Anthropic model (`anthropic_model_served`) | **no**: the pass fails closed |
 
-`title-slug`/`classification`/`summarize` read `/v1/models` once and skip a member the token
+`title-slug`/`summarize` read `/v1/models` once and skip a member the token
 cannot see (recorded as `missing_model`, `skipped`, no request). Router family
 names the gateway never lists (`automaticai/free`) are never skipped for being
 unlisted. `ticketable` runs the chain per window and relies on the 403 for scope.
@@ -91,7 +92,7 @@ one monotonic deadline of that value less `RESERVE_S` (10s). Each request's
 timeout is `min(*_REQUEST_TIMEOUT_S, remaining - 1s)` under a SIGALRM wall-clock
 limit; a member with under 2s left is recorded as `deadline_exceeded` (skipped)
 instead of started. `ticketable`'s windows each get an equal share of what is
-left. Sizing: `title-slug`/`classification`/`summarize` `timeout_s: 390` fits all six
+left. Sizing: `title-slug`/`summarize` `timeout_s: 390` fits all six
 members at 60s plus the 10s catalog and 5s op read (375s <= 380s);
 `ticketable` `timeout_s: 1800` gives each of 3 windows ~596s, room for the
 primary and both GLM routes at 120s. Tests enforce both.
@@ -383,6 +384,45 @@ store"). A pass author does nothing to opt in; the runner does it:
 Inspect the result with `wax transcripts history <item>` (every version and
 pass run) and `wax transcripts show <item> --version N --raw` (that version's
 exact note bytes). Documents (`doc-<sha16>@binding`) are not versioned.
+
+## classification (v2, Jev)
+
+`classification` stores one of four values: `monolog`, `meeting`, `phone_call`, `other`
+(`wax.frontmatter.CLASSIFICATIONS`; design of record `docs/HOLOCENE-TRANSCRIPTS-TAB.md` A.1-A.7, F). It no longer
+uses the chat model chain. Rules run in order and the first match wins:
+
+| # | Rule | Result |
+|---|---|---|
+| 1 | empty body | `skipped` / `empty_document` |
+| 2 | an existing `classification` | kept, no call (unless reclassifying, below) |
+| 3 | `source-audio` named `telnyx-*` | `phone_call`, `classification-source: rule:telnyx`, no model call |
+| 4 | under 15 words AND under 10 s of audio | `other` + `classification-detail: no_content`, `rule:floor` |
+| 5 | Jev (`jev-1.13.0`, the ingress) | one request, two questions |
+
+The Jev request carries `state = {recording: {source, speaker_count, duration_s, word_count}, transcript: first 6000
+chars + "…" + last 2000}` and two questions: `kind` (a `choice` over `monolog`, `meeting`, `phone_call`, `household`,
+`no_content`) and `is_phone` (a `noul`). The top `kind` is accepted at P >= `WAX_CLASSIFICATION_MIN_P` (0.6).
+`household` and `no_content` both store `other`, with the specific label in `classification-detail`. The pass
+**abstains** when P is under the threshold, or when the two questions disagree (`kind` is not `phone_call` while
+`is_phone` > 0.9, or `kind` is `phone_call` while `is_phone` < 0.5): it writes NO `classification`, only
+`classification-detail: unsorted`, `classification-confidence` and `classification-source`, and the note shows under
+"Unsorted" in Holocene. An absent classification is not `monolog`, so diarization still runs. (An abstain on an
+ordinary document, item `doc-...`, stores `other` + `unsorted` so `doc-standard` still titles it.) A transport or
+malformed answer fails the pass with the `provider_*` reason code from `wax.jev`.
+
+Frontmatter written: `classification`, `classification-detail` (`household`, `no_content`, `unsorted` or absent),
+`classification-confidence` (the top probability, 3 decimals; 1.0 for a rule) and `classification-source`
+(`jev-1.13.0`, `rule:telnyx` or `rule:floor`). All four are in the YAML `clobber` list so a reclassification can
+refresh them. Key: HeyMa's own jev-litellm virtual key, alias `heyma-wax-classification`, $0.50/day, 120 rpm
+(`WAX_JEV_API_KEY_OP`, an `op://` item-UUID reference; never project-extraction's key).
+
+**Redoing a value (`--reclassify`).** The script itself never writes; `config/passes.d/bin/classification --reclassify
+NOTE.md` prints the result it would apply, which is the dry run. `WAX_CLASSIFICATION_RECLASSIFY=1` in the environment
+does the same for a runner-driven pass. A reclassify redoes a value that has no `classification-source` (v1's chat
+model never wrote one) or whose source is `rule:*` / `jev-*`; any other source is a human's decision and is kept
+(`--force-human` overrides). If Jev abstains on a note that already has a value, the old value stays. A finished item's
+plan is frozen at v1, so redo it with `WAX_CLASSIFICATION_RECLASSIFY=1 wax ep run classification <item> --live`
+(`--live` runs the live registry definition; an unfinished item is refused).
 
 ## project-extraction and ticketable
 

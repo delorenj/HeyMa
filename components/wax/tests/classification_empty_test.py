@@ -31,10 +31,10 @@ class ClassificationEmptyTest(unittest.TestCase):
 
     def test_empty_bodies_skip_without_a_model_call(self):
         for text in ("", "\n  \n", "---\ntitle: t\n---\n", "---\ntitle: t\n---\n\n   \n"):
-            with self.subTest(text=text), patch.object(CLASSIFICATION.provider, "chat_request") as chat, \
-                    patch.object(CLASSIFICATION.provider, "resolve_api_key") as key:
+            with self.subTest(text=text), patch.object(CLASSIFICATION.jev, "decide") as decide, \
+                    patch.object(CLASSIFICATION.provider, "resolve_key") as key:
                 self.assertEqual(CLASSIFICATION.build_result(self.note(text)), SKIP)
-            chat.assert_not_called()
+            decide.assert_not_called()
             key.assert_not_called()
 
     def test_existing_classification_still_preserved_on_a_real_body(self):

@@ -1,21 +1,25 @@
 slug: classification
-version: 1
-description: Grounded document classification as monolog, meeting or other.
+version: 2
+description: Jev classification of a recording as monolog, meeting, phone_call or other (telnyx and floor rules first).
 capabilities: [document]   # grounded text classification; no audio needed
 enabled: true
 auto: true
 requires: []
-# 6 chain members x 60s request timeout = 360s, plus the 10s catalog lookup and
-# the 5s op read, inside 390s less the 10s reserve. The pass also runs the chain
-# against a deadline taken from this value (WAX_PASS_TIMEOUT_S), so the runner
-# never kills it before it reports every member.
-timeout_s: 390
+# Re-runs (wax ep run ... with WAX_CLASSIFICATION_RECLASSIFY=1) refresh the whole verdict,
+# so every key this pass writes may replace an earlier pass's value. A value whose
+# `classification-source` is not one of this pass's own is a human's and is kept by the
+# script itself (docs/HOLOCENE-TRANSCRIPTS-TAB.md A.6, F.5).
+clobber: [classification, classification-detail, classification-confidence, classification-source]
+# One ~0.5s Jev call with a 20s timeout and one retry (~41s worst case) plus the 5s
+# op read, inside 60s. No model chain: Jev goes through the fleet's Jev ingress
+# (jev-litellm), not the AutomaticAI gateway.
+timeout_s: 60
 env:
-  WAX_TITLE_API_BASE: https://api.automaticai.io/v1
-  WAX_TITLE_MODEL: automaticai/auto/fast
-  # Ordered fallbacks: explicit subscription GLM, then metered DeepSeek, then the
-  # free family. Never Anthropic.
-  WAX_TITLE_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,automaticai/free
-  WAX_TITLE_API_KEY_OP: op://DeLoSecrets/yeurk5dpqkaarspvsn3cjtmkki/heyma-wax-inference
-  WAX_TITLE_REQUEST_TIMEOUT_S: "60"
+  # HeyMa's own virtual key (alias heyma-wax-classification): $0.50/day budget,
+  # 120 rpm, per-request spend in the ingress's spend log. jev-1.13.0 is pinned
+  # because the thresholds below were measured on it.
+  WAX_JEV_URL: https://jev.delo.sh/typesafe/v1/systemone
+  WAX_JEV_MODEL: jev-1.13.0
+  WAX_JEV_API_KEY_OP: op://DeLoSecrets/lmtarsmlr35gqyydjsw245mvra/credential
+  WAX_CLASSIFICATION_MIN_P: "0.6"
 command: ["{component_root}/config/passes.d/bin/classification", "{md_path}", "{item_id}"]

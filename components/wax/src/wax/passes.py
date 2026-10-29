@@ -1023,15 +1023,30 @@ def _frozen_plan_entry(item_id: str, slug: str) -> tuple[Optional[dict[str, Any]
 @serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
          definition=None, dependency_versions: Optional[dict[str, int]] = None,
-         ) -> dict[str, Any]:
+         live: bool = False) -> dict[str, Any]:
     """Run one pass against one item. Independent of its siblings, gated only by `requires`.
 
     `attempt` defaults to one past the highest attempt already recorded for
     (item_id, slug) so that a caller which does not track attempts — `wax ep
     run` — cannot mint a command_id that has already been issued.
+
+    `live=True` (`wax ep run --live`) runs the LIVE registry's definition of the
+    pass instead of the item's frozen plan entry. It is the operator's tool for
+    redoing one pass of a FINISHED item under a newer pass version (a plan is
+    history once its completion exists, and `replan` refuses it), e.g. the
+    classification v2 reclassification. An unfinished item is refused: its
+    finalize compares recorded definitions to its plan, and a live run would
+    wedge it in passes_incomplete.
     """
     reg = registry()
-    if definition is None:
+    if live and definition is None:
+        if ledger.connect().execute(
+                "SELECT 1 FROM processing_plans p WHERE p.item_id=? AND NOT EXISTS "
+                "(SELECT 1 FROM completions c WHERE c.item_id=p.item_id AND c.plan_id=p.plan_id)",
+                (item_id,)).fetchone():
+            raise PassError(f"{item_id} has an unfinished plan; --live only redoes a pass of a finished item "
+                            "(use `wax ep replan` for an unfinished one)")
+    if definition is None and not live:
         # An item with a minted plan runs under that plan's frozen definition no matter who asks: `wax ep run`,
         # the tray's retry and the sweep must agree. A manual retry under the LIVE registry recorded a definition
         # the plan never froze, so finalize refused it (passes_incomplete) even after the pass succeeded.

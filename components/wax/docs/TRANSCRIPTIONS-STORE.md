@@ -248,7 +248,7 @@ CREATE TABLE tx.transcript_version (
     title                  text,
     title_slug             text,
     summary                text,
-    classification         text CHECK (classification IN ('monolog','meeting','other')),
+    classification         text CHECK (classification IN ('monolog','meeting','phone_call','other')),  -- 0004
     diarized               boolean,
     diarization_requested  boolean,
     diarization_device_requested text,
@@ -1142,7 +1142,7 @@ The parser goes after the `documents` block (`:1526-1555`), in the same style:
     tse.add_argument("-n", "--limit", type=int, default=10)
     tse.add_argument("--since", help="ISO date/datetime (effective_at >=)")
     tse.add_argument("--until", help="ISO date/datetime (effective_at <)")
-    tse.add_argument("--classification", action="append", choices=["monolog", "meeting", "other"])
+    tse.add_argument("--classification", action="append", choices=list(frontmatter.CLASSIFICATIONS))
     tse.add_argument("--tag", action="append")
     tse.add_argument("--project", action="append")
     tse.add_argument("--origin", action="append", choices=["wax", "hermes-stt", "legacy"])
@@ -1665,3 +1665,9 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
    (`WAX_TRANSCRIPTS_RO_DSN`, `WAX_TRANSCRIPTS_RO_PASSWORD_OP`, DeLoSecrets item "Transcriptions Postgres RO"), used
    only by `wax transcripts browse`, the read-only JSON feed Holocene's Transcripts tab spawns; it never returns a
    body, `note_path`, frontmatter or S3 URL. Deviations from the design are its section F.8.
+10. **Classification v2 (2026-10-29, design `docs/HOLOCENE-TRANSCRIPTS-TAB.md` A.2-A.7, F.5).** The `classification` pass is
+    version 2: telnyx and floor rules, then one Jev request (see `docs/ENRICHMENT-PASSES.md`, "classification (v2, Jev)").
+    It adds three frontmatter keys, `classification-detail`, `classification-confidence` and `classification-source`; none
+    is in `HANDLED_KEYS`, so they land in `vault_extra` and `wax transcripts browse` reads them from the version's
+    `frontmatter` jsonb. No migration. A reclassification is an ordinary applied pass, so it appends a version and
+    `wax transcripts history <item>` shows the change.

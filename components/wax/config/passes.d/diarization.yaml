@@ -8,8 +8,10 @@ kind: diarization
 # Skip a transcript that classification calls a monolog (operator order,
 # 2026-10-27: a monolog must not be diarized). This reverses the 2026-10-12
 # review's "diarize unconditionally" (V2) only for that positive verdict: a
-# meeting, other, or a missing classification (failed, skipped, still unknown)
-# still diarizes, so a classifier outage never costs speaker attribution.
+# meeting, phone_call, other, or a missing classification (failed, skipped, a
+# classification v2 abstain, still unknown) still diarizes, so a classifier
+# outage never costs speaker attribution. Operator decision 2026-10-29 (design
+# F.3): phone calls keep diarizing; only `monolog` skips.
 # `after` (ordering only, never gating) makes the verdict visible before this
 # runs; a failed classification leaves the field absent and diarization runs.
 # The WAX_DIARIZATION env kill-switch (explicitly_disabled) still applies.

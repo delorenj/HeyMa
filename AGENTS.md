@@ -116,7 +116,7 @@ or damaged runtime with `mise run wax:diarization:install`. `wax doctor` proves
 the path with a real Sortformer CUDA forward pass, not an import-only check.
 The `diarization` pass runs after `classification` and skips a transcript
 classified `monolog` (`when`, `condition_unmet`; operator order 2026-10-27). A
-meeting, other, or missing classification still diarizes.
+meeting, phone_call, other, or missing classification (a v2 abstain too) still diarizes.
 
 ## S3: backup-first, never-delete
 
@@ -141,8 +141,11 @@ A failing pass never stops a sibling, except through `requires:` (ordering +
 gating; `after:` only orders): a dependent waits with `dependency_failed`. Failure
 is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
-`classification`, `diarization`, `clipboard-copy`, `title-slug`. Every chat
-pass (`classification`, `title-slug`, and `ticketable`) calls the AutomaticAI
+`classification`, `diarization`, `clipboard-copy`, `title-slug`.
+`classification` (v2) is four-way (`monolog`, `meeting`, `phone_call`, `other`): a
+telnyx rule, a floor rule, then Jev on its own virtual key (alias
+`heyma-wax-classification`); see `docs/ENRICHMENT-PASSES.md`. Every chat
+pass (`title-slug`, `summarize` and `ticketable`) calls the AutomaticAI
 gateway at `https://api.automaticai.io/v1` on the scoped `heyma-wax-inference`
 token (`op://`, never a file), and tries an ordered **model chain**
 (`wax.provider.run_chain`): `automaticai/auto/fast`, then the explicit

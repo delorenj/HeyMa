@@ -52,7 +52,7 @@
     },
     {
       "parameters": {
-        "content": "## Wax Documents Standard\n\nBoth ports are stock MAIN. Output 0 'continue' only orders; output 1 'requires' gates: Title is wired from Classify's requires port, so Title waits for \u2014 and is blocked by the failure of \u2014 Classify.\n\nThis workflow is an AUTHORING artifact. `wax pipeline import` compiles it into a frozen, versioned pipeline; n8n never executes it.",
+        "content": "## Wax Documents Standard\n\nBoth ports are stock MAIN. Output 0 'continue' only orders; output 1 'requires' gates: Title is wired from Classify's requires port, so Title waits for \u2014 and is blocked by the failure of \u2014 Classify.\n\nClassify (v2) may abstain on a document; it then stores `other`, so Title still runs.\n\nThis workflow is an AUTHORING artifact. `wax pipeline import` compiles it into a frozen, versioned pipeline; n8n never executes it.",
         "height": 300,
         "width": 380
       },

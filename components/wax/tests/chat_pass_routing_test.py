@@ -62,7 +62,9 @@ def chat_passes() -> dict[str, dict]:
 
 class ChatPassRoutingTest(unittest.TestCase):
     def test_the_known_chat_passes_are_covered(self):
-        self.assertTrue({"title-slug", "classification", "ticketable", "summarize"} <= set(chat_passes()))
+        # classification is no longer a chat pass: v2 asks Jev through the ingress (JevRoutingTest).
+        self.assertTrue({"title-slug", "ticketable", "summarize"} <= set(chat_passes()))
+        self.assertNotIn("classification", chat_passes())
 
     def test_yaml_env_routes_through_the_gateway(self):
         for slug, doc in chat_passes().items():
@@ -77,7 +79,9 @@ class ChatPassRoutingTest(unittest.TestCase):
     def test_bin_defaults_never_reach_openrouter(self):
         scripts = {PASSES_DIR / "bin" / Path(str(doc["command"][0])).name
                    for doc in chat_passes().values()}
-        # classification borrows title-slug's defaults; check both regardless.
+        # classification no longer borrows title-slug's defaults (it asks Jev), but it still must
+        # never reach OpenRouter or read its key; check it and title-slug regardless.
+        scripts.add(PASSES_DIR / "bin" / "classification")
         scripts.add(PASSES_DIR / "bin" / "title-slug")
         scripts.add(COMPONENT_ROOT / "bin" / "wax")
         for script in sorted(scripts):
@@ -363,7 +367,7 @@ class FallbackChainTest(unittest.TestCase):
                   if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
                   and node.targets[0].id in ("TITLE_MODEL_DEFAULT", "TITLE_MODEL_FALLBACKS_DEFAULT")}
         self.assertEqual([doctor["TITLE_MODEL_DEFAULT"], *doctor["TITLE_MODEL_FALLBACKS_DEFAULT"].split(",")], CHAIN)
-        for slug in ("title-slug", "classification"):
+        for slug in ("title-slug",):
             env = yaml.safe_load((PASSES_DIR / f"{slug}.yaml").read_text())["env"]
             self.assertEqual([env["WAX_TITLE_MODEL"], *env["WAX_TITLE_MODEL_FALLBACKS"].split(",")], CHAIN)
         env = yaml.safe_load((PASSES_DIR / "ticketable.yaml").read_text())["env"]
@@ -388,7 +392,7 @@ class FallbackChainTest(unittest.TestCase):
         # get an equal share, enough for the primary and both GLM routes.
         from wax import provider
         title = self.title
-        for slug in ("title-slug", "classification"):
+        for slug in ("title-slug",):
             doc = yaml.safe_load((PASSES_DIR / f"{slug}.yaml").read_text())
             budget = float(doc["timeout_s"]) - provider.RESERVE_S
             worst = (len(CHAIN) * float(doc["env"]["WAX_TITLE_REQUEST_TIMEOUT_S"])
@@ -571,18 +575,6 @@ class FallbackChainTest(unittest.TestCase):
             # A changed primary keeps the default fallbacks (the live fallback proof uses this).
             self.assertEqual(self.title.model_chain(), ["bogus/none", *CHAIN[1:]])
 
-    def test_classification_falls_through_and_names_the_server(self):
-        classification = load_script(PASSES_DIR / "bin" / "classification")
-        gateway = FakeGateway({CHAIN[0]: classification.provider._http_failure(
-            _http_error(429), url="u", model=CHAIN[0]),
-            CHAIN[1]: _chat_answer({"classification": "meeting"})})
-        with patch.object(classification.provider, "resolve_api_key", return_value="k"), \
-                patch.object(classification.provider, "_api_request", side_effect=gateway):
-            metadata, evidence = classification.enrich_document("Two people discussing a plan.")
-        self.assertEqual(metadata, {"classification": "meeting"})
-        self.assertEqual(evidence["model"], CHAIN[1])
-        self.assertEqual(evidence["fallbacks"][0]["reason_code"], "provider_rate_limited")
-
     def test_ticketable_falls_through_and_names_the_server(self):
         from wax import provider
         ticketable = load_script(PASSES_DIR / "bin" / "ticketable")
@@ -642,17 +634,20 @@ class JevRoutingTest(unittest.TestCase):
                 with self.subTest(pass_=path.stem, var=key):
                     self.assertEqual(_forbidden(str(value)), "", f"{path.name} {key}={value}")
 
-    def test_project_extraction_yaml_targets_the_ingress(self):
-        env = yaml.safe_load((PASSES_DIR / "project-extraction.yaml").read_text())["env"]
-        self.assertEqual(env["WAX_JEV_URL"], JEV_INGRESS)
-        # OpenRouter's `typesafe/jev-*` spelling 400s on System One.
-        self.assertFalse(str(env["WAX_JEV_MODEL"]).startswith("typesafe/"), env["WAX_JEV_MODEL"])
-        self.assertTrue(str(env["WAX_JEV_API_KEY_OP"]).startswith("op://"))
+    def test_jev_pass_yamls_target_the_ingress(self):
+        for slug in ("project-extraction", "classification"):
+            with self.subTest(slug=slug):
+                env = yaml.safe_load((PASSES_DIR / f"{slug}.yaml").read_text())["env"]
+                self.assertEqual(env["WAX_JEV_URL"], JEV_INGRESS)
+                # OpenRouter's `typesafe/jev-*` spelling 400s on System One.
+                self.assertFalse(str(env["WAX_JEV_MODEL"]).startswith("typesafe/"), env["WAX_JEV_MODEL"])
+                self.assertTrue(str(env["WAX_JEV_API_KEY_OP"]).startswith("op://"))
 
     def test_jev_defaults_never_reach_openrouter(self):
         sources = {
             "wax/jev.py": COMPONENT_ROOT / "src" / "wax" / "jev.py",
             "bin/project-extraction": PASSES_DIR / "bin" / "project-extraction",
+            "bin/classification": PASSES_DIR / "bin" / "classification",
             "bin/wax": COMPONENT_ROOT / "bin" / "wax",
         }
         for label, path in sources.items():
