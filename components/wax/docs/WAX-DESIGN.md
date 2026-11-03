@@ -114,9 +114,12 @@ answered / voicemail / declined / missed / no_answer / failed / in_progress; a
 missed call stays a row and nothing else. A voicemail WAV is fetched once, only
 from Telnyx's voicemail bucket host, into `inbox/` under
 `telnyx-vm-<date>-<session>-<epoch>.wav`, so its audio follows the normal
-archive-first path. `wax calls event` returns `ended: true` on exactly the event
-that first gives a call an end; the n8n workflow publishes
-`bloodbank.telephony.call.ended` from that alone. `wax doctor` probes the sync age,
+archive-first path. `wax calls event` returns `ended: true` once per call, on the event
+that settles it (claimed by a conditional UPDATE of `calls.announced_at`): an
+outbound hangup, an inbound hangup after the answer, or the voicemail landing. An
+inbound hangup without an answer is not settled, because a voicemail can still
+follow it ~30 s later; missed and declined calls are never announced. The n8n
+workflow publishes `bloodbank.telephony.call.ended` from that alone. `wax doctor` probes the sync age,
 stranded voicemails and the API key; `wax status` prints a `calls` line.
 
 ---

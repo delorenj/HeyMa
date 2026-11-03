@@ -58,9 +58,12 @@ recordings and webhook deliveries from the API every 10 minutes on Candybar
 (`wax-calls-sync.service`, manifest `components/wax/deploy/candybar/wax-calls-sync/`).
 Missed and declined calls are rows only. A voicemail (`calls.voicemail.completed`, a WAV
 on a 7-day link, host-allowlisted) is fetched once into `inbox/` as
-`telnyx-vm-<date>-<session>-<epoch>.wav`. Only the event that first ends a call returns
-`ended: true`, which the workflow turns into `bloodbank.telephony.call.ended` and one
-ntfy line on `telephony`. The `call-metadata` pass stamps `call-*` frontmatter (direction,
+`telnyx-vm-<date>-<session>-<epoch>.wav`. A call is announced once, when it settles:
+`wax calls event` returns `ended: true` for an outbound call at its hangup, for an answered
+inbound call at the hangup after the answer, and for a voicemail when the message lands;
+the claim is `calls.announced_at`. Missed and declined calls are never announced. The
+workflow turns `ended: true` into `bloodbank.telephony.call.ended` and one ntfy line on
+`telephony`. The `call-metadata` pass stamps `call-*` frontmatter (direction,
 outcome, remote number/name, forwarding, times, session/leg ids). The Telnyx key is
 `op://DeLoSecrets/74k7nz3xkryqns4lpf65a323ue/credential`. Feet-era (TeXML, before
 2026-10-25) RecordVerb second copies have a 16-digit epoch and are never the master.

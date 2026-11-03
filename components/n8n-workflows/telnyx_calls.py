@@ -3,8 +3,8 @@
 
 The workflow is the Telnyx webhook's only consumer. It owns nothing: every event goes, untouched,
 to `wax calls event` through the n8n-nodes-heyma "Wax Calls" node, and Wax keeps the call log.
-Only the event that first ends a call (Wax answers `ended: true`, exactly once per call) is
-announced: bloodbank.telephony.call.ended plus one ntfy line on topic `telephony`.
+Only the event that settles a call (Wax answers `ended: true`, once per call: an outbound hangup,
+an answered inbound hangup, or a voicemail landing; never a missed or declined call) is announced: bloodbank.telephony.call.ended plus one ntfy line on topic `telephony`.
 
 Dry run by default (prints the candidate). --apply PUTs it (n8n publishes an active workflow on
 PUT) and checks the published version is the one sent. Re-running changes nothing.

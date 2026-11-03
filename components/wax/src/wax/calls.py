@@ -33,6 +33,7 @@ Identity of a recording file:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -87,7 +88,8 @@ CREATE TABLE IF NOT EXISTS calls (
     outcome         TEXT,            -- answered | voicemail | missed | declined | no_answer | failed
     hangup_cause    TEXT,
     first_seen      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    announced_at    TEXT             -- when `wax calls event` last answered ended=true
 );
 CREATE INDEX IF NOT EXISTS calls_started ON calls(started_at);
 CREATE TABLE IF NOT EXISTS call_legs (
@@ -137,6 +139,11 @@ def db() -> sqlite3.Connection:
     conn = ledger.connect()
     if not getattr(conn, "_wax_calls_schema", False):
         conn.executescript(SCHEMA)
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(calls)")}
+        if "announced_at" not in columns:
+            conn.execute("ALTER TABLE calls ADD COLUMN announced_at TEXT")
+            # Calls that already ended were never going to be announced again.
+            conn.execute("UPDATE calls SET announced_at=updated_at WHERE ended_at IS NOT NULL")
         try:
             conn._wax_calls_schema = True  # type: ignore[attr-defined]
         except AttributeError:
@@ -365,7 +372,8 @@ def derive(conn: sqlite3.Connection, session: str) -> Optional[dict[str, Any]]:
     started = min((s for s in stamps if s), default=None)
     answered_legs = [leg for leg in real if leg["answered_at"] and (leg["completed"] or leg["call_sec"])]
     answered = min((_ts(leg["answered_at"]) for leg in answered_legs), default=None)
-    if answered is None and kinds & {"call.answered", "call.bridged"} and direction == "outbound":
+    took_voicemail = "calls.voicemail.completed" in kinds or bool(voicemail_legs)
+    if answered is None and "call.answered" in kinds and (direction == "outbound" or not took_voicemail):
         answered = min((_ts(e["occurred_at"]) for e in events if e["event_type"] == "call.answered"),
                        default=None)
     ends = [_ts(leg["finished_at"]) for leg in legs] + [
@@ -484,14 +492,51 @@ def fetch_voicemail(conn: sqlite3.Connection, event_id: str, *, fetch: bool = Tr
          json.dumps({k: v for k, v in payload.items() if k != "recording_url"}, sort_keys=True), sentinel.utcnow()))
     if not fetch:
         return {"recording_key": key, "file_name": None, "fetched": False}
-    placed = _download(url, paths.INBOX / name)
-    conn.execute("UPDATE call_recordings SET file_name=?, updated_at=? WHERE recording_key=?",
-                 (placed.name, sentinel.utcnow(), key))
+    # `wax calls event` and the Candybar sync can reach one voicemail at once; the lock
+    # makes the check-then-download atomic (and dies with its holder).
+    paths.VAR.mkdir(parents=True, exist_ok=True)
+    with open(paths.VAR / "calls-voicemail.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        done = conn.execute("SELECT file_name FROM call_recordings WHERE recording_key=? "
+                            "AND file_name IS NOT NULL", (key,)).fetchone()
+        if done:
+            return {"recording_key": key, "file_name": done["file_name"], "fetched": False}
+        placed = _download(url, paths.INBOX / name)
+        conn.execute("UPDATE call_recordings SET file_name=?, updated_at=? WHERE recording_key=?",
+                     (placed.name, sentinel.utcnow(), key))
     log.info("calls: voicemail for %s fetched into inbox as %s", session, placed.name)
     return {"recording_key": key, "file_name": placed.name, "fetched": True}
 
 
 # ----------------------------------------------------------------- entrypoints --
+
+def settled(call: Optional[dict[str, Any]]) -> bool:
+    """Whether a call's outcome is final enough to announce.
+
+    An inbound call that ends unanswered is NOT: its first hangup often precedes the
+    `calls.voicemail.completed` that decides it (by the length of the message), and a
+    forked SIP leg can hang up while the caller is still ringing. Missed and declined
+    calls are log rows only (operator order 2026-11-03), so they are never announced.
+    """
+    if not call or not call.get("ended_at"):
+        return False
+    answered, ended = _ts(call.get("answered_at")), _ts(call["ended_at"])
+    if answered and ended and ended < answered:
+        return False  # only a forked leg that stopped ringing has hung up; the call is live
+    if call.get("direction") == "inbound":
+        return call.get("outcome") in ("answered", "voicemail")
+    return call.get("outcome") not in (None, "in_progress")
+
+
+def _announce(conn: sqlite3.Connection, call: Optional[dict[str, Any]]) -> bool:
+    """True exactly once per call: the first time it is `settled`. Claimed in the ledger
+    with a conditional UPDATE, so a replay or a concurrent writer never announces twice."""
+    if not settled(call):
+        return False
+    claimed = conn.execute("UPDATE calls SET announced_at=? WHERE call_session_id=? AND announced_at IS NULL",
+                           (sentinel.utcnow(), call["call_session_id"]))
+    return claimed.rowcount == 1
+
 
 def ingest_event(raw: Any, *, via: str = "webhook", fetch: bool = True) -> dict[str, Any]:
     """`wax calls event`: store one Telnyx webhook event and refresh its call."""
@@ -502,15 +547,8 @@ def ingest_event(raw: Any, *, via: str = "webhook", fetch: bool = True) -> dict[
     result: dict[str, Any] = dict(stored)
     result["ended"] = False
     if stored["call_session_id"]:
-        before = conn.execute("SELECT ended_at FROM calls WHERE call_session_id=?",
-                              (stored["call_session_id"],)).fetchone()
         result["call"] = derive(conn, stored["call_session_id"])
-        # `ended` is true exactly once per call: on the event that first gives it
-        # an end. A notifier keys on it, so a multi-leg hangup is one notice.
-        call = result["call"] or {}
-        result["ended"] = bool(stored["new"] and call.get("ended_at")
-                               and call.get("outcome") not in (None, "in_progress")
-                               and not (before and before["ended_at"]))
+        result["ended"] = _announce(conn, result["call"]) if stored["new"] else False
     if stored["event_type"] == "calls.voicemail.completed":
         try:
             result["voicemail"] = fetch_voicemail(conn, stored["event_id"], fetch=fetch)
@@ -520,21 +558,26 @@ def ingest_event(raw: Any, *, via: str = "webhook", fetch: bool = True) -> dict[
 
 
 def sync(since: datetime, *, key: Optional[str] = None, fetch: bool = True,
-         deliveries: bool = True) -> dict[str, Any]:
-    """`wax calls sync`: reconcile CDRs, recordings and events since `since`."""
+         deliveries: bool = True, until: Optional[datetime] = None, record: bool = True) -> dict[str, Any]:
+    """`wax calls sync`: reconcile CDRs, recordings and events since `since` (to `until`).
+
+    Only a full reconcile (`record`) moves `calls.last_sync`, the freshness doctor and
+    status read; a pass's one-file lookup must never stand in for the Candybar job."""
     key = key or api_key()
     conn = db()
     since_iso = _iso(since)
     sessions: set[str] = set()
     counts = {"legs": 0, "recordings": 0, "events": 0, "events_new": 0, "voicemail_fetched": 0,
               "voicemail_errors": []}
+    bound = {"filter[started_at][lte]": _iso(until)} if until else {}
     for cdr in _pages("/detail_records", {"filter[record_type]": "sip-trunking",
-                                          "filter[started_at][gte]": since_iso}, key, size=50):
+                                          "filter[started_at][gte]": since_iso} | bound, key, size=50):
         session = upsert_leg(conn, cdr)
         if session:
             sessions.add(session)
             counts["legs"] += 1
-    for rec in _pages("/recordings", {"filter[created_at][gte]": since_iso}, key):
+    created_bound = {"filter[created_at][lte]": _iso(until)} if until else {}
+    for rec in _pages("/recordings", {"filter[created_at][gte]": since_iso} | created_bound, key):
         session = upsert_recording(conn, rec)
         counts["recordings"] += 1
         if session:
@@ -564,7 +607,8 @@ def sync(since: datetime, *, key: Optional[str] = None, fetch: bool = True,
         except CallsError as exc:
             counts["voicemail_errors"].append({"event_id": event_id, "code": exc.code})
     counts["calls"] = len(sessions)
-    _set_meta(conn, "calls.last_sync", json.dumps({"at": sentinel.utcnow(), "since": since_iso,
+    if record:
+        _set_meta(conn, "calls.last_sync", json.dumps({"at": sentinel.utcnow(), "since": since_iso,
                                                   "calls": len(sessions)}))
     return counts
 
@@ -633,7 +677,8 @@ def health(days: int = 7) -> dict[str, Any]:
     stranded = [r["event_id"] for r in conn.execute(
         "SELECT e.event_id FROM call_events e LEFT JOIN call_recordings r "
         "ON r.recording_key = 'vm:' || e.event_id "
-        "WHERE e.event_type='calls.voicemail.completed' AND e.occurred_at >= ? AND r.file_name IS NULL",
+        "WHERE e.event_type='calls.voicemail.completed' AND e.occurred_at >= ? AND r.file_name IS NULL "
+        "AND e.call_session_id IS NOT NULL AND json_extract(e.payload,'$.recording_url') IS NOT NULL",
         (since,))]
     webhook = conn.execute("SELECT MAX(received_at) AS at FROM call_events WHERE via='webhook'").fetchone()
     counts = {r["outcome"] or "unknown": r["n"] for r in conn.execute(
@@ -712,7 +757,8 @@ def _fetch_for(ident: dict[str, Any], key: Optional[str] = None) -> None:
     elif ident.get("epoch") or ident.get("started_at"):
         around = (datetime.fromtimestamp(ident["epoch"], timezone.utc) if ident.get("epoch")
                   else _ts(ident["started_at"]))
-        sync(around - timedelta(minutes=10), key=key, fetch=False, deliveries=False)
+        sync(around - timedelta(minutes=10), until=around + timedelta(hours=4), key=key,
+             fetch=False, deliveries=False, record=False)
 
 
 def call_for_audio(name: str, *, fetch: bool = False) -> Optional[dict[str, Any]]:
@@ -724,7 +770,10 @@ def call_for_audio(name: str, *, fetch: bool = False) -> Optional[dict[str, Any]
     session = _session_for(conn, ident)
     if session:
         row = conn.execute("SELECT * FROM calls WHERE call_session_id=?", (session,)).fetchone()
-        if row is None or (fetch and row["ended_at"] is None):
+        has_cdr = conn.execute("SELECT 1 FROM call_legs WHERE call_session_id=? LIMIT 1", (session,)).fetchone()
+        # A row built from webhook events alone is provisional (CDRs lag minutes);
+        # ask Telnyx before stamping it into a note.
+        if row is None or (fetch and (row["ended_at"] is None or not has_cdr)):
             row = None
     else:
         row = None

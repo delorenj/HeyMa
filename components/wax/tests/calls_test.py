@@ -108,14 +108,52 @@ class DeriveTest(_Ledger):
         result = calls.ingest_event(event("e2", "call.hangup", IN_SESSION, call_leg_id="w1",
                                           end_time="2026-11-03T20:00:49Z", hangup_cause="originator_cancel"))
         call = result["call"]
-        self.assertTrue(result["ended"])
+        self.assertFalse(result["ended"], "a missed call is a log row, never announced")
         self.assertEqual((call["direction"], call["outcome"], call["remote_number"]),
                          ("inbound", "missed", "+19297480614"))
-        second_leg = calls.ingest_event(event("e3", "call.hangup", IN_SESSION, call_leg_id="w2",
-                                              end_time="2026-11-03T20:00:49Z"))
-        self.assertFalse(second_leg["ended"], "a call ends once, however many legs hang up")
         self.assertEqual((call["forwarded_from"], call["forward_reason"]), ("+12152083549", "no-answer"))
         self.assertIsNone(call["remote_name"])  # a CNAM city is not a person
+
+    def test_answered_inbound_announces_once_at_the_real_hangup(self):
+        calls.ingest_event(event("a1", "call.initiated", IN_SESSION, direction="incoming", call_leg_id="w1",
+                                 **{"from": "+16099203094", "to": "+12154498437",
+                                    "start_time": "2026-11-03T20:00:40Z"}))
+        early = calls.ingest_event(event("a2", "call.hangup", IN_SESSION, call_leg_id="fork",
+                                         end_time="2026-11-03T20:00:45Z"))
+        self.assertFalse(early["ended"], "a forked leg that stopped ringing does not end the call")
+        answered = calls.ingest_event(
+            {"data": event("a3", "call.answered", IN_SESSION, call_leg_id="w1")["data"]
+             | {"occurred_at": "2026-11-03T20:00:50Z"}})
+        self.assertEqual(answered["call"]["outcome"], "answered")
+        self.assertFalse(answered["ended"], "answered after the fork hung up: still live")
+        hung = calls.ingest_event(event("a4", "call.hangup", IN_SESSION, call_leg_id="w1",
+                                        end_time="2026-11-03T20:03:00Z"))
+        self.assertTrue(hung["ended"])
+        self.assertEqual(hung["call"]["outcome"], "answered")
+        later = calls.ingest_event(event("a5", "call.recording.saved", IN_SESSION, call_leg_id="w1"))
+        replay = calls.ingest_event(event("a4", "call.hangup", IN_SESSION, call_leg_id="w1",
+                                          end_time="2026-11-03T20:03:00Z"))
+        self.assertFalse(later["ended"] or replay["ended"], "announced exactly once")
+
+    def test_voicemail_is_announced_when_the_message_lands_not_at_hangup(self):
+        calls.ingest_event(event("v1", "call.initiated", VM_SESSION, direction="incoming", call_leg_id="w1",
+                                 **{"from": "+12157748272", "to": "+12154498437",
+                                    "start_time": "2026-11-03T20:00:40Z"}))
+        # Live shape (2026-10-30): initiated, hangup, cost, then the message ~28 s later. No call.answered.
+        hung = calls.ingest_event(event("v3", "call.hangup", VM_SESSION, call_leg_id="w1",
+                                        end_time="2026-11-03T20:01:30Z"))
+        self.assertFalse(hung["ended"], "an inbound hangup may still become a voicemail")
+        with patch.object(calls, "_download", side_effect=calls.CallsError("HTTP 403", "voicemail_expired")):
+            vm = calls.ingest_event(event("v4", "calls.voicemail.completed", VM_SESSION,
+                                          recording_url="https://voice-mail-prod.s3.us-east-1.amazonaws.com/x.wav"))
+        self.assertTrue(vm["ended"])
+        self.assertEqual(vm["call"]["outcome"], "voicemail")
+
+    def test_answered_outbound_announces_at_hangup(self):
+        calls.ingest_event(event("o1", "call.initiated", OUT_SESSION, direction="outgoing", to="+16099203094"))
+        calls.ingest_event(event("o2", "call.answered", OUT_SESSION))
+        self.assertTrue(calls.ingest_event(event("o3", "call.hangup", OUT_SESSION))["ended"])
+        self.assertFalse(calls.ingest_event(event("o4", "call.cost", OUT_SESSION))["ended"])
 
     def test_declined_and_voicemail_outcomes(self):
         calls.upsert_leg(self.conn, cdr(IN_LEG, IN_SESSION, direction="inbound", cli="+16099203094",
@@ -241,6 +279,33 @@ class SyncTest(_Ledger):
         self.assertEqual(calls.recent()[0]["recordings"], ["leg.mp3"])
         self.assertEqual(calls.last_sync()["calls"], 1)
 
+    def test_a_lookup_sync_is_bounded_and_never_poses_as_the_reconcile(self):
+        asked = []
+
+        def fake_pages(path, params, key, size=250):
+            asked.append((path, params))
+            return iter([])
+
+        with patch.object(calls, "_pages", side_effect=fake_pages):
+            calls.sync(calls._ts("2026-10-09T11:50:00Z"), until=calls._ts("2026-10-09T16:00:00Z"),
+                       key="k", deliveries=False, record=False)
+        self.assertIsNone(calls.last_sync())
+        self.assertEqual([p for p, _ in asked], ["/detail_records", "/recordings"])
+        self.assertEqual(asked[0][1]["filter[started_at][lte]"], "2026-10-09T16:00:00Z")
+        self.assertEqual(asked[1][1]["filter[created_at][lte]"], "2026-10-09T16:00:00Z")
+
+    def test_a_webhook_only_row_is_refreshed_before_it_is_stamped(self):
+        calls.ingest_event(event("w1", "call.initiated", OUT_SESSION, direction="outgoing", call_leg_id=OUT_LEG,
+                                 to="+16099203094"))
+        calls.ingest_event(event("w2", "call.hangup", OUT_SESSION, call_leg_id=OUT_LEG))
+        name = f"telnyx-2026-11-03-{OUT_LEG}-1793666147-{'a' * 64}.mp3"
+        self.assertIsNotNone(calls.call_for_audio(name))  # no fetch: the provisional row is fine
+        pages = {"/recordings": [], "/detail_records": [cdr(OUT_LEG, OUT_SESSION)]}
+        with patch.object(calls, "api_key", return_value="k"), \
+                patch.object(calls, "_pages", side_effect=lambda path, params, key, size=250: iter(pages[path])):
+            call = calls.call_for_audio(name, fetch=True)
+        self.assertEqual((call["outcome"], call["talk_seconds"]), ("answered", 123))
+
     def test_health_names_a_voicemail_left_behind(self):
         with patch.object(calls, "_download", side_effect=calls.CallsError("HTTP 403", "voicemail_expired")):
             calls.ingest_event(event("vm9", "calls.voicemail.completed", VM_SESSION,
@@ -248,6 +313,9 @@ class SyncTest(_Ledger):
         # occurred_at in the fixture is fixed; widen the window so it counts.
         self.assertEqual(calls.health(days=3650)["voicemail_unfetched"], ["vm9"])
         self.assertIsNotNone(calls.health()["last_webhook_at"])
+        # An event with nothing to fetch (no session, no URL) can never be fetched; not a finding.
+        calls.ingest_event(event("vm10", "calls.voicemail.completed", VM_SESSION))
+        self.assertEqual(calls.health(days=3650)["voicemail_unfetched"], ["vm9"])
 
 
 class BackfillTest(_Ledger):
