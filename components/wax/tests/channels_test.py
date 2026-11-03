@@ -25,7 +25,9 @@ def levels(a, b):
 
 class DetectionTest(unittest.TestCase):
     def plan(self, name, count=2, lv=(-30.0, -25.0)):
-        return channels.plan(Path("/x") / name, channels_fn=lambda _p: count, levels_fn=levels(*lv))
+        # wax.calls (now present) would look the call up in the ledger / Telnyx; labels have their own tests.
+        with patch.object(channels, "channel_parties", None):
+            return channels.plan(Path("/x") / name, channels_fn=lambda _p: count, levels_fn=levels(*lv))
 
     def test_stereo_call_with_both_channels_audible_is_split(self):
         p = self.plan(CALL)
@@ -78,7 +80,8 @@ class DetectionTest(unittest.TestCase):
             self.assertEqual(channels.stream_channels(src), 2)
             a, b = channels.channel_levels(src)
             self.assertGreater(a, b + 10)
-            self.assertTrue(channels.plan(src).use)
+            with patch.object(channels, "channel_parties", None):
+                self.assertTrue(channels.plan(src).use)
             wav = channels.extract_channel(src, 1, Path(d) / "c1.wav")
             self.assertEqual(channels.stream_channels(wav), 1)
             self.assertLess(channels.channel_levels(wav)[0], a - 10, "channel 1 is the quiet one")
