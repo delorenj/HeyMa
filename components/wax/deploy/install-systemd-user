@@ -12,7 +12,7 @@ from pathlib import Path
 # was silently absent on exactly the machines that had never seen it work. The
 # capture guard finishes a live recording before a graphical-session teardown
 # removes its PipeWire source graph.
-UNITS = ("waxd.service", "wax-alert.service", "wax-capture-guard.service")
+UNITS = ("waxd.service", "wax-alert.service", "wax-capture-guard.service", "wax-calls-sync.service")
 
 
 def locations():
@@ -44,6 +44,8 @@ def render_unit(name: str, component=None, repo=None) -> str:
         .replace("@WAX_EXEC_START@", systemd_quote(repo / "bin" / "waxd"))
         .replace("@WAX_EXEC_QUIESCE@",
                  f"{systemd_quote(repo / 'bin' / 'wax')} rec quiesce --json")
+        .replace("@WAX_EXEC_CALLS_SYNC@",
+                 f"{systemd_quote(repo / 'bin' / 'wax')} --json calls sync --since 2d")
         .replace("@WAX_PATH_ENV@",
                  systemd_quote(f'PATH={Path.home() / ".local/bin"}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
         # The quotes wrap the whole NAME=value assignment, not just the path:

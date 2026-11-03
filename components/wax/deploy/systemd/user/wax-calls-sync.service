@@ -1,0 +1,19 @@
+[Unit]
+Description=Reconcile the Wax call log against the Telnyx API (CDRs, recordings, webhook deliveries)
+Documentation=@WAX_DOCUMENTATION_URI@
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Candybar owns WHEN (manifest: components/wax/deploy/candybar/wax-calls-sync/candybar.toml);
+# there is deliberately no .timer. The webhook path (n8n -> `wax calls event`) is the fast
+# path; this catches whatever it missed: a failed delivery, n8n down, a voicemail whose
+# webhook never arrived. Idempotent: every row is keyed by Telnyx's own ids.
+# The Telnyx key is an op:// reference read through the user manager's
+# OP_SERVICE_ACCOUNT_TOKEN, never a value in this unit.
+Type=oneshot
+ExecStart=@WAX_EXEC_CALLS_SYNC@
+Environment=@WAX_PATH_ENV@
+TimeoutStartSec=240
+Slice=batch.slice
+Nice=10

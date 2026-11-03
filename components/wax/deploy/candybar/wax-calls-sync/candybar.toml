@@ -1,0 +1,14 @@
+# The Wax call log's catch-up reconcile. The .service is the execution source of truth
+# (components/wax/deploy/systemd/user/wax-calls-sync.service, installed by
+# deploy/install-systemd-user); candybar is its only clock.
+[candybar]
+name = "wax-calls-sync"
+description = "Reconcile the Wax call log against Telnyx (CDRs, recordings, webhook deliveries, missed voicemails)"
+tags = ["heyma", "wax", "telephony"]
+schedule = "*/10 * * * *"
+timezone = "America/New_York"
+enabled = false
+
+[candybar.runner]
+kind = "systemd"
+unit = "wax-calls-sync.service"
