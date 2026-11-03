@@ -143,5 +143,39 @@ class WindowHelpersTest(unittest.TestCase):
         self.assertIn("wikification.yaml", shaped["inactive"][0]["subtitle"])
 
 
+def _desktop_installer():
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    path = Path(__file__).resolve().parents[1] / "deploy" / "install-desktop-entry"
+    loader = SourceFileLoader("heyma_desktop_installer", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class BrandTest(unittest.TestCase):
+    def test_logo_ships_with_the_component(self):
+        from wax import component
+        self.assertTrue(component.LOGO.is_file(), component.LOGO)
+        self.assertEqual(component.LOGO.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_brand_accent_and_logo_card_are_styled(self):
+        css = heyma_window.STYLESHEET
+        self.assertIn("--accent-bg-color: #b0603f", css)
+        self.assertIn(".heyma-brand", css)
+        # Adw's forced colour schemes never reach CSS media queries; a
+        # scheme-specific branch here would silently pick the wrong one.
+        self.assertNotIn("prefers-color-scheme", css)
+
+    def test_desktop_entry_matches_the_window_app_id(self):
+        installer = _desktop_installer()
+        self.assertEqual(installer.APP_ID, heyma_window.APP_ID)
+        entry = installer.render_desktop_entry(Path("/opt/Hey Ma 100%"))
+        self.assertIn('Exec="/opt/Hey Ma 100%%/bin/heyma"', entry)
+        self.assertIn(f"Icon={heyma_window.APP_ID}", entry)
+        self.assertIn(f"StartupWMClass={heyma_window.APP_ID}", entry)
+
+
 if __name__ == "__main__":
     unittest.main()

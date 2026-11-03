@@ -1,0 +1,110 @@
+#!/usr/bin/python3
+"""Install the HeyMa window as a desktop application: launcher entry + app icon.
+
+    deploy/install-desktop-entry [--dry-run]
+
+Writes, for THIS checkout's location (never a hardcoded path):
+
+- ~/.local/share/applications/sh.delo.HeyMa.desktop — Exec is the repo's
+  bin/heyma, so the app grid, the dock and the tray all open the same code.
+- ~/.local/share/icons/hicolor/<N>x<N>/apps/sh.delo.HeyMa.png — square icons
+  rendered from assets/brand/heyma-logo.png (the wordmark is 3:2; it is centred
+  on a transparent square, not stretched).
+
+The file name and Icon= are the window's application id on purpose: GNOME on
+Wayland matches a window to its .desktop file by app id, and that match is the
+only way the dock and Alt+Tab show the HeyMa logo instead of a generic cog. The
+icons are generated output of a tracked asset, so they live outside the repo.
+"""
+
+import argparse
+import subprocess
+from pathlib import Path
+
+APP_ID = "sh.delo.HeyMa"
+ICON_SIZES = (48, 64, 128, 256, 512)
+
+
+def locations():
+    component = next(
+        parent for parent in Path(__file__).resolve().parents
+        if (parent / "pyproject.toml").is_file()
+    )
+    repo = next(parent for parent in component.parents if (parent / ".project.json").is_file())
+    return component, repo
+
+
+def desktop_quote(value) -> str:
+    """Quote one Exec argument per the Desktop Entry spec (paths may hold spaces)."""
+    escaped = str(value)
+    for char in ("\\", '"', "`", "$"):
+        escaped = escaped.replace(char, "\\" + char)
+    # `%` is a field-code marker in Exec; a literal one is written `%%`.
+    return '"' + escaped.replace("%", "%%") + '"'
+
+
+def render_desktop_entry(repo: Path) -> str:
+    return "\n".join([
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=HeyMa",
+        "GenericName=Wax settings",
+        "Comment=Wax pipeline settings, enrichment-pass switches and live logs",
+        f"Exec={desktop_quote(repo / 'bin' / 'heyma')}",
+        f"Icon={APP_ID}",
+        "Terminal=false",
+        "Categories=AudioVideo;Audio;",
+        "Keywords=wax;transcription;recording;logs;settings;",
+        "StartupNotify=true",
+        f"StartupWMClass={APP_ID}",
+        "",
+    ])
+
+
+def render_icons(logo: Path, target_root: Path) -> list[Path]:
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+
+    source = GdkPixbuf.Pixbuf.new_from_file(str(logo))
+    side = max(source.get_width(), source.get_height())
+    square = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, side, side)
+    square.fill(0x00000000)
+    source.copy_area(0, 0, source.get_width(), source.get_height(), square,
+                     (side - source.get_width()) // 2, (side - source.get_height()) // 2)
+    written = []
+    for size in ICON_SIZES:
+        target = target_root / f"{size}x{size}" / "apps" / f"{APP_ID}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        square.scale_simple(size, size, GdkPixbuf.InterpType.HYPER).savev(str(target), "png", [], [])
+        written.append(target)
+    return written
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    component, repo = locations()
+    entry = render_desktop_entry(repo)
+    if args.dry_run:
+        print(entry, end="")
+        return
+    share = Path.home() / ".local" / "share"
+    icons = share / "icons" / "hicolor"
+    for path in render_icons(component / "assets" / "brand" / "heyma-logo.png", icons):
+        print(path)
+    applications = share / "applications"
+    applications.mkdir(parents=True, exist_ok=True)
+    desktop = applications / f"{APP_ID}.desktop"
+    desktop.write_text(entry)
+    print(desktop)
+    # Both are caches the desktop rebuilds on its own eventually; refreshing
+    # them now makes the launcher and icon appear without a re-login.
+    subprocess.run(["gtk-update-icon-cache", "--force", "--ignore-theme-index", str(icons)],
+                   check=False, capture_output=True)
+    subprocess.run(["update-desktop-database", str(applications)], check=False, capture_output=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -102,6 +102,10 @@ full-width page. **Settings** clears finished tray rows, retries failed items,
 switches passes on/off and toggles the background worker; **Logs** tails
 `journalctl --user -f -u waxd.service` (or every Wax unit). It owns no state:
 every action is the `wax` CLI beside it. Code `components/wax/src/wax/heyma_window.py`.
+Brand: `components/wax/assets/brand/heyma-logo.png` heads the drawer on a warm card,
+and its terracotta is the window's accent. `components/wax/deploy/install-desktop-entry`
+writes the `sh.delo.HeyMa` launcher and square icons (app id = file name, so the
+Wayland dock shows the logo); re-run it after moving the checkout.
 
 mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:retry`, `wax:test`, `wax:logs`,
 `wax:transcripts:sync|search|migrate`, `wax:test:pg` (real-Postgres store tests; skip without Docker).

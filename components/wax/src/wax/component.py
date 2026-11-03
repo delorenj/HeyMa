@@ -17,5 +17,7 @@ def _component_root() -> Path:
 ROOT = _component_root()
 ASSETS = ROOT / "assets"
 TRAY_ASSETS = ASSETS / "tray"
+BRAND_ASSETS = ASSETS / "brand"
+LOGO = BRAND_ASSETS / "heyma-logo.png"
 CONFIG = ROOT / "config"
 PASSES = CONFIG / "passes.d"

@@ -61,6 +61,32 @@ _ERROR = re.compile(r"\b(ERROR|CRITICAL|Traceback|Exception)\b")
 _WARN = re.compile(r"\bWARNING\b|\bWARN\b")
 
 
+# The logo's two inks: terracotta "Hey" (#c37f60) and parchment "Ma!" (#e8d7b0).
+# The accent is the terracotta darkened until white text on it clears WCAG AA
+# (4.57:1). Only the background is set: libadwaita derives the standalone
+# `--accent-color` from it per colour scheme, so text accents stay legible on
+# light and dark without a media query (Adw's forced schemes do not reach CSS
+# `prefers-color-scheme`, so one would silently pick the wrong branch).
+#
+# Parchment on a light sidebar all but vanishes, so the wordmark always sits on
+# a warm dark card: parchment 10.4:1 and terracotta 4.59:1 on it, in either scheme.
+STYLESHEET = """
+:root {
+  --accent-bg-color: #b0603f;
+  --accent-fg-color: #ffffff;
+}
+.heyma-brand {
+  margin: 6px 12px 12px 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background-color: #2f2622;
+}
+/* The system monospace face at full UI size wraps a log line into five; a tail
+   wants density. */
+.heyma-log { font-size: 80%; }
+"""
+
+
 # ------------------------------------------------------------ pure helpers ----
 
 def log_level(line: str) -> str:
@@ -442,12 +468,6 @@ class LogsPage:
         self.buffer.create_tag("stamp", foreground="#77767b")
         self.buffer.create_tag("unit", foreground="#3584e4")
         self.view.add_css_class("heyma-log")
-        css = Gtk.CssProvider()
-        # The system monospace face at full UI size wraps a log line into five;
-        # a tail wants density.
-        css.load_from_string(".heyma-log { font-size: 80%; }")
-        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
-                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.scroller = _scroller(self.view)
         self.scroller.get_vadjustment().connect("notify::upper", self._upper_changed)
         self.scroller.get_vadjustment().connect("notify::page-size", self._upper_changed)
@@ -544,8 +564,42 @@ class LogsPage:
             adj.set_value(adj.get_upper() - adj.get_page_size())
 
 
+def _brand():
+    """The HeyMa wordmark at the head of the drawer; plain text if the asset is gone.
+
+    A missing logo is cosmetic, so it never stops the window opening — but it
+    says so in the drawer rather than quietly leaving a hole.
+    """
+    if component.LOGO.is_file():
+        logo = Gtk.Picture.new_for_filename(str(component.LOGO))
+        logo.set_content_fit(Gtk.ContentFit.CONTAIN)
+        logo.set_can_shrink(True)
+        logo.set_alternative_text("HeyMa")
+        logo.set_size_request(-1, 96)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        card.add_css_class("heyma-brand")
+        card.append(logo)
+        return card
+    title = Adw.WindowTitle(title="HeyMa", subtitle=f"logo missing: {component.LOGO.name}",
+                            margin_bottom=12)
+    return title
+
+
+def install_style() -> None:
+    """Load STYLESHEET once per display, above the theme and below user CSS."""
+    display = Gdk.Display.get_default()
+    if display is None or getattr(display, "_heyma_styled", False):
+        return
+    css = Gtk.CssProvider()
+    css.load_from_string(STYLESHEET)
+    Gtk.StyleContext.add_provider_for_display(display, css,
+                                              Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    display._heyma_styled = True
+
+
 class HeyMaWindow:
     def __init__(self, app, page: str = "settings"):
+        install_style()
         self.window = Adw.ApplicationWindow(application=app, title="HeyMa",
                                             default_width=1100, default_height=760)
         self.window.set_size_request(360, 360)
@@ -574,10 +628,12 @@ class HeyMaWindow:
         self.nav.connect("row-selected", self._nav_selected)
 
         sidebar = Adw.ToolbarView()
-        sidebar_header = Adw.HeaderBar()
-        sidebar_header.set_title_widget(Adw.WindowTitle(title="HeyMa", subtitle="Wax"))
+        sidebar_header = Adw.HeaderBar(show_title=False)
         sidebar.add_top_bar(sidebar_header)
-        sidebar.set_content(_scroller(self.nav))
+        drawer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        drawer.append(_brand())
+        drawer.append(self.nav)
+        sidebar.set_content(_scroller(drawer))
 
         # -- content ------------------------------------------------------------
         content = Adw.ToolbarView()
@@ -648,6 +704,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--page", choices=[key for key, _, _ in PAGES], default="settings")
     args, rest = ap.parse_known_args(argv)
     _load_gtk()
+    # The installed icon (deploy/install-desktop-entry) carries the app id, so
+    # X11 window decorations find it too; Wayland docks read the .desktop file.
+    Gtk.Window.set_default_icon_name(APP_ID)
     app = Adw.Application(application_id=APP_ID,
                           flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
     state: dict[str, Any] = {}
