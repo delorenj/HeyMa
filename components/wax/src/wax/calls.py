@@ -577,6 +577,22 @@ def last_sync() -> Optional[dict[str, Any]]:
         return None
 
 
+def health(days: int = 7) -> dict[str, Any]:
+    """What `wax doctor` and `wax status` ask of the call log, from the ledger alone."""
+    conn = db()
+    since = _iso(datetime.now(timezone.utc) - timedelta(days=days))
+    stranded = [r["event_id"] for r in conn.execute(
+        "SELECT e.event_id FROM call_events e LEFT JOIN call_recordings r "
+        "ON r.recording_key = 'vm:' || e.event_id "
+        "WHERE e.event_type='calls.voicemail.completed' AND e.occurred_at >= ? AND r.file_name IS NULL",
+        (since,))]
+    webhook = conn.execute("SELECT MAX(received_at) AS at FROM call_events WHERE via='webhook'").fetchone()
+    counts = {r["outcome"] or "unknown": r["n"] for r in conn.execute(
+        "SELECT outcome, COUNT(*) AS n FROM calls WHERE started_at >= ? GROUP BY outcome", (since,))}
+    return {"last_sync": last_sync(), "last_webhook_at": webhook["at"] if webhook else None,
+            "voicemail_unfetched": stranded, "outcomes": counts, "days": days}
+
+
 # ------------------------------------------------------------ audio <-> call --
 
 def audio_identity(name: str) -> Optional[dict[str, Any]]:

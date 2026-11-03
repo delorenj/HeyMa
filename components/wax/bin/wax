@@ -1163,6 +1163,7 @@ def probe_all() -> list[dict[str, Any]]:
                "" if reachable else "start NATS; events queue in the outbox meanwhile (fail-open)"))
     probe_outbox(add)
     probe_transcriptions(add)
+    probe_calls(add)
 
     # -- contract-A stage health -------------------------------------------
     # The two blocks that were unrepresentable during both outages. They are the
@@ -1311,6 +1312,60 @@ def probe_transcriptions(add) -> None:
             add(row)
     except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
         add(_probe("transcripts store", FAIL, f"{type(e).__name__}: {e}"))
+
+
+CALLS_SYNC_WARN_S = 30 * 60   # candybar fires wax-calls-sync every 10 min
+CALLS_SYNC_FAIL_S = 3 * 3600
+
+
+def calls_snapshot() -> dict[str, Any]:
+    """The call log's line in `wax status`. Never synced is reported, not failed: a box with
+    no Telnyx line is legitimate. A stale reconcile or a stranded voicemail is an error."""
+    try:
+        h = telephony.health()
+    except Exception as e:  # noqa: BLE001
+        return {"state": "error", "detail": f"{type(e).__name__}: {e}"}
+    synced = (h["last_sync"] or {}).get("at")
+    out: dict[str, Any] = {"outcomes": h["outcomes"], "voicemail_unfetched": len(h["voicemail_unfetched"])}
+    if not synced:
+        return out | {"state": "off", "detail": "never synced"}
+    age = _age_seconds(synced)
+    out["sync_age_s"] = int(age)
+    if out["voicemail_unfetched"]:
+        return out | {"state": "error", "detail": f"{out['voicemail_unfetched']} voicemail(s) not fetched"}
+    if age > CALLS_SYNC_FAIL_S:
+        return out | {"state": "error", "detail": f"last sync {int(age // 3600)} h ago"}
+    return out | {"state": "ok", "detail": f"synced {int(age // 60)} min ago"}
+
+
+def probe_calls(add) -> None:
+    """The call log (wax.calls): the Candybar reconcile is current, the Telnyx key still
+    authenticates, and no voicemail sits only behind a link that expires in 7 days."""
+    try:
+        h = telephony.health()
+        synced = (h["last_sync"] or {}).get("at")
+        age = _age_seconds(synced) if synced else None
+        status = FAIL if age is None or age > CALLS_SYNC_FAIL_S else WARN if age > CALLS_SYNC_WARN_S else PASS
+        hook = f"; last webhook event {int(_age_seconds(h['last_webhook_at']) // 60)} min ago" \
+            if h["last_webhook_at"] else "; no webhook event yet"
+        add(_probe("call log synced", status,
+                   (f"wax calls sync {int(age // 60)} min ago" if age is not None else "never synced") + hook,
+                   "" if status == PASS else
+                   "systemctl --user start wax-calls-sync; candybar show wax-calls-sync -n 5"))
+        n = len(h["voicemail_unfetched"])
+        add(_probe("voicemails fetched", PASS if not n else FAIL,
+                   f"{n} voicemail(s) from the last {h['days']}d not in the inbox" if n
+                   else f"every voicemail from the last {h['days']}d is in the inbox",
+                   "" if not n else "wax calls sync --since 7d  (the Telnyx link dies 7 days after the call)"))
+    except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
+        add(_probe("call log synced", FAIL, f"{type(e).__name__}: {e}"))
+        return
+    try:
+        telephony._get("/balance", {}, telephony.api_key())
+        add(_probe("telnyx api key", PASS, "GET /v2/balance answered"))
+    except telephony.CallsError as e:
+        add(_probe("telnyx api key", FAIL, f"{e} ({e.code})",
+                   "op item 74k7nz3xkryqns4lpf65a323ue must hold the full Telnyx v2 key"))
 
 
 def doctor(as_json: bool, quiet: bool) -> int:
@@ -1523,6 +1578,8 @@ def status_unhealthy(snap: dict[str, Any]) -> bool:
     # only place a long outage or a model digest mismatch becomes visible. Green is not evidence.
     if (snap.get("transcriptions") or {}).get("state") == "error":
         return True
+    if (snap.get("calls") or {}).get("state") == "error":
+        return True
     return any((snap.get(machine) or {}).get("state") in ("error", "error-partial")
                for machine in ("stream", "inbox"))
 
@@ -1585,6 +1642,15 @@ def render_status(snap: dict[str, Any]) -> None:
         if tx.get("state") not in ("ok", None) and tx.get("reason"):
             line += f"   {tx['reason']}"
         if tx.get("state") in ("error", "lagging"):
+            line += "   -> wax doctor"
+        print(line)
+    calls_ = snap.get("calls")
+    if calls_ is not None:
+        tally = " · ".join(f"{k} {v}" for k, v in sorted((calls_.get("outcomes") or {}).items()))
+        line = f"  {'calls':<12} {calls_.get('state', '?'):<8} {calls_.get('detail', '')}"
+        if tally:
+            line += f"  (7d: {tally})"
+        if calls_.get("state") == "error":
             line += "   -> wax doctor"
         print(line)
     for key in ("ledger_error", "tray_queue_error", "error"):
@@ -2181,6 +2247,7 @@ def main() -> int:
 
     if args.cmd == "status":
         snap = ledger.enrich(state.snapshot())
+        snap["calls"] = calls_snapshot()
         if J:
             _emit(snap, True)
         else:

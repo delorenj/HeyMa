@@ -237,6 +237,14 @@ class SyncTest(_Ledger):
         self.assertEqual(calls.recent()[0]["recordings"], ["leg.mp3"])
         self.assertEqual(calls.last_sync()["calls"], 1)
 
+    def test_health_names_a_voicemail_left_behind(self):
+        with patch.object(calls, "_download", side_effect=calls.CallsError("HTTP 403", "voicemail_expired")):
+            calls.ingest_event(event("vm9", "calls.voicemail.completed", VM_SESSION,
+                                     recording_url="https://voice-mail-prod.s3.us-east-1.amazonaws.com/x.wav"))
+        # occurred_at in the fixture is fixed; widen the window so it counts.
+        self.assertEqual(calls.health(days=3650)["voicemail_unfetched"], ["vm9"])
+        self.assertIsNotNone(calls.health()["last_webhook_at"])
+
 
 class PassCommandTest(_Ledger):
     def test_a_non_call_recording_is_skipped(self):

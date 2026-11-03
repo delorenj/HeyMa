@@ -19,3 +19,4 @@ passes:
   - title-slug
   - diarization
   - project-extraction
+  - call-metadata
