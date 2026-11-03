@@ -33,6 +33,7 @@ from wax import (archive, catalog, capture, component, config, documents, events
                  hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
                  sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
+from wax import calls as telephony  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -1828,6 +1829,58 @@ def transcripts_command(args, J: bool) -> int:
     return 1
 
 
+def _since(text: str):
+    """`2d`, `6h`, `90m` or an ISO timestamp -> aware UTC datetime."""
+    from datetime import datetime, timedelta, timezone
+    m = re.fullmatch(r"(\d+)([dhm])", text.strip())
+    if m:
+        unit = {"d": "days", "h": "hours", "m": "minutes"}[m.group(2)]
+        return datetime.now(timezone.utc) - timedelta(**{unit: int(m.group(1))})
+    stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def calls_command(args, J: bool) -> int:
+    try:
+        if args.sub == "sync":
+            _emit(telephony.sync(_since(args.since), fetch=not args.no_fetch), J)
+            return 0
+        if args.sub == "event":
+            raw = Path(args.file).read_text() if args.file and args.file != "-" else sys.stdin.read()
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                print("error: stdin is not JSON", file=sys.stderr)
+                return 2
+            _emit(telephony.ingest_event(body, fetch=not args.no_fetch), J)
+            return 0
+        if args.sub == "list":
+            rows = telephony.recent(args.limit, args.outcome)
+            if J:
+                _emit(rows, True)
+                return 0
+            for r in rows:
+                when = telephony.local_iso(r["started_at"]) or "?"
+                who = r["remote_name"] or r["remote_number"] or "?"
+                arrow = {"inbound": "<-", "outbound": "->"}.get(r["direction"], "--")
+                talk = f" {r['talk_seconds']}s" if r["answered_at"] else ""
+                fwd = f"  fwd:{r['forward_reason']}" if r["forward_reason"] else ""
+                audio = f"  [{len(r['recordings'])} audio]" if r["recordings"] else ""
+                print(f"{when[:19]}  {arrow} {who:<24} {r['outcome'] or '?':<10}{talk}{fwd}{audio}")
+            return 0
+        if args.sub == "show":
+            found = telephony.show(args.ref)
+            if not found:
+                print(f"no call for {args.ref}", file=sys.stderr)
+                return 1
+            _emit(found, True)
+            return 0
+    except telephony.CallsError as exc:
+        print(f"error: {exc} ({exc.code})", file=sys.stderr)
+        return 2
+    return 1
+
+
 def main() -> int:
     # --json accepted at ANY position: `wax --json state stream` and
     # `wax state stream --json` both work. Requiring it before the subcommand
@@ -2037,6 +2090,20 @@ def main() -> int:
 
     dr = sub.add_parser("drain", help="process inbox items now (one-shot)", parents=[common])
     dr.add_argument("-n", type=int, default=1, help="max items to process")
+
+    cl = sub.add_parser("calls", help="phone calls (Telnyx): the call log and its audio",
+                        parents=[common]).add_subparsers(dest="sub", required=True)
+    cls_ = cl.add_parser("sync", parents=[common], help="reconcile CDRs, recordings and webhook events from Telnyx")
+    cls_.add_argument("--since", default="2d", help="window: 2d, 6h, 90m or ISO (default 2d)")
+    cls_.add_argument("--no-fetch", action="store_true", help="record voicemail but do not download it")
+    cle = cl.add_parser("event", parents=[common], help="ingest one Telnyx webhook envelope (JSON on stdin)")
+    cle.add_argument("--file", help="read the envelope from a file instead of stdin")
+    cle.add_argument("--no-fetch", action="store_true", help="record voicemail but do not download it")
+    cll = cl.add_parser("list", parents=[common], help="the call log, newest first")
+    cll.add_argument("--limit", type=int, default=30)
+    cll.add_argument("--outcome", help="answered | voicemail | missed | declined | no_answer | failed")
+    cl.add_parser("show", parents=[common], help="one call: legs, recordings, events").add_argument(
+        "ref", help="call_session_id, call_leg_id, item id or file name")
 
     doc = sub.add_parser(
         "doctor", parents=[common],
@@ -2464,6 +2531,9 @@ def main() -> int:
 
     if args.cmd == "transcripts":
         return transcripts_command(args, J)
+
+    if args.cmd == "calls":
+        return calls_command(args, J)
 
     if args.cmd == "doctor":
         return doctor(J, args.quiet)

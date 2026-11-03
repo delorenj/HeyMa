@@ -1,0 +1,21 @@
+slug: call-metadata
+version: 1
+description: Who, which way and how a phone call went (Telnyx call log), stamped as call-* keys.
+capabilities: [audio]      # joins the recording file name to the Telnyx call log
+enabled: true
+auto: true
+# Consumes nothing from its siblings. A file that is not a call recording is
+# `skipped` / `not_a_call`, so every audio item can carry this pass cheaply.
+requires: []
+# The call log is recomputed from Telnyx facts that keep arriving (CDRs lag the
+# hangup; a webhook may land after the recording). A re-run refreshes every key
+# this pass owns; nothing else ever writes them.
+clobber: [call-direction, call-outcome, call-remote-number, call-remote-name, call-line,
+          call-forwarded-from, call-forward-reason, call-started, call-answered, call-ended,
+          call-talk-seconds, call-session-id, call-leg-id, call-source]
+# Local ledger read first; at most three Telnyx GETs (20s each) when the call
+# is not in the log yet, plus the op read.
+timeout_s: 90
+env:
+  WAX_TELNYX_API_KEY_OP: op://DeLoSecrets/74k7nz3xkryqns4lpf65a323ue/credential
+command: ["{component_root}/config/passes.d/bin/call-metadata", "{md_path}", "{item_id}"]

@@ -1,0 +1,50 @@
+#!/usr/bin/python3
+"""Stamp the Telnyx call a recording belongs to onto its note (wax.ep.v1).
+
+    call-metadata <note.md> <item_id>
+
+Not a call recording -> skipped/not_a_call. A call recording whose call Telnyx
+has not reported yet -> reason_code=call_not_found (the sweep retries it).
+"""
+import json
+import sys
+from pathlib import Path
+
+component_root = next(parent for parent in Path(__file__).resolve().parents
+                      if (parent / "pyproject.toml").is_file())
+sys.path.insert(0, str(component_root / "src"))
+from wax import calls, ledger  # noqa: E402
+
+
+def audio_name(item_id: str) -> str:
+    row = ledger.connect().execute("SELECT orig_name, path FROM items WHERE item_id=?", (item_id,)).fetchone()
+    if not row:
+        return ""
+    return row["orig_name"] or Path(row["path"] or "").name
+
+
+def main() -> int:
+    item_id = sys.argv[2] if len(sys.argv) > 2 else ""
+    name = audio_name(item_id)
+    ident = calls.audio_identity(name) if name else None
+    if ident is None:
+        print(json.dumps({"wax_ep_version": 1, "state": "skipped", "reason_code": "not_a_call"}))
+        return 0
+    try:
+        call = calls.call_for_audio(name, fetch=True)
+    except calls.CallsError as exc:
+        print(f"reason_code={exc.code}", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+    if call is None:
+        print("reason_code=call_not_found", file=sys.stderr)
+        print(f"Telnyx has no call for {name} yet ({ident['source']})", file=sys.stderr)
+        return 1
+    print(json.dumps({"wax_ep_version": 1, "frontmatter": calls.frontmatter_for(call),
+                      "evidence": {"call_session_id": call["call_session_id"], "source": ident["source"],
+                                   "record_verb": bool(ident.get("record_verb"))}}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
