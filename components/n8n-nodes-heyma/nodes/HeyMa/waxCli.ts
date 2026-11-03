@@ -156,7 +156,29 @@ export type WaxSubcommand =
 	| { kind: 'pipelineImport'; file: string; name?: string }
 	| { kind: 'pipelineShow'; name: string }
 	| { kind: 'documentsScan'; pipeline?: string }
-	| { kind: 'documentsRun'; pipeline: string; file: string };
+	| { kind: 'documentsRun'; pipeline: string; file: string }
+	| { kind: 'callsEvent'; payload: JsonValue; fetch?: boolean }
+	| { kind: 'callsSync'; since?: string; fetch?: boolean }
+	| { kind: 'callsShow'; ref: string };
+
+/** `2d`, `6h`, `90m`, or an ISO-8601 timestamp — what `wax calls sync --since` accepts. */
+export const CALLS_SINCE_RE = /^(?:\d{1,4}[dhm]|\d{4}-\d{2}-\d{2}(?:[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?)?)$/u;
+/** A call session/leg UUID, or the Wax item id (16 hex) of a call recording. */
+export const CALLS_REF_RE = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16})$/iu;
+const MAX_EVENT_BYTES = 256 * 1024;
+
+/** The bytes a subcommand writes to the CLI's stdin, if any. */
+export function waxSubcommandInput(command: WaxSubcommand): string | undefined {
+	if (command.kind !== 'callsEvent') return undefined;
+	if (typeof command.payload !== 'object' || command.payload === null || Array.isArray(command.payload)) {
+		throw new WaxCliError('Telnyx event must be a JSON object (the webhook item, or its body)');
+	}
+	const input = JSON.stringify(command.payload);
+	if (Buffer.byteLength(input, 'utf8') > MAX_EVENT_BYTES) {
+		throw new WaxCliError('Telnyx event is larger than 256 KiB');
+	}
+	return input;
+}
 
 export function buildWaxSubcommandArgs(command: WaxSubcommand): string[] {
 	const args = ['--json'];
@@ -230,6 +252,25 @@ export function buildWaxSubcommandArgs(command: WaxSubcommand): string[] {
 			}
 			return [...args, 'documents', 'run', command.pipeline, command.file];
 		}
+		case 'callsEvent':
+			// The event itself travels on stdin, never argv.
+			return [...args, 'calls', 'event', ...(command.fetch === false ? ['--no-fetch'] : [])];
+		case 'callsSync': {
+			args.push('calls', 'sync');
+			if (command.since !== undefined) {
+				if (!CALLS_SINCE_RE.test(command.since)) {
+					throw new WaxCliError('Since must be like 2d, 6h, 90m or an ISO timestamp');
+				}
+				args.push('--since', command.since);
+			}
+			if (command.fetch === false) args.push('--no-fetch');
+			return args;
+		}
+		case 'callsShow':
+			if (!CALLS_REF_RE.test(command.ref)) {
+				throw new WaxCliError('Call must be a session/leg UUID or a Wax item id');
+			}
+			return [...args, 'calls', 'show', command.ref];
 	}
 }
 
@@ -246,14 +287,19 @@ export async function runWaxSubcommand(options: {
 		waxRoot: options.waxRoot,
 	});
 	const args = buildWaxSubcommandArgs(options.command);
+	const input = waxSubcommandInput(options.command);
 	try {
-		const { stderr, stdout } = await execFileAsync(options.executable, args, {
+		const pending = execFileAsync(options.executable, args, {
 			encoding: 'utf8',
 			env: { ...process.env, WAX_ROOT: options.waxRoot },
 			maxBuffer: MAX_OUTPUT_BYTES,
 			timeout: options.timeoutMs,
 			windowsHide: true,
 		});
+		// Always close stdin: a command that reads it must see EOF, and one that
+		// does not must never hang on an inherited pipe.
+		pending.child.stdin?.end(input ?? '');
+		const { stderr, stdout } = await pending;
 		return {
 			response: parseWaxOutput(stdout),
 			stderr: stderr.trim(),

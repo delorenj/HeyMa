@@ -208,6 +208,15 @@ class VoicemailTest(_Ledger):
             result = calls.ingest_event(envelope)
         self.assertEqual(result["voicemail"]["error"], "voicemail_expired")
 
+    def test_a_forged_url_is_never_fetched(self):
+        envelope = event("vm3", "calls.voicemail.completed", VM_SESSION, recording_url="https://evil.example/x.wav")
+        with patch.object(calls.urllib.request, "urlopen", side_effect=AssertionError("fetched")):
+            result = calls.ingest_event(envelope)
+        self.assertEqual(result["voicemail"]["error"], "voicemail_untrusted_url")
+        self.assertTrue(calls._voicemail_url_ok(
+            "https://voice-mail-prod.s3.us-east-1.amazonaws.com/%2B12154498437/x.wav?X-Amz-Signature=1"))
+        self.assertFalse(calls._voicemail_url_ok("http://voice-mail-prod.s3.us-east-1.amazonaws.com/x.wav"))
+
 
 class SyncTest(_Ledger):
     def test_sync_reconciles_all_three_sources(self):

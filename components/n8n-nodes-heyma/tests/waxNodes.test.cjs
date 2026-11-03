@@ -463,6 +463,7 @@ console.log(JSON.stringify({ passes: { passes: [
 		'dist/nodes/HeyMa/HeyMa.node.js',
 		'dist/nodes/WaxEp/WaxEp.node.js',
 		'dist/nodes/WaxPipeline/WaxPipeline.node.js',
+		'dist/nodes/WaxCalls/WaxCalls.node.js',
 		'dist/nodes/WaxPassMultiline/WaxPassMultiline.node.js',
 	]);
 });

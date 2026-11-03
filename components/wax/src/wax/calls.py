@@ -414,7 +414,22 @@ def derive(conn: sqlite3.Connection, session: str) -> Optional[dict[str, Any]]:
 
 # ----------------------------------------------------------------- voicemail --
 
+def _voicemail_url_ok(url: str) -> bool:
+    """Only Telnyx's voicemail bucket (or an operator-listed host) is fetched.
+
+    The webhook is unsigned by the time it reaches Wax, so a URL is a claim; a
+    forged event must not be able to pull an arbitrary file into the inbox.
+    """
+    parsed = urllib.parse.urlparse(url)
+    hosts = os.environ.get("WAX_TELNYX_VOICEMAIL_HOSTS", "voice-mail-prod.s3.us-east-1.amazonaws.com")
+    allowed = {h.strip().lower() for h in hosts.split(",") if h.strip()}
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() in allowed
+
+
 def _download(url: str, destination: Path) -> Path:
+    if not _voicemail_url_ok(url):
+        raise CallsError(f"voicemail URL host not allowed: {urllib.parse.urlparse(url).hostname}",
+                         "voicemail_untrusted_url")
     staging_dir = paths.INBOX / ".staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
     staging = staging_dir / f"telnyx-vm-{uuid.uuid4().hex}.part"
