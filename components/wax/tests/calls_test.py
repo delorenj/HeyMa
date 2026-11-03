@@ -72,6 +72,10 @@ class IdentityTest(unittest.TestCase):
         self.assertTrue(ident["record_verb"])
         self.assertEqual(ident["epoch"], 1792102909)
 
+    def test_a_millisecond_trunk_object_is_not_a_duplicate(self):
+        ident = calls.audio_identity(f"telnyx-2026-10-08-{OUT_LEG}-1791489580786.mp3")
+        self.assertEqual((ident["record_verb"], ident["epoch"]), (False, 1791489580))
+
     def test_voicemail_and_groundwire_and_other(self):
         self.assertEqual(calls.audio_identity(f"telnyx-vm-2026-10-30-{VM_SESSION}-1793393480.wav")
                          ["call_session_id"], VM_SESSION)
@@ -244,6 +248,36 @@ class SyncTest(_Ledger):
         # occurred_at in the fixture is fixed; widen the window so it counts.
         self.assertEqual(calls.health(days=3650)["voicemail_unfetched"], ["vm9"])
         self.assertIsNotNone(calls.health()["last_webhook_at"])
+
+
+class BackfillTest(_Ledger):
+    def test_backfill_fetches_trunk_recordings_once_and_leaves_twins_and_stubs(self):
+        paths.INBOX.mkdir(parents=True)
+        for rid, by, ms in (("r-trunk", "Trunking", 60000), ("r-verb", "RecordVerb", 55000), ("r-stub", "Trunking", 900)):
+            calls.upsert_recording(self.conn, {"id": rid, "call_leg_id": OUT_LEG, "call_session_id": OUT_SESSION,
+                                               "initiated_by": by, "duration_millis": ms,
+                                               "recording_started_at": "2026-10-09T12:00:00Z",
+                                               "download_urls": {"mp3": "https://telnyx.example/x.mp3"}})
+        url = f"https://s3.amazonaws.com/telephony-recorder-prod/a/2026-10-09/{OUT_LEG}-1791547200.mp3?X-Amz-Expires=600"
+        asked = []
+
+        def fake_get(path, params, key):
+            asked.append(path)
+            return {"data": {"download_urls": {"mp3": url}}}
+
+        def fake_download(u, destination, trusted=False):
+            self.assertTrue(trusted)
+            destination.write_bytes(b"ID3" + b"\0" * 100)
+            return destination
+
+        with patch.object(calls, "_get", side_effect=fake_get), patch.object(calls, "_download", side_effect=fake_download):
+            first = calls.backfill_recordings(key="k")
+            again = calls.backfill_recordings(key="k")
+        self.assertEqual(asked, ["/recordings/r-trunk"])
+        self.assertEqual((first["candidates"], first["skipped_stub"], again["candidates"]), (2, 1, 1))
+        name = first["fetched"][0]["file_name"]
+        self.assertEqual(name, f"telnyx-2026-10-09-{OUT_LEG}-1791547200.mp3")
+        self.assertEqual(calls.audio_identity(name)["call_leg_id"], OUT_LEG)
 
 
 class PassCommandTest(_Ledger):

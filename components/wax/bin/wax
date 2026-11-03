@@ -1920,6 +1920,9 @@ def calls_command(args, J: bool) -> int:
                 return 2
             _emit(telephony.ingest_event(body, fetch=not args.no_fetch), J)
             return 0
+        if args.sub == "backfill":
+            _emit(telephony.backfill_recordings(dry_run=args.dry_run, min_ms=int(args.min_seconds * 1000)), J)
+            return 0
         if args.sub == "list":
             rows = telephony.recent(args.limit, args.outcome)
             if J:
@@ -2165,6 +2168,10 @@ def main() -> int:
     cle = cl.add_parser("event", parents=[common], help="ingest one Telnyx webhook envelope (JSON on stdin)")
     cle.add_argument("--file", help="read the envelope from a file instead of stdin")
     cle.add_argument("--no-fetch", action="store_true", help="record voicemail but do not download it")
+    clb = cl.add_parser("backfill", parents=[common],
+                        help="fetch trunk recordings Telnyx kept in its own bucket (pre custom storage) into the inbox")
+    clb.add_argument("--dry-run", action="store_true", help="list what would be fetched")
+    clb.add_argument("--min-seconds", type=float, default=3.0, help="skip stubs shorter than this (default 3)")
     cll = cl.add_parser("list", parents=[common], help="the call log, newest first")
     cll.add_argument("--limit", type=int, default=30)
     cll.add_argument("--outcome", help="answered | voicemail | missed | declined | no_answer | failed")

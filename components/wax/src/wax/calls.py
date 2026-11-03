@@ -426,8 +426,12 @@ def _voicemail_url_ok(url: str) -> bool:
     return parsed.scheme == "https" and (parsed.hostname or "").lower() in allowed
 
 
-def _download(url: str, destination: Path) -> Path:
-    if not _voicemail_url_ok(url):
+def _download(url: str, destination: Path, *, trusted: bool = False) -> Path:
+    """Stage `url` under inbox/.staging and rename it into place, never over a file.
+
+    `trusted` is for a URL the authenticated Telnyx API itself just handed back; anything
+    that came in on a webhook goes through the voicemail host allowlist."""
+    if not trusted and not _voicemail_url_ok(url):
         raise CallsError(f"voicemail URL host not allowed: {urllib.parse.urlparse(url).hostname}",
                          "voicemail_untrusted_url")
     staging_dir = paths.INBOX / ".staging"
@@ -577,6 +581,51 @@ def last_sync() -> Optional[dict[str, Any]]:
         return None
 
 
+BACKFILL_MIN_MS = 3000   # Feet-era missed calls left ~2 KB stubs of a second or two
+
+
+def backfill_recordings(*, dry_run: bool = False, min_ms: int = BACKFILL_MIN_MS,
+                        key: Optional[str] = None) -> dict[str, Any]:
+    """`wax calls backfill`: pull native trunk recordings that never reached our bucket.
+
+    Before custom storage was attached (2026-10-15T21:18Z) Telnyx kept recordings in its own
+    bucket, so telnyx-s3-intake never saw them. Each one gets a fresh presigned link from
+    GET /v2/recordings/<id> and lands in the inbox under the intake's own name shape, so the
+    call-metadata pass joins it like any other. RecordVerb twins (the Feet-era second copy)
+    and sub-`min_ms` stubs are left where they are. Idempotent: `file_name` marks a fetch.
+    """
+    conn = db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM call_recordings WHERE kind='trunk' AND object_name IS NULL AND file_name IS NULL "
+        "AND recording_key NOT LIKE 'vm:%' ORDER BY started_at")]
+    out: dict[str, Any] = {"candidates": len(rows), "fetched": [], "skipped_stub": 0, "errors": [],
+                           "dry_run": dry_run}
+    for row in rows:
+        if (row["duration_millis"] or 0) < min_ms:
+            out["skipped_stub"] += 1
+            continue
+        if dry_run:
+            out["fetched"].append({"recording_key": row["recording_key"], "started_at": row["started_at"]})
+            continue
+        try:
+            key = key or api_key()
+            rec = (_get(f"/recordings/{row['recording_key']}", {}, key).get("data") or {})
+            url = (rec.get("download_urls") or {}).get("mp3") or ""
+            if not url.startswith("https://"):
+                raise CallsError(f"no https download URL for {row['recording_key']}", "recording_no_url")
+            base = urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]
+            if not re.fullmatch(r"[0-9a-f-]{36}-\d{9,13}\.mp3", base):
+                raise CallsError(f"unexpected object name {base!r}", "recording_bad_name")
+            day = (row["started_at"] or "")[:10] or "unknown"
+            placed = _download(url, paths.INBOX / f"telnyx-{day}-{base}", trusted=True)
+            conn.execute("UPDATE call_recordings SET file_name=?, updated_at=? WHERE recording_key=?",
+                         (placed.name, sentinel.utcnow(), row["recording_key"]))
+            out["fetched"].append({"recording_key": row["recording_key"], "file_name": placed.name})
+        except CallsError as exc:
+            out["errors"].append({"recording_key": row["recording_key"], "code": exc.code, "detail": str(exc)})
+    return out
+
+
 def health(days: int = 7) -> dict[str, Any]:
     """What `wax doctor` and `wax status` ask of the call log, from the ledger alone."""
     conn = db()
@@ -603,10 +652,12 @@ def audio_identity(name: str) -> Optional[dict[str, Any]]:
                 "epoch": int(m.group(3))}
     if m := TELNYX_TRUNK.match(base):
         epoch = int(m.group(3))
-        # RecordVerb names carry a microsecond epoch (16 digits) — Feet-era duplicates.
+        # RecordVerb names carry a microsecond epoch (16 digits) — Feet-era duplicates. A
+        # few early trunk objects carry milliseconds (13 digits); those are not duplicates.
+        record_verb = epoch > 10**15
         return {"source": "telnyx", "call_leg_id": m.group(2).lower(),
-                "epoch": epoch // 1_000_000 if epoch > 10**12 else epoch,
-                "record_verb": epoch > 10**12}
+                "epoch": epoch // 1_000_000 if record_verb else epoch // 1000 if epoch > 10**12 else epoch,
+                "record_verb": record_verb}
     if m := GROUNDWIRE.match(base):
         try:
             local = datetime.strptime(m.group(3) + m.group(4), "%y%m%d%H%M%S").astimezone()
