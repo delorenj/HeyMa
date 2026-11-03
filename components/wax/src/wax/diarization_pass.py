@@ -2,13 +2,47 @@ import hashlib
 import importlib.util
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 from . import component, frontmatter, ledger
 
 
+SKIP_CHANNEL_SEPARATED = {"wax_ep_version": 1, "state": "skipped", "reason_code": "channel_separated"}
+
+
+def channel_attributed(md, item_id=None):
+    """True when the carrier's channel split already named every speaker.
+
+    scripts/transcribe.py stamps `channel-attributed: true` on the note (and the
+    adapter mirrors it into `wax.channel_attributed`); the durable timed ASR
+    carries `channel_separated` as a second witness for a note whose frontmatter
+    was edited. Sortformer over a mono mixdown would only overwrite known
+    speakers with guesses, so the pass skips, before it spawns the GPU venv.
+    """
+    try:
+        fm, _ = frontmatter.read(Path(md))
+    except OSError:
+        fm = {}
+    wax = fm.get(frontmatter.WAX_KEY) if isinstance(fm, dict) else None
+    if fm.get("channel-attributed") is True or (isinstance(wax, dict) and wax.get("channel_attributed") is True):
+        return True
+    if item_id:
+        try:
+            row = ledger.connect().execute(
+                "SELECT asr_path FROM transcripts WHERE item_id=?", (item_id,)).fetchone()
+            if row and row["asr_path"]:
+                asr = json.loads(Path(row["asr_path"]).read_text())
+                return bool((asr.get("result") or {}).get("channel_separated"))
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+            pass
+    return False
+
+
 def build_result(md, item_id):
+    if channel_attributed(md, item_id):
+        return dict(SKIP_CHANNEL_SEPARATED)
     row = ledger.connect().execute(
         "SELECT i.path,i.sha256,t.asr_path,t.body_sha256 FROM items i JOIN transcripts t USING(item_id) WHERE item_id=?",
         (item_id,),
@@ -38,6 +72,8 @@ def build_result(md, item_id):
 
 
 def main(md, item_id):
+    if channel_attributed(md, item_id):
+        return dict(SKIP_CHANNEL_SEPARATED)
     python = Path(os.environ.get("DIARIZATION_PYTHON") or
                   (component.ROOT.parents[1] / ".venv-diarization/bin/python"))
     source = component.ROOT / "src"

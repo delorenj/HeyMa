@@ -83,6 +83,25 @@ a real Sortformer streaming forward pass on CUDA—an import or green tray alone
 is not device evidence. Successful transcripts persist requested and actual
 diarization device in their frontmatter and in-band metadata.
 
+**Channel-separated calls.** A Telnyx dual-channel recording (`telnyx-*.mp3`, not
+`telnyx-vm-*`) carries one party per channel (first leg on channel A, the rest
+on B), so the carrier's split replaces the Sortformer guess.
+`scripts/transcribe.py` asks `wax.channels.plan()`: the name starts with
+`telnyx-` and not `telnyx-vm-`, ffprobe reports exactly 2 channels, and ffmpeg
+`astats` puts BOTH channels above -60 dB RMS (an old one-sided recording has
+~-90 dB on channel 1). If so it loads ONE Whisper model, extracts and transcribes
+channel 0 then channel 1 with the usual settings, and merges the segments by
+start time into turns labelled with the two parties (`wax.calls.channel_parties`
+when present, else `Channel A` / `Channel B`). Anything else (voicemail, mono, a
+silent channel, probe failure, `WAX_CHANNEL_SPLIT=0`) takes the normal mono
+path. The note gets `diarized: true`, `channel-attributed: true` and
+`channel-speakers`; in-band metadata carries `channel_separated` and
+`speaker_attribution: channel`, the ledger `transcripts.diarized` is 1, and the
+timed ASR (`asr.json`) records `channel_separated` with per-segment `speaker`.
+The `diarization` pass sees that and returns
+`{"state":"skipped","reason_code":"channel_separated"}` before spawning the GPU
+venv, so channel attribution is never overwritten.
+
 ---
 
 ## State machine: `~/HeyMa/stream`

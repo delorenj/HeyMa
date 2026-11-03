@@ -335,6 +335,9 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                         "diarization_device_requested"
                     ),
                     "diarization_device": meta.get("diarization_device"),
+                    # Dual-channel call: speakers come from the carrier's channel
+                    # split (scripts/transcribe.py), and the diarization pass skips.
+                    "channel_attributed": bool(meta.get("channel_separated")),
                 },
             }
             if refs:

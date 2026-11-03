@@ -129,6 +129,11 @@ the path with a real Sortformer CUDA forward pass, not an import-only check.
 The `diarization` pass runs after `classification` and skips a transcript
 classified `monolog` (`when`, `condition_unmet`; operator order 2026-10-27). A
 meeting, phone_call, other, or missing classification (a v2 abstain too) still diarizes.
+A dual-channel `telnyx-*` call (not `telnyx-vm-*`) is the exception: `scripts/transcribe.py`
+transcribes each channel separately (both above -60 dB RMS, else the mono path), labels turns
+with the call's two parties, and stamps `channel-attributed: true` and `diarized: true`; the
+`diarization` pass then reports `skipped`/`channel_separated` instead of running Sortformer
+(`WAX_CHANNEL_SPLIT=0` disables the split). Code `components/wax/src/wax/channels.py`.
 
 ## S3: backup-first, never-delete
 

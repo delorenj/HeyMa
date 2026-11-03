@@ -257,8 +257,8 @@ def missing_diarization_dependencies() -> list[str]:
     return missing
 
 
-def transcribe_local(audio_path: str, model_size: str, language: str | None, device: str | None = None) -> dict:
-    """Transcribe using faster-whisper locally."""
+def load_whisper(model_size: str, device: str | None = None):
+    """Load one faster-whisper model on the requested/available device."""
     from faster_whisper import WhisperModel
 
     cuda_ok, cuda_reason = cuda_runtime_available()
@@ -292,6 +292,17 @@ def transcribe_local(audio_path: str, model_size: str, language: str | None, dev
             log(f"  Skipping cuda ({reason}); using cpu (int8)")
             model = WhisperModel(model_size, device="cpu", compute_type="int8")
             log("  Device: cpu (int8)")
+    return model
+
+
+def run_whisper(model, audio_path: str, language: str | None,
+                progress_scale: tuple[int, int] = (0, 1)):
+    """Decode one file with an already-loaded model.
+
+    ``progress_scale`` is (slot, slots): channel-separated calls run several
+    passes of this and each reports its slice of one 0-100 bar.
+    Returns (segments, full_text_parts, info).
+    """
     segments, info = model.transcribe(
         audio_path,
         language=language,
@@ -299,11 +310,16 @@ def transcribe_local(audio_path: str, model_size: str, language: str | None, dev
         vad_filter=True,  # skip silence
     )
 
+    slot, slots = progress_scale
+
+    def scaled(pct: int) -> int:
+        return (slot * 100 + pct) // slots
+
     duration = info.duration or 0
     transcript_segments = []
     full_text_parts = []
     last_pct = -1
-    report_progress("transcribe", 0, duration_s=round(duration, 3))
+    report_progress("transcribe", scaled(0), duration_s=round(duration, 3))
     for segment in segments:
         transcript_segments.append({
             "start": segment.start,
@@ -318,11 +334,18 @@ def transcribe_local(audio_path: str, model_size: str, language: str | None, dev
                 last_pct = pct
                 ts = format_timestamp(segment.end)
                 report_progress(
-                    "transcribe", pct, position=ts,
+                    "transcribe", scaled(pct), position=ts,
                     duration=format_duration(duration),
                 )
 
-    report_progress("transcribe", 100, duration_s=round(duration, 3))
+    report_progress("transcribe", scaled(100), duration_s=round(duration, 3))
+    return transcript_segments, full_text_parts, info
+
+
+def transcribe_local(audio_path: str, model_size: str, language: str | None, device: str | None = None) -> dict:
+    """Transcribe using faster-whisper locally."""
+    model = load_whisper(model_size, device)
+    transcript_segments, full_text_parts, info = run_whisper(model, audio_path, language)
 
     return {
         "text": " ".join(full_text_parts),
@@ -332,6 +355,53 @@ def transcribe_local(audio_path: str, model_size: str, language: str | None, dev
         "duration": info.duration,
         "model": model_size,
         "backend": "faster-whisper",
+    }
+
+
+def transcribe_channels(audio_path: str, plan, model_size: str, language: str | None,
+                        device: str | None = None) -> dict:
+    """Transcribe each channel of a dual-channel call with ONE loaded model.
+
+    Channels run one after the other (never two models: Whisper keeps its ~5 GB
+    floor), then merge by start time into speaker-labelled segments. The result
+    has the same shape as ``transcribe_local`` plus ``channel_separated``.
+    """
+    import tempfile
+
+    from wax import channels
+
+    model = load_whisper(model_size, device)
+    labels = plan.labels
+    per_channel: list[list[dict]] = []
+    infos = []
+    lang = language
+    with tempfile.TemporaryDirectory(prefix="wax-channels-") as scratch:
+        for index in (0, 1):
+            log(f"  Channel {index} ({labels[index]}): extracting and transcribing "
+                f"(RMS {plan.levels[index]:.1f} dB)")
+            wav = channels.extract_channel(audio_path, index, Path(scratch) / f"ch{index}.wav")
+            segs, _parts, info = run_whisper(model, str(wav), lang, (index, 2))
+            wav.unlink(missing_ok=True)
+            per_channel.append(segs)
+            infos.append(info)
+            # One call is one language: pin the second channel to what the first
+            # one settled on when it was confident (a short channel guesses badly).
+            if lang is None and (info.language_probability or 0) >= 0.6:
+                lang = info.language
+
+    merged = channels.merge_segments(per_channel, labels)
+    best = max(infos, key=lambda i: i.language_probability or 0)
+    return {
+        "text": " ".join(seg["text"] for seg in merged),
+        "segments": merged,
+        "language": best.language,
+        "language_probability": best.language_probability,
+        "duration": max((i.duration or 0) for i in infos),
+        "model": model_size,
+        "backend": "faster-whisper",
+        "channel_separated": True,
+        "channel_labels": list(labels),
+        "channel_rms_db": [round(v, 1) for v in plan.levels],
     }
 
 
@@ -532,6 +602,7 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
     # Machine-readable enrichment belongs in frontmatter. Keeping it out of the
     # prose means the transcript begins with the transcript, while Obsidian and
     # downstream automation retain the full provenance.
+    channel_separated = bool(result.get("channel_separated"))
     metadata = {
         "source-audio": str(Path(audio_path).resolve()),
         "transcribed-at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -539,7 +610,10 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
         "language": result.get("language"),
         "engine-model": result.get("model"),
         "transcription-backend": result.get("backend"),
-        "diarized": bool(diarization),
+        # Channel-attributed speakers are KNOWN, not guessed, so the note says
+        # diarized. `channel-attributed` below is what tells the diarization pass
+        # to leave the turns alone.
+        "diarized": bool(diarization) or channel_separated,
         # `diarized: false` alone cannot distinguish "one person was talking"
         # from "we asked for speakers and the diarizer gave us nothing". Pair it
         # with the request so a week of silently undiarized transcripts is
@@ -548,6 +622,9 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
         "diarization-device-requested": diarization_device_requested,
         "diarization-device": diarization_device,
     }
+    if channel_separated:
+        metadata["channel-attributed"] = True
+        metadata["channel-speakers"] = list(result.get("channel_labels") or [])
     lines = ["---"]
     for key, value in metadata.items():
         # JSON scalars are valid YAML scalars and safely quote paths/strings.
@@ -556,7 +633,14 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
     lines.append(f"# Transcription: {Path(audio_path).name}")
     lines.append("")
 
-    if result["segments"]:
+    if channel_separated and result["segments"]:
+        from wax import channels
+
+        for turn in channels.speaker_turns(result["segments"]):
+            if lines and lines[-1] != "":
+                lines.append("")
+            lines.append(f"**{turn['speaker_label']} ({format_timestamp(turn['start'])}):** {turn['text']}")
+    elif result["segments"]:
         current_speaker = None
         for seg in result["segments"]:
             ts = format_timestamp(seg["start"])
@@ -619,6 +703,13 @@ def main():
         default=True,
         help="Include speaker diarization (default: enabled; use --no-diarization to opt out)",
     )
+    parser.add_argument(
+        "--channel-split",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Transcribe dual-channel telnyx-* call recordings per channel (default: enabled; "
+             "WAX_CHANNEL_SPLIT=0 also disables)",
+    )
     parser.add_argument("--json", action="store_true", help="Output raw JSON instead of markdown")
     parser.add_argument("--stdout", action="store_true", help="Print to stdout instead of writing file")
     parser.add_argument("--device", choices=["cpu", "cuda", "auto"], default="auto", help="Device for inference (default: auto)")
@@ -647,7 +738,17 @@ def main():
         args.diarization_device if diarization_requested else None
     )
 
-    if args.diarization:
+    # A dual-channel Telnyx call already has its speakers: one party per channel.
+    channel_plan = None
+    if args.channel_split:
+        from wax import channels
+        channel_plan = channels.plan(audio_path)
+        log(f"Channel split: {channel_plan.reason}"
+            + (f" (RMS dB {[round(v, 1) for v in channel_plan.levels]})" if channel_plan.levels else ""))
+        if not channel_plan.use:
+            channel_plan = None
+
+    if args.diarization and not channel_plan:
         missing = missing_diarization_dependencies()
         if missing:
             log(f"Warning: --diarization requested but missing dependencies: {', '.join(missing)}")
@@ -665,7 +766,10 @@ def main():
     log(f"Backend: faster-whisper | Model: {args.model}")
     report_progress("preparing", 0)
 
-    result = transcribe_local(audio_path, args.model, args.language, args.device)
+    if channel_plan:
+        result = transcribe_channels(audio_path, channel_plan, args.model, args.language, args.device)
+    else:
+        result = transcribe_local(audio_path, args.model, args.language, args.device)
     if args.asr_output:
         import hashlib
         import tempfile
@@ -683,7 +787,13 @@ def main():
             os.fsync(handle.fileno())
             temporary = handle.name
         os.replace(temporary, artifact)
-    if args.diarization:
+    channel_separated = bool(result.get("channel_separated"))
+    if channel_separated:
+        # Speakers come from the carrier's channel split; Sortformer must not guess over them.
+        log("  Speakers attributed by channel; skipping Sortformer diarization.")
+        diarization = None
+        diarization_device = None
+    elif args.diarization:
         diarization, diarization_device = diarize_local(audio_path, args.diarization_device)
     else:
         diarization = None
@@ -692,7 +802,7 @@ def main():
     # Requested-but-empty is a FAILURE, not a quiet single-speaker result. Say so
     # on stderr in a shape the adapter greps for, and keep exit 0 so a 3h ASR run
     # is never thrown away over a missing speaker track.
-    diarization_degraded = diarization_requested and not diarization
+    diarization_degraded = diarization_requested and not diarization and not channel_separated
     if diarization_degraded:
         log("Warning: DIARIZATION-DEGRADED: diarization was requested but produced no "
             "speaker turns; this transcript is single-speaker by failure, not by content.")
@@ -745,7 +855,9 @@ def main():
             "language": result.get("language"),
             "word_count": len((result.get("text") or "").split()),
             "segment_count": len(result.get("segments") or []),
-            "diarized": bool(diarization),
+            "diarized": bool(diarization) or channel_separated,
+            "channel_separated": channel_separated,
+            "speaker_attribution": "channel" if channel_separated else ("sortformer" if diarization else None),
             "diarization_requested": diarization_requested,
             "diarization_degraded": diarization_degraded,
             "diarization_device_requested": diarization_device_requested,
