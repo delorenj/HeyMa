@@ -529,6 +529,30 @@ and the TypeSafe pass-through answers), `jev api key` (a virtual key, not
 blocked, budget left; both probe free endpoints; project-extraction's key only,
 classification's `heyma-wax-classification` key is not probed), and `pass events enqueued`.
 
+## call-metadata
+
+`config/passes.d/call-metadata.yaml`, no model. For a phone-call recording it joins the
+item's original file name to the Wax call log (`src/wax/calls.py`) and stamps, absent when
+unknown and never null: `call-direction`, `call-outcome`, `call-remote-number`,
+`call-remote-name`, `call-line`, `call-forwarded-from`, `call-forward-reason`,
+`call-started`, `call-answered`, `call-ended` (vault-local offsets), `call-talk-seconds`,
+`call-session-id`, `call-leg-id`, `call-source`. All fourteen are in `clobber`, so a
+re-run follows the call log.
+
+The join, by name shape:
+
+| file | key |
+|---|---|
+| `telnyx-<date>-<leg>-<epoch>[-<sha256>].mp3` (S3 intake, `wax calls backfill`) | the recording's `call_leg_id`, else the CDR leg, else a leg seen in a webhook event |
+| `telnyx-vm-<date>-<session>-<epoch>.wav` (voicemail) | the `call_session_id` in the name |
+| `rec_<profile>_[<name>_]<digits>@yymmdd_hhmmss.*` (retired Groundwire) | remote number and local start within ±5 s, an answered leg first |
+
+Anything else ends `skipped`/`not_a_call`. An unknown call is fetched once from the Telnyx
+API before the pass fails with `call_not_found`; an API failure is `telnyx_auth_failed`,
+`telnyx_http_error` or `telnyx_unreachable`. The same join names the two channels of a
+dual-channel Telnyx call (`calls.channel_parties`: outbound ch0 is Me, inbound ch0 is the
+caller) for channel-separated transcription.
+
 ## summarize and the untitled-standard pipeline
 
 `summarize` (`config/passes.d/summarize.yaml`, `passes.d/bin/summarize`) gives a

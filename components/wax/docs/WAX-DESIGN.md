@@ -102,6 +102,23 @@ The `diarization` pass sees that and returns
 `{"state":"skipped","reason_code":"channel_separated"}` before spawning the GPU
 venv, so channel attribution is never overwritten.
 
+**The call log.** Call identity is Wax's, not the audio's: `wax.calls` keeps
+`calls` (one row per Telnyx `call_session_id`, recomputed by `derive()` from every
+leg and event), `call_legs` (CDRs, `/v2/detail_records`), `call_recordings`
+(`/v2/recordings` plus voicemails, keyed `vm:<event id>`) and `call_events` (webhook
+envelopes, keyed by Telnyx's event id, so a duplicate or replayed delivery is a
+no-op). Two writers, both idempotent: `wax calls event` (the webhook, through n8n's
+Wax Calls node, JSON on stdin) and `wax calls sync` (Candybar, every 10 min, the
+API as the source of truth for anything the webhook missed). A call's `outcome` is
+answered / voicemail / declined / missed / no_answer / failed / in_progress; a
+missed call stays a row and nothing else. A voicemail WAV is fetched once, only
+from Telnyx's voicemail bucket host, into `inbox/` under
+`telnyx-vm-<date>-<session>-<epoch>.wav`, so its audio follows the normal
+archive-first path. `wax calls event` returns `ended: true` on exactly the event
+that first gives a call an end; the n8n workflow publishes
+`bloodbank.telephony.call.ended` from that alone. `wax doctor` probes the sync age,
+stranded voicemails and the API key; `wax status` prints a `calls` line.
+
 ---
 
 ## State machine: `~/HeyMa/stream`

@@ -46,6 +46,25 @@ Telnyx intake reads only the configured native recording prefix through AWS CLI.
 pipeline stage; intake never edits `dropoff/`. Configuration, delivery boundaries,
 and operator proof: [Telnyx S3 intake](components/telnyx-s3-intake/README.md).
 
+**Phone calls.** Telnyx (+12154498437, the "DeLoNET SIP" credential connection; the
+Verizon cell forwards to it) is the only source of call audio; Groundwire recording
+and the Syncthing `telephony` folder are retired (2026-11-03). Wax owns call identity
+in the `calls · call_legs · call_recordings · call_events` tables of `var/wax.db`
+(`components/wax/src/wax/calls.py`), written by two idempotent paths: the Telnyx
+webhook → n8n workflow `9BkQCtKxdEtPWLAn` (released by
+`components/n8n-workflows/telnyx_calls.py`) → the n8n-nodes-heyma **Wax Calls** node →
+`wax calls event` (JSON on stdin), and `wax calls sync`, which reconciles CDRs,
+recordings and webhook deliveries from the API every 10 minutes on Candybar
+(`wax-calls-sync.service`, manifest `components/wax/deploy/candybar/wax-calls-sync/`).
+Missed and declined calls are rows only. A voicemail (`calls.voicemail.completed`, a WAV
+on a 7-day link, host-allowlisted) is fetched once into `inbox/` as
+`telnyx-vm-<date>-<session>-<epoch>.wav`. Only the event that first ends a call returns
+`ended: true`, which the workflow turns into `bloodbank.telephony.call.ended` and one
+ntfy line on `telephony`. The `call-metadata` pass stamps `call-*` frontmatter (direction,
+outcome, remote number/name, forwarding, times, session/leg ids). The Telnyx key is
+`op://DeLoSecrets/74k7nz3xkryqns4lpf65a323ue/credential`. Feet-era (TeXML, before
+2026-10-25) RecordVerb second copies have a 16-digit epoch and are never the master.
+
 ## waxd — the single owner
 
 `waxd.service` (systemd **user** unit, `enabled`+`active`) holds
@@ -93,6 +112,7 @@ wax transcripts search <query> [--since --tag --classification --origin ... --le
 wax transcripts show <ref> [--version N] [--raw] | history <ref> | migrate [--dry-run] | embed [--limit N]
 wax transcripts link-harvest [PATH...] [--report] [--dry-run]  # px harvest artifacts -> tx.harvest_* (ticket links)
 wax --json transcripts browse [--view K] [--include-hermes] [--id N]  # Holocene's read-only feed (ro role, no bodies)
+wax calls sync [--since 2d] | event | list [--outcome] | show <ref> | backfill [--dry-run]   # the call log
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 
@@ -158,7 +178,7 @@ A failing pass never stops a sibling, except through `requires:` (ordering +
 gating; `after:` only orders): a dependent waits with `dependency_failed`. Failure
 is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
-`classification`, `diarization`, `clipboard-copy`, `title-slug`, `project-extraction`.
+`classification`, `diarization`, `clipboard-copy`, `title-slug`, `project-extraction`, `call-metadata` (no model; skips non-calls with `not_a_call`).
 `classification` (v2) is four-way (`monolog`, `meeting`, `phone_call`, `other`): a
 telnyx rule, a floor rule, then Jev on its own virtual key (alias
 `heyma-wax-classification`); see `docs/ENRICHMENT-PASSES.md`. Every chat
