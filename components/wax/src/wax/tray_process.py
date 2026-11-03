@@ -102,6 +102,12 @@ def main():
     def call(*args):
         subprocess.Popen([str(cli), *args])
 
+    def open_settings():
+        # GTK 4 window in its own process: this one is GTK 3 and the two
+        # cannot share an interpreter. Adw.Application keeps it single-instance.
+        subprocess.Popen([sys.executable, "-m", "wax.heyma_window", "--page", "settings"],
+                         env={**os.environ, "PYTHONPATH": str(component.ROOT / "src")})
+
     indicator = tray.Tray(
         on_toggle=lambda: call("rec", "toggle"),
         on_quit=tray.Gtk.main_quit,
@@ -111,6 +117,7 @@ def main():
         on_retry_passes=lambda item, slugs: call("ep", "run-selected", item, *slugs),
         on_clear_completed=lambda: call("queue", "--clear-completed"),
         on_open_transcript=lambda md: subprocess.Popen(["xdg-open", tray.obsidian_uri(md)]),
+        on_settings=open_settings,
     )
 
     def update():

@@ -32,6 +32,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 from wax import (archive, catalog, capture, component, config, documents, events, finalize, frontmatter,
                  hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
                  sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
+from wax import settings as operator_settings  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -1404,6 +1405,7 @@ def ep_list_rows() -> list[dict[str, Any]]:
         tally = {}
     rows = []
     bad = passes.quarantined(registry)
+    switched_off = operator_settings.disabled_passes()
     for slug, ep in sorted(registry.items()):
         version = int(ep.get("version") or 1)
         counted = {"completed": 0, "failed": 0, "running": 0, "stale": 0}
@@ -1436,6 +1438,9 @@ def ep_list_rows() -> list[dict[str, Any]]:
             "command": _expand_command(ep),
             "path": ep.get("_path"), "error": ep.get("error"),
             "quarantined": bad.get(slug),
+            # The HeyMa window's switch (var/settings.json), independent of the
+            # registry's `enabled:` — compiled pipelines froze that field.
+            "operator_enabled": slug not in switched_off,
             **counted,
         })
     return rows
@@ -1514,6 +1519,9 @@ def render_status(snap: dict[str, Any]) -> None:
               f"{', '.join(ps.get('slugs') or [])}   -> wax ep sweep --dry-run")
     else:
         print(f"  {'passes':<12} ok       no enrichment pass failing at its current version")
+    if ps.get("operator_disabled"):
+        print(f"  {'passes off':<12} {', '.join(ps['operator_disabled'])} (switched off by the operator)"
+              "   -> HeyMa settings / wax ep enable <slug>")
 
     diar = snap.get("diarization") or {}
     if diar.get("degraded"):
@@ -1852,6 +1860,10 @@ def main() -> int:
                               "unless --apply); then `wax ep run` its failed passes")
     eprp.add_argument("item_id")
     eprp.add_argument("--apply", action="store_true", help="write the new plan (nothing runs)")
+    for verb, words in (("enable", "switch a pass back ON for every pipeline"),
+                        ("disable", "switch a pass OFF: runs record it skipped (operator_disabled)")):
+        ept = ep.add_parser(verb, help=words, parents=[common])
+        ept.add_argument("slug")
     epa = ep.add_parser("run-all", help="run every enabled pass for one item", parents=[common])
     epa.add_argument("item_id")
     eps = ep.add_parser("status", help="recorded pass outcomes, newest first", parents=[common])
@@ -2167,6 +2179,8 @@ def main() -> int:
                         print(f"  {'':<24} !! {r['error']}")
                     if r.get("quarantined"):
                         print(f"  {'':<24} !! QUARANTINED: {r['quarantined']}")
+                    if not r.get("operator_enabled", True):
+                        print(f"  {'':<24} !! switched OFF by the operator (`wax ep enable {r['slug']}`)")
                 # STALE is not a failure: it is history recorded against a pass
                 # definition that has since been versioned past.
                 print("\n  OK/FAIL count rows at the CURRENTLY registered version; "
@@ -2174,7 +2188,8 @@ def main() -> int:
             return 0
         if args.sub == "run":
             try:
-                result = passes.run(args.item_id, args.slug, attempt=args.attempt, live=args.live)
+                result = passes.run(args.item_id, args.slug, attempt=args.attempt, live=args.live,
+                                    operator_toggle=False)
             except passes.PassError as e:
                 if not args.live:
                     raise
@@ -2183,6 +2198,12 @@ def main() -> int:
             result["pass_events"] = finalize.publish_pass_events(args.item_id)
             result["completion"] = finalize.finalize(args.item_id)
             _emit(result, J)
+            return 0
+        if args.sub in ("enable", "disable"):
+            if args.slug not in passes.registry():
+                print(f"unknown pass {args.slug!r}; known: {sorted(passes.registry())}", file=sys.stderr)
+                return 2
+            _emit(operator_settings.set_pass_enabled(args.slug, args.sub == "enable"), J)
             return 0
         if args.sub == "replan":
             try:

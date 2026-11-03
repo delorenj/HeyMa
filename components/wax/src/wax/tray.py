@@ -199,6 +199,10 @@ def colour_for(snap: dict) -> tuple[str, str]:
         tip += f"\nevent outbox backlog: {backlog} unpublished"
     if s == "recording" and stream.get("silent"):
         tip += "\nsilence: the encoder hears nothing — is the mic muted?"
+    switched_off = [str(slug) for slug in (passes.get("operator_disabled") or [])]
+    if switched_off:
+        # Deliberate, so not a colour change — but never invisible either.
+        tip += f"\npasses off: {', '.join(switched_off)}"
 
     if s == "recording":
         return "red", tip
@@ -246,8 +250,9 @@ def clear_stage_failure(slug: str | None = None) -> None:
 class Tray:
     def __init__(self, on_toggle=None, on_quit=None, on_open=None,
                  on_skip=None, on_clear_completed=None, on_open_transcript=None,
-                 on_retry_item=None, on_retry_passes=None):
+                 on_retry_item=None, on_retry_passes=None, on_settings=None):
         _load_gtk()
+        self.on_settings = on_settings
         self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
         self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
         self.on_open_transcript = on_open_transcript
@@ -288,6 +293,9 @@ class Tray:
         op = Gtk.MenuItem(label="Open inbox")
         op.connect("activate", lambda *_: self.on_open and self.on_open())
         m.append(op)
+        st = Gtk.MenuItem(label="Settings…")
+        st.connect("activate", lambda *_: self.on_settings and self.on_settings())
+        m.append(st)
         q = Gtk.MenuItem(label="Quit waxd")
         q.connect("activate", lambda *_: self.on_quit and self.on_quit())
         m.append(q)

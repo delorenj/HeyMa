@@ -1,0 +1,17 @@
+#!/usr/bin/python3
+# NOTE: /usr/bin/python3 explicitly, never `env python3` — mise's Python is
+# first on PATH and has no gi, so the window would never open.
+"""heyma — open the HeyMa window (Settings, Logs). The tray's "Settings…" entry.
+
+    heyma [--page settings|logs]
+
+Single-instance: a second invocation presents the window already open.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from wax.heyma_window import main  # noqa: E402
+
+raise SystemExit(main())

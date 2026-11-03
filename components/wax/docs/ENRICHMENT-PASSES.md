@@ -331,6 +331,29 @@ item, slug, attempt, version and final reason. It fires at most once per
 `dependency_failed`. This is the pipeline's dead-letter signal; ntfy-router
 routes it like any other non-muted event.
 
+## Switching a pass off (the operator overlay)
+
+`wax ep disable <slug>` / `wax ep enable <slug>` — or the switches on the HeyMa
+window's Settings page (tray → **Settings…**, `bin/heyma`) — flip one pass for
+**every** pipeline at once, transcripts and documents alike. The state lives in
+`var/settings.json` (`passes.disabled`), outside git, written atomically under
+`var/settings.lock`.
+
+It is an overlay read at execution time, not a registry edit, because compiled
+pipelines froze `enabled:` along with the rest of each definition: editing
+passes.d would change nothing for an item governed by `transcript-standard` or
+`doc-standard`. `passes.run` records a switched-off pass as `skipped` with
+`reason_code: operator_disabled` (ledger row and the note's
+`wax.passes.<slug>` block). A skip, not a failure: it satisfies `requires`, so
+dependents still run, and finalize completes. Items it skipped stay skipped
+after the pass is switched back on; redo one with `wax ep run <slug> <item>`,
+which ignores the switch (`operator_toggle=False`), as naming one pass for one
+item outranks a standing switch.
+
+A switched-off pass is never silent: `wax status` prints a `passes off` line,
+`wax ep list` flags the row (`operator_enabled: false` in `--json`), and the
+tray tooltip names it. It does not tint the icon; it is deliberate.
+
 ## Audio-to-transcript identity
 
 S3 audio names are never renamed after upload. Object-store "rename" is a

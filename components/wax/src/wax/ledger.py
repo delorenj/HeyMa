@@ -824,6 +824,10 @@ def enrich(snap: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             log.warning("pass health unavailable: %s: %s", type(e).__name__, e)
             snap["passes"] = {"failed": 0, "slugs": []}
+        # A switched-off pass is a deliberate gap in every new note; it must be
+        # as visible in `wax status` and state.json as a failing one.
+        from . import settings as operator_settings
+        snap["passes"]["operator_disabled"] = sorted(operator_settings.disabled_passes())
         try:
             snap["diarization"] = diarization_health()
         except Exception as e:  # noqa: BLE001

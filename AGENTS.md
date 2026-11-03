@@ -79,6 +79,7 @@ wax items | queue | history | state <machine> [--cold]
 wax drain                  # process the inbox now, one-shot
 wax retry [<item>]         # requeue preserved failed/suspect inbox items (all, or one)
 wax ep list|status|run <slug> <item>|run-all <item>|sweep
+wax ep enable|disable <slug>     # operator switch for every pipeline (var/settings.json); off = skipped/operator_disabled
 wax ep replan <item> [--apply]   # move ONE unfinished item's frozen plan onto the current pipeline
 wax reconcile [--rebuild]  # rebuild the ledger from durable sources
 wax catalog                # safe discovery snapshot (passes + pipelines) for Holocene/n8n
@@ -94,6 +95,13 @@ wax transcripts link-harvest [PATH...] [--report] [--dry-run]  # px harvest arti
 wax --json transcripts browse [--view K] [--include-hermes] [--id N]  # Holocene's read-only feed (ro role, no bodies)
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
+
+`bin/heyma` (tray → **Settings…**) opens the HeyMa window: GTK 4/libadwaita in its
+own process (the tray is GTK 3), single-instance, a collapsible drawer beside a
+full-width page. **Settings** clears finished tray rows, retries failed items,
+switches passes on/off and toggles the background worker; **Logs** tails
+`journalctl --user -f -u waxd.service` (or every Wax unit). It owns no state:
+every action is the `wax` CLI beside it. Code `components/wax/src/wax/heyma_window.py`.
 
 mise wrappers: `wax:doctor`, `wax:status`, `wax:sweep`, `wax:retry`, `wax:test`, `wax:logs`,
 `wax:transcripts:sync|search|migrate`, `wax:test:pg` (real-Postgres store tests; skip without Docker).

@@ -107,6 +107,14 @@ class TrayIconTest(unittest.TestCase):
             with self.subTest(snapshot=snapshot):
                 self.assertEqual(self.tray.colour_for(snapshot)[0], "yellow")
 
+    def test_switched_off_passes_are_named_but_do_not_tint_the_icon(self):
+        colour, tip = self.tray.colour_for({
+            "stream": {"state": "ready"}, "inbox": {"state": "ready-and-active"},
+            "passes": {"failed": 0, "slugs": [], "operator_disabled": ["summarize", "title-slug"]},
+        })
+        self.assertEqual(colour, "green")
+        self.assertIn("passes off: summarize, title-slug", tip)
+
     def test_recording_is_red_even_when_pipeline_has_faults(self):
         snapshot = {
             "stream": {"state": "recording", "cause_code": "stream_fault"},

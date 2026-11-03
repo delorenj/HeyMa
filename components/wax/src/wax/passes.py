@@ -68,6 +68,7 @@ import tempfile
 from functools import wraps
 
 from . import archive, component, events, frontmatter, ledger, operations, paths, provider, rename, sentinel
+from . import settings as operator_settings
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
@@ -1023,7 +1024,7 @@ def _frozen_plan_entry(item_id: str, slug: str) -> tuple[Optional[dict[str, Any]
 @serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
          definition=None, dependency_versions: Optional[dict[str, int]] = None,
-         live: bool = False) -> dict[str, Any]:
+         live: bool = False, operator_toggle: bool = True) -> dict[str, Any]:
     """Run one pass against one item. Independent of its siblings, gated only by `requires`.
 
     `attempt` defaults to one past the highest attempt already recorded for
@@ -1037,6 +1038,12 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     classification v2 reclassification. An unfinished item is refused: its
     finalize compares recorded definitions to its plan, and a live run would
     wedge it in passes_incomplete.
+
+    A pass the operator switched off (the HeyMa window, `wax ep disable`) is
+    recorded `skipped` with reason_code `operator_disabled` and never runs; the
+    skip satisfies dependents and finalize exactly as a `when:` skip does.
+    `operator_toggle=False` is the explicit `wax ep run`: naming one pass for
+    one item is a stronger instruction than a standing switch.
     """
     reg = registry()
     if live and definition is None:
@@ -1130,7 +1137,10 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
 
     skip_reason = None
     skip_detail = ""
-    if ep.get("kind") == "diarization" and os.environ.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
+    if operator_toggle and not operator_settings.pass_enabled(slug):
+        skip_reason = "operator_disabled"
+        skip_detail = f"switched off in {operator_settings.path()} (HeyMa settings / `wax ep enable {slug}`)"
+    elif ep.get("kind") == "diarization" and os.environ.get("WAX_DIARIZATION", "").lower() in {"0", "false", "no", "off"}:
         skip_reason = "explicitly_disabled"
     condition = ep.get("skip_when")
     when = ep.get("when")
