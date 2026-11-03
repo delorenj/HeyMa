@@ -49,6 +49,12 @@ _REASON = re.compile(r"[a-z_]+")
 # access to model X"). A 403 without this marker is a statement about the key.
 _MODEL_OUT_OF_SCOPE = re.compile(r"token has no access to model|no access to model")
 _MODEL_MISSING = re.compile(r"model\b.{0,160}\b(?:does not exist|not found|is not a valid model)", re.DOTALL)
+# The AutomaticAI gateway's edge (Caddy, client-portal gateway/compose.cloud.yml)
+# answers 503 {"error":{"type":"overloaded_error","code":"gateway_restarting"}}
+# with Retry-After: 15 whenever new-api behind it is down: a deploy, a restart.
+# That is a statement about the ONE door every chain member shares, not about
+# any member (2026-11-03: title-slug burned all six members in one second).
+GATEWAY_RESTARTING = "gateway_restarting"
 
 # Which reference produced each key resolved in this process. A 401 is always
 # a statement about one specific credential, so the failure names it: the
@@ -84,7 +90,7 @@ class ProviderError(RuntimeError):
 
     def __init__(self, message: str, reason_code: str = "run_error", *,
                  status: Optional[int] = None, detail_code: Optional[str] = None,
-                 route: Optional[str] = None) -> None:
+                 route: Optional[str] = None, retry_after: Optional[float] = None) -> None:
         super().__init__(message)
         self.reason_code = reason_code
         self.status = status
@@ -92,6 +98,8 @@ class ProviderError(RuntimeError):
         # The gateway's X-AutomaticAI-Route on a failed request: which route a
         # router name (auto/fast, free) actually picked before it failed.
         self.route = route
+        # Retry-After in seconds, when the failed response carried a usable one.
+        self.retry_after = retry_after
 
 
 def note(message: str) -> None:
@@ -159,6 +167,8 @@ def resolve_key(*, env_var: str, op_ref: str, op_timeout: float = OP_READ_TIMEOU
 def _marker(body: str) -> Optional[str]:
     """Classify an error body by marker. The body itself never leaves here."""
     lowered = body.lower()
+    if GATEWAY_RESTARTING in lowered:
+        return GATEWAY_RESTARTING
     if "max_tokens_exceeded" in lowered:
         return "max_tokens_exceeded"
     if "model_not_found" in lowered or _MODEL_MISSING.search(lowered):
@@ -193,7 +203,31 @@ def _http_error(exc: urllib.error.HTTPError, url: str, key: str) -> ProviderErro
         body = ""
     error = _classify_http(status, body, url, key, exc.headers)
     error.route = route
+    error.retry_after = retry_after_s(exc.headers)
     return error
+
+
+def retry_after_s(headers: Any, *, ceiling: float = 300.0) -> Optional[float]:
+    """Retry-After as delta-seconds (any header case), or None.
+
+    The HTTP-date form is ignored: nothing Wax talks to sends it, and a clock
+    skew would turn it into a nonsense wait. Capped, so a hostile or buggy
+    value cannot park a pass.
+    """
+    if not headers:
+        return None
+    try:
+        items = headers.items()
+    except AttributeError:
+        return None
+    for name, value in items:
+        if str(name).lower() != "retry-after":
+            continue
+        raw = str(value).strip()
+        if re.fullmatch(r"[0-9]{1,9}", raw):  # ASCII only: str.isdigit() accepts '²'
+            return min(float(raw), ceiling)
+        return None
+    return None
 
 
 def _classify_http(status: int, body: str, url: str, key: str, headers: Any) -> ProviderError:
@@ -511,8 +545,9 @@ class ChainFailed(ProviderError):
     """
 
     def __init__(self, attempts: list[dict[str, Any]], *, reason_code: str,
-                 status: Optional[int] = None, detail_code: Optional[str] = None) -> None:
-        super().__init__("no model in the chain answered: " + describe_attempts(attempts),
+                 status: Optional[int] = None, detail_code: Optional[str] = None,
+                 headline: str = "no model in the chain answered") -> None:
+        super().__init__(f"{headline}: " + describe_attempts(attempts),
                          reason_code, status=status, detail_code=detail_code)
         self.attempts = attempts
 
@@ -523,8 +558,43 @@ def describe_attempts(attempts: list[dict[str, Any]]) -> str:
     for item in attempts:
         status = f"/{item['status']}" if item.get("status") else ""
         route = f"->{item['route']}" if item.get("route") and item["route"] != item["model"] else ""
-        parts.append(f"{item['model']}={item['reason_code']}{status}{route}")
+        waited = f" (waited {item['waited']:g}s)" if item.get("waited") else ""
+        parts.append(f"{item['model']}={item['reason_code']}{status}{route}{waited}")
     return "; ".join(parts)
+
+
+# -- the gateway itself is down ------------------------------------------------
+#
+# A gateway-wide failure is not a member's failure: falling through to the next
+# member only asks the same closed door again, and a six-member chain is gone in
+# a second. So the chain WAITS on the same member, for the Retry-After the edge
+# sends (15s), until the gateway is back, the patience below is spent, or the
+# chain deadline needs the time to report. A deploy's restart takes well under a
+# minute; patience beyond that only delays the failure the sweep will retry.
+
+GATEWAY_WIDE = frozenset({GATEWAY_RESTARTING})
+GATEWAY_RETRY_DEFAULT_S = 15.0   # the edge's own Retry-After, when one is missing
+GATEWAY_PATIENCE_S = 120.0       # total wait for the gateway across one chain run
+GATEWAY_SLACK_S = 0.5            # a wait never leaves the next request exactly at the floor
+
+
+def gateway_unavailable(exc: BaseException) -> bool:
+    """Whether this failure says the shared gateway is down, not the member."""
+    return getattr(exc, "detail_code", None) in GATEWAY_WIDE
+
+
+def _gateway_pause(exc: BaseException, deadline: Optional["Deadline"], waited: float,
+                   patience: float) -> float:
+    """How long to wait before asking the same member again; 0 means stop waiting."""
+    wanted = getattr(exc, "retry_after", None)
+    pause = min(max(1.0, float(wanted if wanted is not None else GATEWAY_RETRY_DEFAULT_S)),
+                patience - waited)
+    if deadline is not None:
+        # Leave room for one real request after the wait, inside the deadline.
+        # A wait that left exactly the floor would end, after any sleep
+        # overshoot, just under it: time spent waiting for a request never sent.
+        pause = min(pause, deadline.remaining() - MIN_REQUEST_S - REQUEST_MARGIN_S - GATEWAY_SLACK_S)
+    return pause if pause >= 1.0 else 0.0
 
 
 # -- deadlines ----------------------------------------------------------------
@@ -688,6 +758,7 @@ class ChainResult(NamedTuple):
     model: str                      # the chain member that answered
     attempts: list[dict[str, Any]]  # every member before it, tried or skipped
     provenance: dict[str, str]      # served_by / route / auto, as the gateway reported
+    waited: float = 0.0             # seconds spent waiting out a restarting gateway
 
 
 def _attempt(model: str, exc: ProviderError) -> dict[str, Any]:
@@ -695,11 +766,13 @@ def _attempt(model: str, exc: ProviderError) -> dict[str, Any]:
     return {"model": model, "reason_code": exc.reason_code,
             **({"status": exc.status} if exc.status else {}),
             **({"route": route} if route else {}),
+            **({"detail_code": exc.detail_code} if gateway_unavailable(exc) else {}),
             "detail": str(exc)[:200]}
 
 
 def run_chain(models: list[str], call, *, listed=None, deadline: Optional[Deadline] = None,
-              request_timeout: Optional[float] = None) -> ChainResult:
+              request_timeout: Optional[float] = None, sleep=time.sleep,
+              gateway_patience: float = GATEWAY_PATIENCE_S) -> ChainResult:
     """Run `call(model, timeout)` down `models`; return the first answer as a ChainResult.
 
     `call` may return a plain value or an Answer carrying the gateway's
@@ -709,9 +782,13 @@ def run_chain(models: list[str], call, *, listed=None, deadline: Optional[Deadli
     member with less than MIN_REQUEST_S left is skipped as deadline_exceeded,
     so the chain always ends, with its evidence, before the runner's kill.
     A failure that does not fall through (no_api_key, a rejected key, an
-    Anthropic server) stops the chain at once.
+    Anthropic server) stops the chain at once. A gateway-wide failure
+    (gateway_restarting) neither falls through nor stops: the chain sleeps the
+    Retry-After and asks the SAME member again, within `gateway_patience` and
+    the deadline; past that it stops, since no other member can do better.
     """
     attempts: list[dict[str, Any]] = []
+    waited = 0.0
     for index, model in enumerate(models):
         if ANTHROPIC_RE.search(model):
             attempts.append({"model": model, "reason_code": ANTHROPIC_REFUSED, "skipped": True,
@@ -722,38 +799,65 @@ def run_chain(models: list[str], call, *, listed=None, deadline: Optional[Deadli
             attempts.append({"model": model, "reason_code": "missing_model", "skipped": True,
                              "detail": "not listed for this token"})
             continue
-        timeout = request_timeout
-        if deadline is not None:
-            timeout = deadline.request_timeout(request_timeout)
-            if timeout < MIN_REQUEST_S:
-                left = deadline.remaining()
-                for rest in models[index:]:
-                    attempts.append({"model": rest, "reason_code": "deadline_exceeded", "skipped": True,
-                                     "detail": f"{left:.1f}s left of the {deadline.budget:g}s chain budget"})
+        while True:
+            timeout = request_timeout
+            if deadline is not None:
+                timeout = deadline.request_timeout(request_timeout)
+                if timeout < MIN_REQUEST_S:
+                    left = deadline.remaining()
+                    for rest in models[index:]:
+                        attempts.append({"model": rest, "reason_code": "deadline_exceeded", "skipped": True,
+                                         "detail": f"{left:.1f}s left of the {deadline.budget:g}s chain budget"})
+                    return _chain_exhausted(attempts)
+            try:
+                with wall_clock_limit(None if deadline is None else timeout + HARD_GRACE_S):
+                    answer = call(model, timeout)
+            except DeadlineExceeded:
+                attempts.append({"model": model, "reason_code": "timeout",
+                                 "detail": f"no complete answer within {timeout:g}s (chain deadline)"})
                 break
-        try:
-            with wall_clock_limit(None if deadline is None else timeout + HARD_GRACE_S):
-                answer = call(model, timeout)
-        except DeadlineExceeded:
-            attempts.append({"model": model, "reason_code": "timeout",
-                             "detail": f"no complete answer within {timeout:g}s (chain deadline)"})
-            continue
-        except ProviderError as exc:
-            attempts.append(_attempt(model, exc))
-            if not falls_through(exc):
-                raise ChainFailed(attempts, reason_code=exc.reason_code, status=exc.status,
-                                  detail_code=exc.detail_code) from exc
-            continue
-        if isinstance(answer, Answer):
-            value, provenance = answer.value, answer.provenance
-        else:
-            value, provenance = answer, {}
-        banned = anthropic_in(provenance)
-        if banned:
-            attempts.append({"model": model, "reason_code": ANTHROPIC_SERVED, **provenance,
-                             "detail": f"refused: {banned}"})
-            raise ChainFailed(attempts, reason_code=ANTHROPIC_SERVED)
-        return ChainResult(value, model, attempts, provenance)
+            except ProviderError as exc:
+                if gateway_unavailable(exc):
+                    pause = _gateway_pause(exc, deadline, waited, gateway_patience)
+                    if pause > 0:
+                        # Not an attempt: the member was never reached, and a
+                        # wait recorded as one reads as `fell_through` to itself
+                        # in the note and the store. The journal gets the note.
+                        note(f"note: the gateway is down ({exc.detail_code}); waiting {pause:g}s "
+                             f"to ask {model} again")
+                        sleep(pause)
+                        waited += pause
+                        continue
+                    attempts.append({**_attempt(model, exc),
+                                     **({"waited": round(waited, 1)} if waited else {})})
+                    for rest in models[index + 1:]:
+                        attempts.append({"model": rest, "reason_code": exc.reason_code, "skipped": True,
+                                         "detail_code": exc.detail_code,
+                                         "detail": "not asked: the gateway every member shares was down"})
+                    raise ChainFailed(attempts, reason_code=exc.reason_code, status=exc.status,
+                                      detail_code=exc.detail_code,
+                                      headline=f"the gateway was down ({exc.detail_code}); the chain "
+                                               f"waited {waited:g}s and asked no other member") from exc
+                attempts.append(_attempt(model, exc))
+                if not falls_through(exc):
+                    raise ChainFailed(attempts, reason_code=exc.reason_code, status=exc.status,
+                                      detail_code=exc.detail_code) from exc
+                break
+            if isinstance(answer, Answer):
+                value, provenance = answer.value, answer.provenance
+            else:
+                value, provenance = answer, {}
+            banned = anthropic_in(provenance)
+            if banned:
+                attempts.append({"model": model, "reason_code": ANTHROPIC_SERVED, **provenance,
+                                 "detail": f"refused: {banned}"})
+                raise ChainFailed(attempts, reason_code=ANTHROPIC_SERVED)
+            return ChainResult(value, model, attempts, provenance, round(waited, 1))
+    return _chain_exhausted(attempts)
+
+
+def _chain_exhausted(attempts: list[dict[str, Any]]) -> ChainResult:
+    """Raise the ChainFailed for a chain that ran out of members or budget."""
     tried = [item for item in attempts if not item.get("skipped")]
     codes = [item["reason_code"] for item in tried]
     if not tried:

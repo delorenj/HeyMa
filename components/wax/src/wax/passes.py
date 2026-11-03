@@ -651,6 +651,20 @@ def _run_frontmatters(args: list[str]) -> None:
         raise PassError(f"frontmatters exited {result.returncode}: {detail}")
 
 
+def frontmatter_schema_path(ep: dict[str, Any], *, item_id: str = "",
+                            md: Optional[Path] = None) -> Optional[Path]:
+    """The pass's `frontmatter_schema` as a path, or None when it declares none.
+
+    `wax doctor` resolves it the same way, without a note, so a schema that
+    moved is a doctor row and not only a per-run warning in the journal.
+    """
+    schema = ep.get("frontmatter_schema")
+    if not schema:
+        return None
+    expanded = _expand(schema, item_id=item_id, md=md or Path(""))
+    return Path(os.path.expandvars(os.path.expanduser(expanded)))
+
+
 def _apply_base_schema(ep: dict[str, Any], item_id: str, md: Path) -> None:
     """Stamp the vault's base taxonomy onto the note. Best-effort, never fatal.
 
@@ -660,11 +674,9 @@ def _apply_base_schema(ep: dict[str, Any], item_id: str, md: Path) -> None:
     LLM. It now runs ahead of the child and downgrades every failure to a
     warning: the base schema must not be able to fail a pass either.
     """
-    schema = ep.get("frontmatter_schema")
-    if not schema:
+    schema_path = frontmatter_schema_path(ep, item_id=item_id, md=md)
+    if schema_path is None:
         return
-    expanded = _expand(schema, item_id=item_id, md=md)
-    schema_path = Path(os.path.expandvars(os.path.expanduser(expanded)))
     if not schema_path.is_file():
         log.warning("%s: frontmatter schema missing, skipping base stamp: %s",
                     ep.get("slug"), schema_path)

@@ -199,6 +199,7 @@ def _http_failure(exc: urllib.error.HTTPError, *, url: str, model: str) -> Title
     """Turn an HTTP error into the most specific reason_code its body supports."""
     error = _classify_http_failure(exc, url=url, model=model)
     error.route = chat_provider.gateway_route(exc.headers)
+    error.retry_after = chat_provider.retry_after_s(exc.headers)
     return error
 
 

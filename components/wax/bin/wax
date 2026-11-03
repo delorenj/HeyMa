@@ -658,6 +658,43 @@ def probe_project_extraction(add, *, repo: Path, effective: dict[str, str],
         add(_probe("jev api key", PASS, detail))
 
 
+def probe_frontmatter_schemas() -> dict[str, Any]:
+    """Every frontmatter_schema a pass would stamp from, live registry AND compiled.
+
+    A missing schema only logs a warning per run and skips the base stamp
+    (passes._apply_base_schema), so a schema that moved went unnoticed for a
+    month (2026-10: `_vault/` left DeLoDocs). A compiled pipeline freezes the
+    path, so fixing the yaml alone does not fix what actually runs.
+    """
+    wanted: dict[Path, list[str]] = {}
+    for slug, ep in sorted(passes.registry().items()):
+        path = passes.frontmatter_schema_path(ep) if ep.get("enabled") else None
+        if path is not None:
+            wanted.setdefault(path, []).append(f"{slug} (registry)")
+    try:
+        compiled = pipelines.compiled()
+    except Exception as e:  # noqa: BLE001 - a broken ledger is its own probe; name it here
+        return _probe("frontmatter schemas", WARN, f"compiled pipelines unreadable: {type(e).__name__}: {e}")
+    for name, row in sorted(compiled.items()):
+        for node in (row.get("definition") or {}).get("passes") or []:
+            ep = node.get("registry") if isinstance(node, dict) else None
+            path = passes.frontmatter_schema_path(ep) if isinstance(ep, dict) else None
+            if path is not None:
+                wanted.setdefault(path, []).append(f"{node.get('slug')} ({name})")
+    if not wanted:
+        return _probe("frontmatter schemas", PASS, "no pass declares a frontmatter_schema")
+    missing = {path: users for path, users in wanted.items() if not path.is_file()}
+    if missing:
+        return _probe("frontmatter schemas", WARN,
+                      "; ".join(f"{path} is missing, so {', '.join(users)} skip the base stamp"
+                                for path, users in missing.items()),
+                      "point frontmatter_schema in config/passes.d/<slug>.yaml at the vault's "
+                      "frontmatter-category-map.json, then recompile: `wax pipeline compile` and "
+                      "`wax pipeline import <release export> --name <pipeline>`")
+    return _probe("frontmatter schemas", PASS,
+                  "; ".join(f"{path} ({len(users)} use(s))" for path, users in wanted.items()))
+
+
 def probe_classification_key(add, *, effective: dict[str, str], yenv: dict[str, tuple[str, str]]) -> None:
     """The classification pass's own Jev virtual key (alias heyma-wax-classification, $0.50/day).
 
@@ -1039,8 +1076,9 @@ def probe_all() -> list[dict[str, Any]]:
                            if visible else
                            f"{member} is NOT listed for this token; the chain skips it",
                            "" if visible else
-                           "python3 deploy/provision-inference --apply   # the SSOT for the token scope "
-                           "(skips routes the gateway catalog lacks; re-run after a gateway deploy)"))
+                           "outside the token scope: python3 deploy/provision-inference --apply (the SSOT). "
+                           "In scope but unlisted: the gateway has no enabled channel for it (an unfunded or "
+                           "paused account, e.g. 2026-11-02 z.ai/DeepSeek), which is gateway-side"))
             leaked = sorted(m for m in seen if ANTHROPIC_RE.search(m))
             add(_probe("inference token scope", FAIL if leaked else PASS,
                        ("the token still grants Anthropic route(s): " + ", ".join(leaked)) if leaked
@@ -1078,6 +1116,7 @@ def probe_all() -> list[dict[str, Any]]:
     except passes.PassError as e:
         add(_probe("frontmatters editor", FAIL, str(e),
                    "set WAX_FRONTMATTERS to a working executable in waxd.service"))
+    add(probe_frontmatter_schemas())
 
     # -- durability: the one true emergency --------------------------------
     rc, _, err = _run([archive.MC, "ls", f"{archive.ALIAS}/{archive.BUCKET}"], timeout=30)

@@ -170,7 +170,9 @@ The chain lives in each pass YAML env (`WAX_TITLE_MODEL` +
 moves on for provider-side failures only (429, 402, 5xx, unreachable, timeout,
 truncated or garbled responses, unknown model, 400, a 403 that means "outside
 the token's scope", empty or unparseable content) and never for `no_api_key` or
-a rejected key. The whole chain runs against one deadline taken from the
+a rejected key. A gateway-wide `503 gateway_restarting` (a gateway deploy) is
+neither: the chain waits the Retry-After on the same member, up to 120s inside
+its deadline, then stops without spraying the other members. The whole chain runs against one deadline taken from the
 runner's `WAX_PASS_TIMEOUT_S`, so the runner never kills a pass before it
 reports every member. The result's `evidence` names the member asked (`model`),
 what the gateway says served it (`served_by`, `route`, `auto`) and each failed

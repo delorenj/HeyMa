@@ -10,7 +10,11 @@ requires: []
 # against a deadline taken from this value (WAX_PASS_TIMEOUT_S), so the runner
 # never kills it before it reports every member.
 timeout_s: 390
-frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
+# The vault's base taxonomy. `_vault/` moved out of DeLoDocs to ~/code/obsops
+# (2026-10); the old {home}/d/_vault path silently skipped the stamp since.
+# `wax doctor` checks this path ("frontmatter schemas"), for every compiled
+# pipeline too, since a compiled pipeline freezes it.
+frontmatter_schema: "{home}/code/obsops/Settings/frontmatter-category-map.json"
 env:
   WAX_TITLE_API_BASE: https://api.automaticai.io/v1
   WAX_TITLE_MODEL: automaticai/auto/fast

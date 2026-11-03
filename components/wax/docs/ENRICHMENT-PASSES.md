@@ -121,6 +121,18 @@ actually ASKED (a skipped member says nothing about the providers),
 only when every member was skipped, and the detail lists every member as
 `model=reason/status->route`.
 
+**A restarting gateway is waited out, not fallen through.** While new-api
+restarts (any gateway deploy), the edge answers every request `503`
+`{"error":{"type":"overloaded_error","code":"gateway_restarting"}}` with
+`Retry-After: 15`. That door is shared by every member, so falling through only
+spends the whole chain in a second (2026-11-03). The chain instead sleeps the
+Retry-After and asks the SAME member again, for up to `GATEWAY_PATIENCE_S`
+(120s) and never past the chain deadline; then it stops with
+`provider_http_error` / `detail_code=gateway_restarting` without asking the
+rest, and the sweep retries. A wait is a journal note, never a `fallbacks` entry
+(the member was not reached, so it did not fall through); a give-up records the
+member once, with the total `waited`.
+
 **Changing a chain.** Compiled pipelines freeze pass env and `timeout_s`, so
 re-import the n8n release exports after changing a chain (dry-run the diff on a
 copy of the ledger first; only chain and timeout env may change). An item's
@@ -144,7 +156,7 @@ requires: []
 after: []
 clobber: []
 timeout_s: 390   # 6 chain members x 60s + catalog + op read, inside 390s less the reserve
-frontmatter_schema: "{home}/d/_vault/Settings/frontmatter-category-map.json"
+frontmatter_schema: "{home}/code/obsops/Settings/frontmatter-category-map.json"
 env:
   WAX_TITLE_MODEL: automaticai/auto/fast
   WAX_TITLE_MODEL_FALLBACKS: automaticai/personal/glm-5.3-flash,automaticai/personal/glm-5.3,automaticai/deepseek/deepseek-flash,automaticai/deepseek/deepseek-v4-pro,automaticai/free
