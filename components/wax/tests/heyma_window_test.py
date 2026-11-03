@@ -171,10 +171,40 @@ class BrandTest(unittest.TestCase):
     def test_desktop_entry_matches_the_window_app_id(self):
         installer = _desktop_installer()
         self.assertEqual(installer.APP_ID, heyma_window.APP_ID)
-        entry = installer.render_desktop_entry(Path("/opt/Hey Ma 100%"))
-        self.assertIn('Exec="/opt/Hey Ma 100%%/bin/heyma"', entry)
+        entry = installer.render_desktop_entry(Path("/opt/Hey Ma"))
+        self.assertIn('Exec="/opt/Hey Ma/bin/heyma"', entry)
         self.assertIn(f"Icon={heyma_window.APP_ID}", entry)
         self.assertIn(f"StartupWMClass={heyma_window.APP_ID}", entry)
+
+
+    def test_exec_quoting_has_both_escape_layers(self):
+        # Quoting layer escapes " ` $ \ with one backslash; the `string`
+        # value layer then doubles every backslash. One layer = invalid escape.
+        quote = _desktop_installer().desktop_quote
+        self.assertEqual(quote("/a$b"), '"/a\\\\$b"')
+        self.assertEqual(quote('/a"b'), '"/a\\\\"b"')
+        self.assertEqual(quote("/a`b"), '"/a\\\\`b"')
+        self.assertEqual(quote("/a\\b"), '"/a\\\\\\\\b"')
+        self.assertEqual(quote("/a b;c'd"), '"/a b;c\'d"')
+
+    def test_a_percent_in_the_checkout_path_is_refused_loudly(self):
+        with self.assertRaises(ValueError):
+            _desktop_installer().render_desktop_entry(Path("/opt/100%"))
+
+
+class PageArgumentTest(unittest.TestCase):
+    """`--page` is parsed in the PRIMARY on a remote caller's argv."""
+
+    def test_named_page(self):
+        self.assertEqual(heyma_window.requested_page(["--page", "logs"]), "logs")
+        self.assertEqual(heyma_window.requested_page(["--page=settings"]), "settings")
+
+    def test_bare_launch_names_no_page(self):
+        self.assertIsNone(heyma_window.requested_page([]))
+
+    def test_bad_page_is_an_error_not_an_exit(self):
+        with self.assertRaises(ValueError):
+            heyma_window.requested_page(["--page", "nope"])
 
 
 if __name__ == "__main__":

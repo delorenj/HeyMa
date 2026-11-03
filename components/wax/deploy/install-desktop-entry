@@ -35,15 +35,29 @@ def locations():
 
 
 def desktop_quote(value) -> str:
-    """Quote one Exec argument per the Desktop Entry spec (paths may hold spaces)."""
-    escaped = str(value)
-    for char in ("\\", '"', "`", "$"):
-        escaped = escaped.replace(char, "\\" + char)
-    # `%` is a field-code marker in Exec; a literal one is written `%%`.
-    return '"' + escaped.replace("%", "%%") + '"'
+    """Quote one Exec argument per the Desktop Entry spec (paths may hold spaces).
+
+    Two layers, applied in this order by readers in reverse: the quoting rule
+    backslash-escapes `"`, backtick, `$` and `\\` inside a quoted argument, and
+    Exec is ALSO a `string` value whose own escapes are decoded first, so every
+    backslash the quoting layer produced must be doubled. A single layer writes
+    `\\$`, an invalid string escape: GLib then returns no command line at all.
+    `%` is a field-code marker, so a literal one is `%%`.
+    """
+    quoted = str(value).replace("\\", "\\\\")
+    for char in ('"', "`", "$"):
+        quoted = quoted.replace(char, "\\" + char)
+    quoted = quoted.replace("\\", "\\\\")
+    return '"' + quoted.replace("%", "%%") + '"'
 
 
 def render_desktop_entry(repo: Path) -> str:
+    if "%" in str(repo):
+        # Spec-correct `%%` is not enough: GLib looks for the Exec binary
+        # WITHOUT decoding field codes, finds no "100%%/bin/heyma", and drops
+        # the whole entry, so the launcher would silently never appear.
+        raise ValueError(f"refusing a checkout path containing '%': {repo} "
+                         "(GLib cannot resolve it in Exec; move the checkout)")
     return "\n".join([
         "[Desktop Entry]",
         "Type=Application",
@@ -86,7 +100,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     component, repo = locations()
-    entry = render_desktop_entry(repo)
+    try:
+        entry = render_desktop_entry(repo)
+    except ValueError as exc:
+        raise SystemExit(f"install-desktop-entry: {exc}")
     if args.dry_run:
         print(entry, end="")
         return

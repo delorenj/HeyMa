@@ -698,29 +698,60 @@ class HeyMaWindow:
         return False
 
 
+def requested_page(arguments: list[str]) -> Optional[str]:
+    """The `--page` an invocation asked for, or None when it named none.
+
+    Parsed here rather than by argparse because it runs in the PRIMARY process
+    on a remote caller's argv: a bad argument must be reported to that caller,
+    never exit the window everyone is looking at.
+    """
+    pages = {key for key, _, _ in PAGES}
+    for index, arg in enumerate(arguments):
+        value = None
+        if arg == "--page" and index + 1 < len(arguments):
+            value = arguments[index + 1]
+        elif arg.startswith("--page="):
+            value = arg.split("=", 1)[1]
+        if value is not None:
+            if value not in pages:
+                raise ValueError(f"--page must be one of {sorted(pages)}, not {value!r}")
+            return value
+    return None
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    import argparse
-    ap = argparse.ArgumentParser(prog="heyma")
-    ap.add_argument("--page", choices=[key for key, _, _ in PAGES], default="settings")
-    args, rest = ap.parse_known_args(argv)
     _load_gtk()
     # The installed icon (deploy/install-desktop-entry) carries the app id, so
     # X11 window decorations find it too; Wayland docks read the .desktop file.
     Gtk.Window.set_default_icon_name(APP_ID)
+    # HANDLES_COMMAND_LINE: a second `heyma --page logs` forwards its argv to
+    # the primary. With plain `activate` only the signal crosses, so the page
+    # the second caller asked for was silently dropped.
     app = Adw.Application(application_id=APP_ID,
-                          flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+                          flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
     state: dict[str, Any] = {}
 
-    def activate(application):
+    def command_line(application, cmdline) -> int:
+        arguments = list(cmdline.get_arguments())[1:]
+        try:
+            page = requested_page(arguments)
+        except ValueError as exc:
+            # printerr is varargs and unbound in PyGObject; the _literal form
+            # carries the message back to the caller's stderr.
+            cmdline.printerr_literal(f"heyma: {exc}\n")
+            return 2
         window = state.get("window")
         if window is None:
-            window = state["window"] = HeyMaWindow(application, args.page)
-        else:
-            window.show_page(args.page)
+            window = state["window"] = HeyMaWindow(application, page or "settings")
+        elif page:
+            # A bare launch (the app grid, the dock) only raises the window; it
+            # never yanks the operator off the page they are reading.
+            window.show_page(page)
         window.window.present()
+        return 0
 
-    app.connect("activate", activate)
-    return app.run([sys.argv[0], *rest])
+    app.connect("command-line", command_line)
+    return app.run([sys.argv[0], *(sys.argv[1:] if argv is None else argv)])
 
 
 if __name__ == "__main__":
