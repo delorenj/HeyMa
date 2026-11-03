@@ -496,8 +496,17 @@ def ingest_event(raw: Any, *, via: str = "webhook", fetch: bool = True) -> dict[
     if stored is None:
         raise CallsError("not a Telnyx v2 event envelope", "not_an_event")
     result: dict[str, Any] = dict(stored)
+    result["ended"] = False
     if stored["call_session_id"]:
+        before = conn.execute("SELECT ended_at FROM calls WHERE call_session_id=?",
+                              (stored["call_session_id"],)).fetchone()
         result["call"] = derive(conn, stored["call_session_id"])
+        # `ended` is true exactly once per call: on the event that first gives it
+        # an end. A notifier keys on it, so a multi-leg hangup is one notice.
+        call = result["call"] or {}
+        result["ended"] = bool(stored["new"] and call.get("ended_at")
+                               and call.get("outcome") not in (None, "in_progress")
+                               and not (before and before["ended_at"]))
     if stored["event_type"] == "calls.voicemail.completed":
         try:
             result["voicemail"] = fetch_voicemail(conn, stored["event_id"], fetch=fetch)

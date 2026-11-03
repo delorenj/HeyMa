@@ -104,8 +104,12 @@ class DeriveTest(_Ledger):
         result = calls.ingest_event(event("e2", "call.hangup", IN_SESSION, call_leg_id="w1",
                                           end_time="2026-11-03T20:00:49Z", hangup_cause="originator_cancel"))
         call = result["call"]
+        self.assertTrue(result["ended"])
         self.assertEqual((call["direction"], call["outcome"], call["remote_number"]),
                          ("inbound", "missed", "+19297480614"))
+        second_leg = calls.ingest_event(event("e3", "call.hangup", IN_SESSION, call_leg_id="w2",
+                                              end_time="2026-11-03T20:00:49Z"))
+        self.assertFalse(second_leg["ended"], "a call ends once, however many legs hang up")
         self.assertEqual((call["forwarded_from"], call["forward_reason"]), ("+12152083549", "no-answer"))
         self.assertIsNone(call["remote_name"])  # a CNAM city is not a person
 
