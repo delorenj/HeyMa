@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS call_recordings (
     started_at TEXT, ended_at TEXT, duration_millis INTEGER,
     object_name     TEXT,              -- <leg>-<epoch>.mp3 in our S3, when custom storage held it
     file_name       TEXT,              -- what Wax put in inbox/ (voicemail)
+    fetch_error     TEXT,              -- terminal: voicemail_empty (nothing was said; never retried)
     raw TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS call_recordings_leg ON call_recordings(call_leg_id);
@@ -144,6 +145,8 @@ def db() -> sqlite3.Connection:
             conn.execute("ALTER TABLE calls ADD COLUMN announced_at TEXT")
             # Calls that already ended were never going to be announced again.
             conn.execute("UPDATE calls SET announced_at=updated_at WHERE ended_at IS NOT NULL")
+        if "fetch_error" not in {r["name"] for r in conn.execute("PRAGMA table_info(call_recordings)")}:
+            conn.execute("ALTER TABLE call_recordings ADD COLUMN fetch_error TEXT")
         try:
             conn._wax_calls_schema = True  # type: ignore[attr-defined]
         except AttributeError:
@@ -476,10 +479,11 @@ def fetch_voicemail(conn: sqlite3.Connection, event_id: str, *, fetch: bool = Tr
     if not row or row["event_type"] != "calls.voicemail.completed":
         return None
     key = f"vm:{event_id}"
-    done = conn.execute("SELECT file_name FROM call_recordings WHERE recording_key=? AND file_name IS NOT NULL",
-                        (key,)).fetchone()
+    done = conn.execute("SELECT file_name, fetch_error FROM call_recordings WHERE recording_key=? "
+                        "AND (file_name IS NOT NULL OR fetch_error IS NOT NULL)", (key,)).fetchone()
     if done:
-        return {"recording_key": key, "file_name": done["file_name"], "fetched": False}
+        return {"recording_key": key, "file_name": done["file_name"], "fetched": False,
+                **({"empty": True} if done["fetch_error"] == "voicemail_empty" else {})}
     payload = json.loads(row["payload"])
     url, session = _str(payload.get("recording_url")), row["call_session_id"]
     if not url or not session:
@@ -501,7 +505,15 @@ def fetch_voicemail(conn: sqlite3.Connection, event_id: str, *, fetch: bool = Tr
                             "AND file_name IS NOT NULL", (key,)).fetchone()
         if done:
             return {"recording_key": key, "file_name": done["file_name"], "fetched": False}
-        placed = _download(url, paths.INBOX / name)
+        try:
+            placed = _download(url, paths.INBOX / name)
+        except CallsError as exc:
+            if exc.code == "voicemail_empty":
+                # A message with nothing in it (a caller who hung up at the beep) is final:
+                # there is no audio to wait for, so it never counts as left behind.
+                conn.execute("UPDATE call_recordings SET fetch_error=?, updated_at=? WHERE recording_key=?",
+                             (exc.code, sentinel.utcnow(), key))
+            raise
         conn.execute("UPDATE call_recordings SET file_name=?, updated_at=? WHERE recording_key=?",
                      (placed.name, sentinel.utcnow(), key))
     log.info("calls: voicemail for %s fetched into inbox as %s", session, placed.name)
@@ -678,6 +690,7 @@ def health(days: int = 7) -> dict[str, Any]:
         "SELECT e.event_id FROM call_events e LEFT JOIN call_recordings r "
         "ON r.recording_key = 'vm:' || e.event_id "
         "WHERE e.event_type='calls.voicemail.completed' AND e.occurred_at >= ? AND r.file_name IS NULL "
+        "AND r.fetch_error IS NULL "
         "AND e.call_session_id IS NOT NULL AND json_extract(e.payload,'$.recording_url') IS NOT NULL",
         (since,))]
     webhook = conn.execute("SELECT MAX(received_at) AS at FROM call_events WHERE via='webhook'").fetchone()

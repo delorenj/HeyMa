@@ -317,6 +317,17 @@ class SyncTest(_Ledger):
         calls.ingest_event(event("vm10", "calls.voicemail.completed", VM_SESSION))
         self.assertEqual(calls.health(days=3650)["voicemail_unfetched"], ["vm9"])
 
+    def test_an_empty_voicemail_is_final_not_left_behind(self):
+        url = "https://voice-mail-prod.s3.us-east-1.amazonaws.com/x.wav"
+        empty = calls.CallsError("voicemail download too small", "voicemail_empty")
+        with patch.object(calls, "_download", side_effect=empty) as download:
+            first = calls.ingest_event(event("vm11", "calls.voicemail.completed", VM_SESSION, recording_url=url))
+            self.assertEqual(first["voicemail"]["error"], "voicemail_empty")
+            again = calls.fetch_voicemail(self.conn, "vm11")
+        self.assertEqual(download.call_count, 1, "an empty message is never downloaded again")
+        self.assertEqual((again["file_name"], again["empty"]), (None, True))
+        self.assertEqual(calls.health(days=3650)["voicemail_unfetched"], [])
+
 
 class BackfillTest(_Ledger):
     def test_backfill_fetches_trunk_recordings_once_and_leaves_twins_and_stubs(self):
