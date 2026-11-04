@@ -293,6 +293,13 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_CLASSIFICATION_RECLASSIFY", "passes.d/bin/classification (1 = redo a v1/rule/jev value; never a human's)",
      "<unset>"),
     ("WAX_PROJECT_MIN_P", "passes.d/bin/project-extraction (noul threshold)", "0.6"),
+    ("WAX_DICTIONARY", "wax/dictionary.py (the HeyMa custom dictionary)", "<WAX_ROOT>/Dictionary.yaml"),
+    ("WAX_DICTIONARY_MIN_P", "passes.d/bin/dictionary-correction (Jev bar: respelt, sound-alike, spoken dot)", "0.5"),
+    ("WAX_DICTIONARY_MIN_P_HEARD", "passes.d/bin/dictionary-correction (Jev bar: a listed heard: form)", "0.4"),
+    ("WAX_DICTIONARY_MIN_P_CASE", "passes.d/bin/dictionary-correction (Jev bar: case-only change to English)",
+     "0.65"),
+    ("WAX_DICTIONARY_MIN_SCORE", "wax/dictionary.py (scan: spelling similarity a sound-alike needs)", "0.82"),
+    ("WAX_DICTIONARY_SPOKEN_DOT", "passes.d/bin/dictionary-correction (0 = leave a spoken \"dot\" alone)", "1"),
     ("WAX_PROJECT_MIN_P_LONG", "passes.d/bin/project-extraction (threshold for transcripts > 30K chars)", "0.75"),
     ("PJ_PROJECT_REGISTRY", "wax/pjregistry.py, bin/wax doctor (wins over PJ_REGISTRY_URL, as in `pj`)",
      "<unset>"),
@@ -697,19 +704,24 @@ def probe_frontmatter_schemas() -> dict[str, Any]:
 
 
 def probe_classification_key(add, *, effective: dict[str, str], yenv: dict[str, tuple[str, str]]) -> None:
-    """The classification pass's own Jev virtual key (alias heyma-wax-classification, $0.50/day).
+    probe_jev_pass_key(add, "classification", effective=effective, yenv=yenv)
+
+
+def probe_jev_pass_key(add, slug: str, *, effective: dict[str, str], yenv: dict[str, tuple[str, str]]) -> None:
+    """A Jev pass's own virtual key: classification (heyma-wax-classification) or
+    dictionary-correction (heyma-wax-dictionary), each $0.50/day.
 
     probe_project_extraction only ever looked at project-extraction's key. A dead, blocked or
-    budget-spent classification key fails every new recording's classification pass, so it gets its
-    own free probe (a key lookup; no decision is requested). The ingress itself is probed once above.
+    budget-spent key fails that pass on every new recording, so each gets its own free probe (a key
+    lookup; no decision is requested). The ingress itself is probed once above.
     """
-    ep = passes.registry().get("classification")
+    ep = passes.registry().get(slug)
     if ep is None:
         return
     enabled = bool(ep.get("enabled"))
     bad = FAIL if enabled else WARN
-    unused = "" if enabled else " (classification is not enabled)"
-    name = "jev api key (classification)"
+    unused = "" if enabled else f" ({slug} is not enabled)"
+    name = f"jev api key ({slug})"
     pass_env = ep.get("env") or {}
 
     def setting(key: str, default: str) -> str:
@@ -732,7 +744,7 @@ def probe_classification_key(add, *, effective: dict[str, str], yenv: dict[str, 
         detail = (f"{where} is not a virtual key (the ingress master key?)" if err.startswith("HTTP 404")
                   else f"{where} was rejected by {base} ({err.split(':')[0]})" if err.startswith(("HTTP 401", "HTTP 403"))
                   else f"{base}/key/info: {err or 'no info object'}")
-        add(_probe(name, bad, detail + unused, "mint a HeyMa virtual key on jev-litellm for classification, "
+        add(_probe(name, bad, detail + unused, f"mint a HeyMa virtual key on jev-litellm for {slug}, "
                    "store it in 1Password and point the pass's WAX_JEV_API_KEY_OP at it"))
         return
     alias = info.get("key_alias") or "<no alias>"
@@ -752,6 +764,26 @@ def probe_classification_key(add, *, effective: dict[str, str], yenv: dict[str, 
                        f"move it into {reference} and drop WAX_JEV_API_KEY"))
         else:
             add(_probe(name, PASS, detail))
+
+
+def probe_dictionary(add) -> None:
+    """The HeyMa custom dictionary parses. A broken file fails dictionary-correction on every transcript."""
+    ep = passes.registry().get("dictionary-correction")
+    if ep is None:
+        return
+    from wax import dictionary
+    enabled = bool(ep.get("enabled"))
+    path = dictionary.default_path()
+    try:
+        book = dictionary.load(path)
+    except dictionary.DictionaryError as exc:
+        add(_probe("custom dictionary", FAIL if enabled else WARN, f"{exc.reason_code}: {exc}",
+                   f"fix {path} (see the format notes at its top; quote an `about` with a comma or colon)"))
+        return
+    heard = sum(len(t.heard) for t in book.terms)
+    add(_probe("custom dictionary", PASS if book.terms else WARN,
+               f"{path}: {len(book.terms)} term(s), {heard} listed mis-hearing(s), sha {book.sha256[:12]}",
+               "" if book.terms else f"add the words speech recognition gets wrong to {path}"))
 
 
 def pending_pass_event_report() -> list[tuple[str, str, int]]:
@@ -1090,6 +1122,8 @@ def probe_all() -> list[dict[str, Any]]:
     # -- project-extraction dependencies ------------------------------------
     probe_project_extraction(add, repo=repo, effective=effective, yenv=yenv)
     probe_classification_key(add, effective=effective, yenv=yenv)
+    probe_jev_pass_key(add, "dictionary-correction", effective=effective, yenv=yenv)
+    probe_dictionary(add)
 
     # -- pass commands and the frontmatter editor --------------------------
     broken, checked = [], 0

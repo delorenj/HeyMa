@@ -55,6 +55,7 @@
 			"dist/nodes/WaxPassClassification/WaxPassClassification.node.js",
 			"dist/nodes/WaxPassClipboardCopy/WaxPassClipboardCopy.node.js",
 			"dist/nodes/WaxPassDiarization/WaxPassDiarization.node.js",
+			"dist/nodes/WaxPassDictionaryCorrection/WaxPassDictionaryCorrection.node.js",
 			"dist/nodes/WaxPassDomainCuration/WaxPassDomainCuration.node.js",
 			"dist/nodes/WaxPassFrontmatterStamp/WaxPassFrontmatterStamp.node.js",
 			"dist/nodes/WaxPassMemOps/WaxPassMemOps.node.js",

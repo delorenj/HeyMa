@@ -27,6 +27,7 @@ lives beside the code. All of it is one filesystem, which is what makes
 | `dropoff/` | Syncthing **receiveonly** device feed. waxd only ever COPIES out of it. Never write here |
 | `archive/` | audio parked after S3 verify |
 | `skipped/`, `quarantine/`, `recovered/` | preserved, never processed / never deleted |
+| `Dictionary.yaml` | the HeyMa custom dictionary: words ASR always mangles, with `heard:` mis-hearings; read by `dictionary-correction` on every run |
 | `var/wax.db` | SQLite ledger: `items · backups · transcripts · passes · outbox · transitions` |
 | `var/{state.json,waxd.sock,waxd.lock}` | live mirror, raw status socket, singleton lock |
 | `~/d/Transcripts/` | where transcripts land (`WAX_VAULT`); really `~/code/DeLoDocs/Transcripts` |
@@ -181,7 +182,11 @@ A failing pass never stops a sibling, except through `requires:` (ordering +
 gating; `after:` only orders): a dependent waits with `dependency_failed`. Failure
 is recorded per-slug with a `reason_code` in both the ledger and the note's
 `wax.passes.<slug>` frontmatter block. Enabled today: `frontmatter-stamp`,
-`classification`, `diarization`, `clipboard-copy`, `title-slug`, `project-extraction`, `call-metadata` (no model; skips non-calls with `not_a_call`).
+`classification`, `diarization`, `dictionary-correction`, `clipboard-copy`, `title-slug`, `project-extraction`, `call-metadata` (no model; skips non-calls with `not_a_call`).
+`dictionary-correction` respells the speaker's own words (Skillex, DeLoNET, "delo dot sh" → delo.sh)
+against **`Dictionary.yaml`** at the repo root, the HeyMa custom dictionary (read every run; edit it, no
+compile), with Jev judging each candidate on its own virtual key (alias `heyma-wax-dictionary`). It runs
+after `diarization` and before title/clipboard/projects in `transcript-standard`.
 `classification` (v2) is four-way (`monolog`, `meeting`, `phone_call`, `other`): a
 telnyx rule, a floor rule, then Jev on its own virtual key (alias
 `heyma-wax-classification`); see `docs/ENRICHMENT-PASSES.md`. Every chat

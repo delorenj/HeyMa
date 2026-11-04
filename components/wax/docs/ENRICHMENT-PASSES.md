@@ -459,6 +459,132 @@ model never wrote one) or whose source is `rule:*` / `jev-*`; any other source i
 plan is frozen at v1, so redo it with `WAX_CLASSIFICATION_RECLASSIFY=1 wax ep run classification <item> --live`
 (`--live` runs the live registry definition; an unfinished item is refused).
 
+## dictionary-correction (Jev, the HeyMa custom dictionary)
+
+Speech recognition does not know the speaker's own words, so it spells them a
+new way every time: Skillix, "skill X" and "skill ex" for Skillex, "D low net"
+for DeLoNET, "delo dot sh" for delo.sh. `dictionary-correction` respells them
+against **`$WAX_ROOT/Dictionary.yaml`** (`~/HeyMa/Dictionary.yaml`;
+`WAX_DICTIONARY` overrides), the HeyMa custom dictionary. The file is read on
+every run, so an edit applies to the next transcript with no compile or
+restart: the compiled pipeline freezes the pass's command and env, never the
+file. Its format notes are at the top of the file. An `about` containing a
+comma or a colon must be quoted.
+
+```yaml
+terms:
+  Skillex:                                         # the word only
+  Plane: "the ticket-board tool"                   # the word and what it is
+  pjangler: [pee jangler]                          # the word and how it gets misheard
+  DeLoNET: {heard: [d low net, dlonet], about: "the home lab"}
+```
+
+The pass runs in three steps.
+
+1. **Scan** (`wax.dictionary.candidates`, deterministic). Runs of one to four
+   words on one line, joined only by spaces or hyphens, are matched in this order:
+   - `heard`: a listed mis-hearing.
+   - `exact`: the term's own letters with the wrong case or spacing ("Delo net").
+   - `case`: a case-only change to an ordinary English word ("plane", "in hindsight").
+   - `fuzzy`: a sound-alike. This needs at least five letters and a spelling
+     ratio of 0.82 or more (`WAX_DICTIONARY_MIN_SCORE`), or 0.9 if every word
+     in the run is ordinary English.
+   - `dot`: a spoken "dot" between labels that end in a TLD or file suffix
+     ("delo dot sh" becomes `delo.sh`, "a dot env" becomes "a .env").
+     `WAX_DICTIONARY_SPOKEN_DOT=0` turns this off.
+
+   The scan never edits frontmatter, the `# Transcription:` header,
+   `**Speaker**` labels, code, wiki links, link targets or URLs. It also never
+   matches:
+   - letters spelled aloud (J-A-R-A-D, "C-A-L dot D-E-L-O dot SH");
+   - a correct sentence-case spelling;
+   - a run that begins or ends with a function word, unless that form is
+     listed ("Dami and" and "in Telephoria" keep their "and" and "in");
+   - a sound-alike that ends in a number ("GoHighLevel2", "Vox CPM2") or
+     crosses a spoken "dot";
+   - a domain term whose suffix was not heard ("delos" is not delo.sh).
+
+   Where readings nest, the listed or exact reading wins over a fragment inside it.
+2. **Judge.** Jev decides every distinct (heard text, term) pair as one
+   `noul` question. Requests are batched 40 at a time, and at most 160 pairs
+   are asked per document; any beyond that are dropped and the drop is noted.
+   Each request's state is `{speaker_vocabulary: {term: about},
+   excerpts: {cN: up to two occurrences in context}}`, with the header and
+   labels blanked. The ingress is `jev-1.13.0`, using HeyMa's own virtual key
+   (alias `heyma-wax-dictionary`, $0.50/day, 120 rpm,
+   `op://DeLoSecrets/sazfdn52xd3a3uyatrbo43hiei/credential`).
+3. **Apply.** A candidate is accepted when its probability reaches the bar
+   for its source:
+
+   | Source | Bar | Variable |
+   |---|---|---|
+   | `heard` | 0.4 | `WAX_DICTIONARY_MIN_P_HEARD` |
+   | `case` | 0.65 | `WAX_DICTIONARY_MIN_P_CASE` |
+   | everything else | 0.5 | `WAX_DICTIONARY_MIN_P` |
+
+   Overlapping readings are resolved with the most probable first, then the
+   longer span. The corrected body comes back as a `body_replace`
+   compare-and-replace intent, so an edit made while the pass ran wins.
+
+The bars were measured on 2026-11-04. 588 candidates mined from the 944 vault
+transcripts were labelled blind and then replayed through the scan's rules.
+At the shipped bars the results were:
+
+| Source | Precision |
+|---|---|
+| `heard` | 1.00 |
+| `exact` | 0.97 |
+| `case` | 0.98 |
+| `fuzzy` | 0.94 |
+| `dot` | 1.00 |
+
+Recall was 0.92 overall. The edge-word, number, spelled-address and nesting
+rules came from that labelling. Before them, precision was 0.92.
+
+**Placement.** The pass is `after: [diarization]`. Diarization re-renders the
+body from the timed ASR and skips a body it no longer recognises
+(`human_edits`), so corrections must come after it. In `transcript-standard`
+(v12), title-slug, clipboard-copy and project-extraction are ordered after this
+pass, so they read the corrected text. That ordering lives in the pipeline,
+not the registry, so switching the pass off never quarantines them. The YAML
+declares `capabilities: [audio, document]`, but only the transcript pipeline
+binds it today.
+
+**Results.**
+- Nothing to correct is a completed run with no body change and no Jev call.
+- An empty note is `skipped`/`empty_document`.
+- A missing or unparseable dictionary fails with `dictionary_missing` or
+  `dictionary_invalid`. It never runs as if the dictionary were empty.
+- A Jev failure fails with the `provider_*` reason code.
+- `evidence` records the dictionary's path, sha and term count; the
+  candidate, asked and dropped counts; request ids; the bars; and up to 60
+  `corrections` rows (`from`, `to`, `count`, `p`, `source`, `accepted`,
+  `applied`).
+
+Only diarization's body edit marks `transcripts.diarized`. This pass's edit
+leaves it alone.
+
+**Doctor.** `wax doctor` checks two things:
+- `jev api key (dictionary-correction)`: a free key lookup, covering a block
+  or a spent budget.
+- `custom dictionary`: the file parses, plus its term and mis-hearing counts.
+
+**Growing it.** When a transcript misspells one of the speaker's words, add
+the misspelling under that term's `heard:`. Leave ordinary English words out
+of `heard`, because they are right most of the time; the scan still finds them
+by sound, at the normal bar. To redo one finished item:
+
+```bash
+wax ep run dictionary-correction <item>
+```
+
+To preview without writing, run the script directly; it prints the result it
+would apply:
+
+```bash
+config/passes.d/bin/dictionary-correction NOTE.md
+```
+
 ## project-extraction and ticketable
 
 Two passes turn a transcript into pjangler-attributed tickets. Their YAMLs and
