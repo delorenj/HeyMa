@@ -1,0 +1,16 @@
+name: dictionary-only
+version: 1
+description: >
+  Runs dictionary-correction alone on one Markdown note, by name
+  (trigger: manual, no folders). It respells the speaker's own words against
+  the HeyMa custom dictionary (Dictionary.yaml), with Jev judging each
+  correction. Use it for notes that have no Wax item and so cannot take
+  `wax ep run`: `wax documents run dictionary-only NOTE.md`. Examples are
+  transcripts older than the Wax ledger, or any other note. A document run
+  edits the body only and never renames the note. Compile this one
+  explicitly (`wax pipeline compile dictionary-only`); doc-standard is
+  n8n-sourced and compiling the whole directory would replace it.
+trigger: manual
+enabled: true
+passes:
+  - slug: dictionary-correction
