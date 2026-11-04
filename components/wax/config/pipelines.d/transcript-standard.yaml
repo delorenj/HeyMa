@@ -12,11 +12,17 @@ description: >
 trigger: transcription
 enabled: true
 failure_policy: independent
+# dictionary-correction respells the speaker's own words after diarization
+# (which re-renders the body); title, clipboard and projects are ordered after
+# it (ordering only, never a gate) so they read the corrected text. The edges
+# live here, not in those passes' registry `after:`, so switching the
+# dictionary pass off never quarantines them.
 passes:
   - frontmatter-stamp
-  - clipboard-copy
+  - {slug: clipboard-copy, after: [dictionary-correction]}
   - classification
-  - title-slug
+  - {slug: title-slug, after: [dictionary-correction]}
   - diarization
-  - project-extraction
+  - {slug: project-extraction, after: [dictionary-correction]}
   - call-metadata
+  - dictionary-correction

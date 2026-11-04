@@ -1,0 +1,215 @@
+#!/usr/bin/python3
+"""wax.ep.v1 dictionary correction: respell the speaker's own words the way they spell them.
+
+Speech recognition does not know the speaker's vocabulary, so it spells it a
+new way every time: "Skillix", "skill X" and "skill ex" for Skillex, "D low
+net" for DeLoNET, "delo dot sh" for delo.sh. This pass fixes those against
+the HeyMa custom dictionary (`$WAX_ROOT/Dictionary.yaml`; `$WAX_DICTIONARY`
+overrides) the way a human proof-reader would:
+
+1. find every run of words that sounds like a dictionary term but is not
+   spelled like one, and every spoken "dot" between a name and a domain or
+   file suffix (wax.dictionary.candidates, deterministic and generous);
+2. ask Jev, in context, whether each one really is that term — "skill set"
+   in a job interview is not Skillex, "hey ma, pass the salt" is not HeyMa —
+   one `noul` per distinct (heard, term) pair, batched, with the dictionary's
+   one-line description of every term asked about as state;
+3. replace the spans Jev accepts, most probable first, never two overlapping,
+   and hand the corrected body back as a compare-and-replace intent, so a
+   human edit made while the pass ran wins.
+
+A mis-hearing the speaker has listed under `heard:` is accepted at a lower
+probability (WAX_DICTIONARY_MIN_P_HEARD) than one found by sound alone
+(WAX_DICTIONARY_MIN_P): the speaker has already seen it go wrong that way.
+Jev still judges it, because a listed form can be ordinary words in context.
+A case-only change to an ordinary English word ("plane" -> "Plane", "in
+hindsight") needs more (WAX_DICTIONARY_MIN_P_CASE): it is usually right as
+written.
+
+Editing the dictionary takes effect on the next run, with no compile: the
+compiled pipeline freezes this pass's command and env, not the file.
+
+The pass reads one document and prints one declarative result; Wax applies
+it. It never prints document text or provider bodies, and it never touches
+frontmatter, the `# Transcription:` header, speaker labels, code, links or
+URLs. Nothing to correct is a completed run with no body change. A missing or
+malformed dictionary, or a Jev failure, exits nonzero with a reason code.
+"""
+
+import hashlib
+import os
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+
+COMPONENT_ROOT = next(
+    parent for parent in Path(__file__).resolve().parents
+    if (parent / "pyproject.toml").is_file()
+)
+sys.path.insert(0, str(COMPONENT_ROOT / "src"))
+
+from wax import dictionary, frontmatter, jev, provider  # noqa: E402
+
+
+# HeyMa's jev-litellm virtual key for this pass (alias heyma-wax-dictionary,
+# $0.50/day); never the ingress master key or the raw TypeSafe key.
+DEFAULT_KEY_OP = "op://DeLoSecrets/sazfdn52xd3a3uyatrbo43hiei/credential"
+KEY_ENV = "WAX_JEV_API_KEY"
+# Measured 2026-11-04 on jev-1.13.0: 588 corpus candidates labelled blind, then
+# replayed through the scan's rules. At these bars precision was 1.00 for
+# heard, 0.97 exact, 0.98 case, 0.94 fuzzy, 1.00 dot; recall 0.92 overall.
+DEFAULT_MIN_P = 0.5
+DEFAULT_MIN_P_HEARD = 0.4
+DEFAULT_MIN_P_CASE = 0.65
+# Questions per Jev request, and distinct (heard, term) pairs per document.
+BATCH = 40
+MAX_GROUPS = 160
+EVIDENCE_MIN_P = 0.3
+EVIDENCE_ROWS = 60
+DOT_ABOUT = 'a web address or file name, where the speaker said "dot" for "."'
+UNDESCRIBED = "one of the speaker's own names"
+
+
+def question(said: str, term: str, about: str) -> dict[str, Any]:
+    """The measured wording (2026-11-04): vocabulary in state, one excerpt per question."""
+    return jev.noul(
+        f'is speech-recognition output, which often mangles the speaker\'s own project, tool and place '
+        f'names. Does "{said}" in it stand for "{term}" ({about}), i.e. is "{said}" a mis-transcription '
+        f'of "{term}"?',
+        true=f'The speaker said "{term}"; "{said}" is how speech recognition mis-spelled it.',
+        false=f'"{said}" means what it says (or something else), not "{term}".',
+    )
+
+
+def grouped(found: list[dictionary.Candidate]) -> list[list[dictionary.Candidate]]:
+    """Occurrences sharing (heard text, replacement), strongest and most frequent first."""
+    groups: dict[tuple[str, str], list[dictionary.Candidate]] = {}
+    for c in found:
+        groups.setdefault((c.said.casefold(), c.replacement), []).append(c)
+    return sorted(groups.values(), key=lambda g: (-max(c.score for c in g), -len(g), g[0].start))
+
+
+def describe(c: dictionary.Candidate) -> str:
+    if c.source == "dot":
+        return (c.term.about if c.term is not None and c.term.about else DOT_ABOUT)
+    return c.term.about if c.term is not None and c.term.about else UNDESCRIBED
+
+
+def ask(body: str, groups: list[list[dictionary.Candidate]], *, key: str, model: str,
+        url: str) -> tuple[list[float], list[jev.Decision]]:
+    probabilities: list[float] = []
+    decisions: list[jev.Decision] = []
+    mask = dictionary.protected_mask(body)
+    for offset in range(0, len(groups), BATCH):
+        batch = groups[offset:offset + BATCH]
+        vocabulary: dict[str, str] = {}
+        excerpts: dict[str, str] = {}
+        questions: dict[str, Any] = {}
+        for index, group in enumerate(batch):
+            gid = f"c{offset + index + 1}"
+            first = group[0]
+            vocabulary.setdefault(first.replacement, describe(first))
+            shown = [dictionary.excerpt(body, c.start, c.end, mask=mask) for c in group[:2]]
+            excerpts[gid] = " … ".join(dict.fromkeys(shown))
+            q = question(first.said, first.replacement, describe(first))
+            q["instructions"] = f"Excerpt `{gid}` " + q["instructions"]
+            questions[gid] = q
+        decision = jev.decide({"speaker_vocabulary": vocabulary, "excerpts": excerpts}, questions,
+                              key=key, model=model, url=url)
+        decisions.append(decision)
+        probabilities.extend(decision.noul(gid) for gid in questions)
+    return probabilities, decisions
+
+
+def build_result(md: Path) -> dict[str, Any]:
+    # Bytes, no newline translation: the digest must be the one the runner recomputes.
+    _fm, body = frontmatter.split(md.read_bytes().decode("utf-8"))
+    if not provider.document_text(body):
+        return {"wax_ep_version": 1, "state": "skipped", "reason_code": "empty_document"}
+    book = dictionary.load()
+    min_score = provider.env_number("WAX_DICTIONARY_MIN_SCORE", dictionary.DEFAULT_MIN_SCORE,
+                                    minimum=0.5, maximum=1.0)
+    spoken_dot = os.environ.get("WAX_DICTIONARY_SPOKEN_DOT", "1").strip().lower() not in ("0", "false", "no", "off")
+    found = dictionary.candidates(body, book, min_score=min_score, spoken_dot=spoken_dot)
+    groups = grouped(found)
+    asked, dropped = groups[:MAX_GROUPS], groups[MAX_GROUPS:]
+    if dropped:
+        provider.note(f"note: {len(dropped)} weaker candidate pair(s) beyond {MAX_GROUPS} were not asked about")
+    evidence: dict[str, Any] = {
+        "dictionary": {"path": str(book.path), "sha256": book.sha256[:16], "terms": len(book.terms)},
+        "candidates": len(groups), "asked": len(asked), "dropped": len(dropped),
+    }
+    if not asked:
+        evidence["corrections"] = []
+        return {"wax_ep_version": 1, "frontmatter": {}, "evidence": evidence}
+
+    min_p = provider.env_number("WAX_DICTIONARY_MIN_P", DEFAULT_MIN_P, minimum=0.01, maximum=1.0)
+    min_p_heard = provider.env_number("WAX_DICTIONARY_MIN_P_HEARD", DEFAULT_MIN_P_HEARD, minimum=0.01, maximum=1.0)
+    min_p_case = provider.env_number("WAX_DICTIONARY_MIN_P_CASE", DEFAULT_MIN_P_CASE, minimum=0.01, maximum=1.0)
+    thresholds = {"heard": min_p_heard, "case": min_p_case}
+    key = provider.resolve_key(env_var=KEY_ENV,
+                               op_ref=os.environ.get("WAX_JEV_API_KEY_OP", DEFAULT_KEY_OP).strip())
+    probabilities, decisions = ask(
+        body, asked, key=key,
+        model=os.environ.get("WAX_JEV_MODEL", "").strip() or jev.DEFAULT_MODEL,
+        url=os.environ.get("WAX_JEV_URL", "").strip() or jev.DEFAULT_URL)
+
+    accepted: list[tuple[dictionary.Candidate, float]] = []
+    rows = []
+    for group, p in zip(asked, probabilities):
+        first = group[0]
+        threshold = thresholds.get(first.source, min_p)
+        ok = p >= threshold
+        if ok:
+            accepted.extend((c, p) for c in group)
+        if ok or p >= EVIDENCE_MIN_P:
+            rows.append({"from": first.said, "to": first.replacement, "count": len(group),
+                         "p": round(p, 3), "source": first.source, "accepted": ok})
+    chosen = dictionary.resolve(accepted)
+    applied: dict[tuple[str, str], int] = {}
+    for c in chosen:
+        applied[(c.said.casefold(), c.replacement)] = applied.get((c.said.casefold(), c.replacement), 0) + 1
+    for row in rows:
+        if row["accepted"]:
+            row["applied"] = applied.get((row["from"].casefold(), row["to"]), 0)
+    rows.sort(key=lambda r: (not r["accepted"], -r["p"]))
+    evidence.update({
+        "model": ", ".join(sorted({d.model for d in decisions})),
+        "requests": len(decisions),
+        "request_ids": [d.request_id for d in decisions if d.request_id],
+        "threshold": min_p, "threshold_heard": min_p_heard, "threshold_case": min_p_case,
+        "replaced": len(chosen),
+        "corrections": rows[:EVIDENCE_ROWS],
+    })
+    result: dict[str, Any] = {"wax_ep_version": 1, "frontmatter": {}, "evidence": evidence}
+    if chosen:
+        result["body_replace"] = {"sha256": hashlib.sha256(body.encode()).hexdigest(),
+                                  "text": dictionary.apply(body, chosen)}
+    return result
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if not args:
+        print("usage: dictionary-correction DOCUMENT.md [ITEM_ID]", file=sys.stderr)
+        return 2
+    md = Path(args[0]).expanduser()
+    if not md.is_file():
+        return provider.fail("run_error", f"not a document file: {md}")
+    try:
+        result = build_result(md)
+    except dictionary.DictionaryError as exc:
+        return provider.fail(exc.reason_code, str(exc))
+    except provider.ProviderError as exc:
+        return provider.fail(exc.reason_code, str(exc))
+    except UnicodeDecodeError as exc:
+        return provider.fail("run_error", f"not UTF-8: {exc}")
+    except OSError as exc:
+        return provider.fail("run_error", f"{type(exc).__name__}: {exc}")
+    provider.emit_result(result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

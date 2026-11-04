@@ -1,0 +1,34 @@
+slug: dictionary-correction
+version: 1
+description: Respell the speaker's own words (projects, tools, hosts, domains, people) against the HeyMa custom dictionary, with Jev judging each correction in context.
+# Reads only note text, so the same core serves an ordinary document; only the
+# transcript pipeline runs it today (a human's own note is theirs to spell).
+capabilities: [audio, document]
+enabled: true
+auto: true
+requires: []
+# Ordering only. Diarization re-renders the body from the timed ASR and skips a
+# body that no longer hashes to what Wax wrote (`human_edits`), so corrections
+# must land after it, never before. Title, clipboard and project extraction are
+# ordered after this pass (their `after:`) so they read the corrected text.
+after: [diarization]
+# The corrected body replaces the read body only if it still hashes the same,
+# so an edit made while the pass ran wins.
+body_mutation: compare-and-replace
+clobber: []
+# One to four ~0.1-0.7s Jev calls (20s timeout, one retry each) plus the 5s op
+# read; a long meeting's candidate scan is a few seconds.
+timeout_s: 180
+env:
+  # HeyMa's own virtual key on the fleet Jev ingress (alias heyma-wax-dictionary):
+  # $0.50/day, 120 rpm, per-request spend in the ingress's spend log. jev-1.13.0
+  # is pinned because the thresholds below were measured on it.
+  WAX_JEV_URL: https://jev.delo.sh/typesafe/v1/systemone
+  WAX_JEV_MODEL: jev-1.13.0
+  WAX_JEV_API_KEY_OP: op://DeLoSecrets/sazfdn52xd3a3uyatrbo43hiei/credential
+  # Jev probability a correction needs, by how the scan found it (measured
+  # 2026-11-04 against 588 blind-labelled corpus candidates; see the script).
+  WAX_DICTIONARY_MIN_P: "0.5"          # respelt, sound-alike or spoken dot
+  WAX_DICTIONARY_MIN_P_HEARD: "0.4"    # listed under heard:
+  WAX_DICTIONARY_MIN_P_CASE: "0.65"    # case-only change to an English word
+command: ["{component_root}/config/passes.d/bin/dictionary-correction", "{md_path}", "{item_id}"]

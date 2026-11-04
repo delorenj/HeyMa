@@ -953,7 +953,10 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
         current = _rename_transcript(md, item_id, requested_slug) if requested_slug else md
     finally:
         staging.unlink(missing_ok=True)
-    if replacement is not None and not document:
+    if replacement is not None and not document and ep.get("kind") == "diarization":
+        # Only a diarization body carries speaker turns. Any other body edit
+        # (summarize, dictionary-correction) must not mark a monolog diarized:
+        # that column is the diarization health signal (ledger.diarization_health).
         ledger.connect().execute("UPDATE transcripts SET diarized=1 WHERE item_id=?", (item_id,))
 
     changed = [f"frontmatter.{key}" for key in effective_updates]

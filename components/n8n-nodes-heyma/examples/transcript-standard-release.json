@@ -38,8 +38,8 @@
       "type": "n8n-nodes-heyma.wax-pass-clipboard-copy",
       "typeVersion": 1,
       "position": [
-        -40,
-        -140
+        940,
+        260
       ]
     },
     {
@@ -60,7 +60,7 @@
       "type": "n8n-nodes-heyma.wax-pass-title-slug",
       "typeVersion": 1,
       "position": [
-        460,
+        940,
         -140
       ]
     },
@@ -82,7 +82,7 @@
       "type": "n8n-nodes-heyma.wax-pass-project-extraction",
       "typeVersion": 1,
       "position": [
-        200,
+        940,
         60
       ]
     },
@@ -98,9 +98,20 @@
       ]
     },
     {
+      "parameters": {},
+      "id": "wax-tr-dictionary-correction",
+      "name": "Dictionary",
+      "type": "n8n-nodes-heyma.wax-pass-dictionary-correction",
+      "typeVersion": 1,
+      "position": [
+        700,
+        60
+      ]
+    },
+    {
       "parameters": {
-        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN. Output 0 'continue' only orders: Stamp → Clipboard → Classify.\n\nOutput 1 'requires' gates: Title is wired from Classify's requires port, so a failed Classify leaves Title dependency-blocked instead of dropped.\n\nClassify (v2, Jev) stores monolog, meeting, phone_call or other, or abstains and stores none (the note shows as Unsorted). Classify → Diarize is a continue edge (ordering only): Diarize skips a transcript classified as a monolog (its registry `when`), and still runs for a meeting, phone call, other, an abstain, or when Classify fails, since the field is then absent. Projects (project-extraction, Jev over the pjangler registry) is independent and keeps an existing project-ids. Call Metadata (call-metadata) is independent: it stamps call-* frontmatter from the Wax call log for a Telnyx recording or voicemail and skips anything else (not_a_call). Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
-        "height": 320,
+        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN, output 0 'continue': ordering only, never a gate. Classify → Diarize → Dictionary → Title, Clipboard and Projects.\n\nClassify (v2, Jev) stores monolog, meeting, phone_call or other, or abstains and stores none (the note shows as Unsorted). Diarize skips a transcript classified as a monolog (its registry `when`), and still runs for a meeting, phone call, other, an abstain, or when Classify fails, since the field is then absent. Dictionary (dictionary-correction, Jev over ~/HeyMa/Dictionary.yaml) respells the speaker's own words after Diarize, which re-renders the body and would otherwise skip a corrected one as human_edits; Title, Clipboard and Projects run after it so they read the corrected text, and run anyway if it fails. Projects (project-extraction, Jev over the pjangler registry) keeps an existing project-ids. Call Metadata (call-metadata) is independent: it stamps call-* frontmatter from the Wax call log for a Telnyx recording or voicemail and skips anything else (not_a_call). Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
+        "height": 400,
         "width": 400
       },
       "id": "wax-tr-note",
@@ -119,6 +130,38 @@
         [
           {
             "node": "Diarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Diarize": {
+      "main": [
+        [
+          {
+            "node": "Dictionary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dictionary": {
+      "main": [
+        [
+          {
+            "node": "Title",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Clipboard",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Projects",
             "type": "main",
             "index": 0
           }

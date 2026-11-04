@@ -1,0 +1,154 @@
+# HeyMa custom dictionary
+#
+# The words speech recognition always gets wrong: project, tool, host, domain,
+# company and people names, spelled the way they should be written. The Wax
+# `dictionary-correction` pass reads this file on every transcript and fixes
+# anything that sounds like a term here but is not spelled like it, after asking
+# Jev whether that reading fits the context ("skill set" in a job interview is
+# not Skillex). Edits take effect on the next transcript; nothing to compile or
+# restart.
+#
+# One term per key, written exactly as it should appear (case matters):
+#
+#   Skillex:                                  # just the word
+#   Skillex: my skill registry                # the word and what it is
+#   Skillex: [skillix, skill x]               # the word and how it gets misheard
+#   Skillex: {heard: [skillix, skill x], about: "my skill registry"}
+#
+# Quote an `about` that contains a comma or a colon, as below.
+#
+# `heard` lists mis-hearings you have actually seen. They are accepted more
+# readily than a sound-alike the pass finds on its own, but Jev still checks
+# each one in context. Leave ordinary English words out of `heard` (they are
+# right most of the time); the pass still finds them by sound, at the normal bar.
+# `about` is one short line Jev is shown, so it can tell your Skillex from a
+# skill set. A spoken "dot" in a domain or file name ("delo dot sh",
+# "settings dot json") is fixed without being listed.
+#
+# Seeded 2026-11-04 by mining the 944 transcripts in ~/d/Transcripts.
+
+terms:
+  # -- HeyMa, Wax and the 33GOD platform ------------------------------------
+  HeyMa: {heard: [hey ma, hema, haema, hayma, haima, hama, hey-ma], about: "the voice recording and transcription pipeline (the ~/HeyMa repo)"}
+  Wax: "the HeyMa audio pipeline daemon and CLI"
+  33GOD: {heard: [33 god, 33-god, thirty three god], about: "the agent platform monorepo"}
+  Bloodbank: {heard: [blood bank, blood bang], about: "the 33GOD event bus"}
+  Candybar: {heard: [candy bar, candy-bar, candy bars], about: "the 33GOD single recurring-schedule clock and desktop app"}
+  Candystore: {heard: [candy store, candy-store], about: "the 33GOD event and audit store"}
+  Holocene: {heard: [hollow scene, holo scene, holiseen], about: "the 33GOD control-plane dashboard"}
+  Hindsight: "the agent project-memory service (api.hs.delo.sh)"
+  Hermes: "the agent runtime and gateway"
+  Momo: "the human-driven project-manager agent"
+  Flume: "the original 33GOD agent delegation component"
+  pjangler: {heard: [p jangler, p. jangler, pj angler, pee jangler, pea jangler, p-jangler, p p jangler], about: "the project registry and ticket-board CLI (pj)"}
+  px: {heard: [p x], about: "the pilot ticket CLI"}
+  Skillex: {heard: [skillix, skill x, skillx, skellix, skelly], about: "the agent-skill registry and sync CLI"}
+  Jev: {heard: [jeb, jive, jef, jet b], about: "TypeSafe's decision model (a system-one LLM) at jev.delo.sh"}
+  TypeSafe: {heard: [type safe], about: "the company behind the Jev decision model"}
+  Clairic: {heard: [cleric, claret], about: "the structured-extraction sibling of Jev"}
+  CodeGraph: {heard: [code graph], about: "the code knowledge-graph tool"}
+  Kapture: "the browser automation tool"
+  Deckard: {heard: [decker, deck are], about: "the Stream Deck controller for zellij tabs"}
+  TonnyBox: {heard: [tonny box, tani box, tawny box], about: "the Raspberry Pi voice-capture satellite with the 'Hey Tonny' wake word"}
+  Voxxy: {heard: [voxy, voxie, vox e], about: "the text-to-speech service and CLI"}
+  VoxCPM: {heard: [vox cpm], about: "the local text-to-speech model behind Voxxy"}
+  tokies: {heard: [tokis], about: "the token-usage and cooldown CLI"}
+  Grolf: {heard: [groff], about: "a named Hermes agent (director of engineering for 33GOD)"}
+  Rererere: {heard: [re-re-re-re, re re re], about: "a named Hermes agent"}
+  Dumply: {heard: [dumpley], about: "a named Hermes agent profile"}
+  DLOHQ: {heard: [delo hq], about: "the Telegram headquarters for the Hermes agent fleet"}
+  SOUL.md: {heard: [sold.md], about: "a Hermes agent's instruction file"}
+  frontmatter: {heard: [front matter], about: "the YAML header of a Markdown note"}
+
+  # -- DeLoNET, the home lab --------------------------------------------------
+  DeLoNET: {heard: [dlonet, dilonet, gelonet, delo net, dlo net, d low net, d-low-net], about: "the home lab and network, and the company of the same name"}
+  delo.sh: {heard: [dlo.sh, dilo.sh, dlo sh, dlosh, delo sh, dlo-sh, delo dot chesh], about: "the home lab domain (services are subdomains like drive.delo.sh)"}
+  DeLoDocs: {heard: [dlo docs, delo docs, dilo docs, dillo docs, deal of docs, dealer docs, deladox], about: "the Obsidian notes vault"}
+  DeLoSecrets: {heard: [dlo secrets, delo secrets, dilo secrets, delos secrets], about: "the 1Password vault holding every credential"}
+  DeLoHome: {heard: [dlo home, delo home, dilo home], about: "the home-automation MCP server"}
+  DeLoContainers: {heard: [dlo containers, dlo container], about: "the homelab Docker Compose stacks repo"}
+  big-chungus: {heard: [big chungus, big chunk], about: "the main home server and workstation"}
+  burro-salmon.ts.net: {heard: [burro salmon, burrow salmon], about: "the Tailscale tailnet domain"}
+  tailnet: {heard: [tail net], about: "the Tailscale network"}
+  Tailscale: {heard: [tail scale], about: "the VPN mesh"}
+  Syncthing: {heard: [sync thing, sink thing], about: "the file sync tool that feeds recordings to HeyMa"}
+  Traefik: "the homelab reverse proxy"
+  MinIO: {heard: [mini os, mini o], about: "the S3 object store behind s3.delo.sh"}
+  zellij: {heard: [zellege, zellage, zelleage, zelle-age, zellige, zelige, zelij, zellig, zealage], about: "the terminal multiplexer every agent runs in"}
+  Alacritty: "the terminal emulator"
+  mise: {heard: [mize, meez], about: "the dev-tool and task runner (mise run)"}
+  zshyzsh: {heard: [zshy zsh, zishy zish, zishy], about: "the zsh configuration repo"}
+  systemd: {heard: [system d], about: "the Linux service manager"}
+  TOML: {heard: [tom l], about: "the config file format"}
+  PM2: {heard: [pm too], about: "the Node process manager"}
+  delorenj: {heard: [dealer nj, dealer n j, deal or nj], about: "the speaker's username and GitHub handle"}
+
+  # -- AutomaticAI and client work ---------------------------------------------
+  AutomaticAI: {heard: [automatic ai, automatic a i, auto matic ai, automatic.ai], about: "the speaker's consulting company"}
+  automaticai.io: {heard: [automatic ai.io, automatic aiio], about: "AutomaticAI's domain (the LLM gateway is api.automaticai.io)"}
+  IntelliForia: {heard: [telephoria, teleforia, telefora, intelaforia, intellivoria, intelliforya, intelliphoria, intelphoria, intelafory, intelephoria, inteliforia, telphoria, telifornia, infliforia, impelaforia, palaforia, intelithoria, telephthoria, intelli-phoria, intel foria, intel floria], about: "the EMR compliance company and app"}
+  CentralReach: {heard: [central reach, center reach], about: "the ABA-therapy EMR IntelliForia integrates with"}
+  Skycare: {heard: [sky care, skycaret, sky cares], about: "the partner system integrated with IntelliForia"}
+  Brellium: {heard: [brelium, brillium, braillium, brilliam, bralium, brailleum], about: "the compliance product IntelliForia is compared with"}
+  TriNote: {heard: [try note, tri-note, tri note], about: "the clinical-notes platform"}
+  GorillaDesk: {heard: [gorilla desk, grilla desk, grill a desk, guerrilla desk, gorilla dest], about: "the pest-control field-service software in the IPM Home Services engagement"}
+  PestPak: {heard: [pest pack], about: "a competing pest-control software"}
+  GoHighLevel: {heard: [go high level], about: "the CRM used in AutomaticAI client work"}
+  Grigory: {heard: [grigor, grigori], about: "an AutomaticAI client"}
+  Slowburns: {heard: [slow burns], about: "the Ken Burns-style Civil War dispatch video app"}
+  Gruvato: {heard: [groovato, gravato, gravado, groovado, gruvado], about: "the drummer practice app"}
+  KeepyMoney: {heard: [keepy money], about: "the household-finance dashboard"}
+  PlaneAndSimple: {heard: [plain and simple, plain-and-simple], about: "the Plane-based IT ticketing project"}
+  CommonProject: {heard: [common project], about: "the shared project scaffold pjangler uses"}
+  Milkshake: "the cost-reconciliation platform"
+  Dowser: {heard: [dowzer], about: "the lead-generation CLI"}
+  Docsidian: {heard: [doxidian], about: "the Obsidian plugin repo"}
+  Avacadabra: {heard: [ava cadabra], about: "a project repo"}
+  Dresscode: "a project repo"
+  Plane: "the project-management tool that holds the ticket boards"
+
+  # -- People -------------------------------------------------------------------
+  Jarad: {heard: [jared, jarod], about: "the speaker's own first name (Jarad DeLorenzo)"}
+  DeLorenzo: {heard: [dilorenzo, di lorenzo, de lorenzo, delorenz, de lourenzo], about: "the speaker's surname"}
+  Damian: {heard: [damien], about: "Damian Miller, an AutomaticAI collaborator"}
+  Chaya: "an IntelliForia colleague (chaya.delo.sh)"
+  Cait: "a colleague (cait.delo.sh)"
+  Simcha: {heard: [simca, simka], about: "a stakeholder in IntelliForia"}
+  Gershon: {heard: [gerson], about: "an IntelliForia colleague"}
+
+  # -- Vendors, models and tools ----------------------------------------------
+  1Password: {heard: [one pass, onepass, one password], about: "the password manager that holds every secret"}
+  Claude: {heard: [clawed, clod, claud], about: "Anthropic's assistant and Claude Code"}
+  Anthropic: {heard: [anthropix, thropic], about: "the company behind Claude"}
+  OpenAI: "the company behind ChatGPT and Codex"
+  ChatGPT: {heard: [chat gbt, chat gpt], about: "OpenAI's assistant"}
+  Codex: "the OpenAI coding agent CLI"
+  Kimi: {heard: [kimmy, kimmie], about: "the Kimi Code model subscription"}
+  Kimi Claw: {heard: [kimmy claw], about: "the phone-controlling agent"}
+  OpenClaw: {heard: [open claw, open clawed], about: "an agent framework"}
+  OpenRouter: {heard: [open router], about: "the pay-as-you-go LLM routing service"}
+  LiteLLM: {heard: [light llm, lite llm, light l l m], about: "the LLM proxy"}
+  DeepSeek: {heard: [deep seek, deep sick], about: "an LLM provider"}
+  Deepgram: {heard: [deep gram], about: "a speech-to-text API"}
+  ElevenLabs: {heard: [eleven labs, 11 labs], about: "a text-to-speech vendor"}
+  Cartesia: "a text-to-speech vendor"
+  fal.ai: {heard: [fal dot ai, foul dot ai, foul.io, fall ai], about: "the image and model inference host"}
+  Ideogram: {heard: [idiogram], about: "an image generation tool"}
+  Mistral: "an LLM provider"
+  Qdrant: "the vector database"
+  LiveKit: {heard: [live kit], about: "the voice-agent framework"}
+  Langfuse: {heard: [lang fuse], about: "an LLM observability tool"}
+  LangChain: {heard: [lanechain], about: "an agent framework"}
+  Telnyx: {heard: [telnix, telmex, tell nix, tel nix, telnex, telnics, tell next], about: "the phone carrier that records calls"}
+  TeXML: {heard: [txml], about: "Telnyx's XML call-control application"}
+  BMAD: {heard: [be mad, bmat, beemad, b-mad, b mad], about: "the BMAD planning method (epics, stories, PRDs)"}
+  TestFlight: {heard: [test flight, test-flight], about: "Apple's beta app distribution"}
+  HubSpot: {heard: [hub spot], about: "a CRM"}
+  DigitalOcean: {heard: [digital ocean], about: "the cloud host for IntelliForia staging"}
+  Cloudflare: {heard: [cloud flare, cloudfare], about: "DNS, tunnels and Workers for the speaker's domains"}
+  Vercel: {heard: [versel, versal], about: "a hosting platform"}
+  Tauri: "the Rust desktop app framework"
+  BlueBubbles: {heard: [blue bubbles], about: "the iMessage bridge server"}
+  shadcn: {heard: [shad cn], about: "the UI component library"}
+  Zapier: {heard: [zappier], about: "an integration platform"}
+  GoodLeap: {heard: [good leap], about: "the solar financing company"}
