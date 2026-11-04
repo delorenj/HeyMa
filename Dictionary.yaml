@@ -33,7 +33,7 @@ terms:
   Wax: "the HeyMa audio pipeline daemon and CLI"
   33GOD: {heard: [33 god, 33-god, thirty three god], about: "the agent platform monorepo"}
   Bloodbank: {heard: [blood bank, blood bang], about: "the 33GOD event bus"}
-  Candybar: {heard: [candy bar, candy-bar, candy bars], about: "the 33GOD single recurring-schedule clock and desktop app"}
+  Candybar: {heard: [candy bar, candy-bar], about: "the 33GOD single recurring-schedule clock and desktop app"}
   Candystore: {heard: [candy store, candy-store], about: "the 33GOD event and audit store"}
   Holocene: {heard: [hollow scene, holo scene, holiseen], about: "the 33GOD control-plane dashboard"}
   Hindsight: "the agent project-memory service (api.hs.delo.sh)"
@@ -98,7 +98,7 @@ terms:
   Slowburns: {heard: [slow burns], about: "the Ken Burns-style Civil War dispatch video app"}
   Gruvato: {heard: [groovato, gravato, gravado, groovado, gruvado], about: "the drummer practice app"}
   KeepyMoney: {heard: [keepy money], about: "the household-finance dashboard"}
-  PlaneAndSimple: {heard: [plain and simple, plain-and-simple], about: "the Plane-based IT ticketing project"}
+  PlaneAndSimple: "the Plane-based IT ticketing project (not the idiom plain and simple)"
   CommonProject: {heard: [common project], about: "the shared project scaffold pjangler uses"}
   Milkshake: "the cost-reconciliation platform"
   Dowser: {heard: [dowzer], about: "the lead-generation CLI"}
