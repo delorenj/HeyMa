@@ -1,0 +1,16 @@
+name: title-only
+version: 1
+description: >
+  Runs title-slug alone on one Markdown note, by name (trigger: manual, no
+  folders). It proposes a title and summary from the note's text and writes
+  them to the frontmatter, keeping any title or summary already there, so
+  blank `title` and `summary` first to regenerate them. Use it for notes that
+  have no Wax item and so cannot take `wax ep run title-slug`:
+  `wax documents run title-only NOTE.md`. A document run never renames the
+  note. Compile this one explicitly (`wax pipeline compile title-only`);
+  doc-standard is n8n-sourced and compiling the whole directory would replace
+  it.
+trigger: manual
+enabled: true
+passes:
+  - slug: title-slug
