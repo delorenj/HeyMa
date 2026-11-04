@@ -29,11 +29,11 @@
 
 terms:
   # -- HeyMa, Wax and the 33GOD platform ------------------------------------
-  HeyMa: {heard: [hey ma, hema, haema, hayma, haima, hama, hey-ma], about: "the voice recording and transcription pipeline (the ~/HeyMa repo)"}
+  HeyMa: {heard: [hey ma, hema, haema, hayma, haima, hey-ma], about: "the voice recording and transcription pipeline (the ~/HeyMa repo)"}
   Wax: "the HeyMa audio pipeline daemon and CLI"
   33GOD: {heard: [33 god, 33-god, thirty three god], about: "the agent platform monorepo"}
   Bloodbank: {heard: [blood bank, blood bang], about: "the 33GOD event bus"}
-  Candybar: {heard: [candy bar, candy-bar], about: "the 33GOD single recurring-schedule clock and desktop app"}
+  Candybar: {heard: [candy bar, candy-bar], about: "the 33GOD single recurring-schedule clock and desktop app (not the snack)"}
   Candystore: {heard: [candy store, candy-store], about: "the 33GOD event and audit store"}
   Holocene: {heard: [hollow scene, holo scene, holiseen], about: "the 33GOD control-plane dashboard"}
   Hindsight: "the agent project-memory service (api.hs.delo.sh)"
@@ -152,3 +152,8 @@ terms:
   shadcn: {heard: [shad cn], about: "the UI component library"}
   Zapier: {heard: [zappier], about: "an integration platform"}
   GoodLeap: {heard: [good leap], about: "the solar financing company"}
+
+  # -- Look-alikes ----------------------------------------------------------------
+  # Real words that sound like a term above. Listing one here makes it win over
+  # the sound-alike, so it is never respelled into the term.
+  Skrillex: "the electronic musician (not Skillex)"
