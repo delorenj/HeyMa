@@ -113,6 +113,19 @@ class TitleSlugPassTest(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], TITLE_SLUG.MAX_OUTPUT_TOKENS)
         self.assertLessEqual(payload["max_tokens"], 2_048)
 
+    def test_a_schema_placeholder_answer_is_a_bad_response(self):
+        response = {"choices": [{"message": {"content": '{"title":"string","summary":"string"}'}}]}
+        with (
+            patch.object(TITLE_SLUG, "preflight_model"),
+            patch.object(TITLE_SLUG, "_api_request", return_value=response),
+        ):
+            with self.assertRaises(TITLE_SLUG.TitlePassError) as caught:
+                TITLE_SLUG.hosted_enrichment(
+                    "A transcript.", model="example/model",
+                    api_base="https://provider.example/v1", api_key="test-key", timeout=10,
+                )
+        self.assertEqual(caught.exception.reason_code, "provider_bad_response")
+
 
 if __name__ == "__main__":
     unittest.main()

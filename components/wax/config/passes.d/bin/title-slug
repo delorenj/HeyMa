@@ -98,6 +98,8 @@ RESULT_SCHEMA = {
     "required": ["title", "summary"],
     "additionalProperties": False,
 }
+# Answers that are the schema's own words, not a title or summary.
+SCHEMA_PLACEHOLDERS = frozenset({"string", "title", "summary", "<title>", "<summary>", "null", "none"})
 
 # Non-fatal observations. They are held back rather than printed as they happen
 # so that on failure `reason_code=` is genuinely the first line of stderr.
@@ -449,6 +451,12 @@ the supplied transcript. Do not infer names or facts that are not present.
     summary = str(result.get("summary") or "").strip()
     if not title or not summary:
         raise TitlePassError(f"{model} returned an empty title or summary",
+                             reason_code="provider_bad_response")
+    # A weak model can echo the schema's type names instead of filling them in
+    # (a pre-ledger note got the title "string" on 2026-11-04). That is a garbled
+    # answer, so the chain moves on to the next member.
+    if title.lower() in SCHEMA_PLACEHOLDERS or summary.lower() in SCHEMA_PLACEHOLDERS:
+        raise TitlePassError(f"{model} echoed a schema placeholder ({title!r})",
                              reason_code="provider_bad_response")
     return {"title": title, "summary": summary}
 
