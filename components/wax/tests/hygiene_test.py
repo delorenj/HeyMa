@@ -528,6 +528,24 @@ class VanishedDocumentsTest(_Env):
             self.assertEqual(documents.get(key)["state"], "trashed")
             self.assertEqual(ledger.passes_failed()["failed"], 0)
 
+    def test_a_failure_superseded_by_a_later_processed_run_stops_counting(self):
+        """2026-11-04: a manual title-only run failed, the retry minted a new id."""
+        note = self.note(self.inbox, "rec.md", "---\ntitle: ''\n---\nbody one\n")
+        old, _ = documents.register(note, binding_id="")
+        documents.mark_state("", old["doc_id"], "failed")
+        old_key = documents.doc_key("", old["doc_id"])
+        self._failed_pass(old_key)
+        with patch.object(ledger, "_enabled_pass_versions", return_value={"alpha": 1}):
+            self.assertEqual(ledger.passes_failed()["failed"], 1)
+            note.write_text("---\ntitle: Rec\n---\nbody one\n")
+            new, _ = documents.register(note, binding_id="")
+            self.assertNotEqual(new["doc_id"], old["doc_id"])
+            self.assertEqual(ledger.passes_failed()["failed"], 1, "not superseded until processed")
+            ledger.connect().execute(
+                "UPDATE documents SET first_seen='2099-01-01T00:00:00Z' WHERE doc_id=?", (new["doc_id"],))
+            documents.mark_state("", new["doc_id"], "processed")
+            self.assertEqual(ledger.passes_failed()["failed"], 0)
+
     def test_phantom_doc_standard_failure_is_cleared(self):
         """The 2026-10-26 case: the empty doc's row, its file long gone."""
         binding = "doc-standard-Wax-4a02b5d4cb30"

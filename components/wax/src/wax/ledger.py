@@ -612,6 +612,17 @@ _VANISHED_DOC_KEYS = (
     "SELECT CASE WHEN binding_id='' THEN doc_id ELSE doc_id||'@'||binding_id END "
     "FROM documents WHERE state IN ('trashed','gone')")
 
+# A failed document whose note was since rewritten and processed again under a
+# newer identity (same binding, same path) is superseded. Content-addressed ids
+# mean the old row can never be re-driven, so its failure is history as well.
+# Typical case: a manual `wax documents run` that failed, then succeeded on a
+# later try after the note's bytes changed.
+_SUPERSEDED_DOC_KEYS = (
+    "SELECT CASE WHEN d.binding_id='' THEN d.doc_id ELSE d.doc_id||'@'||d.binding_id END "
+    "FROM documents d WHERE d.state='failed' AND EXISTS ("
+    "SELECT 1 FROM documents n WHERE n.binding_id=d.binding_id AND n.path=d.path "
+    "AND n.state='processed' AND n.first_seen > d.first_seen)")
+
 
 def passes_failed() -> dict[str, Any]:
     """Distinct items whose latest attempt of a current, enabled pass failed.
@@ -622,7 +633,8 @@ def passes_failed() -> dict[str, Any]:
     gate, params = _current_pass_gate()
     rows = connect().execute(
         "SELECT DISTINCT item_id, ep_slug FROM passes "
-        f"WHERE state='failed' AND {gate} AND item_id NOT IN ({_VANISHED_DOC_KEYS})",
+        f"WHERE state='failed' AND {gate} AND item_id NOT IN ({_VANISHED_DOC_KEYS}) "
+        f"AND item_id NOT IN ({_SUPERSEDED_DOC_KEYS})",
         params,
     ).fetchall()
     return {
