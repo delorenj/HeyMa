@@ -119,6 +119,8 @@ wax transcripts link-harvest [PATH...] [--report] [--dry-run]  # px harvest arti
 wax --json transcripts browse [--view K] [--include-hermes] [--id N]  # Holocene's read-only feed (ro role, no bodies)
 wax dict add <Term> [--about ..] [--heard ..] | heard <Term> <form>.. | show | list | remove | fix <Term>   # Dictionary.yaml, scanned against the vault
 wax calls sync [--since 2d] | event | list [--outcome] | show <ref> | backfill [--dry-run]   # the call log
+wax failures [list] [--since 7d] [--grace 1h]   # recent failures grouped by (kind, slug, reason); read-only, never calls px
+wax failures sweep [--since 7d] [--grace 1h] [--max 5] [--dry-run]   # one URGENT HEYMA ticket per signature via px; deduped in var/wax.db; not scheduled
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```
 

@@ -71,6 +71,11 @@ run = "python3 -m pytest tests"
 description = "Edit the HeyMa custom dictionary (wax dict ...)"
 run = "'{{config_root}}/bin/wax' dict"
 
+# `mise run wax:failures` lists; `mise run wax:failures -- sweep --dry-run` previews tickets
+[tasks."wax:failures"]
+description = "Recent Wax failures grouped by signature; sweep files them as HEYMA tickets"
+run = "'{{config_root}}/bin/wax' failures"
+
 [tasks."wax:diarization:install"]
 description = "Create or repair the pinned CUDA diarization runtime"
 run = "'{{config_root}}/components/wax/deploy/install-diarization'"

@@ -442,6 +442,46 @@ A Postgres or Ollama outage is **lag**, never a pass or worker failure: snapshot
 
 ---
 
+### Failure tickets (`wax failures`)
+
+Every sub-stage degrades quietly, so a failure is only found if something asks the
+ledger. `wax failures` asks it and files what it finds as tickets on the HEYMA
+board. `src/wax/failures.py`; deterministic, no LLM.
+
+**What is ticket-worthy.** A failure inside `--since` (default 7d) that is final
+(attempts exhausted, a terminal fetch error, a worker crash) or has been failing
+longer than `--grace` (default 1h). Kinds: `pass` (failed pass rows, audio or
+document), `document` (failed receipts no pass row already explains), `item`
+(failed/suspect items, cause from the latest item transition), `recording`
+(terminal `fetch_error` other than `voicemail_empty`, unfetched voicemails past
+grace), `outbox` (unpublished past `events.OUTBOX_STALE_S`), `snapshot`
+(rejected or still-failing transcript snapshots), `hygiene` (a sweep that
+errored), `worker` (`worker_exception`; `stranded_work` only when an episode
+outlasted the grace). Not ticket-worthy: `dependency_failed` (the cause is
+upstream), passes the registry or the operator has disabled, rows from an older
+pass version, vanished or superseded documents, `CALL_REJECTED` and other
+by-design outcomes.
+
+**Grouping and dedupe.** One signature per `(kind, slug-or-pipeline,
+reason_code)`; fingerprint `sha256("kind|slug|reason")[:12]`. The ticket lists up
+to 20 affected subjects. `failure_tickets` in `var/wax.db` (created lazily) maps a
+fingerprint to its ticket (`filed`, or `uncertain` after a px error or timeout).
+A later sweep with the same subjects makes zero px calls; new subjects become one
+comment, or, when the ticket is completed/cancelled, a new generation.
+
+**Marker.** `wax-failure:<fp>.<generation>`, passed to `px task create --marker`
+and written into the body as `[wax-failure:<fp>.<generation>]`. px adopts an
+existing ticket carrying the marker, so an `uncertain` row (a create whose answer
+was lost) is retried with the same marker and cannot file a twin. Comments never
+carry the marker. A ticket holds a one-line, scrubbed detail per subject and
+never env, transcript bodies, or stderr tails.
+
+**Running it.** `wax failures` is read-only; `wax failures sweep [--max 5]
+[--dry-run]` calls px (absolute `WAX_PX`, default `~/.local/bin/px`, 60s per call,
+exit 2 on any px or collector error). `--max` bounds new tickets per run and logs
+what it deferred. It is **not scheduled**: any schedule belongs to Candybar, not
+a timer or loop here.
+
 ## Recording: hotkey + tray
 
 **What gets built:** `waxd`, a single `/usr/bin/python3` process (3.13.7 — verified: `gi`, `Gtk 3.0`, `AyatanaAppIndicator3 0.1`, `evdev`, `sqlite3`, `yaml` all import with **no venv, no pip**). Shebang is literally `#!/usr/bin/python3`, **never** `#!/usr/bin/env python3` — mise's Python 3.14 is first on `PATH` and has no `gi`, which would silently break the tray. Everything else is apt: `python3-gi 3.50.0`, `python3-evdev 1.9.1`, `gir1.2-ayatanaappindicator3-0.1`, `gir1.2-gtk-3.0`.

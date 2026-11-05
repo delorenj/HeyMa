@@ -178,6 +178,11 @@ def emit_ep_command(item_id: str, ep_slug: str, argv: list[str], attempt: int = 
 # suppressed. status, doctor, drain and the tray all share it.
 UNPUBLISHED = "published_at IS NULL AND suppressed_reason IS NULL"
 
+# An unpublished row older than this is stale: the drainer runs on every waxd
+# tick, so ten minutes owed to the bus is an outage, not a queue. `wax doctor`
+# fails its outbox probe on it and `wax failures` files it.
+OUTBOX_STALE_S = 600
+
 
 def unpublished() -> tuple[int, Optional[str]]:
     """(count, oldest created_at) of rows that are still owed to the bus."""
