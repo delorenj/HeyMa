@@ -1406,7 +1406,7 @@ Work on HeyMa `main` and commit and push after each step. Step 0 first: claim a 
 | 18 | `pyproject.toml` | Dependencies as in D.9 | — |
 | 19 | `/home/delorenj/HeyMa/mise.toml` | Tasks `wax:transcripts:sync`, `wax:transcripts:search`, `wax:transcripts:migrate` (each `'{{config_root}}/bin/wax' transcripts <sub>`), and `wax:test:pg` (`dir = components/wax`, `run = "/usr/bin/python3 -m pytest tests/transcriptions_pg_test.py -q"`) | `mise tasks` lists them; `mise run wax:test:pg` passes, or skips cleanly with no Docker. |
 | 20 | `tests/transcriptions_pg_test.py` | Section E.2 | Green |
-| 21 | Docs | <br>• `docs/WAX-DESIGN.md`: new section "Transcriptions store" (A–D condensed) <br>• `docs/ENRICHMENT-PASSES.md`: every applied pass is versioned; frontmatter-only passes cost zero embeddings; `body_mutation` passes re-chunk <br>• HeyMa `AGENTS.md`: layout row for `transcriptions` and the `wax transcripts` commands <br>• the canonical skill at `~/code/skillex/all-skills/wax-pipeline`, never `.agents/skills` | Docs match the CLI `--help` output |
+| 21 | Docs | <br>• `docs/WAX-DESIGN.md`: new section "Transcriptions store" (A–D condensed) <br>• `docs/ENRICHMENT-PASSES.md`: every applied pass is versioned; frontmatter-only passes cost zero embeddings; `body_mutation` passes re-chunk <br>• HeyMa `AGENTS.md`: layout row for `transcriptions` and the `wax transcripts` commands <br>• the hub skill at `skills/heyma/references/transcriptions-store.md` (was `all-skills/wax-pipeline` until ADR-0002, 2026-11-05), never `.agents/skills` | Docs match the CLI `--help` output |
 
 ### F.1 Backfill runbook for the existing 868 notes
 
