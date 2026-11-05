@@ -569,10 +569,39 @@ leaves it alone.
   or a spent budget.
 - `custom dictionary`: the file parses, plus its term and mis-hearing counts.
 
-**Growing it.** When a transcript misspells one of the speaker's words, add
-the misspelling under that term's `heard:`. Leave ordinary English words out
-of `heard`, because they are right most of the time; the scan still finds them
-by sound, at the normal bar. To redo one finished item:
+**Growing it: `wax dict`.** Nobody has to hand-edit the YAML or invent
+mis-hearings (code `src/wax/dictedit.py`):
+
+```bash
+wax dict add Kapture --about "the browser automation daemon"   # add a word
+wax dict heard Kapture "cap sure"      # list a mis-hearing you actually saw
+wax dict show Kapture                  # how it fares in the vault, now
+wax dict fix Kapture [--dry-run]       # re-run the pass on notes that may misspell it
+wax dict list [filter] | remove TERM [--heard FORM]
+```
+
+`add` writes one line in the file's own style (a new trailing `Added with wax
+dict` section, or `--section NAME`), proves the new file loads and that only
+that entry changed, replaces it atomically under `var/dictionary.lock`, and
+then commits and pushes `Dictionary.yaml` alone (`--no-commit` or
+`WAX_DICT_COMMIT=0` to skip). It then scans the vault for the term and reports
+three numbers: how often it is already spelled right, what the pass would
+already offer Jev (those need no `heard:` entry), and the **near misses**,
+spans that sound close (fuzzy score 0.72 up to the pass bar) but would not be
+offered. A near miss that really is the term is the only `heard:` form worth
+listing, and the report prints the `wax dict heard` command for it.
+
+The linter refuses (without `--force`) what went wrong in calibration: a
+single ordinary English word, and a fragment of the term ("jangler" for
+pjangler). It warns on phrases made of ordinary words ("candy bar" caught a
+snack) and on forms that begin or end with a function word. A form spelled
+like the term, or its plural, is reported and not written: the pass matches it
+already. Collisions with another term or another term's `heard:` are errors.
+
+`wax dict fix` runs the pass on each note the scan found: a Wax item through
+`passes.run` (ledger and frontmatter as for `wax ep run`), any other note
+through the manual `dictionary-only` pipeline; a note carrying another item's
+id is skipped. To redo one finished item by hand:
 
 ```bash
 wax ep run dictionary-correction <item>

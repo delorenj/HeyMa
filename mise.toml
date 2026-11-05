@@ -66,6 +66,11 @@ description = "Run the Wax test suite"
 dir = "{{config_root}}/components/wax"
 run = "python3 -m pytest tests"
 
+# `mise run wax:dict -- add Kapture --about "the browser daemon"`
+[tasks."wax:dict"]
+description = "Edit the HeyMa custom dictionary (wax dict ...)"
+run = "'{{config_root}}/bin/wax' dict"
+
 [tasks."wax:diarization:install"]
 description = "Create or repair the pinned CUDA diarization runtime"
 run = "'{{config_root}}/components/wax/deploy/install-diarization'"

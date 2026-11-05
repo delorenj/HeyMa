@@ -34,6 +34,7 @@ from wax import (archive, catalog, capture, component, config, documents, events
                  sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
+from wax import dictedit  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -1984,6 +1985,209 @@ def calls_command(args, J: bool) -> int:
     return 1
 
 
+def _commit_dictionary(path: Path, message: str) -> dict:
+    """Commit (only) the dictionary file and push it: the operator's rule is that
+    nothing lives only on this disk. Never fails the command; it reports."""
+    if os.environ.get("WAX_DICT_COMMIT", "1").strip().lower() in ("0", "false", "no", "off"):
+        return {"committed": False, "why": "WAX_DICT_COMMIT=0"}
+
+    def git(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(path.parent), *argv], capture_output=True, text=True,
+                              timeout=timeout)
+    try:
+        top = git("rev-parse", "--show-toplevel")
+        if top.returncode:
+            return {"committed": False, "why": "not in a git repository"}
+        if not git("status", "--porcelain", "--", str(path)).stdout.strip():
+            return {"committed": False, "why": "no change to commit"}
+        done = git("commit", "-q", "-m", message, "-m", "Written by `wax dict`.", "--", str(path))
+        if done.returncode:
+            return {"committed": False, "why": (done.stderr or done.stdout).strip()[-300:]}
+        sha = git("rev-parse", "--short", "HEAD").stdout.strip()
+        pushed = git("push", "-q", timeout=120)
+        return {"committed": True, "commit": sha, "pushed": pushed.returncode == 0,
+                **({} if pushed.returncode == 0 else {"push_error": (pushed.stderr or "").strip()[-300:]})}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"committed": False, "why": f"{type(exc).__name__}: {exc}"}
+
+
+def _print_scan(r: dict) -> None:
+    term = r["term"]
+    print(f"\nIn your {r['notes_scanned']} transcripts:")
+    print(f"  spelled right       {r['spelled_right']:>4} times in {r['spelled_right_notes']} notes")
+    print(f"  offered to Jev      {r['caught_total']:>4} times in {len(r['notes_to_fix'])} notes"
+          "   (the pass asks Jev about each one in context)")
+    for c in r["caught"][:8]:
+        ex = c["examples"][0] if c["examples"] else ""
+        print(f"      {c['said']!r:<26} x{c['count']:<3} {c['source']:<6} \"{ex[:90]}\"")
+    if len(r["caught"]) > 8:
+        print(f"      ... and {len(r['caught']) - 8} more spellings")
+    if r["near"]:
+        print(f"  sounds close, NOT offered unless you list it (score {r['near_miss_min_score']}"
+              f"-{r['min_score']}):")
+        for c in r["near"][:8]:
+            ex = c["examples"][0] if c["examples"] else ""
+            print(f"      {c['said']!r:<26} x{c['count']:<3} {c['score']:.2f}   \"{ex[:90]}\"")
+        print(f"    if one of those really is {term}:  wax dict heard {shlex.quote(term)} "
+              f"{shlex.quote(r['near'][0]['said'])}")
+    if r["notes_to_fix"]:
+        print(f"  to correct those {len(r['notes_to_fix'])} notes now:  wax dict fix {shlex.quote(term)}")
+
+
+def _print_lint(lint) -> None:
+    for w in lint.warnings:
+        print(f"  warning: {w}")
+    for n in lint.notes:
+        print(f"  note: {n}")
+
+
+def dict_command(args, J: bool) -> int:
+    try:
+        if args.sub == "list":
+            rows = dictedit.listing()
+            if args.filter:
+                needle = args.filter.casefold()
+                rows = [r for r in rows if needle in r["term"].casefold()
+                        or needle in r["about"].casefold() or any(needle in h.casefold() for h in r["heard"])]
+            if J:
+                _emit(rows, True)
+                return 0
+            section = None
+            for r in rows:
+                if r["section"] != section:
+                    section = r["section"]
+                    print(f"\n{section or '(no section)'}")
+                heard = f"  [{', '.join(r['heard'])}]" if r["heard"] else ""
+                about = f"  {r['about']}" if r["about"] else ""
+                print(f"  {r['term']}{heard}{about}")
+            print(f"\n{len(rows)} terms  ({dictedit.dictionary.default_path()})")
+            return 0
+        if args.sub == "show":
+            found = dictedit.lookup(args.term)
+            if found is None:
+                print(f"{args.term!r} is not in the dictionary (wax dict add {shlex.quote(args.term)})",
+                      file=sys.stderr)
+                return 1
+            report = None if args.no_scan else dictedit.scan(found.term)
+            if J:
+                _emit({"term": found.term, "heard": list(found.listed), "about": found.about,
+                       "scan": report}, True)
+                return 0
+            print(found.term)
+            print(f"  about: {found.about or '(none)'}")
+            print(f"  heard: {', '.join(found.listed) or '(none)'}")
+            if report:
+                _print_scan(report)
+            return 0
+        if args.sub in ("add", "heard", "remove"):
+            if args.sub == "add":
+                change = dictedit.add(args.term, about=args.about or "", heard=tuple(args.heard or ()),
+                                      section=args.section, update=args.update, force=args.force,
+                                      dry_run=args.dry_run)
+            elif args.sub == "heard":
+                found = dictedit.lookup(args.term)
+                if found is None:
+                    print(f"{args.term!r} is not in the dictionary; add it first: "
+                          f"wax dict add {shlex.quote(args.term)} --heard {shlex.quote(args.forms[0])}",
+                          file=sys.stderr)
+                    return 1
+                change = dictedit.add(found.term, heard=tuple(args.forms), update=True, force=args.force,
+                                      dry_run=args.dry_run)
+            else:
+                change = dictedit.remove(args.term, heard=tuple(args.heard or ()), dry_run=args.dry_run)
+            out = {"action": change.action, "term": change.term, "line": change.line,
+                   "heard": change.heard, "about": change.about, "written": change.written,
+                   "path": str(change.path), "warnings": change.lint.warnings, "notes": change.lint.notes}
+            if change.written and not args.no_commit:
+                verb = {"added": "add", "updated": "update", "removed": "remove"}[change.action]
+                out["git"] = _commit_dictionary(change.path, f"dictionary: {verb} {change.term}")
+            scan_it = change.action in ("added", "updated") and not getattr(args, "no_scan", True)
+            if scan_it:
+                if change.written:
+                    out["scan"] = dictedit.scan(change.term)
+                else:
+                    # A dry run scans the dictionary as it WOULD be.
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as tmp:
+                        draft = Path(tmp) / "Dictionary.yaml"
+                        current = change.path.read_text(encoding="utf-8")
+                        lay = dictedit.layout(current)
+                        draft.write_text(dictedit._replace_line(current, change.term, change.line)
+                                         if change.term in lay.entries
+                                         else dictedit._insert(current, change.line, getattr(args, "section", None)))
+                        out["scan"] = dictedit.scan(change.term, book=dictedit.dictionary.load(draft))
+            if J:
+                _emit(out, True)
+                return 0
+            prefix = "would be " if args.dry_run else ""
+            if change.action == "unchanged":
+                print(f"{change.term}: nothing to change")
+            elif change.action == "removed":
+                print(f"{prefix}removed {change.term}")
+            else:
+                print(f"{prefix}{change.action} {change.term}")
+                print(f"  {change.line.strip()}")
+            _print_lint(change.lint)
+            if out.get("scan"):
+                _print_scan(out["scan"])
+            g = out.get("git")
+            if g:
+                if g.get("committed"):
+                    print(f"\ncommitted {g['commit']}" + (" and pushed" if g.get("pushed")
+                                                          else f"; push failed: {g.get('push_error', '')}"))
+                elif g.get("why") not in ("no change to commit",):
+                    print(f"\nnot committed: {g.get('why')}")
+            return 0
+        if args.sub == "fix":
+            found = dictedit.lookup(args.term)
+            if found is None:
+                print(f"{args.term!r} is not in the dictionary", file=sys.stderr)
+                return 1
+            report = dictedit.scan(found.term)
+            plan = dictedit.fix_plan(report["notes_to_fix"])
+            if args.limit:
+                plan = plan[:args.limit]
+            runnable = [s for s in plan if s["how"] != "skip"]
+            if args.dry_run:
+                if J:
+                    _emit({"term": found.term, "plan": plan}, True)
+                    return 0
+                print(f"{len(runnable)} notes would get the dictionary pass for {found.term} "
+                      f"({sum(1 for s in plan if s['how'] == 'item')} Wax items, "
+                      f"{sum(1 for s in plan if s['how'] == 'document')} other notes):")
+                for s in plan:
+                    print(f"  {s['how']:<8} {Path(s['path']).name}" + (f"   ({s['why']})" if s.get("why") else ""))
+                return 0
+            results = []
+            for s in plan:
+                if s["how"] == "skip":
+                    results.append({**s, "state": "skipped"})
+                    continue
+                r = dictedit.fix_one(s, found.term)
+                results.append(r)
+                if not J:
+                    gained = f"+{r['gained']} {found.term}" if r.get("gained") else "no change"
+                    print(f"  {r.get('state', '?'):<10} {gained:<18} {Path(r['path']).name}"
+                          + (f"  {r['error']}" if r.get("error") else ""))
+            total = sum(r.get("gained") or 0 for r in results)
+            failed = sum(1 for r in results if r.get("state") == "failed")
+            if J:
+                _emit({"term": found.term, "results": results, "gained": total, "failed": failed}, True)
+            else:
+                skipped = [r for r in results if r["how"] == "skip"]
+                for r in skipped:
+                    print(f"  skipped    {Path(r['path']).name}  ({r['why']})")
+                print(f"\n{found.term}: +{total} in {sum(1 for r in results if r.get('gained'))} notes; "
+                      f"{failed} failed; {len(skipped)} skipped. Jev turned down the rest in context.")
+            return 2 if failed else 0
+    except dictedit.DictEditError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"  {exc.hint}", file=sys.stderr)
+        return 2
+    return 1
+
+
 def main() -> int:
     # --json accepted at ANY position: `wax --json state stream` and
     # `wax state stream --json` both work. Requiring it before the subcommand
@@ -2211,6 +2415,43 @@ def main() -> int:
     cll.add_argument("--outcome", help="answered | voicemail | missed | declined | no_answer | failed")
     cl.add_parser("show", parents=[common], help="one call: legs, recordings, events").add_argument(
         "ref", help="call_session_id, call_leg_id, item id or file name")
+
+    dc_ = sub.add_parser("dict", parents=[common],
+                         help="the HeyMa custom dictionary (Dictionary.yaml): add words, see how they fare"
+                         ).add_subparsers(dest="sub", required=True)
+    da = dc_.add_parser("add", parents=[common], help="add a word; shows how it already appears in your transcripts")
+    da.add_argument("term", help="the word exactly as it should be written, e.g. Skillex")
+    da.add_argument("--about", help="one line saying what it is (Jev reads it to tell your Skillex from a skill set)")
+    da.add_argument("--heard", action="append", metavar="FORM",
+                    help="a mis-hearing you have actually seen (repeatable); optional, see the scan")
+    da.add_argument("--section", help="put it under this section header (default: 'Added with wax dict')")
+    da.add_argument("--update", action="store_true", help="amend an existing word instead of refusing")
+    da.add_argument("--force", action="store_true", help="list a heard form the linter refuses")
+    da.add_argument("--dry-run", action="store_true", help="show the change and the scan; write nothing")
+    da.add_argument("--no-scan", action="store_true", help="skip the transcript scan")
+    da.add_argument("--no-commit", action="store_true", help="do not git commit + push Dictionary.yaml")
+    dh = dc_.add_parser("heard", parents=[common], help="add mis-hearings to a word already in the dictionary")
+    dh.add_argument("term")
+    dh.add_argument("forms", nargs="+", metavar="FORM")
+    dh.add_argument("--force", action="store_true", help="list a form the linter refuses")
+    dh.add_argument("--dry-run", action="store_true")
+    dh.add_argument("--no-scan", action="store_true")
+    dh.add_argument("--no-commit", action="store_true")
+    drm = dc_.add_parser("remove", parents=[common], help="remove a word, or only some of its mis-hearings")
+    drm.add_argument("term")
+    drm.add_argument("--heard", action="append", metavar="FORM", help="remove only this mis-hearing (repeatable)")
+    drm.add_argument("--dry-run", action="store_true")
+    drm.add_argument("--no-commit", action="store_true")
+    dl = dc_.add_parser("list", parents=[common], help="every word, by section")
+    dl.add_argument("filter", nargs="?", help="only words, descriptions or mis-hearings containing this")
+    dsh = dc_.add_parser("show", parents=[common], help="one word, and how it fares in your transcripts")
+    dsh.add_argument("term")
+    dsh.add_argument("--no-scan", action="store_true")
+    dfx = dc_.add_parser("fix", parents=[common],
+                         help="run the dictionary pass on every transcript that may mis-spell this word")
+    dfx.add_argument("term")
+    dfx.add_argument("--dry-run", action="store_true", help="list the notes; change nothing")
+    dfx.add_argument("--limit", type=int, help="at most this many notes")
 
     doc = sub.add_parser(
         "doctor", parents=[common],
@@ -2642,6 +2883,9 @@ def main() -> int:
 
     if args.cmd == "calls":
         return calls_command(args, J)
+
+    if args.cmd == "dict":
+        return dict_command(args, J)
 
     if args.cmd == "doctor":
         return doctor(J, args.quiet)

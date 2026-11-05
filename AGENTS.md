@@ -117,6 +117,7 @@ wax transcripts search <query> [--since --tag --classification --origin ... --le
 wax transcripts show <ref> [--version N] [--raw] | history <ref> | migrate [--dry-run] | embed [--limit N]
 wax transcripts link-harvest [PATH...] [--report] [--dry-run]  # px harvest artifacts -> tx.harvest_* (ticket links)
 wax --json transcripts browse [--view K] [--include-hermes] [--id N]  # Holocene's read-only feed (ro role, no bodies)
+wax dict add <Term> [--about ..] [--heard ..] | heard <Term> <form>.. | show | list | remove | fix <Term>   # Dictionary.yaml, scanned against the vault
 wax calls sync [--since 2d] | event | list [--outcome] | show <ref> | backfill [--dry-run]   # the call log
 wax archive | transcribe | migrate | skip | pipeline enable|disable | events
 ```

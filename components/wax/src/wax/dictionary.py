@@ -396,18 +396,23 @@ def _match(said: str, book: Dictionary, words: frozenset[str],
 
 
 def candidates(body: str, book: Dictionary, *, min_score: float = DEFAULT_MIN_SCORE,
-               spoken_dot: bool = True) -> list[Candidate]:
+               spoken_dot: bool = True,
+               memo: Optional[dict[str, Optional[tuple[Term, str, float]]]] = None) -> list[Candidate]:
     """Every span that may be a mis-spelling, best match per span, overlaps kept.
 
     Overlaps are resolved after Jev answers (`resolve`), because which of two
     overlapping readings is right is exactly the question Jev is asked.
+
+    `memo` may be shared across calls that use the same book and min_score (a
+    scan of the whole vault): a run's match depends only on its own text.
     """
     mask = protected_mask(body)
     tokens = _tokens(body, mask)
     words = english()
     found: dict[tuple[int, int], Candidate] = {}
     # The same few thousand word runs recur all through a long meeting.
-    memo: dict[str, Optional[tuple[Term, str, float]]] = {}
+    if memo is None:
+        memo = {}
 
     def offer(c: Candidate) -> None:
         key = (c.start, c.end)

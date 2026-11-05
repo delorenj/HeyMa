@@ -17,6 +17,10 @@
 #
 # Quote an `about` that contains a comma or a colon, as below.
 #
+# Or never touch this file: `wax dict add Kapture --about "the browser daemon"`
+# adds a word, checks it, commits it and shows how it already appears in your
+# transcripts, including the near misses worth listing with `wax dict heard`.
+#
 # `heard` lists mis-hearings you have actually seen. They are accepted more
 # readily than a sound-alike the pass finds on its own, but Jev still checks
 # each one in context. Leave ordinary English words out of `heard` (they are
