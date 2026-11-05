@@ -208,6 +208,42 @@ class AudioJoinTest(_Ledger):
         self.assertNotIn("call-remote-name", fm)  # unknown is absent, never null
         self.assertTrue(fm["call-started"].startswith("2026-11-0"))
 
+    def test_cdr_session_wins_when_the_recording_session_has_no_call(self):
+        self._seed()
+        # HEYMA-12: Telnyx recordings and CDRs report different session ids
+        # for the exact same leg. Only the CDR session has a derived call.
+        self.conn.execute("UPDATE call_recordings SET call_session_id=?", (IN_SESSION,))
+        name = f"telnyx-2026-11-03-{OUT_LEG}-1793666147-{'a' * 64}.mp3"
+        call = calls.call_for_audio(name)
+        self.assertIsNotNone(call)
+        self.assertEqual(call["call_session_id"], OUT_SESSION)
+        with patch.object(calls, "_fetch_for", side_effect=AssertionError("complete CDR is already local")):
+            call = calls.call_for_audio(name, fetch=True)
+        fm = calls.frontmatter_for(call)
+        self.assertEqual((fm["call-session-id"], fm["call-leg-id"]), (OUT_SESSION, OUT_LEG))
+        self.assertEqual(fm["call-outcome"], "answered")
+        # Resolving identity must not rewrite the provider's recording facts.
+        self.assertEqual(self.conn.execute(
+            "SELECT call_session_id FROM call_recordings").fetchone()[0], IN_SESSION)
+
+    def test_cdr_session_wins_even_if_the_other_session_has_a_call(self):
+        self._seed()
+        calls.upsert_leg(self.conn, cdr(IN_LEG, IN_SESSION, direction="inbound"))
+        calls.derive(self.conn, IN_SESSION)
+        self.conn.execute("UPDATE call_recordings SET call_session_id=?", (IN_SESSION,))
+        name = f"telnyx-2026-11-03-{OUT_LEG}-1793666147.mp3"
+        self.assertEqual(calls.call_for_audio(name)["call_session_id"], OUT_SESSION)
+        self.assertEqual(calls.show(OUT_LEG)["call"]["call_session_id"], OUT_SESSION)
+
+    def test_recording_and_event_sessions_remain_fallbacks_without_a_cdr(self):
+        self._seed()
+        self.conn.execute("DELETE FROM call_legs")
+        name = f"telnyx-2026-11-03-{OUT_LEG}-1793666147.mp3"
+        self.assertEqual(calls.call_for_audio(name)["call_session_id"], OUT_SESSION)
+        self.conn.execute("DELETE FROM call_recordings")
+        calls.record_event(self.conn, event("join", "call.hangup", OUT_SESSION, call_leg_id=OUT_LEG))
+        self.assertEqual(calls.call_for_audio(name)["call_session_id"], OUT_SESSION)
+
     def test_groundwire_prefers_the_answered_attempt_nearest_in_time(self):
         self._seed()
         calls.upsert_leg(self.conn, cdr("redial", "redial-session", started_at="2026-11-03T00:35:45Z",

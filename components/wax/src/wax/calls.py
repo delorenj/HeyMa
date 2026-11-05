@@ -730,8 +730,10 @@ def _session_for(conn: sqlite3.Connection, ident: dict[str, Any]) -> Optional[st
     if ident.get("call_session_id"):
         return ident["call_session_id"]
     if leg := ident.get("call_leg_id"):
-        for sql in ("SELECT call_session_id FROM call_recordings WHERE call_leg_id=? AND call_session_id IS NOT NULL",
-                    "SELECT call_session_id FROM call_legs WHERE call_leg_id=?",
+        # A recording's session can differ from the CDR's telnyx_session_id
+        # for the same leg. The CDR is the session used to derive the call.
+        for sql in ("SELECT call_session_id FROM call_legs WHERE call_leg_id=?",
+                    "SELECT call_session_id FROM call_recordings WHERE call_leg_id=? AND call_session_id IS NOT NULL",
                     "SELECT call_session_id FROM call_events WHERE call_leg_id=? AND call_session_id IS NOT NULL"):
             row = conn.execute(sql, (leg,)).fetchone()
             if row:
