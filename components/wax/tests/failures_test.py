@@ -43,7 +43,8 @@ d = os.environ["FAKE_PX_DIR"]
 state_path = os.path.join(d, "state.json")
 state = json.load(open(state_path)) if os.path.exists(state_path) else {"seq": 0, "markers": {}, "groups": {}, "comments": []}
 with open(os.path.join(d, "calls.jsonl"), "a") as fh:
-    fh.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}) + "\n")
+    fh.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(),
+                         "env": {k: os.environ.get(k) for k in ("PLANE_BOARD", "PLANE_WORKSPACE")}}) + "\n")
 mode_path = os.path.join(d, "mode")
 mode = open(mode_path).read().strip() if os.path.exists(mode_path) else "ok"
 def save():
@@ -77,6 +78,11 @@ if args[:2] == ["task", "create"]:
     answer({"ok": True, "created": ticket, "ref": ref, "id": "id-" + ref, "adopted": False, "was_created": True})
 if args[0] == "show":
     ref = args[1]
+    if ref in state.get("deleted", {}):     # what pilot answers for a ticket the board no longer has
+        gone = {"ok": False, "error": "no ticket %s in workspace 33god" % ref}
+        if state["deleted"][ref] == "code":
+            gone["code"] = "not_found"
+        answer(gone, 1)
     answer({"ok": True, "ticket": {"ref": ref, "state_group": state["groups"].get(ref, "unstarted"),
                                    "state_name": "Todo"}})
 if args[0] == "comment":
@@ -142,6 +148,11 @@ class _Ledger(unittest.TestCase):
     def close_ticket(self, ref: str, group: str = "completed") -> None:
         state = self.px_state()
         state["groups"][ref] = group
+        (self.px_dir / "state.json").write_text(json.dumps(state))
+
+    def delete_ticket(self, ref: str, *, with_code: bool = True) -> None:
+        state = self.px_state()
+        state.setdefault("deleted", {})[ref] = "code" if with_code else "words"
         (self.px_dir / "state.json").write_text(json.dumps(state))
 
     # ------------------------------------------------------------- writers --
@@ -225,7 +236,9 @@ class _Ledger(unittest.TestCase):
         # receipts that must NOT surface: blamed on a failed pass, processed, gone
         self.document("b1", "doc-5555555555555555", self.root / "vault/blamed.md")
         self.receipt("b1", "doc-5555555555555555", reason="provider_bad_response")
-        self.pass_row("doc-5555555555555555@b1", "title-slug")
+        # explicitly older than aaaa...0001's ago(7200): two ago(7200) calls land in the
+        # same millisecond only sometimes, which made the newest-first order flaky
+        self.pass_row("doc-5555555555555555@b1", "title-slug", updated=ago(7300))
         self.document("b1", "doc-6666666666666666", self.root / "vault/ok.md", state="processed")
         self.receipt("b1", "doc-6666666666666666")
         self.document("b1", "doc-7777777777777777", self.root / "vault/gone.md", state="gone")
@@ -514,6 +527,80 @@ class SweepTest(_Ledger):
         self.transition("item", "bbbb000000000002", "failed", "transcribe_failed", ago(100))
         res = failures.sweep(px=self.px())
         self.assertEqual(next(r for r in res["signatures"] if r["fp"] == fp)["action"], "refiled")
+
+    def _deleted_ticket_refiles(self, *, with_code: bool) -> None:
+        # Review finding: `px show` on a ticket deleted from the board fails, the row
+        # kept its subjects, and every later sweep re-asked and exited 2 for good.
+        self._two_signatures()
+        failures.sweep(px=self.px())
+        fp = failures.fingerprint("pass", "title-slug", "provider_bad_response")
+        old_ref = failures.tickets()[fp]["ticket_ref"]
+        self.delete_ticket(old_ref, with_code=with_code)
+        self.pass_row("aaaa000000000002", "title-slug", exhausted=ago(100), updated=ago(100))
+        res = failures.sweep(px=self.px())
+        rec = next(r for r in res["signatures"] if r["fp"] == fp)
+        self.assertEqual(res["px_errors"], 0, rec)
+        self.assertEqual(rec["action"], "refiled")
+        self.assertEqual(rec["ticket_state_group"], failures.GONE)
+        row = failures.tickets()[fp]
+        self.assertEqual((row["generation"], row["status"]), (2, "filed"))
+        self.assertNotEqual(row["ticket_ref"], old_ref)
+        create = self.px_calls()[-1]["argv"]
+        self.assertIn(f"Regression: {old_ref} was closed (or deleted)", create[create.index("-d") + 1])
+
+    def test_a_deleted_ticket_is_a_new_generation_not_an_error_forever(self):
+        self._deleted_ticket_refiles(with_code=True)
+
+    def test_a_deleted_ticket_is_recognised_from_older_px_words_too(self):
+        self._deleted_ticket_refiles(with_code=False)
+
+    def test_a_show_failure_that_is_not_a_missing_ticket_still_retries(self):
+        self._two_signatures()
+        failures.sweep(px=self.px())
+        self.pass_row("aaaa000000000002", "title-slug", exhausted=ago(100), updated=ago(100))
+        self.px_mode("fail")
+        res = failures.sweep(px=self.px())
+        self.assertEqual(res["px_errors"], 1)
+        fp = failures.fingerprint("pass", "title-slug", "provider_bad_response")
+        self.assertEqual(failures.tickets()[fp]["generation"], 1)
+        self.px_mode("ok")
+        res = failures.sweep(px=self.px())
+        self.assertEqual(next(r for r in res["signatures"] if r["fp"] == fp)["action"], "commented")
+
+    def test_px_never_sees_a_board_override_from_the_environment(self):
+        # Review finding: PLANE_BOARD / PLANE_WORKSPACE outrank the cwd's .project.json
+        # in pilot, so a sweep from a shell bound elsewhere would file on that board.
+        self._two_signatures()
+        with patch.dict(os.environ, {"PLANE_BOARD": "11111111-1111-1111-1111-111111111111",
+                                     "PLANE_WORKSPACE": "elsewhere"}):
+            failures.sweep(px=self.px())
+        calls = self.px_calls()
+        self.assertTrue(calls)
+        self.assertEqual({json.dumps(c["env"], sort_keys=True) for c in calls},
+                         {json.dumps({"PLANE_BOARD": None, "PLANE_WORKSPACE": None}, sort_keys=True)})
+        self.assertEqual(os.environ.get("FAKE_PX_DIR"), str(self.px_dir))   # the rest of the env still reaches px
+
+    def test_a_second_concurrent_sweep_does_nothing(self):
+        # Review finding: two sweeps at once both found no row and filed twins.
+        import fcntl
+        self._two_signatures()
+        fd = os.open(str(paths.VAR / failures.LOCK_NAME), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertLogs("wax.failures", level="WARNING"):
+                res = failures.sweep(px=self.px())
+            self.assertTrue(res["locked"])
+            self.assertEqual((res["px_errors"], res["px_calls"], res["counts"]), (0, 0, {}))
+            self.assertIn("nothing done", failures.render_sweep(res))
+            self.assertEqual(self.px_calls(), [])
+            self.assertNotIn("failure_tickets", failures._tables(self.conn))
+            # a dry run is still allowed: it writes nothing
+            self.assertEqual(failures.sweep(px=self.px(), dry_run=True)["counts"], {"would_create": 2})
+        finally:
+            os.close(fd)
+        res = failures.sweep(px=self.px())
+        self.assertNotIn("locked", res)
+        self.assertEqual(res["counts"], {"created": 2})
 
     def test_px_failure_leaves_uncertain_then_the_next_run_adopts(self):
         self._two_signatures()

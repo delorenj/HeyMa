@@ -33,6 +33,8 @@ or operator) or failed at a version older than the registry's.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import logging
@@ -44,7 +46,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from . import component, documents, events, hygiene, ledger, paths
 from . import settings as operator_settings
@@ -654,7 +656,7 @@ def body(sig: dict[str, Any], *, generation: int, marker_text: str,
     lines = ["Filed by `wax failures sweep` (deterministic, no LLM). Start with the `heyma-pipeline-doctor` "
              "skill (`mise run wax:doctor`), then the commands under Look at.", ""]
     if previous_ref:
-        lines += [f"Regression: {previous_ref} was closed and this signature is failing again "
+        lines += [f"Regression: {previous_ref} was closed (or deleted) and this signature is failing again "
                   f"(generation {generation}).", ""]
     lines += [
         f"- Kind: {sig['kind']}",
@@ -680,7 +682,28 @@ def comment_text(sig: dict[str, Any], new_subjects: list[dict[str, Any]], now: f
 # -------------------------------------------------------------------- px ----
 
 class PxError(RuntimeError):
-    """A px call that did not demonstrably succeed. One line, never a stderr tail."""
+    """A px call that did not demonstrably succeed. One line, never a stderr tail.
+
+    `code` is px's machine-readable refusal code when its --json answer carried
+    one (`not_found`, ...), and `reason` px's own one-line error text."""
+
+    def __init__(self, message: str, *, code: Optional[str] = None, reason: Optional[str] = None):
+        super().__init__(message)
+        self.code, self.reason = code, reason
+
+
+# The ticket a filed row points at is gone from the board (deleted, or its board
+# lost it). px >= the --marker release answers `code: not_found`; older px only
+# says so in words, so the words count too.
+_NOT_FOUND = re.compile(r"^no ticket \S+ (?:in workspace|on this board)\b")
+GONE = "deleted"
+
+# px resolves its board from the cwd's .project.json, but PLANE_BOARD and
+# PLANE_WORKSPACE in the environment OUTRANK that binding (pilot config.js). A
+# sweep run from an agent shell bound to another project would file there.
+_BINDING_ENV = ("PLANE_BOARD", "PLANE_WORKSPACE")
+
+LOCK_NAME = "failures-sweep.lock"
 
 
 def px_path() -> Path:
@@ -761,18 +784,20 @@ class Px:
         if not (exe.is_file() and os.access(exe, os.X_OK)):
             raise PxError(f"px {verb}: not an executable file: {exe}")
         self.calls += 1
+        env = {k: v for k, v in os.environ.items() if k not in _BINDING_ENV}
         try:
             proc = subprocess.run([str(exe), *argv], cwd=str(self.cwd or repo_root()), capture_output=True,
-                                  text=True, timeout=self.timeout, stdin=subprocess.DEVNULL)
+                                  text=True, timeout=self.timeout, stdin=subprocess.DEVNULL, env=env)
         except subprocess.TimeoutExpired:
             raise PxError(f"px {verb}: timed out after {self.timeout:g}s") from None
         except OSError as exc:
             raise PxError(f"px {verb}: {type(exc).__name__}: {exc}") from None
         doc = _parse_json(proc.stdout)
         if proc.returncode != 0 or not isinstance(doc, dict) or doc.get("ok") is not True:
-            why = doc.get("error") if isinstance(doc, dict) else None
-            why = _line(why, 200) or _line(proc.stderr, 200) or _line(proc.stdout, 200) or "no output"
-            raise PxError(f"px {verb}: exit {proc.returncode}: {why}")
+            said = _line(doc.get("error"), 200) if isinstance(doc, dict) else ""
+            code = doc.get("code") if isinstance(doc, dict) and isinstance(doc.get("code"), str) else None
+            why = said or _line(proc.stderr, 200) or _line(proc.stdout, 200) or "no output"
+            raise PxError(f"px {verb}: exit {proc.returncode}: {why}", code=code, reason=said or None)
         return doc
 
     def create(self, title_text: str, body_text: str, marker_text: str) -> dict[str, Any]:
@@ -780,7 +805,15 @@ class Px:
                                      "-l", LABELS, "-d", body_text, "--marker", marker_text, "--json"))
 
     def show(self, ref: str) -> dict[str, Any]:
-        doc = self.run("show", ref, "--json")
+        """{ref, state_group, state}; state_group GONE when the board no longer has
+        the ticket, so a deleted ticket is treated like a closed one instead of
+        failing every later sweep on the same `px show`."""
+        try:
+            doc = self.run("show", ref, "--json")
+        except PxError as exc:
+            if exc.code == "not_found" or _NOT_FOUND.match(exc.reason or ""):
+                return {"ref": ref, "state_group": GONE, "state": None}
+            raise
         ticket = doc.get("ticket") if isinstance(doc.get("ticket"), dict) else doc
         group_name = _first_str(ticket.get("state_group"), ticket.get("group"))
         if not group_name:
@@ -870,9 +903,49 @@ def report(conn: Optional[sqlite3.Connection] = None, now: Optional[float] = Non
             "waiting": waiting, "errors": errors}
 
 
+@contextlib.contextmanager
+def _sweep_lock() -> Iterator[bool]:
+    """A non-blocking flock on var/failures-sweep.lock: True when held.
+
+    Two sweeps at once (a Candybar run and a hand-run one) would both find no
+    row, both ask px for the same marker before either created it, and file
+    twins. The flock dies with its holder, so a crashed sweep never wedges it."""
+    paths.VAR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(paths.VAR / LOCK_NAME), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def sweep(conn: Optional[sqlite3.Connection] = None, now: Optional[float] = None,
           since_s: float = DEFAULT_SINCE_S, grace_s: float = DEFAULT_GRACE_S, *,
           max_new: int = DEFAULT_MAX_NEW, dry_run: bool = False, px: Optional[Px] = None) -> dict[str, Any]:
+    """File every ticket-worthy signature once (see _sweep). A real sweep holds
+    var/failures-sweep.lock; while another holds it this one does nothing and
+    says so (`locked: true`). A dry run writes nothing and takes no lock."""
+    if dry_run:
+        return _sweep(conn, now, since_s, grace_s, max_new=max_new, dry_run=True, px=px)
+    with _sweep_lock() as held:
+        if held:
+            return _sweep(conn, now, since_s, grace_s, max_new=max_new, dry_run=False, px=px)
+    log.warning("failures sweep: another sweep holds %s; nothing done", paths.VAR / LOCK_NAME)
+    return {"generated_at": _iso(time.time() if now is None else float(now)), "dry_run": False,
+            "since_s": since_s, "grace_s": grace_s, "max_new": int(max_new), "signatures": [], "capped": [],
+            "collector_errors": [], "px_errors": 0, "px_calls": 0, "counts": {}, "locked": True}
+
+
+def _sweep(conn: Optional[sqlite3.Connection] = None, now: Optional[float] = None,
+           since_s: float = DEFAULT_SINCE_S, grace_s: float = DEFAULT_GRACE_S, *,
+           max_new: int = DEFAULT_MAX_NEW, dry_run: bool = False, px: Optional[Px] = None) -> dict[str, Any]:
     """File every ticket-worthy signature once. Newest failure first.
 
     Per signature: no row -> create (at most `max_new` creates per run, and what the
@@ -880,7 +953,7 @@ def sweep(conn: Optional[sqlite3.Connection] = None, now: Optional[float] = None
     earlier create failed or timed out) -> create again with the SAME marker, so px
     adopts the ticket if it exists; `filed` -> only subjects not yet on the ticket
     cost a px call: `px show`, then a comment, or a new generation when the ticket
-    was closed. A px failure never raises: the row stays `uncertain` (or keeps its
+    was closed or deleted. A px failure never raises: the row stays `uncertain` (or keeps its
     subjects for the next run) with `last_error`, and the sweep moves on.
     """
     conn = conn if conn is not None else ledger.connect()
@@ -958,7 +1031,7 @@ def sweep(conn: Optional[sqlite3.Connection] = None, now: Optional[float] = None
                 continue
             shown = px.show(row["ticket_ref"])
             rec["ticket_state_group"] = shown["state_group"]
-            if shown["state_group"] in CLOSED_GROUPS:
+            if shown["state_group"] in CLOSED_GROUPS or shown["state_group"] == GONE:
                 file(sig, rec, generation=int(row["generation"] or 1) + 1, prior=None,
                      previous_ref=row["ticket_ref"], retry=False)
                 continue
@@ -1007,6 +1080,8 @@ def render_list(rep: dict[str, Any]) -> str:
 
 
 def render_sweep(res: dict[str, Any]) -> str:
+    if res.get("locked"):
+        return f"another `wax failures sweep` holds var/{LOCK_NAME}; nothing done this run"
     lines = []
     for rec in res["signatures"]:
         lines.append(f"{rec.get('action', '?'):<13} {rec.get('ref') or '-':<10} {rec['kind']} {rec['slug']}: "

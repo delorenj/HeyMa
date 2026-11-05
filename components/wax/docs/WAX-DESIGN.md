@@ -467,7 +467,8 @@ reason_code)`; fingerprint `sha256("kind|slug|reason")[:12]`. The ticket lists u
 to 20 affected subjects. `failure_tickets` in `var/wax.db` (created lazily) maps a
 fingerprint to its ticket (`filed`, or `uncertain` after a px error or timeout).
 A later sweep with the same subjects makes zero px calls; new subjects become one
-comment, or, when the ticket is completed/cancelled, a new generation.
+comment, or, when the ticket is completed/cancelled or gone from the board (`px
+show` answers `not_found`), a new generation.
 
 **Marker.** `wax-failure:<fp>.<generation>`, passed to `px task create --marker`
 and written into the body as `[wax-failure:<fp>.<generation>]`. px adopts an
@@ -478,7 +479,12 @@ never env, transcript bodies, or stderr tails.
 
 **Running it.** `wax failures` is read-only; `wax failures sweep [--max 5]
 [--dry-run]` calls px (absolute `WAX_PX`, default `~/.local/bin/px`, 60s per call,
-exit 2 on any px or collector error). `--max` bounds new tickets per run and logs
+exit 2 on any px or collector error). px runs from the HeyMa checkout with
+`PLANE_BOARD`/`PLANE_WORKSPACE` removed from its environment, because pilot ranks
+those above `.project.json` and a shell bound elsewhere would otherwise redirect
+the tickets. A real sweep holds `var/failures-sweep.lock` (non-blocking flock); a
+second sweep started meanwhile does nothing, says so and exits 0, so two runs never
+file twins. `--max` bounds new tickets per run and logs
 what it deferred. It is **not scheduled**: any schedule belongs to Candybar, not
 a timer or loop here.
 
