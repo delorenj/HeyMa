@@ -650,11 +650,16 @@ def _criteria(sig: dict[str, Any]) -> list[str]:
     ]
 
 
+# Repo-relative path of the incident procedure in HeyMa's hub skill (skills/heyma).
+# skill_hub_test checks this file exists, so a move of the sub-skill fails the suite.
+DOCTOR_SKILL = "skills/heyma/subskills/doctor/SUBSKILL.md"
+
+
 def body(sig: dict[str, Any], *, generation: int, marker_text: str,
          previous_ref: Optional[str] = None) -> str:
     """The ticket description: pointer-rich, cheap, written for the triage agent."""
-    lines = ["Filed by `wax failures sweep` (deterministic, no LLM). Start with the `heyma-pipeline-doctor` "
-             "skill (`mise run wax:doctor`), then the commands under Look at.", ""]
+    lines = [f"Filed by `wax failures sweep` (deterministic, no LLM). Start with the `heyma` hub's doctor "
+             f"sub-skill (`{DOCTOR_SKILL}`, or `mise run wax:doctor`), then the commands under Look at.", ""]
     if previous_ref:
         lines += [f"Regression: {previous_ref} was closed (or deleted) and this signature is failing again "
                   f"(generation {generation}).", ""]

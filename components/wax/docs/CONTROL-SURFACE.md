@@ -12,10 +12,10 @@ the compiled graph. Do not publish the n8n workflows to make Wax run them.
 
 ## Active scenarios
 
-| Pipeline | Trigger | Passes | Policy |
+| Pipeline | Trigger | Passes (compiled, 2026-11-05) | Policy |
 |---|---|---|---|
-| `transcript-standard` | Wax completes transcription, after verified audio archival | frontmatter-stamp, clipboard-copy, classification, title-slug, diarization | Independent siblings; no new dependency gates |
-| `doc-standard` | New Markdown path in `~/d/Inbox/Wax`, scanned by waxd every 120 seconds while pipeline processing is enabled | classification → title-slug | Title requires classification; title also requires the classification meaning field to exist |
+| `transcript-standard` v12 | Wax completes transcription, after verified audio archival | frontmatter-stamp, clipboard-copy, classification, title-slug, diarization, project-extraction, call-metadata, dictionary-correction | Independent siblings; `diarization` follows `classification`, `dictionary-correction` follows `diarization` |
+| `doc-standard` v10 | New Markdown path in `~/d/Inbox/Wax`, scanned by waxd every 120 seconds while pipeline processing is enabled | classification → title-slug, project-extraction | Title requires classification; title also requires the classification meaning field to exist |
 
 `~/d/Transcripts` remains the transcript **output** destination. It is not watched
 as a second enrichment inbox. The dedicated document folder resolves to
@@ -26,8 +26,9 @@ edits do not trigger enrichment**; invoke an explicit document run to enrich an
 edit. Wax's own writes do not trigger another run. Failed arrivals retry within
 the attempt budget; exhaustion stays visible and needs an explicit retry.
 
-Project extraction and ticket extraction remain disabled. Auto/voice scenarios
-have not been invented or activated as part of this release.
+Project extraction has been enabled in both standard pipelines since
+2026-10-29; ticket extraction (`ticketable`) remains disabled. Auto/voice
+scenarios have not been invented or activated as part of this release.
 
 ## CLI first
 
@@ -95,11 +96,14 @@ Wax: restart `waxd.service` after Python runner changes. The capture encoder is
 in a separate systemd scope; an ordinary daemon restart preserves recording.
 Verify the capture and worker heartbeat after restarting.
 
-n8n: build and **pack** the package, store its tarball in a durable local package
-directory, install that tarball into `~/.n8n/nodes`, then `mise x -- pm2 restart n8n`.
-A local directory symlink is not sufficient proof of n8n discovery. The native
-PackageDirectoryLoader test verifies all fourteen types and their icons.
-The release package is `~/.local/share/wax/packages/n8n-nodes-heyma-0.2.0-1f77a72.tgz`.
+n8n: `npm run build` in `components/n8n-nodes-heyma`, then
+`mise x -- pm2 restart n8n`. The package is installed in `~/.n8n/nodes` as a
+`file:` link to the component (a symlink to the working tree, in place since
+2026-11-04), so building in place and restarting n8n is the whole deploy; the
+native PackageDirectoryLoader test verifies all eighteen node types (version
+0.3.0) and their icons. Tarballs kept in `~/.local/share/wax/packages/` (e.g.
+`n8n-nodes-heyma-0.3.0-74755f5.tgz`) are archived rollback artifacts, not the
+live install.
 
 Holocene: API is `holocene-api.service`; web is the `holocene-web` service in the
 33god-platform Compose project. Its API invokes the absolute Wax CLI and
@@ -110,7 +114,7 @@ allowlist-projects responses. CLI failure is DOWN, never an empty healthy view.
 A release-check note was added *after* seeding the empty document inbox. The
 worker discovered it automatically and completed both passes in one attempt,
 with one durable receipt and unchanged body. Later scans did not re-enrich it.
-Two audio items also completed all five passes under the compiled transcription
-authority. Holocene rendered both graphs, the document receipt and worker
+Two audio items also completed all five passes (the pass count at the time)
+under the compiled transcription authority. Holocene rendered both graphs, the document receipt and worker
 freshness. The pre-existing two failed diarization rows remain visible in the
 registry-wide catalog; this release does not hide or bulk-retry that backlog.

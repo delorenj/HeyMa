@@ -426,7 +426,7 @@ class GroupingTest(_Ledger):
         title = failures.title(sig)
         self.assertEqual(title, "[wax] pass title-slug: provider_bad_response (25 affected)")
         self.assertLess(len(title), 120)
-        self.assertIn("heyma-pipeline-doctor", text)
+        self.assertIn(failures.DOCTOR_SKILL, text)
         self.assertIn("no LLM", text)
         self.assertIn("## Acceptance criteria", text)
         self.assertIn("`wax ep status dddd000000000000`", text)

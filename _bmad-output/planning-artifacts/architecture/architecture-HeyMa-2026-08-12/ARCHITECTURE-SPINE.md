@@ -69,6 +69,15 @@ flowchart LR
   releasable, and operable repositories. HeyMa never vendors or imports their
   implementation packages.
 
+- **Amendment (2026-11-05, operator order):** Vinyl is mounted as a Git
+  submodule at `components/vinyl` (branch `main`) for co-location: one checkout,
+  source navigation, and its own hub skill (`components/vinyl/skills/vinyl/`)
+  routed from HeyMa's hub. This is not integration and does not change ownership.
+  Vinyl remains its own repository with its own versions, releases, packaging and
+  runtime; HeyMa code never imports from `components/vinyl`, and adapters still
+  use only Vinyl's CLI and status surface (AD-3). `~/code/vinyl` stays as a
+  symlink to the submodule so Vinyl's tooling and dubplate keep working.
+
 ### AD-2 — HeyMa owns the integration control plane [ADOPTED]
 
 - **Binds:** Unified tray, aggregate status, cross-product workflows,
@@ -85,6 +94,9 @@ flowchart LR
   and invoke only product-owned stable CLIs or public APIs. They never import
   product code, read product databases, call deployment tools such as
   `systemctl` or Docker directly, or use Git submodules as integration.
+- **Note (2026-11-05):** the `components/vinyl` submodule (AD-1 amendment) is
+  co-location, not integration; this rule binds adapters regardless of where the
+  product source is checked out.
 
 ### AD-4 — Bounded tray authority [ADOPTED]
 

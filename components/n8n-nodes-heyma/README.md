@@ -6,7 +6,7 @@ boundary and verified deployment procedure. The `wax-*-workflow.json` exports
 below are disabled starter templates; `*-release.json` captures the active
 Wax-owned graphs.
 
-A private n8n community-node package for controlling HeyMa's Wax audio pipeline.
+A private n8n community-node package (version **0.3.0**, **18 node types**) for controlling HeyMa's Wax audio pipeline.
 
 Wax remains the single owner of recording, archiving, transcription, and enrichment. Every node here is a thin control client: each invokes the canonical `wax` CLI, which keeps capture serialization, sentinels, state transitions, retries, and receipts inside Wax. Nodes never execute pass scripts, never read `passes.d/` or the SQLite ledger, and never schedule anything.
 
@@ -39,6 +39,16 @@ npm run nodes:passes   # reads `wax catalog --json`, emits nodes/wax-pass-<slug>
 
 Generated files carry an AUTO-GENERATED banner and are committed: the node manifest must stay reviewable and travel-safe. Each generated node lives at `nodes/WaxPass<Class>/WaxPass<Class>.node.ts` — the basename MUST be the PascalCase class name, because n8n's native `PackageDirectoryLoader` derives the class to instantiate from the manifest basename (`new (require(path).<basename>)()` inside a `vm.Script`); a kebab-case basename is not a valid identifier and kills the entire package load, legacy nodes included. `description.name` keeps the kebab slug (`wax-pass-title-slug`), which is the identity stored in existing workflow exports. Node icons reference the shared `file:../HeyMa/heyma.svg` (n8n resolves `file:` icons relative to each node's own directory). `tests/nativeLoader.test.cjs` loads the whole built package with the REAL installed n8n-core loader — no mocks — and asserts every manifest entry loads and every icon resolves to a file on disk.
 
+### Wax Calls (`WaxCalls`)
+
+Call-log operations against `wax calls`:
+
+- **Ingest Telnyx Event** (default) — feeds one Telnyx webhook event to `wax calls event`. The event JSON travels on **stdin, never argv** (it contains phone numbers and recording URLs). `Event Source` is `item` (the whole webhook item; Wax finds the envelope inside) or `field` (a dot path into the item, default `body`). `Fetch Voicemail` (default on) lets Wax pull a newly completed voicemail's WAV into the inbox; off passes `--no-fetch`. `Execute Once` defaults **off** here — one webhook delivery is one event, so every item must be ingested.
+- **Sync** — `wax calls sync` with a `Since` window (default `2d`); pulls CDRs, recordings and webhook deliveries from the Telnyx API.
+- **Show Call** — `wax calls show` for a session id, leg id, item id or file name.
+
+This node is the push half of the call log: workflow `9BkQCtKxdEtPWLAn` ("On Telnyx DeLoSIP Event", released by `components/n8n-workflows/telnyx_calls.py`) wires the Telnyx webhook to it and turns a returned `ended: true` into `bloodbank.telephony.call.ended` plus one ntfy line. The pull half is Candybar's `wax-calls-sync` job; n8n never schedules it.
+
 ### Wax Pipeline (`WaxPipeline`)
 
 Encapsulates a whole graph — passes, trigger, folder bindings — behind pipeline-level CLI operations plus a pure authoring posture:
@@ -65,6 +75,7 @@ wax pipeline import components/n8n-nodes-heyma/examples/wax-transcription-workfl
 
 - Every operation is one validated CLI invocation — slugs, pipeline names, IDs, and absolute paths are regex-checked before any process starts.
 - Absolute paths only for both the Wax executable and `WAX_ROOT`; PATH lookup is never used.
+- Large or sensitive payloads (a Telnyx call event) go to the CLI on **stdin**, never argv; stdin is always closed after the write.
 - Wax's JSON response object is parsed into the n8n item output (arrays are rejected); `stderr` is preserved when Wax writes one.
 - CLI failures (non-zero exit) and exit-zero operation failures both surface as error items under `continueOnFail`, with exit code, stderr, and stdout attached.
 
@@ -102,7 +113,7 @@ cd ~/.n8n/nodes
 npm install /home/delorenj/HeyMa/components/n8n-nodes-heyma
 ```
 
-Restart n8n after installation. In the editor, add **HeyMa** (Recording), **Wax Enrichment Pass**, or **Wax Pipeline**, then choose the operation.
+Restart n8n after installation. On this host n8n's community-node `package.json` depends on this directory with a `file:` link, so `node_modules/n8n-nodes-heyma` is a **symlink to the working tree**: after any source change, `npm run build` here and `pm2 restart n8n` is the whole deploy. (The tarballs under `~/.local/share/wax/packages/` are archived rollback artifacts, not what is loaded.) In the editor, add **HeyMa** (Recording), **Wax Enrichment Pass**, a **Wax Pass** node, **Wax Pipeline**, or **Wax Calls**, then choose the operation.
 
 ## Configuration
 
@@ -195,6 +206,8 @@ wax documents list --state processed
 wax catalog --json | jq '."pipelines"'
 ```
 
-Only enabled, document-capable passes run on documents: today that is
-`classification`, `title-slug` and `project-extraction` (enabled and added to both
-standard pipelines on 2026-10-29).
+Only enabled, document-capable passes run on documents. As of 2026-11-05 the
+document-capable set is `classification`, `title-slug`, `project-extraction`,
+`dictionary-correction` and `summarize` (`ticketable` is document-capable but
+disabled). The compiled `doc-standard` v10 pipeline runs `classification`,
+`title-slug` and `project-extraction`.

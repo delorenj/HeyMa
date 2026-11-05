@@ -127,8 +127,14 @@ systemctl --user daemon-reload
 
 Dry-run performs only credential resolution, LIST, and HEAD; it creates no
 runtime directories, receipts, or inbox files. It does not prove GET or Wax
-processing. The timer polls every minute with a five-second random delay, a
-60-second boot trigger, and persistent calendar catch-up. Each oneshot has a
+processing. **Scheduling is owned by Candybar, not the systemd timer.** The
+Candybar job `telnyx-s3-intake` (`* * * * *` America/New_York, id
+`01a17952-2ab7-78f1-a008-f994a0aaf1c7`) starts the oneshot service every
+minute; `telnyx-s3-intake.timer` is deliberately **disabled** (verified
+2026-11-05: loaded, disabled, inactive) and exists only as the documented
+rollback path in `~/code/33GOD/candybar/deploy/migration/ledger.yaml` (wave
+7.11, cutover 2026-10-26 — RandomizedDelaySec and OnBootSec were dropped and
+Persistent was replaced by the Candybar misfire policy). Each oneshot has a
 240-second internal budget and a 270-second systemd timeout. Overlap fails
 immediately with exit 75. Failure triggers a best-effort desktop alert; the
 journal and CLI status remain the operational evidence on a headless session.
@@ -137,15 +143,15 @@ journal and CLI status remain the operational evidence on a headless session.
 
 ```sh
 ~/HeyMa/bin/telnyx-s3-intake status
-systemctl --user status telnyx-s3-intake.service telnyx-s3-intake.timer
+systemctl --user status telnyx-s3-intake.service
 journalctl --user -u telnyx-s3-intake.service -n 100 --no-pager
-systemctl --user list-timers telnyx-s3-intake.timer
+candybar show telnyx-s3-intake -n 5   # the schedule: last/next runs
 
 # Publishes real eligible audio; run only after installation review.
 systemctl --user start telnyx-s3-intake.service
 
-# Stop scheduling and any active intake process.
-systemctl --user disable --now telnyx-s3-intake.timer
+# Pause the polling clock (Candybar owns it; the timer stays disabled).
+candybar pause telnyx-s3-intake       # resume: candybar resume telnyx-s3-intake
 systemctl --user stop telnyx-s3-intake.service
 ```
 
@@ -172,8 +178,9 @@ Keep `receipts.db` and prepared stages across upgrades and service restarts.
 Do not delete receipts as a retry mechanism: failed receipts already retry, and
 forgetting delivered receipts permits source downloads again. Back up the DB
 with SQLite's backup facility while intake is stopped, together with staging.
-If state is lost, restore it before enabling the timer; a fresh DB cannot know
-which remote recordings were delivered. Never modify Wax's DB to repair intake.
+If state is lost, restore it before resuming the Candybar job (or, in a full
+rollback, before re-enabling the timer); a fresh DB cannot know which remote
+recordings were delivered. Never modify Wax's DB to repair intake.
 Intake does not remove remote audio during any recovery.
 
 ## Validation
@@ -197,7 +204,8 @@ preexisting warnings.
 An isolated real transport run fetched 3 files with verified SHA256 hashes.
 After its inbox was drained, a fresh intake instance using the same receipt DB
 delivered 0. The live service reported success with 3 delivered receipts, each
-with `attempts=1`; the 60-second timer is enabled.
+with `attempts=1`; the 60-second timer was enabled at the time. (Scheduling
+moved to Candybar on 2026-10-26; the timer is now disabled — see above.)
 
 Live Wax items `828c0910089ac082`, `8bb31e5fd6afd629`, and `3592c67bdf4c4841`
 are all `complete`, with existing Markdown transcripts. The first item is speech
