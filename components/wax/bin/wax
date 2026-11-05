@@ -29,9 +29,9 @@ COMPONENT_ROOT = next(
 )
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
-from wax import (archive, catalog, capture, component, config, documents, events, finalize, frontmatter,
-                 hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile, sanity,
-                 sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
+from wax import (archive, catalog, capture, component, config, documents, events, failures, finalize,
+                 frontmatter, hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile,
+                 sanity, sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
 from wax import dictedit  # noqa: E402
@@ -95,7 +95,7 @@ PASS, WARN, FAIL = "pass", "warn", "fail"
 SECRET_NAME_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", re.IGNORECASE)
 
 MIRROR_MAX_AGE_S = 180      # waxd rewrites state.json at 1 Hz; 180 s is 180 misses
-OUTBOX_STALE_S = 600
+OUTBOX_STALE_S = events.OUTBOX_STALE_S
 CMD_TIMEOUT_S = 20          # every subprocess doctor spawns; it must never hang
 HTTP_TIMEOUT_S = 15
 PJ_TIMEOUT_S = 5
@@ -1930,6 +1930,33 @@ def transcripts_command(args, J: bool) -> int:
     return 1
 
 
+def _duration_arg(text: str) -> float:
+    try:
+        return failures.parse_duration(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def failures_command(args, J: bool) -> int:
+    """`wax failures [list]` reads; `wax failures sweep` files tickets through px.
+    Finding failures is not an error: exit 2 only when px or the collector failed."""
+    since = getattr(args, "since", failures.DEFAULT_SINCE_S)
+    grace = getattr(args, "grace", failures.DEFAULT_GRACE_S)
+    if getattr(args, "sub", None) in (None, "list"):
+        rep = failures.report(since_s=since, grace_s=grace)
+        if J:
+            _emit(rep, True)
+        else:
+            print(failures.render_list(rep))
+        return 2 if rep["errors"] else 0
+    res = failures.sweep(since_s=since, grace_s=grace, max_new=args.max, dry_run=args.dry_run)
+    if J:
+        _emit(res, True)
+    else:
+        print(failures.render_sweep(res))
+    return 2 if res["px_errors"] or res["collector_errors"] else 0
+
+
 def _since(text: str):
     """`2d`, `6h`, `90m` or an ISO timestamp -> aware UTC datetime."""
     from datetime import datetime, timedelta, timezone
@@ -1994,21 +2021,25 @@ def _commit_dictionary(path: Path, message: str) -> dict:
     def git(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
         return subprocess.run(["git", "-C", str(path.parent), *argv], capture_output=True, text=True,
                               timeout=timeout)
+    path = Path(path).resolve()
     try:
         top = git("rev-parse", "--show-toplevel")
         if top.returncode:
             return {"committed": False, "why": "not in a git repository"}
         if not git("status", "--porcelain", "--", str(path)).stdout.strip():
-            return {"committed": False, "why": "no change to commit"}
+            return {"committed": False, "why": f"git sees no change to {path} (ignored?)"}
         done = git("commit", "-q", "-m", message, "-m", "Written by `wax dict`.", "--", str(path))
         if done.returncode:
             return {"committed": False, "why": (done.stderr or done.stdout).strip()[-300:]}
         sha = git("rev-parse", "--short", "HEAD").stdout.strip()
-        pushed = git("push", "-q", timeout=120)
-        return {"committed": True, "commit": sha, "pushed": pushed.returncode == 0,
-                **({} if pushed.returncode == 0 else {"push_error": (pushed.stderr or "").strip()[-300:]})}
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"committed": False, "why": f"{type(exc).__name__}: {exc}"}
+    try:
+        pushed = git("push", "-q", timeout=120)
+        ok, err = pushed.returncode == 0, (pushed.stderr or "").strip()[-300:]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        ok, err = False, f"{type(exc).__name__}: {exc}"
+    return {"committed": True, "commit": sha, "pushed": ok, **({} if ok else {"push_error": err})}
 
 
 def _print_scan(r: dict) -> None:
@@ -2135,7 +2166,7 @@ def dict_command(args, J: bool) -> int:
                 if g.get("committed"):
                     print(f"\ncommitted {g['commit']}" + (" and pushed" if g.get("pushed")
                                                           else f"; push failed: {g.get('push_error', '')}"))
-                elif g.get("why") not in ("no change to commit",):
+                else:
                     print(f"\nnot committed: {g.get('why')}")
             return 0
         if args.sub == "fix":
@@ -2177,8 +2208,12 @@ def dict_command(args, J: bool) -> int:
                 skipped = [r for r in results if r["how"] == "skip"]
                 for r in skipped:
                     print(f"  skipped    {Path(r['path']).name}  ({r['why']})")
+                ran = [r for r in results if r["how"] != "skip"]
+                quiet = [r for r in ran if not r.get("gained") and r.get("state") == "completed"]
                 print(f"\n{found.term}: +{total} in {sum(1 for r in results if r.get('gained'))} notes; "
-                      f"{failed} failed; {len(skipped)} skipped. Jev turned down the rest in context.")
+                      f"{failed} failed; {len(skipped)} skipped"
+                      + (f"; in {len(quiet)} the pass ran and changed nothing (Jev judged those "
+                         "mentions to be something else, or they were already right)" if quiet else "") + ".")
             return 2 if failed else 0
     except dictedit.DictEditError as exc:
         print(f"refused: {exc}", file=sys.stderr)
@@ -2397,6 +2432,24 @@ def main() -> int:
 
     dr = sub.add_parser("drain", help="process inbox items now (one-shot)", parents=[common])
     dr.add_argument("-n", type=int, default=1, help="max items to process")
+
+    # --since/--grace on the group AND each verb, SUPPRESS'd so a value given at
+    # either position survives (a subparser default would overwrite the parent's).
+    fa = sub.add_parser("failures", parents=[common],
+                        help="recent Wax failures as signatures; `sweep` files each once as an urgent "
+                             "HEYMA ticket through px")
+    fa_sub = fa.add_subparsers(dest="sub")
+    fa_list = fa_sub.add_parser("list", parents=[common], help="(default) read-only: signatures and their tickets")
+    fa_sweep = fa_sub.add_parser("sweep", parents=[common],
+                                 help="file new signatures, comment new subjects, refile regressions (px)")
+    for parser in (fa, fa_list, fa_sweep):
+        parser.add_argument("--since", type=_duration_arg, default=argparse.SUPPRESS,
+                            help="failures newer than this (30m, 1h, 7d, 2w; default 7d)")
+        parser.add_argument("--grace", type=_duration_arg, default=argparse.SUPPRESS,
+                            help="a non-final failure is ticket-worthy after failing this long (default 1h)")
+    fa_sweep.add_argument("--max", type=int, default=failures.DEFAULT_MAX_NEW,
+                          help="at most this many new tickets per run (default 5); the rest wait, logged")
+    fa_sweep.add_argument("--dry-run", action="store_true", help="no px, no ledger writes; print titles and bodies")
 
     cl = sub.add_parser("calls", help="phone calls (Telnyx): the call log and its audio",
                         parents=[common]).add_subparsers(dest="sub", required=True)
@@ -2877,6 +2930,9 @@ def main() -> int:
         print(f"\n  manifest: {path}")
         print("  nothing was moved.")
         return 0
+
+    if args.cmd == "failures":
+        return failures_command(args, J)
 
     if args.cmd == "transcripts":
         return transcripts_command(args, J)

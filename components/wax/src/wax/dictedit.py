@@ -31,6 +31,7 @@ import multiprocessing
 import os
 import re
 import tempfile
+import unicodedata
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -49,7 +50,7 @@ MAX_EXAMPLES = 3
 WORKERS = max(1, min(8, (os.cpu_count() or 2) // 4))
 
 _HEADER = re.compile(r"^\s*#\s*--\s*(?P<name>.*?)\s*-*\s*$")
-_ENTRY_KEY = re.compile(r"^  (?P<key>[^\s#].*?):(?:[ \t]|$)")
+_ENTRY_KEY = re.compile(r"""^  (?P<key>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#"'].*?):(?:[ \t]|$)""")
 _PLAIN_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*(?: [A-Za-z0-9._+-]+)*$")
 _PLAIN_FORM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'’_-]*$")
 
@@ -108,7 +109,7 @@ def layout(text: str) -> Layout:
         if m and not line.lstrip().startswith("#"):
             j = i + 1
             while j < len(lines) and lines[j].strip() and not lines[j].lstrip().startswith("#") \
-                    and len(lines[j]) - len(lines[j].lstrip()) > 2:
+                    and (len(lines[j]) - len(lines[j].lstrip()) > 2 or lines[j].startswith("  - ")):
                 j += 1
             key = _parse_key(m.group("key"))
             out.entries[key] = Entry(key=key, line=i, end=j)
@@ -148,16 +149,30 @@ def render(term: str, heard: list[str], about: str) -> str:
         value = _quote(about)
     else:
         value = ""
+    for text in (term, about, *heard):
+        bad = next((ch for ch in text if unicodedata.category(ch) in ("Cc", "Cs", "Cn", "Co")), None)
+        if bad is not None:
+            raise DictEditError(f"{text!r} contains the control character U+{ord(bad):04X}",
+                                "retype it without the stray character")
     line = f"  {_key(term)}:" + (f" {value}" if value else "")
-    parsed = yaml.safe_load(line.strip())
     expected = {term: _entry_value(heard, about)}
-    if parsed != expected:
+    if _safe_load(line.strip()) != expected:
         # A form the quick style check let through as plain YAML read back as
         # something else: quote everything rather than guess again.
         line = f"  {_quote(term)}: " + json.dumps(_entry_value(heard, about), ensure_ascii=False)
-        if yaml.safe_load(line.strip()) != expected:
+        if _safe_load(line.strip()) != expected:
             raise DictEditError(f"cannot write {term!r} as one line of YAML")
     return line
+
+
+def _safe_load(text: str) -> Any:
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return _UNPARSEABLE
+
+
+_UNPARSEABLE = object()
 
 
 def _entry_value(heard: list[str], about: str) -> Any:
@@ -196,23 +211,30 @@ def _section_end(lay: Layout, header: int) -> int:
 
 
 def _find_section(lay: Layout, name: str) -> Optional[int]:
-    want = name.casefold().strip()
-    for title, line in lay.sections:
-        if title.casefold().startswith(want) or want in title.casefold():
-            return line
+    """Exact title, else the one title it starts, else the one title containing it."""
+    want = " ".join(name.split()).casefold()
+    if not want:
+        return None
+    for test in (lambda t: t == want, lambda t: t.startswith(want), lambda t: want in t):
+        hits = [(title, line) for title, line in lay.sections if test(title.casefold())]
+        if len(hits) == 1:
+            return hits[0][1]
+        if len(hits) > 1:
+            raise DictEditError(f"{name!r} matches several sections",
+                                "say which: " + "; ".join(t for t, _ in hits))
     return None
 
 
 def _insert(text: str, line: str, section: Optional[str]) -> str:
     lay = layout(text)
     lines = list(lay.lines)
-    name = section or DEFAULT_SECTION
+    name = " ".join((section or "").split()) or DEFAULT_SECTION
     header = _find_section(lay, name)
     if header is not None:
         at = _section_end(lay, header)
         lines[at:at] = [line]
         return "\n".join(lines)
-    if section and section.casefold() != DEFAULT_SECTION.casefold():
+    if name.casefold() != DEFAULT_SECTION.casefold():
         known = ", ".join(t for t, _ in lay.sections) or "none"
         raise DictEditError(f"no section matching {section!r}", f"sections: {known}")
     # A new trailing section, after the last entry of the terms mapping.
@@ -235,8 +257,20 @@ def _replace_line(text: str, term: str, line: Optional[str]) -> str:
         raise DictEditError(f"{term!r} is written over several lines",
                             "edit that entry in Dictionary.yaml by hand")
     lines = list(lay.lines)
+    if line is not None:
+        line += _trailing_comment(lines[entry.line])
     lines[entry.line:entry.end] = [line] if line is not None else []
     return "\n".join(lines)
+
+
+def _trailing_comment(line: str) -> str:
+    """`   # note` at the end of an entry line (a `#` inside quotes is not one), or ""."""
+    whole = _safe_load(line.strip())
+    for m in re.finditer(r"[ \t]+#", line):
+        head = line[:m.start()]
+        if head.strip() and _safe_load(head.strip()) == whole:
+            return line[m.start():]
+    return ""
 
 
 # ------------------------------------------------------------------ linting --
@@ -294,10 +328,26 @@ def lint_term(term: str, book: dictionary.Dictionary) -> Lint:
     return out
 
 
-def redundant(term: str, form: str) -> bool:
-    """`form` adds nothing: the pass already matches it as the term itself."""
-    sq, tsq = dictionary.squash(form), dictionary.squash(term)
-    return bool(sq) and sq in (tsq, tsq + "s", tsq + "es")
+def redundant(term: str, form: str, book: dictionary.Dictionary) -> bool:
+    """`form` adds nothing: it IS the term, or the pass already offers it as the term unlisted.
+
+    Decided by the pass's own scan on a one-line sentence, not by spelling: a
+    form spelled like the term can still need listing ("automatic a i" ends on
+    function words, which the scan only crosses for a listed form)."""
+    form = " ".join(form.split())
+    if form == term:
+        return True
+    return offered(term, form, book) in ("exact", "case")
+
+
+def offered(term: str, form: str, book: dictionary.Dictionary) -> Optional[str]:
+    """How the pass would offer `form` as `term` today (heard/exact/case/fuzzy), or None."""
+    form = " ".join(form.split())
+    for c in dictionary.candidates(f"we said {form} there", book):
+        if c.term is not None and c.term.term == term and c.said.casefold() == form.casefold() \
+                and c.replacement == term:
+            return c.source
+    return None
 
 
 def lint_heard(term: str, form: str, book: dictionary.Dictionary, *, others_only: bool = False) -> Lint:
@@ -316,14 +366,14 @@ def lint_heard(term: str, form: str, book: dictionary.Dictionary, *, others_only
         out.errors.append(f"{form!r} is the term {other.term!r}")
     if others_only:
         return out
-    if sq == tsq:
-        out.notes.append(f"{form!r} is spelled like {term} already; it is matched without being listed, "
-                         "so it was not added")
+    how = offered(term, form, book)
+    if how in ("exact", "case") or form == term:
+        out.notes.append(f"{form!r} is already corrected to {term} without being listed, so it was not added")
         return out
-    if sq in (tsq + "s", tsq + "es"):
-        out.notes.append(f"{form!r} is the plural of {term}; the pass already keeps the s, so it was not added")
-        return out
-    if sq in tsq:
+    if how == "fuzzy":
+        out.notes.append(f"{form!r} is already offered to Jev by sound; listing it lowers Jev's bar for it "
+                         "from 0.5 to 0.4")
+    if sq in tsq and sq != tsq:
         out.refusals.append(
             f"{form!r} is a piece of {term}: every {form!r} would become {term}, even beside the rest "
             f"of the word (\"jangler\" once turned \"P jangler\" into \"P pjangler\")")
@@ -412,6 +462,15 @@ class Change:
     written: bool
 
 
+def _target(path: Optional[Path]) -> Path:
+    """The real file (through any symlink), which must exist: an edit never creates it."""
+    target = Path(path if path else dictionary.default_path()).expanduser().resolve()
+    if not target.is_file():
+        raise DictEditError(f"no dictionary at {target}",
+                            "WAX_DICTIONARY names another file; the shipped one is ~/HeyMa/Dictionary.yaml")
+    return target
+
+
 def _book(path: Path) -> dictionary.Dictionary:
     try:
         return dictionary.load(path)
@@ -423,7 +482,7 @@ def add(term: str, *, about: str = "", heard: tuple[str, ...] = (), section: Opt
         update: bool = False, force: bool = False, dry_run: bool = False,
         path: Optional[Path] = None) -> Change:
     """Add a term, or with `update` amend one (new `about` replaces, new `heard` forms append)."""
-    target = Path(path) if path else dictionary.default_path()
+    target = _target(path)
     term = " ".join(term.split())
     about = " ".join(about.split())
     with _locked(target):
@@ -448,7 +507,7 @@ def add(term: str, *, about: str = "", heard: tuple[str, ...] = (), section: Opt
             if not form or any(form.casefold() == h.casefold() for h in new_heard):
                 continue
             lint.extend(lint_heard(term, form, book))
-            if not redundant(term, form):        # a no-op form is reported, not written
+            if not redundant(term, form, book):  # a no-op form is reported, not written
                 new_heard.append(form)
         new_about = about or cur_about
         if lint.errors:
@@ -469,7 +528,7 @@ def add(term: str, *, about: str = "", heard: tuple[str, ...] = (), section: Opt
 def remove(term: str, *, heard: tuple[str, ...] = (), dry_run: bool = False,
            path: Optional[Path] = None) -> Change:
     """Remove a term, or only some of its `heard` forms."""
-    target = Path(path) if path else dictionary.default_path()
+    target = _target(path)
     with _locked(target):
         old = target.read_text(encoding="utf-8")
         _book(target)
@@ -548,7 +607,7 @@ def _scan_note(path_str: str) -> dict[str, Any]:
         if not any(mask[m.start():m.end()]):
             right += 1
     caught = [(c.said, c.source, c.score, dictionary.excerpt(body, c.start, c.end, 70, mask))
-              for c in dictionary.candidates(body, book, min_score=_SCAN["min_score"], spoken_dot=False,
+              for c in dictionary.candidates(body, book, min_score=_SCAN["min_score"],
                                              memo=_SCAN["memo"])
               if c.term is not None and c.term.term == term]
     spans = {s for s, *_ in caught}
@@ -646,6 +705,10 @@ def fix_plan(note_paths: list[str]) -> list[dict[str, Any]]:
     return plan
 
 
+def _first(text: Any) -> str:
+    return str(text or "").strip().splitlines()[0][:200] if str(text or "").strip() else ""
+
+
 def count_term(path: Path, term: str) -> int:
     try:
         _fm, body = frontmatter.split(path.read_text(encoding="utf-8", errors="ignore"))
@@ -666,6 +729,8 @@ def fix_one(step: dict[str, Any], term: str) -> dict[str, Any]:
             finalize.publish_pass_events(step["item_id"])
             finalize.finalize(step["item_id"])
             out["state"] = result.get("state") or "completed"
+            if result.get("reason_code") or result.get("error"):
+                out["error"] = f"{result.get('reason_code') or ''} {_first(result.get('error'))}".strip()
             current = ledger.connect().execute(
                 "SELECT md_path FROM transcripts WHERE item_id=?", (step["item_id"],)).fetchone()
             if current is not None and current["md_path"]:
@@ -675,6 +740,9 @@ def fix_one(step: dict[str, Any], term: str) -> dict[str, Any]:
             states = sorted({str(r.get("state")) for r in result.get("results") or []})
             out["state"] = "failed" if result.get("failed") else (",".join(states) or
                                                                   result.get("skipped") or "completed")
+            bad = next((r for r in result.get("results") or [] if r.get("state") in ("failed", "skipped")), None)
+            if bad is not None and (bad.get("reason_code") or bad.get("error")):
+                out["error"] = f"{bad.get('reason_code') or ''} {_first(bad.get('error'))}".strip()
     except Exception as exc:  # noqa: BLE001 - one note never stops the rest
         out["state"] = "failed"
         out["error"] = f"{type(exc).__name__}: {exc}"[:300]

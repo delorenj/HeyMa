@@ -104,7 +104,7 @@ class EditTest(Base):
         self.assertEqual(self.book.read_text(), before)
 
     def test_a_form_spelled_like_the_term_is_noted_not_written(self):
-        change = dictedit.add("Skillex", heard=("skill ex", "skillexes"), update=True, path=self.book)
+        change = dictedit.add("Skillex", heard=("skill ex", "SKILLEX"), update=True, path=self.book)
         self.assertEqual(change.action, "unchanged")
         self.assertEqual(len(change.lint.notes), 2)
 
@@ -151,6 +151,71 @@ class EditTest(Base):
         self.assertEqual(rows["Skillex"]["section"], "Platform")
         self.assertEqual(rows["Jarad"]["section"], "People")
         self.assertEqual(rows["Skillex"]["heard"], ["skill x"])
+
+
+class ReviewRegressionTest(Base):
+    """Defects the adversarial review of `wax dict` reproduced (2026-11-05)."""
+
+    def test_a_quoted_key_with_a_colon_can_be_updated_and_removed(self):
+        dictedit.add("Foo: bar", about="x", path=self.book)
+        self.assertIn("Foo: bar", dictedit.layout(self.book.read_text()).entries)
+        dictedit.add("Foo: bar", about="y", update=True, path=self.book)
+        self.assertEqual(self.terms()["Foo: bar"], "y")
+        dictedit.remove("Foo: bar", path=self.book)
+        self.assertNotIn("Foo: bar", self.terms())
+
+    def test_control_characters_are_refused_not_a_traceback(self):
+        for kwargs in ({"about": "a\x7fb"}, {"heard": ("a\x80b",)}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(dictedit.DictEditError):
+                dictedit.add("Zed", path=self.book, **kwargs)
+        self.assertEqual(self.book.read_text(), BOOK)
+
+    def test_rewriting_a_line_keeps_its_trailing_comment(self):
+        dictedit.add("Bloodbank", heard=("blood bang",), update=True, path=self.book)
+        self.assertIn('Bloodbank: [blood bank, blood bang]   # trailing comment stays', self.book.read_text())
+        dictedit.add("Hermes", about="has # inside", path=self.book)
+        dictedit.add("Hermes", about="new", update=True, path=self.book)
+        self.assertEqual(self.terms()["Hermes"], "new")
+
+    def test_section_prefers_exact_then_refuses_ambiguity(self):
+        self.book.write_text(BOOK + "\n  # -- Dev tools ----\n  Mise:\n\n  # -- Tools ----\n  Jq:\n")
+        dictedit.add("Uv", section="tools", path=self.book)
+        lines = self.book.read_text().splitlines()
+        self.assertEqual(lines.index("  Uv:"), lines.index("  Jq:") + 1)
+        with self.assertRaises(dictedit.DictEditError) as caught:
+            dictedit.add("Fd", section="o", path=self.book)
+        self.assertIn("several", str(caught.exception))
+        with self.assertRaises(dictedit.DictEditError) as caught:
+            dictedit.add("Fd", section="zzz", path=self.book)
+        self.assertIn("Dev tools", caught.exception.hint)
+
+    def test_a_symlinked_dictionary_is_edited_through_the_link(self):
+        real = self.root / "real.yaml"
+        self.book.rename(real)
+        self.book.symlink_to(real)
+        dictedit.add("Zed", path=self.book)
+        self.assertTrue(self.book.is_symlink())
+        self.assertIn("Zed", yaml.safe_load(real.read_text())["terms"])
+
+    def test_a_missing_dictionary_is_a_refusal(self):
+        with self.assertRaises(dictedit.DictEditError):
+            dictedit.add("Zed", path=self.root / "missing.yaml")
+        with self.assertRaises(dictedit.DictEditError):
+            dictedit.remove("Zed", path=self.root / "missing.yaml")
+
+    def test_a_form_the_pass_only_matches_when_listed_is_written(self):
+        self.book.write_text(BOOK + "  AutomaticAI: the consultancy\n")
+        change = dictedit.add("AutomaticAI", heard=("automatic a i",), update=True, path=self.book)
+        self.assertEqual(change.action, "updated")
+        self.assertEqual(self.terms()["AutomaticAI"], {"heard": ["automatic a i"], "about": "the consultancy"})
+
+    def test_scan_counts_spoken_dots_like_the_pass(self):
+        self.book.write_text(BOOK + "  delo.sh: the homelab domain\n")
+        vault = self.root / "vault"
+        vault.mkdir()
+        (vault / "a.md").write_text("go to delo dot sh now\n")
+        report = dictedit.scan("delo.sh", book=dictionary.load(self.book), vault=vault, workers=1)
+        self.assertEqual(len(report["notes_to_fix"]), 1)
 
 
 class LintTest(Base):
