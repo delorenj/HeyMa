@@ -52,7 +52,7 @@ terms:
   Clairic: {heard: [cleric, claret], about: "the structured-extraction sibling of Jev"}
   CodeGraph: {heard: [code graph], about: "the code knowledge-graph tool"}
   Kapture: "the browser automation tool"
-  Deckard: {heard: [decker, deck are], about: "the Stream Deck controller for zellij tabs"}
+  Deckard: {heard: [decker, deck are, deckered], about: "the Stream Deck controller for zellij tabs"}
   TonnyBox: {heard: [tonny box, tani box, tawny box], about: "the Raspberry Pi voice-capture satellite with the 'Hey Tonny' wake word"}
   Voxxy: {heard: [voxy, voxie, vox e], about: "the text-to-speech service and CLI"}
   VoxCPM: {heard: [vox cpm], about: "the local text-to-speech model behind Voxxy"}
