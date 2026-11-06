@@ -156,6 +156,7 @@ terms:
   shadcn: {heard: [shad cn], about: "the UI component library"}
   Zapier: {heard: [zappier], about: "an integration platform"}
   GoodLeap: {heard: [good leap], about: "the solar financing company"}
+  Claude Desktop: {heard: [cloud desktop], about: "Anthropic's desktop app"}
 
   # -- Look-alikes ----------------------------------------------------------------
   # Real words that sound like a term above. Listing one here makes it win over
