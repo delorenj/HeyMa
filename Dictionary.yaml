@@ -157,6 +157,7 @@ terms:
   Zapier: {heard: [zappier], about: "an integration platform"}
   GoodLeap: {heard: [good leap], about: "the solar financing company"}
   Claude Desktop: {heard: [cloud desktop], about: "Anthropic's desktop app"}
+  Claude Code: {heard: [cloud code], about: "Anthropic's coding agent CLI"}
 
   # -- Look-alikes ----------------------------------------------------------------
   # Real words that sound like a term above. Listing one here makes it win over
