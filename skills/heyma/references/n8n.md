@@ -45,13 +45,13 @@ Two **inactive** n8n editor workflows are authoring surfaces for the pipeline ex
 
 - `SdNTSHrlakV5ubhC` "Telnyx voicemail" — Feet-era TeXML, still active, also publishes `bloodbank.telephony.call.*`.
 - `OTrzey7C2VKe8dr4` "Telephony: Receive Wax call transcripts" — consumes `bloodbank.audio.transcription.completed`, caches in Redis.
-- `2GDEqWFQvm8ncRjQ` "Telephony: Watch calls with [a contact]" — an n8n **scheduleTrigger every 30 s** polling Telnyx. This is a second clock and a standing Candybar-policy finding: keep it visible, do not touch it from here.
+- `2GDEqWFQvm8ncRjQ` "Telephony: Watch calls with [a contact]" — polls Telnyx recordings; since 2026-11-06 Candybar `telephony-damian-call-watch` fires its webhook every minute (was an n8n scheduleTrigger every 30 s).
 - `90JBJTQsEY8gNfVF`, `BtrkJ4iIvGEKZA9U`, `WvuJ5MBALOLgXrV6` (inactive) — call-sharing for that contact.
 - `R72MPZgl07qZ0ka6` "AAI Meeting Audio Workflow" — uses the HeyMa Start/Stop Recording nodes on a calendar webhook.
 - `uDx166slPJMhAbM5` "Handle onTranscriptionReady - Obsidian Enhanced" — legacy subworkflow writing into the transcript vault.
-- `PJ2uzBR0Zab9IKbi` "Telnyx SMS inbox".
+- `PJ2uzBR0Zab9IKbi` "Telnyx SMS inbox" — its held-notification release runs on Candybar `telnyx-sms-release-held` every minute (was an n8n scheduleTrigger every 30 s).
 
-Every n8n workflow is exported every 15 minutes to `~/code/delonet-n8n-workflows/workflows/<slug>--<id>.json` by Candybar job `delonet-n8n-workflows-sync` — the place to diff what is actually live.
+Every n8n workflow is exported every 15 minutes to `~/code/delonet-n8n-workflows/workflows/<slug>--<id>.json` by Candybar job `delonet-n8n-workflows-sync` — the place to diff what is actually live. No n8n workflow keeps its own clock: recurring ones are listed in that repo's `.candybars/` and README ("Recurring workflows run on Candybar").
 
 ## Changing a node or a released workflow
 
