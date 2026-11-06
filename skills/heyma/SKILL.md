@@ -80,7 +80,7 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 
 | Topic | Go to |
 |---|---|
-| Vinyl dictation (separate app, own pipeline) | vinyl hub: `components/vinyl/skills/vinyl/SKILL.md` once the submodule lands; until then `~/code/vinyl/skills/vinyl/SKILL.md` |
+| Vinyl dictation (separate app, own pipeline) | the `vinyl` hub: `components/vinyl/skills/vinyl/SKILL.md` (submodule) |
 | Writing or fixing skills, the hub standard | `skillex-skill-registry` skill, `~/code/skillex/docs/skills/hub-skill-standard.md` |
 | Generic n8n node, expression or validation help | `n8n-workflow-patterns`, `n8n-node-configuration`, `n8n-mcp-tools-expert` skills |
 | Bloodbank subjects, schemas, NATS | `bloodbank-integration` skill |

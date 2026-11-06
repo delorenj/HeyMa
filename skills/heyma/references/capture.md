@@ -118,8 +118,7 @@ systemctl --user restart org.gnome.SettingsDaemon.MediaKeys.target   # the servi
 A second binding, `vinyl` (`<Control>BackSpace`, `/usr/bin/vinyl-toggle`,
 "Vinyl dictation"), is **not Wax**. "I dictated a lot and there are no
 transcripts" means check intake and the vinyl hub skill first
-(`components/vinyl/skills/vinyl/SKILL.md` once the submodule lands, until then
-`~/code/vinyl/skills/vinyl/SKILL.md`), not the pipeline. The evdev hotkey
+(`components/vinyl/skills/vinyl/SKILL.md`), not the pipeline. The evdev hotkey
 design in WAX-DESIGN.md was never built.
 
 ## Where the audio goes next

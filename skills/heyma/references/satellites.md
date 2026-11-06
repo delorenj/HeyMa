@@ -28,11 +28,11 @@ Integration contract (its AGENTS.md, v0):
 
 ## Vinyl — the boundary
 
-Vinyl (`~/code/vinyl`, apt package `vinyl` 0.3.2, code in `/usr/lib/vinyl`) is **live dictation**: push-to-talk speech-to-text that types into the focused window. CPU-only, all-local (sherpa-onnx parakeet-tdt-0.6b-v3-int8), no cloud. Modes: `vinyl daemon` (local), `vinyl serve` (TCP 7733 for thin clients), `vinyl client`, `vinyl live` (a frozen meeting-caption prototype, captions on :7734). Live units 2026-11-05: `vinyld`, `vinyld-serve`, `vinyl-tray`, `vinyl-live` active; `vinyld-client` inactive. Hotkey `Ctrl+KP_Divide` (journal scope `app-gnome-vinyl\x2dtoggle-*.scope`).
+Vinyl (submodule `components/vinyl` since 2026-11-05, `~/code/vinyl` is a symlink to it; apt package `vinyl` 0.3.2, code in `/usr/lib/vinyl`) is **live dictation**: push-to-talk speech-to-text that types into the focused window. CPU-only, all-local (sherpa-onnx parakeet-tdt-0.6b-v3-int8), no cloud. Modes: `vinyl daemon` (local), `vinyl serve` (TCP 7733 for thin clients), `vinyl client`, `vinyl live` (a frozen meeting-caption prototype, captions on :7734). Live units 2026-11-05: `vinyld`, `vinyld-serve`, `vinyl-tray`, `vinyl-live` active; `vinyld-client` inactive. Hotkey `Ctrl+BackSpace` → `/usr/bin/vinyl-toggle` (journal scope `app-gnome-vinyl\x2dtoggle-*.scope`); the old `custom4` `Ctrl+KP_Divide` binding is dead.
 
 **Vinyl is not Wax and never feeds it.** Different goal (ephemeral dictated text vs archived audio), different pipeline, different state (`~/.local/state/vinyl/`). Only three things put audio into Wax: the `Ctrl+\` hotkey, the phone via Syncthing, and Telnyx — see the triage table in [intake](intake.md). If someone "dictated a lot and no transcripts appeared," they used Vinyl; that is the whole answer. Vinyl's own "WAX bridge" roadmap line (drop audio into `~/audio/inbox`) is unbuilt and stale — `~/audio` is a retired root.
 
-Vinyl is becoming a submodule at `components/vinyl`; its hub will live at `components/vinyl/skills/vinyl/SKILL.md` (until then `~/code/vinyl/skills/vinyl/SKILL.md` — no `skills/` tree exists yet, 2026-11-05).
+Vinyl is a Git submodule at `components/vinyl` (branch `main`) for co-location only: its own repo, versions and releases, and HeyMa code never imports it (architecture spine AD-1 amendment, 2026-11-05). Its knowledge lives in its own hub, the `vinyl` skill: `components/vinyl/skills/vinyl/SKILL.md`. Do not init the submodule on tiny-chungus, where the thin client runs from `~/code/vinyl/.venv`.
 
 ## Tarballs
 

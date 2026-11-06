@@ -67,6 +67,7 @@ exactly one route.
 | `components/n8n-nodes-heyma/`, `components/n8n-workflows/` | n8n adapter nodes and released workflows |
 | `components/telnyx-s3-intake/`, `components/syncthing-audio/` | intake services |
 | `components/heyma-obsidian/`, `components/remote-audio/` | satellites |
+| `components/vinyl/` | Vinyl dictation, a submodule for co-location only (not Wax; own hub `components/vinyl/skills/vinyl/`); `~/code/vinyl` symlinks here |
 | `skills/heyma/` | the hub skill (this repo's only skill) |
 
 ## Docs & tests

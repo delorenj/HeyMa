@@ -147,7 +147,7 @@ Load the reference for the **first** failing layer (table above), plus:
 
 | Symptom | Go to |
 |---|---|
-| "I transcribed a lot and there are no transcripts" | Check intake before the pipeline: ledger `first_seen`, hotkey scopes, Syncthing. `Ctrl+BackSpace` is vinyl dictation, not Wax (the `vinyl` hub skill, `components/vinyl/skills/vinyl/SKILL.md`, or `~/code/vinyl/skills/vinyl/SKILL.md` until the submodule lands). See [intake](../../references/intake.md). |
+| "I transcribed a lot and there are no transcripts" | Check intake before the pipeline: ledger `first_seen`, hotkey scopes, Syncthing. `Ctrl+BackSpace` is vinyl dictation, not Wax (the `vinyl` hub skill, `components/vinyl/skills/vinyl/SKILL.md`). See [intake](../../references/intake.md). |
 | Titles missing or odd, chain evidence shows `missing_model` | [passes/model-chain](../../references/passes/model-chain.md) |
 | Wrong respellings | [passes/dictionary](../../references/passes/dictionary.md) |
 | Item `failed` with `archive_failed` | [archive](../../references/archive.md) (transcription did not run) |

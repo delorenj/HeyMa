@@ -1,3 +1,8 @@
 [submodule "components/heyma-obsidian"]
 	path = components/heyma-obsidian
 	url = git@github.com:delorenj/heyma-obsidian.git
+	branch = main
+[submodule "components/vinyl"]
+	path = components/vinyl
+	url = git@github.com:delorenj/vinyl.git
+	branch = main
