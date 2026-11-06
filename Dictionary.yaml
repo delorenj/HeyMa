@@ -84,7 +84,7 @@ terms:
   zshyzsh: {heard: [zshy zsh, zishy zish, zishy], about: "the zsh configuration repo"}
   systemd: {heard: [system d], about: "the Linux service manager"}
   TOML: {heard: [tom l], about: "the config file format"}
-  PM2: {heard: [pm too], about: "the Node process manager"}
+  PM2: {heard: [pm too, pm two], about: "the Node process manager"}
   delorenj: {heard: [dealer nj, dealer n j, deal or nj], about: "the speaker's username and GitHub handle"}
 
   # -- AutomaticAI and client work ---------------------------------------------
