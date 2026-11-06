@@ -78,7 +78,7 @@ terms:
   Syncthing: {heard: [sync thing, sink thing], about: "the file sync tool that feeds recordings to HeyMa"}
   Traefik: "the homelab reverse proxy"
   MinIO: {heard: [mini os, mini o], about: "the S3 object store behind s3.delo.sh"}
-  zellij: {heard: [zellege, zellage, zelleage, zelle-age, zellige, zelige, zelij, zellig, zealage], about: "the terminal multiplexer every agent runs in"}
+  zellij: {heard: [zellege, zellage, zelleage, zelle-age, zellige, zelige, zelij, zellig, zealage, zelage], about: "the terminal multiplexer every agent runs in"}
   Alacritty: "the terminal emulator"
   mise: {heard: [mize, meez], about: "the dev-tool and task runner (mise run)"}
   zshyzsh: {heard: [zshy zsh, zishy zish, zishy], about: "the zsh configuration repo"}
