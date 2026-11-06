@@ -36,7 +36,7 @@ A pass may return `events` in its result; its YAML must list them under `emits`,
 
 | Consumer | Takes | Does |
 |---|---|---|
-| n8n Transcription Notifications (`XHWRrrYCzu4ifdS7`) | `transcription.completed`, `intake.detected` | ntfy topic `audio` |
+| n8n Transcription Notifications (`XHWRrrYCzu4ifdS7`) | live: `file.received` + `transcription.completed`; `intake.detected` only in the unapplied release | ntfy topic `audio` (nothing relays `intake.detected` until the release is applied; moot while `ticketable` is disabled — see [n8n](n8n.md)) |
 | `bloodbank-ntfy-router` container | `task.exhausted` | Routes the dead-letter to ntfy |
 | Candystore | `bloodbank.evt.>` | Durable history |
 | n8n Telnyx workflow (`9BkQCtKxdEtPWLAn`) | webhook, not Bloodbank | Publishes `bloodbank.telephony.call.ended` plus ntfy topic `telephony`. Wax does not emit it; see [calls](calls.md) |

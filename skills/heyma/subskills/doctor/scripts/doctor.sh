@@ -103,7 +103,7 @@ doctor.sh — read-only health board for the Wax audio pipeline
   --layer <name>   run one layer only (daemon|capture|paths|queue|stages|enrichment|
                    transcription|archive|events|desktop|deploy|hygiene)
   --only <id>      run one check by id
-  --quick          skip the slow checks (S3 round-trips, test suite, candystore)
+  --quick          skip the slow checks (S3 round-trips, test suite)
   --verbose        show the evidence line for passing checks too
 USAGE
       exit 0 ;;

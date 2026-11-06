@@ -41,15 +41,15 @@ is at an older one. It is time-sensitive; re-read `wax ep list`.
 
 | Pass | `timeout_s` | OK / FAIL / STALE |
 |---|---|---|
-| call-metadata | 90 | 101 / 0 / 0 |
-| classification | 60 | 556 / 0 / 13 |
-| clipboard-copy | 30 | 236 / 0 / 0 |
+| call-metadata | 90 | 102 / 0 / 0 |
+| classification | 60 | 557 / 0 / 13 |
+| clipboard-copy | 30 | 237 / 0 / 0 |
 | diarization | 86400 | 168 / 0 / 0 |
-| dictionary-correction | 180 | 785 / 0 / 0 |
-| frontmatter-stamp | 60 | 418 / 0 / 0 |
-| project-extraction | 120 | 532 / 0 / 0 |
+| dictionary-correction | 180 | 786 / 0 / 0 |
+| frontmatter-stamp | 60 | 419 / 0 / 0 |
+| project-extraction | 120 | 533 / 0 / 0 |
 | summarize | 390 | 2 / 0 / 0 |
-| title-slug | 390 | 458 / 3 / 69 |
+| title-slug | 390 | 459 / 3 / 69 |
 | ticketable, domain-curation, mem-ops, transcription-enhance, wikification | 1800, 900, 900, 900, 900 | 0 / 0 / 0 |
 
 `title-slug` carries the only current failures (rate limits and bad responses

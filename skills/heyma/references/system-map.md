@@ -43,7 +43,7 @@ Do not judge `wax.db` by its mtime: it is WAL, so the main file can be old while
 | `syncthing-audio-policy.service` | Metadata-only: accepts flat uniquely named recordings once, saves permanent exclusions |
 | `holocene-api.service` | Holocene API; invokes `wax --json catalog` |
 
-`heyma-whisper.service` appears in old docs and is `not-found` on this host. There is no whisper service; waxd spawns the transcriber.
+`heyma-whisper.service` appears in old docs and is `not-found` on this host. There is no Wax whisper service; waxd spawns the transcriber. (`holocene-whisper.service` does exist — Holocene's own resident faster-whisper server for car memos on :8766. It owns no Wax pipeline stage.)
 
 ## Two state machines
 

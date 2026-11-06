@@ -3,7 +3,7 @@
 Telnyx (+12154498437, the "DeLoNET SIP" credential connection) is the only source of call audio; the Verizon cell forwards to it. Groundwire recording and the Syncthing `telephony` folder were retired 2026-11-03. Wax owns call identity in `var/wax.db` (`calls`, `call_legs`, `call_recordings`, `call_events`); the code is `components/wax/src/wax/calls.py`. Two idempotent writers feed it:
 
 - **Push:** Telnyx webhook → n8n workflow `9BkQCtKxdEtPWLAn` ("On Telnyx DeLoSIP Event") → the Wax Calls node (`n8n-nodes-heyma.waxCalls`) → `wax calls event` with the event JSON on stdin.
-- **Pull:** `wax calls sync`, every 10 minutes via Candybar job `wax-calls-sync` (`*/10 * * * *`, id `01a1a365-819d-72ec-b518-f8de3976dead`, enabled, created 2026-11-03; ~295 invocations, 1 failure as of 2026-11-05).
+- **Pull:** `wax calls sync`, every 10 minutes via Candybar job `wax-calls-sync` (`*/10 * * * *`, id `01a1a365-819d-72ec-b518-f8de3976dead`, enabled, created 2026-11-03; ~300 invocations, 1 failure as of 2026-11-05).
 
 The `calls` row is always recomputed by `derive()` from legs, recordings and events; nothing patches it in place.
 
@@ -71,7 +71,7 @@ Two traps:
 - **The sync path never announces.** Only `wax calls event` does. If the webhook path was down (a broken working tree broke it 2026-11-05T18:50Z with `NameError: name 'contextlib' is not defined` in `failures.py`), the sync recovers the rows but those calls stay unannounced.
 - The `announced_at` migration backfilled it to `updated_at` for already-ended rows, so `announced_at` means "claimed", not necessarily "announced".
 
-Ledger state 2026-11-05: 139 calls since 2026-10-05; outcomes answered 97 (71 in / 26 out), declined 11, failed 14, missed 10, no_answer 3, voicemail 4. 132 rows have `announced_at`.
+Ledger state 2026-11-05: 140 calls since 2026-10-05; outcomes answered 98 (72 in / 26 out), declined 11, failed 14, missed 10, no_answer 3, voicemail 4. 133 rows have `announced_at`.
 
 ## Audio to call
 

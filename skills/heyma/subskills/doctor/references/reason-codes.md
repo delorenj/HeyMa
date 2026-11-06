@@ -97,7 +97,7 @@ by `wax state` and `wax items`. Details live in
 |---|---|---|
 | `archive_failed` | item `failed` | S3 backup did not verify after 3 attempts. The source is copied to `recovered/unbacked/` and **transcription does not run**. |
 | `s3_reverify_failed` | item `failed` | The live re-verify before parking found a size mismatch; audio stays in the inbox. |
-| `file_too_large_for_transcription` | item `skipped` | Over `MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` (300MB); archived first, then moved to `skipped/oversize`. |
+| `file_too_large_for_transcription` | item `skipped` | At or over `MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` (300MB; the check is strict, so exactly 300MB is blocked); archived first, then moved to `skipped/oversize`. |
 | `audio_too_long_for_transcription` | item `skipped` | At or over `MAX_AUDIO_DURATION_FOR_TRANSCRIPTION` (3h); archived first, moved to `skipped/overduration`. |
 | `transcribe_failed` | item `failed` | The transcriber raised. Audio stays in the inbox. |
 | `completion_withheld` | item `enrichment_pending` | A planned pass is not done, so `transcription.completed` waits. |

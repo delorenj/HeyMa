@@ -361,7 +361,7 @@ the board still checks them (`no-stale-mirror`, `no-root-passes-d`,
 | `systemctl status` memory | misleading | Counts reclaimable page cache from transcription children. Use `/proc/<pid>/status`. |
 | Green tray | not evidence | See "Wax fails silently by construction" in [the doctor procedure](../SUBSKILL.md). On 2026-11-05 the board itself caught it: `tray-colour-honest` failed with the tray GREEN while two `title-slug` failures sat in the 7-day window. |
 | MinIO is one drive | true | `s3.delo.sh` is MinIO on the same NVMe partition as the original audio. It protects against deletion and corruption, not against losing that disk. Offsite is the R2 bucket `delonet-backups`; see [archive](../../../references/archive.md). |
-| Ledger rows pointing at missing audio | 215 on 2026-11-05 (`doctor.sh` warns) | They inflate `items.pending` forever while `queue.total` stays 0. Local `archive/2026/02-09` is missing for about 284 items whose S3 copies verified (2026-10-18 note, unexplained). |
+| Ledger rows pointing at missing audio | 214 on 2026-11-05 (`doctor.sh` warns) | They inflate `items.pending` forever while `queue.total` stays 0. Local `archive/2026/02-09` is missing for about 284 items whose S3 copies verified (2026-10-18 note, unexplained). |
 
 ## The pattern behind all of it
 

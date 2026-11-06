@@ -55,7 +55,7 @@ Found a plaintext secret anywhere? Move it into the DeLoSecrets vault, replace i
 
 ## Candybar schedules
 
-Candybar is the only clock. `wax-calls-sync` runs `*/10` (295 runs, 1 failure on 2026-11-05) from `components/wax/deploy/candybar/wax-calls-sync/candybar.toml`, and `telnyx-s3-intake` runs every minute. The only systemd timer on the box is the page-only `candybar-watchdog.timer`. Never add a timer, cron or sleep loop; load the `candybar` skill before scheduling anything.
+Candybar is the only clock. `wax-calls-sync` runs `*/10` (~300 runs, 1 failure on 2026-11-05) from `components/wax/deploy/candybar/wax-calls-sync/candybar.toml`, and `telnyx-s3-intake` runs every minute. The only systemd timer on the box is the page-only `candybar-watchdog.timer`. Never add a timer, cron or sleep loop; load the `candybar` skill before scheduling anything.
 
 ## Provisioning scripts (`components/wax/deploy/`)
 

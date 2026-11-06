@@ -52,9 +52,10 @@ answerable from S3 while every chat pass is down.
 
 In order inside `worker.process` (it is serialized: one item at a time):
 
-1. **Size gate.** Over `MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` (300MB): the file
-   is archived first, then moved to `skipped/oversize`, state `skipped`, cause
-   `file_too_large_for_transcription`.
+1. **Size gate.** At or over `MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` (300MB):
+   the file is archived first, then moved to `skipped/oversize`, state
+   `skipped`, cause `file_too_large_for_transcription`. (The check is strict:
+   a file exactly at the ceiling is too large, `config.py`.)
 2. **Duration gate.** `ffprobe` duration at or over
    `MAX_AUDIO_DURATION_FOR_TRANSCRIPTION` (3h): archived first, moved to
    `skipped/overduration`, state `skipped`, cause `audio_too_long_for_transcription`.
