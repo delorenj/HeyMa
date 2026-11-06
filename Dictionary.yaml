@@ -71,7 +71,7 @@ terms:
   DeLoSecrets: {heard: [dlo secrets, delo secrets, dilo secrets, delos secrets], about: "the 1Password vault holding every credential"}
   DeLoHome: {heard: [dlo home, delo home, dilo home], about: "the home-automation MCP server"}
   DeLoContainers: {heard: [dlo containers, dlo container], about: "the homelab Docker Compose stacks repo"}
-  big-chungus: {heard: [big chungus, big chunk], about: "the main home server and workstation"}
+  big-chungus: {heard: [big chungus], about: "the main home server and workstation"}
   burro-salmon.ts.net: {heard: [burro salmon, burrow salmon], about: "the Tailscale tailnet domain"}
   tailnet: {heard: [tail net], about: "the Tailscale network"}
   Tailscale: {heard: [tail scale], about: "the VPN mesh"}
