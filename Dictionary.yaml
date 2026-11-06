@@ -147,7 +147,7 @@ terms:
   TeXML: {heard: [txml], about: "Telnyx's XML call-control application"}
   BMAD: {heard: [bmat, beemad, b-mad, b mad], about: "the BMAD planning method (epics, stories, PRDs)"}
   TestFlight: {heard: [test flight, test-flight], about: "Apple's beta app distribution"}
-  HubSpot: {heard: [hub spot], about: "a CRM"}
+  HubSpot: {heard: [hub spot, hubspa], about: "a CRM"}
   DigitalOcean: {heard: [digital ocean], about: "the cloud host for IntelliForia staging"}
   Cloudflare: {heard: [cloud flare, cloudfare], about: "DNS, tunnels and Workers for the speaker's domains"}
   Vercel: {heard: [versel, versal], about: "a hosting platform"}
