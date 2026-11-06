@@ -145,7 +145,7 @@ terms:
   LangChain: {heard: [lanechain], about: "an agent framework"}
   Telnyx: {heard: [telnix, telmex, tell nix, tel nix, telnex, telnics, tell next], about: "the phone carrier that records calls"}
   TeXML: {heard: [txml], about: "Telnyx's XML call-control application"}
-  BMAD: {heard: [be mad, bmat, beemad, b-mad, b mad], about: "the BMAD planning method (epics, stories, PRDs)"}
+  BMAD: {heard: [bmat, beemad, b-mad, b mad], about: "the BMAD planning method (epics, stories, PRDs)"}
   TestFlight: {heard: [test flight, test-flight], about: "Apple's beta app distribution"}
   HubSpot: {heard: [hub spot], about: "a CRM"}
   DigitalOcean: {heard: [digital ocean], about: "the cloud host for IntelliForia staging"}
