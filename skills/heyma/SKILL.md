@@ -33,7 +33,7 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 | What does the ledger say? | `sqlite3 "file:$HOME/HeyMa/var/wax.db?mode=ro"` |
 | Is the transcript store behind? | `wax transcripts sync --check` |
 | What is the latest transcript (overall or for a project)? | `wax tx [PROJECT...]` |
-| Which transcripts arrived today or yesterday? | `wax tx --today`, `wax tx --yesterday` |
+| Which transcripts are dated today or yesterday? | `wax tx --today`, `wax tx --yesterday` |
 | Did the call land? | `wax calls list`, `wax calls show <ref>` |
 
 ## Routes — read exactly one, then come back
