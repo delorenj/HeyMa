@@ -121,6 +121,10 @@ transcripts" means check intake and the vinyl hub skill first
 (`components/vinyl/skills/vinyl/SKILL.md`), not the pipeline. The evdev hotkey
 design in WAX-DESIGN.md was never built.
 
+## HeyMa window: Telephony is separate from recording
+
+The native window adds a Telephony page beside Settings and Logs (`heyma --page telephony`), described in [telephony](telephony.md). It is a default-off/shadow call-policy view, not the Wax microphone. Local ringing is opt-in and owned by the existing tray; shadow would-block matches are not actually rejected or muted. The Wax red recording indicator keeps its original capture meaning.
+
 ## Where the audio goes next
 
 A finalized recording lands in `inbox/`, the one work queue. From there the

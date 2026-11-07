@@ -120,6 +120,7 @@ Detail: [transcriptions-store](transcriptions-store.md).
 | `wax calls backfill [--dry-run] [--min-seconds 3]` | Recover call rows from history |
 | `wax calls list [--limit 30] [--outcome O]` | Outcome: answered, voicemail, missed, declined, no_answer, failed |
 | `wax calls show <ref>` | One call with legs, recordings and events |
+| `wax calls telephony [--limit N]` | Local read-only call/screening/processing snapshot for the Telephony page; disabled/shadow only, no Telnyx refresh or live control. See [telephony](telephony.md) |
 | `wax dict add <term> [--about T] [--heard FORM]... [--section S] [--update] [--force] [--dry-run] [--no-scan] [--no-commit]` | Add a term to `Dictionary.yaml` |
 | `wax dict heard <term> <form>...` | Add mis-hearings to a term |
 | `wax dict remove <term> [--heard]` | Remove a term, or only its heard forms |

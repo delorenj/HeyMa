@@ -13,6 +13,9 @@
 /recovered/
 /skipped/
 /var/
+# Operator-local Telephony policy/ringer settings (source defaults are in the component)
+/config/telephony.json
+/config/telephony.json.lock
 
 # Local assets and heavyweight runtimes
 /assets/

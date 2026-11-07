@@ -395,12 +395,56 @@ class BackfillTest(_Ledger):
         self.assertEqual(calls.audio_identity(name)["call_leg_id"], OUT_LEG)
 
 
+class ShadowAdapterCLITest(_Ledger):
+    def test_event_retains_ingestion_result_with_disabled_local_core(self):
+        import os
+        body = event("shadow-cli-event", "call.initiated", IN_SESSION,
+                     direction="incoming", call_leg_id=IN_LEG,
+                     **{"from": "+12152083549", "to": "+12154498437"})
+        env = os.environ.copy()
+        env["WAX_ROOT"] = self.tmp.name
+        proc = subprocess.run([sys.executable, str(COMPONENT / "bin/wax"), "--json", "calls", "event",
+                               "--no-fetch"], input=json.dumps(body), capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertTrue(result["new"])
+        self.assertEqual(result["call_session_id"], IN_SESSION)
+        self.assertFalse(result["ended"])
+        self.assertFalse((Path(self.tmp.name) / "var/telephony").exists(),
+                         "disabled core must not write decision receipts")
+
+
 class PassCommandTest(_Ledger):
     def test_a_non_call_recording_is_skipped(self):
         proc = subprocess.run([sys.executable, str(COMPONENT / "config/passes.d/bin/call-metadata"), "x.md", "nope"],
                               capture_output=True, text=True, env={"WAX_ROOT": self.tmp.name, "PATH": "/usr/bin:/bin"})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout.strip().splitlines()[-1])["reason_code"], "not_a_call")
+
+
+class TelephonyCommandTest(unittest.TestCase):
+    def test_read_only_snapshot_missing_ledger_is_explicitly_unavailable(self):
+        with tempfile.TemporaryDirectory() as root:
+            proc = subprocess.run([sys.executable, str(COMPONENT / "bin/wax"), "--json", "calls", "telephony"],
+                                  capture_output=True, text=True,
+                                  env={"WAX_ROOT": root, "PATH": "/usr/bin:/bin"})
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            result = json.loads(proc.stdout)
+            self.assertEqual(result["schema"], "heyma.telephony.snapshot.v1")
+            self.assertEqual(result["health"], "unavailable")
+            self.assertFalse((Path(root) / "var/wax.db").exists())
+
+    def test_limit_validated_and_tx_parser_still_present(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = {"WAX_ROOT": root, "PATH": "/usr/bin:/bin"}
+            proc = subprocess.run([sys.executable, str(COMPONENT / "bin/wax"), "--json", "calls",
+                                   "telephony", "--limit", "0"], capture_output=True, text=True, env=env)
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("limit", proc.stderr)
+            help_proc = subprocess.run([sys.executable, str(COMPONENT / "bin/wax"), "tx", "--help"],
+                                       capture_output=True, text=True, env=env)
+            self.assertEqual(help_proc.returncode, 0, help_proc.stderr)
+            self.assertIn("--project", help_proc.stdout)
 
 
 if __name__ == "__main__":

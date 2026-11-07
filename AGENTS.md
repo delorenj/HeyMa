@@ -68,6 +68,7 @@ exactly one route.
 | `components/telnyx-s3-intake/`, `components/syncthing-audio/` | intake services |
 | `components/heyma-obsidian/`, `components/remote-audio/` | satellites |
 | `components/vinyl/` | Vinyl dictation, a submodule for co-location only (not Wax; own hub `components/vinyl/skills/vinyl/`); `~/code/vinyl` symlinks here |
+| `components/telephony/` | Default-off/shadow call-policy component; local Telephony page/projection, no live rejection/routing or audio suppression. Operator route: `skills/heyma/references/telephony.md` |
 | `skills/heyma/` | the hub skill (this repo's only skill) |
 
 ## Docs & tests

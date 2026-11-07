@@ -34,6 +34,7 @@ from wax import (archive, catalog, capture, component, config, documents, events
                  sanity, sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
+from wax import telephony as telephony_shadow  # noqa: E402
 from wax import dictedit  # noqa: E402
 from wax.transcriptions import tx  # noqa: E402
 
@@ -1981,7 +1982,16 @@ def calls_command(args, J: bool) -> int:
             except ValueError:
                 print("error: stdin is not JSON", file=sys.stderr)
                 return 2
-            _emit(telephony.ingest_event(body, fetch=not args.no_fetch), J)
+            result = telephony.ingest_event(body, fetch=not args.no_fetch)
+            telephony_shadow.shadow_event(body, is_new=bool(result.get("new")))
+            _emit(result, J)
+            return 0
+        if args.sub == "telephony":
+            try:
+                _emit(telephony_shadow.snapshot(args.limit), J)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
             return 0
         if args.sub == "backfill":
             _emit(telephony.backfill_recordings(dry_run=args.dry_run, min_ms=int(args.min_seconds * 1000)), J)
@@ -2479,6 +2489,8 @@ def main() -> int:
     cll = cl.add_parser("list", parents=[common], help="the call log, newest first")
     cll.add_argument("--limit", type=int, default=30)
     cll.add_argument("--outcome", help="answered | voicemail | missed | declined | no_answer | failed")
+    clt = cl.add_parser("telephony", parents=[common], help="read-only local shadow screening and Wax processing snapshot")
+    clt.add_argument("--limit", type=int, default=30, help="recent calls, 1–100 (default 30)")
     cl.add_parser("show", parents=[common], help="one call: legs, recordings, events").add_argument(
         "ref", help="call_session_id, call_leg_id, item id or file name")
 

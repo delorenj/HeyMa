@@ -7,6 +7,10 @@ Telnyx (+12154498437, the "DeLoNET SIP" credential connection) is the only sourc
 
 The `calls` row is always recomputed by `derive()` from legs, recordings and events; nothing patches it in place.
 
+## Telephony page and shadow rules
+
+See [telephony](telephony.md) for the native page, `wax --json calls telephony`, local ringer and the default-off/shadow component. Shadow **would-block is not blocked**: it never changes Telnyx routing, normal recording or Wax audio processing. The existing direct SIP route is unchanged; pre-ring rejection requires a later explicitly approved cutover.
+
 ## The CLI
 
 | Command | What it does |

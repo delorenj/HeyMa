@@ -31,7 +31,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 import signal
 
-from wax import capture, events as events_mod, ledger, paths, state, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
+from wax import capture, events as events_mod, ledger, paths, state, telephony as telephony_shadow, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
 
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
@@ -109,6 +109,10 @@ class Daemon:
         # window. They must be separate — see _condition.
         self._conditions: dict[str, tuple[Optional[str], float, float]] = {}
         self.snapshot: dict = {}
+        self._telephony_snapshot: Optional[dict] = None
+        self._telephony_refresh_at = 0.0
+        self._telephony_refreshing = False
+        self._telephony_lock = threading.Lock()
         self._silence_monitor_rid: Optional[str] = None
         self._silence_monitor_file = None
         self._is_silent = False
@@ -257,6 +261,30 @@ class Daemon:
                         f"encoder has heard silence for {SILENCE_WARN_S:.0f}s+ while recording "
                         "— is the mic muted?" if long_silence else None, recovered="cleared")
 
+    def _refresh_telephony(self) -> None:
+        """Read the optional projection off-loop; at most one read is in flight."""
+        try:
+            projection = telephony_shadow.snapshot(limit=30)
+        except Exception as exc:  # noqa: BLE001 - telephony cannot blind recording
+            projection = telephony_shadow.unavailable(
+                f"Telephony projection unavailable ({type(exc).__name__})")
+        with self._telephony_lock:
+            self._telephony_snapshot = projection
+            self._telephony_refreshing = False
+
+    def _schedule_telephony(self) -> dict:
+        """Coalesce one asynchronous observer without blocking capture's tick."""
+        now = time.monotonic()
+        with self._telephony_lock:
+            refresh = now >= self._telephony_refresh_at and not self._telephony_refreshing
+            if refresh:
+                self._telephony_refreshing = True
+                self._telephony_refresh_at = now + 5.0
+            projection = self._telephony_snapshot
+        if refresh:
+            threading.Thread(target=self._refresh_telephony, daemon=True, name="wax-telephony-observer").start()
+        return projection or telephony_shadow.unavailable("Telephony projection not initialized")
+
     def _tick(self) -> bool:
         try:
             snap = state.snapshot()
@@ -302,6 +330,9 @@ class Daemon:
                 if diar.get("degraded") else None,
                 recovered="cleared")
         self._check_silence(snap)
+        # One coalesced local observer, never a second audio worker. Optional
+        # CLI/SQLite timeouts must not block the one-second capture/tray tick.
+        snap["telephony"] = self._schedule_telephony()
         self.snapshot = snap
         active = (snap.get("inbox") or {}).get("active_item")
         stage = (snap.get("inbox") or {}).get("active_stage")

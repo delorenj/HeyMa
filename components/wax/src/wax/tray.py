@@ -250,9 +250,11 @@ def clear_stage_failure(slug: str | None = None) -> None:
 class Tray:
     def __init__(self, on_toggle=None, on_quit=None, on_open=None,
                  on_skip=None, on_clear_completed=None, on_open_transcript=None,
-                 on_retry_item=None, on_retry_passes=None, on_settings=None):
+                 on_retry_item=None, on_retry_passes=None, on_settings=None,
+                 on_telephony=None, on_silence=None):
         _load_gtk()
         self.on_settings = on_settings
+        self.on_telephony, self.on_silence = on_telephony, on_silence
         self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
         self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
         self.on_open_transcript = on_open_transcript
@@ -296,6 +298,12 @@ class Tray:
         st = Gtk.MenuItem(label="Settings…")
         st.connect("activate", lambda *_: self.on_settings and self.on_settings())
         m.append(st)
+        phone = Gtk.MenuItem(label="Telephony…")
+        phone.connect("activate", lambda *_: self.on_telephony and self.on_telephony())
+        m.append(phone)
+        silence = Gtk.MenuItem(label="Silence local ringtone")
+        silence.connect("activate", lambda *_: self.on_silence and self.on_silence())
+        m.append(silence)
         q = Gtk.MenuItem(label="Quit waxd")
         q.connect("activate", lambda *_: self.on_quit and self.on_quit())
         m.append(q)

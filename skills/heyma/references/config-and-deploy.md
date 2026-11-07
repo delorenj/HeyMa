@@ -70,6 +70,10 @@ Candybar is the only clock. `wax-calls-sync` runs `*/10` (~300 runs, 1 failure o
 
 Never hand-edit a compiled pipeline or the gateway token scope; change the source (the YAML, the n8n export, `provision-inference`) and re-run the script or the import.
 
+## Telephony shadow rollout
+
+The [telephony](telephony.md) component is disabled by default, with desktop ringing opt-in. Its nonsecret config and local shadow receipts do not authorize Telnyx mutation or ASR suppression; `enforce` is refused. Do not activate a webhook, provision Jev keys, change the main-DID assignment, buy resources or alter recording as part of this release. A source commit does not reload the existing daemon/tray; any presentation restart must be coordinated separately. See `docs/telephony-shadow-contract.md` for the implementation/review boundary.
+
 ## Shipping a change
 
 1. Run the suite: `mise run wax:test` (or `cd components/wax && python3 -m pytest tests`). It needs no `PYTHONPATH`. Real-Postgres tests: `mise run wax:test:pg`.

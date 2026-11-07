@@ -63,7 +63,7 @@ def render_desktop_entry(repo: Path) -> str:
         "Type=Application",
         "Name=HeyMa",
         "GenericName=Wax settings",
-        "Comment=Wax pipeline settings, enrichment-pass switches and live logs",
+        "Comment=Wax pipeline settings, Telephony shadow call history and live logs",
         f"Exec={desktop_quote(repo / 'bin' / 'heyma')}",
         f"Icon={APP_ID}",
         "Terminal=false",

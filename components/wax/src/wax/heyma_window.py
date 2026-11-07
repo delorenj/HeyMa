@@ -1,6 +1,6 @@
-"""The HeyMa window: Settings and a live Logs tail, opened from the tray.
+"""The HeyMa window: Settings, Telephony and a live Logs tail, opened from the tray.
 
-    python3 -m wax.heyma_window [--page settings|logs]
+    python3 -m wax.heyma_window [--page settings|telephony|logs]
 
 GTK 4 + libadwaita, in its OWN process. The tray is GTK 3 (libappindicator has
 no GTK 4 build) and the two toolkits cannot share an interpreter, so the tray
@@ -33,13 +33,16 @@ import re
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import component, paths
+from . import telephony_presentation as phone
 
 APP_ID = "sh.delo.HeyMa"
 WAX_CLI = component.ROOT / "bin" / "wax"
+TELEPHONY_REFRESH_MS = 2000
 MAX_LOG_LINES = 5000
 LOG_BACKLOG = 400
 
@@ -54,6 +57,7 @@ LOG_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 PAGES = (
     ("settings", "Settings", "emblem-system-symbolic"),
+    ("telephony", "Telephony", "call-start-symbolic"),
     ("logs", "Logs", "utilities-terminal-symbolic"),
 )
 
@@ -429,6 +433,139 @@ class SettingsPage:
         _background(lambda: wax("pipeline", "enable" if enabled else "disable"), done)
 
 
+def telephony_config(*args: str) -> tuple[bool, Any, str]:
+    """Use the local, self-locating core CLI; never a provider API or PATH lookup."""
+    try:
+        proc = subprocess.run([str(phone.TELEPHONY_CLI), "--json", "config", *args],
+                              capture_output=True, text=True, timeout=5)
+        data = json.loads(proc.stdout) if proc.stdout.strip() else None
+        if proc.returncode:
+            return False, data, (proc.stderr or proc.stdout or "config failed").strip()[:250]
+        return True, data, ""
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return False, None, f"{type(exc).__name__}: {exc}"
+
+
+class TelephonyPage:
+    """Read-only call display, except for explicit opt-in ringtone settings."""
+
+    def __init__(self, toast: Callable[[str], None]):
+        self.toast = toast
+        self._syncing = False
+        self._loading = False
+        self._visible = False
+        self._refresh_source = None
+        self._generation = 0
+        self._rows = []
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16,
+                       margin_top=24, margin_bottom=24, margin_start=24, margin_end=24,
+                       hexpand=True)
+        self.widget = _scroller(body)
+        self.banner = Adw.PreferencesGroup(title="Telephony", description=
+                                           "Disabled by default. Shadow decisions never reject a call.")
+        self.status = Adw.ActionRow(title="Loading Telephony…")
+        self.banner.add(self.status)
+        self.ring = Adw.SwitchRow(title="Play incoming call sound",
+                                  subtitle="Off by default. This plays only in shadow mode; "
+                                           "it never changes the phone's ring or recording.")
+        self.ring.set_sensitive(False)
+        self.ring.connect("notify::active", self._ring_changed)
+        self.banner.add(self.ring)
+        body.append(self.banner)
+        self.calls = Adw.PreferencesGroup(title="Calls", description=
+                                           "Phone events and audio processing are separate timelines.")
+        body.append(self.calls)
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", valign=Gtk.Align.CENTER,
+                             tooltip_text="Refresh calls")
+        refresh.add_css_class("flat")
+        refresh.connect("clicked", lambda *_: self.refresh())
+        self.calls.set_header_suffix(refresh)
+
+    def start(self) -> None:
+        """Refresh while displayed; the single GLib source is removed on navigation."""
+        if self._visible:
+            return
+        self._visible = True
+        self._refresh_source = GLib.timeout_add(TELEPHONY_REFRESH_MS, self._refresh_tick)
+        self.refresh()
+
+    def stop(self) -> None:
+        self._visible = False
+        self._generation += 1  # discard any result returning after navigation/close
+        if self._refresh_source is not None:
+            GLib.source_remove(self._refresh_source)
+            self._refresh_source = None
+
+    def _refresh_tick(self) -> bool:
+        if not self._visible:
+            self._refresh_source = None
+            return False
+        self.refresh()
+        return True
+
+    def refresh(self) -> None:
+        if not self._visible or self._loading:
+            return
+        self._loading = True
+        generation = self._generation
+        _background(lambda: wax("calls", "telephony", timeout=8),
+                    lambda result: self._finish_refresh(result, generation))
+
+    def _finish_refresh(self, result: tuple[bool, Any, str], generation: int) -> None:
+        self._loading = False
+        if not self._visible or generation != self._generation:
+            return
+        self._apply(result)
+
+    def _apply(self, result: tuple[bool, Any, str]) -> None:
+        ok, snapshot, error = result
+        model = phone.presentation(snapshot if ok else None, datetime.now(timezone.utc))
+        self.status.set_title(model["banner"])
+        detail = error or "Local snapshot; no provider request from this page"
+        if model["ring_enabled"]:
+            unavailable = phone.playback_unavailable()
+            if unavailable:
+                detail += f" · Incoming sound unavailable: {unavailable}"
+        self.status.set_subtitle(_markup(detail))
+        self._syncing = True
+        self.ring.set_active(model["ring_enabled"])
+        self.ring.set_sensitive(model["available"])
+        self._syncing = False
+        for row in self._rows:
+            self.calls.remove(row)
+        self._rows = []
+        for entry in model["calls"]:
+            row = Adw.ExpanderRow(title=_markup(entry["title"]),
+                                  subtitle=_markup(f"{entry['direction']} · {entry['from_number']} → "
+                                                   f"{entry['to_number']} · {entry['screening']}"))
+            for title, detail in (("Phone", entry["phone"]),
+                                  ("Screening reason", entry["reason"] or "No reason"),
+                                  ("Processing", entry["processing"])):
+                row.add_row(Adw.ActionRow(title=title, subtitle=_markup(detail)))
+            for warning in entry["warnings"]:
+                row.add_row(Adw.ActionRow(title="Warning", subtitle=_markup(warning)))
+            self.calls.add(row)
+            self._rows.append(row)
+        if not self._rows:
+            row = Adw.ActionRow(title="No calls shown" if model["available"] else "Call history unavailable",
+                                subtitle="No recent calls in the local snapshot" if model["available"] else
+                                         "Cannot tell whether calls are present")
+            self.calls.add(row)
+            self._rows.append(row)
+
+    def _ring_changed(self, row, _pspec) -> None:
+        if self._syncing:
+            return
+        enabled = row.get_active()
+        row.set_sensitive(False)
+        def done(result):
+            ok, _data, error = result
+            self.toast(("Incoming call sound on" if enabled else "Incoming call sound off")
+                       if ok else f"Ringtone: {error}")
+            self.refresh()  # read back durable config; no daemon restart
+        _background(lambda: telephony_config("--ring", "on" if enabled else "off"), done)
+
+
 class LogsPage:
     """`journalctl --follow` into a text view, batched, colour-coded, capped."""
 
@@ -606,10 +743,12 @@ class HeyMaWindow:
         self.toasts = Adw.ToastOverlay()
 
         self.settings = SettingsPage(self.toast)
+        self.telephony = TelephonyPage(self.toast)
         self.logs = LogsPage()
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE,
                                hexpand=True, vexpand=True)
         self.stack.add_named(self.settings.widget, "settings")
+        self.stack.add_named(self.telephony.widget, "telephony")
         self.stack.add_named(self.logs.widget, "logs")
         self.toasts.set_child(self.stack)
 
@@ -686,14 +825,19 @@ class HeyMaWindow:
         key = row.page_key
         self.stack.set_visible_child_name(key)
         self.title.set_title(dict((k, label) for k, label, _ in PAGES)[key])
+        if key != "telephony":
+            self.telephony.stop()
         if key == "logs":
             self.logs.start()  # lazily: no journalctl until someone looks
         elif key == "settings":
             self.settings.refresh()
+        elif key == "telephony":
+            self.telephony.start()
         if self.split.get_collapsed():
             self.split.set_show_sidebar(False)
 
     def _closing(self, *_):
+        self.telephony.stop()
         self.logs.stop()
         return False
 

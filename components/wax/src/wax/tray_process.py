@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import component, paths
@@ -93,7 +94,7 @@ class TrayProcess:
 
 def main():
     import json
-    from . import tray
+    from . import tray, telephony_presentation
     tray._load_gtk()
     if not tray.Gtk.init_check()[0]:
         return 1
@@ -102,11 +103,13 @@ def main():
     def call(*args):
         subprocess.Popen([str(cli), *args])
 
-    def open_settings():
-        # GTK 4 window in its own process: this one is GTK 3 and the two
-        # cannot share an interpreter. Adw.Application keeps it single-instance.
-        subprocess.Popen([sys.executable, "-m", "wax.heyma_window", "--page", "settings"],
+    def open_page(page):
+        # GTK4 window in a separate process from GTK3 libappindicator.
+        subprocess.Popen([sys.executable, "-m", "wax.heyma_window", "--page", page],
                          env={**os.environ, "PYTHONPATH": str(component.ROOT / "src")})
+
+    ringer = telephony_presentation.Ringer(
+        telephony_presentation.RingPlayer(), datetime.now(timezone.utc))
 
     indicator = tray.Tray(
         on_toggle=lambda: call("rec", "toggle"),
@@ -117,7 +120,9 @@ def main():
         on_retry_passes=lambda item, slugs: call("ep", "run-selected", item, *slugs),
         on_clear_completed=lambda: call("queue", "--clear-completed"),
         on_open_transcript=lambda md: subprocess.Popen(["xdg-open", tray.obsidian_uri(md)]),
-        on_settings=open_settings,
+        on_settings=lambda: open_page("settings"),
+        on_telephony=lambda: open_page("telephony"),
+        on_silence=ringer.silence,
     )
 
     def update():
@@ -127,13 +132,17 @@ def main():
             indicator.set(colour, tip, (snap.get("stream") or {}).get("state") == "recording",
                           flash=tray.flash_for(snap))
             indicator.set_queue(snap.get("tray_items") or [])
-        except (OSError, ValueError):
-            pass
+            ringer.tick(snap.get("telephony"), datetime.now(timezone.utc))
+        except (OSError, ValueError, TypeError):
+            ringer.tick(None, datetime.now(timezone.utc))
         return True
 
     tray.GLib.timeout_add(1000, update)
     update()
-    tray.Gtk.main()
+    try:
+        tray.Gtk.main()
+    finally:
+        ringer.player.stop()
     return 0
 
 

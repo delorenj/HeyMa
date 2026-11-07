@@ -1,9 +1,9 @@
 #!/usr/bin/python3
 # NOTE: /usr/bin/python3 explicitly, never `env python3` — mise's Python is
 # first on PATH and has no gi, so the window would never open.
-"""heyma — open the HeyMa window (Settings, Logs). The tray's "Settings…" entry.
+"""heyma — open the HeyMa window (Settings, Telephony, Logs). The tray opens pages here.
 
-    heyma [--page settings|logs]
+    heyma [--page settings|telephony|logs]
 
 Single-instance: a second invocation presents the window already open.
 """
