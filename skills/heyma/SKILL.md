@@ -1,6 +1,6 @@
 ---
 name: heyma
-description: 'HeyMa / Wax audio pipeline on big-chungus (record, archive, transcribe, enrich). Covers waxd, the wax CLI, Ctrl+\ hotkey, tray and HeyMa window, inbox/dropoff, Syncthing and Telnyx S3 intake, Telnyx calls and voicemail, S3 backup-first archive, whisper, Sortformer diarization, enrichment passes and the model chain, Dictionary.yaml, pipelines and document bindings, the Postgres transcriptions store, Bloodbank events, wax failures tickets, n8n-nodes-heyma, Holocene Wax tab, vinyl boundary. Use for diagnosing or changing any of it. Symptoms: recorded but no transcript, pass failed, tray green but nothing happens, stuck inbox item, missing call, wrong word in transcript.'
+description: 'HeyMa / Wax audio pipeline on big-chungus (record, archive, transcribe, enrich). Covers waxd, the wax CLI, Ctrl+\ hotkey, tray and HeyMa window, inbox/dropoff, Syncthing and Telnyx S3 intake, Telnyx calls and voicemail, S3 backup-first archive, whisper, Sortformer diarization, enrichment passes and the model chain, Dictionary.yaml, pipelines and document bindings, the Postgres transcriptions store, Bloodbank events, wax failures tickets, n8n-nodes-heyma, Holocene Wax tab, vinyl boundary. Use for diagnosing or changing any of it. Symptoms: recorded but no transcript, pass failed, tray green but nothing happens, stuck inbox item, missing call, wrong word in transcript. Retrieval: get the latest transcript, get my transcript, last transcript for this project, today''s transcripts, yesterday''s transcripts, this week''s transcripts.'
 ---
 
 # HeyMa (Wax)
@@ -32,6 +32,8 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 | What did the daemon log? | `journalctl --user -u waxd.service -n 200` |
 | What does the ledger say? | `sqlite3 "file:$HOME/HeyMa/var/wax.db?mode=ro"` |
 | Is the transcript store behind? | `wax transcripts sync --check` |
+| What is the latest transcript (overall or for a project)? | `wax tx [PROJECT...]` |
+| Which transcripts arrived today or yesterday? | `wax tx --today`, `wax tx --yesterday` |
 | Did the call land? | `wax calls list`, `wax calls show <ref>` |
 
 ## Routes — read exactly one, then come back
@@ -51,6 +53,7 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 | Fixing a mis-heard word, `wax dict` | [passes/dictionary](references/passes/dictionary.md) |
 | Compiling, importing, replanning pipelines | [pipelines](references/pipelines.md) |
 | Document bindings, hygiene, PDF intake | [documents](references/documents.md) |
+| Retrieving the latest transcript, a project's transcript, or today's/yesterday's/this week's transcripts | [transcript-retrieval](references/transcript-retrieval.md) |
 | Postgres `tx` store, search, backfill, lag | [transcriptions-store](references/transcriptions-store.md) |
 | Phone calls, voicemail, call-metadata, call log | [calls](references/calls.md) |
 | Bloodbank events, outbox, `task.exhausted` | [events](references/events.md) |

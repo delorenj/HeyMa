@@ -35,6 +35,7 @@ from wax import (archive, catalog, capture, component, config, documents, events
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
 from wax import dictedit  # noqa: E402
+from wax.transcriptions import tx  # noqa: E402
 
 
 def _emit(obj, as_json: bool) -> None:
@@ -2365,6 +2366,18 @@ def main() -> int:
                              "(ignores the nightly hour/date gate and does not set it)")
     dsu.add_argument("--dry-run", action="store_true", help="report only; change nothing")
 
+    txp = sub.add_parser("tx", help="latest transcript or project/date listing (read-only)", parents=[common])
+    txp.add_argument("words", nargs="*", metavar="PROJECT", help="project name or ID (default: latest overall)")
+    txp.add_argument("--project", help="project name or ID instead of positional words")
+    tx_window = txp.add_mutually_exclusive_group()
+    tx_window.add_argument("--today", action="store_true", help="list today's transcripts through now")
+    tx_window.add_argument("--yesterday", action="store_true", help="list yesterday's transcripts")
+    tx_window.add_argument("--week", action="store_true", help="list this week's transcripts from Monday")
+    txp.add_argument("--list", action="store_true", help="list transcript metadata instead of latest content")
+    txp.add_argument("-n", "--limit", type=int, help="list at most N rows (implies --list; default 1000)")
+    txp.add_argument("--raw", action="store_true", help="print exact note bytes for latest transcript")
+    txp.add_argument("--include-hermes", action="store_true", help="include Hermes STT voice commands")
+
     trx = sub.add_parser("transcripts", help="versioned transcript store (Postgres `transcriptions`)",
                          parents=[common]).add_subparsers(dest="sub", required=True)
     tsy = trx.add_parser("sync", parents=[common],
@@ -2933,6 +2946,48 @@ def main() -> int:
 
     if args.cmd == "failures":
         return failures_command(args, J)
+
+    if args.cmd == "tx":
+        try:
+            if args.words and args.project is not None:
+                raise tx.TxError("give a positional project or --project, not both")
+            project = args.project if args.project is not None else (" ".join(args.words) if args.words else None)
+            if project is not None and not project.strip():
+                raise tx.TxError("project must not be empty")
+            window = next((name for name in ("today", "yesterday", "week") if getattr(args, name)), None)
+            out = tx.run(project=project, window=window, listing=args.list or args.limit is not None,
+                         limit=args.limit if args.limit is not None else tx.browse.DEFAULT_LIMIT,
+                         raw=args.raw, include_hermes=args.include_hermes)
+        except (tx.TxError, LookupError, ValueError) as exc:
+            detail = str(exc)
+            if J:
+                _emit({"schema": tx.SCHEMA, "error": {"message": detail}}, True)
+            else:
+                print(f"error: {detail}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # database connectivity errors; never expose DSNs
+            if not transcriptions.db.is_outage(exc) and not _is_pg_error(exc):
+                raise
+            if J:
+                _emit({"schema": tx.SCHEMA, "error": {"message": "transcript store unavailable"}}, True)
+            else:
+                print("error: transcript store unavailable", file=sys.stderr)
+            return 2
+        if J:
+            _emit(out, True)
+        elif out["mode"] == "list":
+            if not out["rows"]:
+                print("No transcripts found for this selection.")
+            for row in out["rows"]:
+                print(f"#{row['transcript_id']}  {_tx_day(row['effective_at'])}  {row['title'] or '?'}"
+                      + (f"  ({', '.join(row['projects'])})" if row['projects'] else ""))
+            if out["truncated"]:
+                print("(truncated: raise --limit)")
+        elif args.raw:
+            sys.stdout.write(out["transcript"]["raw"])
+        else:
+            render_transcripts_show(out["transcript"])
+        return 0
 
     if args.cmd == "transcripts":
         return transcripts_command(args, J)

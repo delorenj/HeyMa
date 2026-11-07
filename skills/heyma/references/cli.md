@@ -85,6 +85,14 @@ Detail: [pipelines](pipelines.md).
 
 Detail: [documents](documents.md).
 
+## Transcript retrieval (`wax tx`)
+
+| Command | What it does |
+|---|---|
+| `wax tx [PROJECT...] [--project P] [--today\|--yesterday\|--week\|--list] [-n N] [--raw] [--include-hermes]` | Latest transcript content overall or for a project; date selectors and `--list` return metadata lists. `-n`/`--limit` implies a list. Project names, canonical IDs and aliases resolve against project-extraction metadata and registry hints; an unknown or ambiguous name never falls back to overall. `--raw` is latest-only. See [transcript-retrieval](transcript-retrieval.md) |
+
+`--json` works before or after `tx`; latest JSON includes content, and list JSON contains `rows` and `truncated`. Latest with no match exits 2; an empty list exits 0. Lists include stable `#id` references usable with `wax transcripts show '#ID'`.
+
 ## Transcript store
 
 | Command | What it does |
