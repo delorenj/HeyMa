@@ -33,7 +33,7 @@
 
 terms:
   # -- HeyMa, Wax and the 33GOD platform ------------------------------------
-  HeyMa: {heard: [hey ma, hema, haema, hayma, haima, hey-ma], about: "the voice recording and transcription pipeline (the ~/HeyMa repo)"}
+  HeyMa: {heard: [hey ma, hema, haema, hayma, haima, hey-ma, Hay Mar], about: "the voice recording and transcription pipeline (the ~/HeyMa repo)"}
   Wax: "the HeyMa audio pipeline daemon and CLI"
   33GOD: {heard: [33 god, 33-god, thirty three god], about: "the agent platform monorepo"}
   Bloodbank: {heard: [blood bank, blood bang], about: "the 33GOD event bus"}
