@@ -1,0 +1,10 @@
+[candybar]
+name = "nightly-transcription-maintanence"
+description = "Cleans up the ~/d/Transcripts directory by deleting inconsequential transcripts (probes, obvious flawed connections, voicemails, files named things like \"repeated-hello-checks-audio\", etc"
+tags = ["nightly", "HeyMa", "transcriptions", "maintenance"]
+schedule = "12 * * * *"
+timezone = "America/New_York"
+
+[candybar.runner]
+kind = "exec"
+argv = ["/home/delorenj/.local/bin/wax", "transcripts", "prune", "--apply"]
