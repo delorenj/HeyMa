@@ -32,8 +32,9 @@ completed; `wax doctor` was green. Shape 3: a quality failure no probe measures.
 3. Turns came from `argmax`, so 878 s of silence went to a speaker (Speaker 1
    owned 2506 s against 1119 s once thresholded).
 
-**Fix.** Sortformer runs through NeMo's own `forward` with the model card's
-batch setting (14 s instead of 123 s for 83 min); frames below 0.5 are silence;
+**Fix.** Sortformer runs through NeMo's own `forward_streaming` with the model
+card's batch setting and CPU featurization (16 s instead of 123 s for 83 min,
+0.97 GB peak VRAM); frames below 0.5 are silence;
 the pass force-aligns words (torchaudio MMS_FA, 739 of 744 segments aligned)
 and splits segments at speaker changes. Whisper `word_timestamps` was tried
 first and rejected: it OOMs on the shared GPU where plain decoding fits. The

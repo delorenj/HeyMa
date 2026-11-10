@@ -5,7 +5,7 @@ activity for a whole recording. Keeping that contract here makes the runtime
 reproducible from tracked Wax source and keeps an import check from allocating a
 hidden model on the GPU.
 
-Inference is NeMo's own ``forward`` (``forward_streaming`` in streaming mode),
+Inference is NeMo's own ``forward_streaming`` (what ``forward`` runs in streaming mode),
 which handles chunk offsets, left/right context and the speaker cache. Wax used
 to hand-roll a one-second loop inherited from WhisperLiveKit; it re-fed most of
 the previous second as context but told the model only one frame of it was
@@ -59,11 +59,23 @@ def frame_seconds(model) -> float:
 
 
 def frame_probabilities(model, signal):
-    """Speaker activity for a 16 kHz mono signal: ([[p_spk0..p_spk3] per frame], frame_s)."""
+    """Speaker activity for a 16 kHz mono signal: ([[p_spk0..p_spk3] per frame], frame_s).
+
+    This is ``model.forward`` in streaming mode with the featurization moved to
+    the CPU: NeMo STFTs the whole waveform on the model's device (its OOM-safe
+    path only splits batches, and Wax sends one file), which costs about 1 GB of
+    VRAM per hour of audio on a shared GPU. The mel features the GPU keeps are
+    about 0.2 GB per hour.
+    """
     with torch.inference_mode():
-        audio = torch.as_tensor(signal, dtype=torch.float32, device=model.device).unsqueeze(0)
-        length = torch.tensor([audio.shape[1]], device=model.device)
-        preds = model.forward(audio_signal=audio, audio_signal_length=length)
+        audio = torch.as_tensor(signal, dtype=torch.float32).unsqueeze(0)
+        length = torch.tensor([audio.shape[1]])
+        # A fresh preprocessor from the model's config: deepcopy keeps STFT closures
+        # bound to the GPU window. It has no learned weights, only a mel bank.
+        featurizer = model.from_config_dict(model.cfg.preprocessor).to("cpu").eval()
+        features, feature_length = featurizer(input_signal=audio, length=length)
+        features = features[:, :, : int(feature_length.max())].to(model.device)
+        preds = model.forward_streaming(features, feature_length.to(model.device))
     return preds[0].float().cpu().tolist(), frame_seconds(model)
 
 

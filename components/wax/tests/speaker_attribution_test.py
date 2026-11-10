@@ -50,6 +50,13 @@ class SegmentWordsTest(unittest.TestCase):
         self.assertTrue(timed)
         self.assertEqual([(w["start"], w["text"]) for w in words], [(0.1, "hi"), (0.5, "there")])
 
+    def test_an_untimed_word_among_timed_ones_is_placed_not_dropped(self):
+        words, timed = sa.segment_words({"start": 0, "end": 3, "text": "hello 123 world",
+                                         "words": [[0, 0.5, "hello"], [None, None, "123"], [1.0, 1.5, "world"]]})
+        self.assertTrue(timed)
+        self.assertEqual([(w["text"], w["start"], w["end"]) for w in words],
+                         [("hello", 0.0, 0.5), ("123", 0.5, 1.0), ("world", 1.0, 1.5)])
+
     def test_old_asr_without_words_is_interpolated_by_length(self):
         words, timed = sa.segment_words({"start": 10.0, "end": 14.0, "text": "a bbbbbb"})
         self.assertFalse(timed)
@@ -96,6 +103,17 @@ class AttributeSegmentsTest(unittest.TestCase):
                "words": [[0.2, 0.8, "a"], [1.2, 1.5, "b"], [10.2, 10.8, "c"]]}
         pieces = sa.attribute_segments([seg], turns)
         self.assertEqual([(p["speaker"], p["text"]) for p in pieces], [(0, "a b"), (1, "c")])
+
+    def test_the_nearest_turn_can_be_a_long_one_that_started_long_before(self):
+        # Review finding: three short turns between a long turn's start and the word
+        # hid the long turn (gap 10 s) behind a short one 39 s away.
+        turns = [{"start_time": 0.0, "end_time": 100.0, "speaker": 0},
+                 {"start_time": 50.0, "end_time": 51.0, "speaker": 1},
+                 {"start_time": 60.0, "end_time": 61.0, "speaker": 2},
+                 {"start_time": 70.0, "end_time": 71.0, "speaker": 3}]
+        self.assertEqual(sa._TurnIndex(turns).speaker_at(108.0, 112.0), 0)
+        self.assertEqual(sa._TurnIndex(turns + [{"start_time": 113.0, "end_time": 114.0, "speaker": 3}])
+                         .speaker_at(108.0, 112.0), 3)
 
     def test_no_turns_leaves_text_unattributed(self):
         pieces = sa.attribute_segments([{"start": 0.0, "end": 1.0, "text": "hi"}], [])

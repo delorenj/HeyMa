@@ -53,27 +53,53 @@ def turns_from_frames(frames: Iterable[Sequence[float]], frame_s: float,
     return turns
 
 
+def interpolate_missing(words: list[dict], start: float, end: float) -> None:
+    """Give words with no times (numbers, symbols) times between their timed neighbours."""
+    i = 0
+    while i < len(words):
+        if words[i]["start"] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(words) and words[j]["start"] is None:
+            j += 1
+        left = words[i - 1]["end"] if i > 0 else start
+        right = words[j]["start"] if j < len(words) else end
+        right = max(right, left)
+        step = (right - left) / (j - i)
+        for k in range(i, j):
+            words[k]["start"] = left + (k - i) * step
+            words[k]["end"] = left + (k - i + 1) * step
+        i = j
+
+
 def segment_words(segment: dict) -> tuple[list[dict], bool]:
     """Words of one ASR segment with times, and whether those times are real.
 
     Real word timestamps (``segment["words"]`` as ``[start, end, word]`` or
-    ``{start, end, word}``) are used when present. Older ASR artifacts have none,
-    so each word gets a slice of the segment proportional to its length.
+    ``{start, end, word}``) are used when present; a word among them with no
+    time is placed between its neighbours, never dropped. Older ASR artifacts
+    have no words, so each word gets a slice of the segment proportional to its
+    length.
     """
     raw = segment.get("words") or []
+    start, end = float(segment["start"]), float(segment["end"])
     words = []
     for item in raw:
         if isinstance(item, dict):
-            start, end, text = item.get("start"), item.get("end"), item.get("word")
+            w_start, w_end, text = item.get("start"), item.get("end"), item.get("word")
         else:
-            start, end, text = item[0], item[1], item[2]
+            w_start, w_end, text = item[0], item[1], item[2]
         text = (text or "").strip()
-        if text and start is not None and end is not None:
-            words.append({"start": float(start), "end": float(end), "text": text})
-    if words:
+        if not text:
+            continue
+        timed = w_start is not None and w_end is not None
+        words.append({"start": float(w_start) if timed else None,
+                      "end": float(w_end) if timed else None, "text": text})
+    if any(w["start"] is not None for w in words):
+        interpolate_missing(words, start, end)
         return words, True
     tokens = (segment.get("text") or "").split()
-    start, end = float(segment["start"]), float(segment["end"])
     weights = [len(t) + 1 for t in tokens]  # +1 for the space: short words still take time
     total = sum(weights) or 1
     out, cursor = [], start
@@ -91,6 +117,12 @@ class _TurnIndex:
         self.turns = sorted(turns, key=lambda t: (t["start_time"], t["end_time"]))
         self.starts = [t["start_time"] for t in self.turns]
         self.max_len = max((t["end_time"] - t["start_time"] for t in self.turns), default=0.0)
+        # latest[i]: the turn ending last among turns[0..i], i.e. the nearest one
+        # before any time at or after turns[i]'s start that none of them reach.
+        self.latest: list[dict] = []
+        for turn in self.turns:
+            prev = self.latest[-1] if self.latest else None
+            self.latest.append(turn if prev is None or turn["end_time"] >= prev["end_time"] else prev)
 
     def speaker_at(self, start: float, end: float) -> Optional[int]:
         """Speaker with the most overlap of [start, end]; else the nearest turn's speaker."""
@@ -107,17 +139,13 @@ class _TurnIndex:
             return max(overlap, key=lambda spk: (overlap[spk], -spk))
         mid = (start + end) / 2
         pos = bisect.bisect_right(self.starts, mid)
-        best, best_gap = None, None
-        for turn in self.turns[max(0, pos - 2):pos + 1] + self._ending_near(mid, pos):
-            gap = max(turn["start_time"] - mid, mid - turn["end_time"], 0.0)
-            if best_gap is None or gap < best_gap:
-                best, best_gap = turn["speaker"], gap
-        return best
-
-    def _ending_near(self, mid: float, pos: int) -> list[dict]:
-        # A long turn that started well before `mid` can still end closest to it.
-        lo = bisect.bisect_left(self.starts, mid - self.max_len)
-        return [t for t in self.turns[lo:pos] if t["end_time"] <= mid]
+        candidates = []
+        if pos > 0:
+            candidates.append(self.latest[pos - 1])  # nearest turn that started before mid
+        if pos < len(self.turns):
+            candidates.append(self.turns[pos])       # first turn starting after mid
+        best = min(candidates, key=lambda t: max(t["start_time"] - mid, mid - t["end_time"], 0.0))
+        return best["speaker"]
 
 
 def _smooth(labels: list[Optional[int]], max_run: Sequence[int]) -> list[Optional[int]]:

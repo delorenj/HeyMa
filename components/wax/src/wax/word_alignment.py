@@ -17,6 +17,8 @@ from __future__ import annotations
 import unicodedata
 from typing import Callable, Optional, Sequence
 
+from .speaker_attribution import interpolate_missing
+
 SAMPLE_RATE = 16000
 PAD_S = 0.5            # Whisper segment bounds are approximate; give the aligner room.
 MAX_SEGMENT_S = 30.0
@@ -27,26 +29,6 @@ def normalize(word: str, alphabet: set[str]) -> str:
     """Romanize-lite: strip accents, lowercase, keep only characters the aligner knows."""
     plain = unicodedata.normalize("NFKD", word.lower())
     return "".join(ch for ch in plain if ch in alphabet)
-
-
-def _interpolate_missing(words: list[dict], start: float, end: float) -> None:
-    """Give unaligned words (numbers, symbols) times between their aligned neighbours."""
-    i = 0
-    while i < len(words):
-        if words[i]["start"] is not None:
-            i += 1
-            continue
-        j = i
-        while j < len(words) and words[j]["start"] is None:
-            j += 1
-        left = words[i - 1]["end"] if i > 0 else start
-        right = words[j]["start"] if j < len(words) else end
-        right = max(right, left)
-        step = (right - left) / (j - i)
-        for k in range(i, j):
-            words[k]["start"] = left + (k - i) * step
-            words[k]["end"] = left + (k - i + 1) * step
-        i = j
 
 
 class Aligner:
@@ -101,7 +83,7 @@ class Aligner:
             cursor += len(norm)
             words.append({"start": offset + group[0].start * frame_s,
                           "end": offset + group[-1].end * frame_s, "text": token})
-        _interpolate_missing(words, start, end)
+        interpolate_missing(words, start, end)
         return [[round(w["start"], 2), round(w["end"], 2), w["text"]] for w in words]
 
 
