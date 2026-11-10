@@ -742,6 +742,43 @@ def test_open_history_is_not_a_link_and_bookmarks_are_exact_paths(env):
     assert got["Kept/tmp.md"] == "linked"
 
 
+DAILY = STAMP + """## Morning Checklist
+- [ ] Check [calendar](https://calendar.google.com)
+- [ ] Create today's prioritized task list
+
+## Top 3 Priorities
+1. <% tp.file.cursor(3) %>
+2. <% tp.file.cursor(4) %>
+
+## Notes
+<% tp.file.cursor(6) %>
+
+## Habits
+- [ ] Drink 8 glasses of water
+- [ ]
+"""
+
+
+def test_unfilled_template_stubs_are_trashed_and_filled_ones_kept(env):
+    for day in ("01", "02", "03"):
+        env.put(f"Dailies/2025-01-{day}.md", DAILY)
+    env.put("Dailies/2025-01-04.md", DAILY.replace("## Notes\n", "## Notes\n\n\n"))       # blank lines only
+    env.put("Dailies/2025-01-05.md", DAILY.replace("<% tp.file.cursor(6) %>", "<% tp.file.cursor(6) %>\nIan ma"))
+    env.put("Dailies/2025-01-06.md", DAILY.replace("- [ ] Check [cal", "- [x] Check [cal"))  # ticked
+    env.put("Dailies/2025-01-07.md", DAILY.replace("- [/] ", "").replace("- [ ] Create", "- [/] Create"))
+    env.put("Dailies/2025-01-08.md", DAILY.replace("- [ ] Drink", "- [ ] Call mom\n- [ ] Drink"))  # typed task
+    env.put("Dailies/2025-01-09.md", DAILY.replace("pipeline-status: new", "tags: [work]"))   # author's key
+    env.put("Dailies/2025-01-10.md", DAILY.replace("<%", "[").replace("%>", "]"))            # no template tag
+    got = outcomes(vault_sweep.sweep(only=["prune-empty"]), "prune-empty")
+    trashed = {f"Dailies/2025-01-{d}.md" for d in ("01", "02", "03", "04")}
+    assert {p for p, o in got.items() if o == "would_trash"} == trashed
+    out = vault_sweep.sweep(apply=True, only=["prune-empty"])
+    assert {p for p, o in outcomes(out, "prune-empty").items() if o == "trashed"} == trashed
+    assert (env.vault / ".trash/Dailies/2025-01-01.md").read_text() == DAILY
+    for d in ("05", "06", "07", "08", "09", "10"):
+        assert (env.vault / f"Dailies/2025-01-{d}.md").exists()
+
+
 def test_names_that_differ_only_by_case_collide(env, fake_pipeline):
     env.put("Work/Budget.md", "budget v1")
     env.put("Work/budget.sync-conflict-20260101-120000-ABCDEFG.md", "budget v2")

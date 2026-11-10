@@ -15,7 +15,7 @@ Rule table (the hub's ``references/vault-sweep.md`` carries the same table):
 
 | action | what it matches | what --apply does |
 |---|---|---|
-| ``prune-empty`` | a zero-byte file of any type (bar ``__init__.py``/``py.typed``); a ``*.md`` with a blank body whose frontmatter holds only blank values or ``created``/``modified``/``updated``-style stamps (NOT ``aliases``, ``tags``, ``date``, ``id``: those are the author's) | trash (link-guarded) |
+| ``prune-empty`` | a zero-byte file of any type (bar ``__init__.py``/``py.typed``); a ``*.md`` with a blank body whose frontmatter holds only blank values or ``created``/``modified``/``updated``-style stamps (NOT ``aliases``, ``tags``, ``date``, ``id``: those are the author's); an UNFILLED Templater stub (operator order 2026-11-10): at least one unexpanded ``<% ... %>`` tag, only stamps in the frontmatter, and nothing in the body but headings, tags, empty list items and unchecked tasks that at least 3 stubs in the same folder share (a ticked or ``[/]`` box, a typed word or a task only you wrote keeps it) | trash (link-guarded) |
 | ``prune-temp`` | DROPPINGS by suffix: ``.tmp .temp .swp .swo .part .partial .crdownload`` or a trailing ``~`` -> trash whatever they hold. BACKUPS ``.bak .bak-* .orig`` -> trash only while the original sits beside them, else report. NAMES whose whole stem is ``tmp``/``temp``/``tmep`` (+ up to 3 digits), ``scratch``/``scratchpad`` (+ digits), ``<x>-scratch``/``<x>_scratch``, or ``tmp`` + 8 lowercase chars with a digit -> trash whatever it holds (operator order 2026-11-10: "I don't want any of them"); only the whole stem counts, so "Learning Scratch" or "Build a Database from Scratch" never match. Age floor ``max(min-age, WAX_VAULT_SWEEP_TEMP_MIN_AGE_S)`` | trash (link-guarded) |
 | ``untitled`` | stem ``Untitled``, ``Untitled 2``, ``untitled-3``, ``UNTITLED CHAT 2024-12-01 15 18 32 1`` ... | ``*.md`` blank or stamp-only: trash. ``*.md`` with content: save a pre-image under ``.trash/.vault-sweep/<run>/``, run ``untitled-standard`` (summarize, title-slug), then rename to the slug (at most ``WAX_UNTITLED_SWEEP_MAX`` per run; a case-only clash with a sibling is held). A default ``.base``/empty ``.canvas``: trash. Anything else: report |
 | ``consolidate`` | ``X copy``, ``X copy 2``, ``X (1)``, Syncthing ``.sync-conflict-``/``conflicted copy`` beside ``X``; a bare ``X 1``..``X 9`` only while ``X`` itself exists | a copy identical to the survivor (``X``, else the oldest copy; bytes, or text after CRLF/trailing-space normalisation): trash. ``X`` missing and ONE Syncthing conflict file left: rename it to exactly ``X`` (never a case-only clash). A lone ``X copy``/``X (1)`` is a name, not a conflict: report. Differing copies, bare-N orphans, same-folder identical notes: report |
@@ -305,6 +305,49 @@ def strictly_empty(text: str) -> bool:
 def stamp_only(text: str) -> bool:
     """Blank body whose frontmatter holds only auto-stamped keys (``created``, ``pipeline-status`` ...)."""
     return blank_note(text, STAMP_KEYS)
+
+
+# An unfilled Templater daily stub (operator order 2026-11-10, "trash the daily
+# stubs"): the template's tags were never expanded and nobody wrote in it.
+TEMPLATER_TAG_RE = re.compile(r"<%.*?%>")
+LIST_MARK_RE = re.compile(r"^(?:[-*+]|\d+[.)])(?:\s+\[ \])?(?:\s+|$)")
+UNCHECKED_TASK_RE = re.compile(r"^[-*+]\s+\[ \]\s+\S")
+TEMPLATE_STUB_MAX_BYTES = 16 << 10
+# An unchecked task with text is template boilerplate only while this many stubs
+# in the same folder carry the identical line; a task you typed is yours.
+TEMPLATE_BOILERPLATE_MIN = 3
+
+
+def template_stub_tasks(text: str) -> Optional[list[str]]:
+    """The unchecked task lines of an UNFILLED Templater stub, or None when the note is anything else.
+
+    A stub still holds at least one unexpanded ``<% ... %>`` tag, its frontmatter only stamps, and every
+    body line is a heading, a tag (optionally after a list marker), an empty list item or an unchecked
+    task. A ticked or in-progress box, a completion stamp or one typed word makes it a real note."""
+    if hygiene.classify_text(text) not in ("empty", "content"):
+        return None
+    plain = text.lstrip("﻿")
+    body = plain
+    if plain.startswith("---"):
+        fm, body = frontmatter.split(plain)
+        if not isinstance(fm, dict) or not all(
+                key in STAMP_KEYS or (key == "source" and value == "vault-migration") or hygiene._blank(value)
+                for key, value in fm.items()):
+            return None
+    if not TEMPLATER_TAG_RE.search(body):
+        return None
+    tasks: list[str] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if UNCHECKED_TASK_RE.match(line) and not TEMPLATER_TAG_RE.search(line):
+            tasks.append(line)
+            continue
+        rest = LIST_MARK_RE.sub("", TEMPLATER_TAG_RE.sub("", line).strip(), count=1).strip()
+        if rest:
+            return None
+    return tasks
 
 
 def default_base(text: str) -> bool:
@@ -832,14 +875,33 @@ class Sweep:
         return [e for e in self.files if e.path not in self.claimed]
 
     def act_prune_empty(self) -> None:
+        self.stubs = self._template_stubs()
         for e in self.unclaimed():
             self.guard("prune-empty", e.path, self._prune_empty, e)
+
+    def _template_stubs(self) -> set[Path]:
+        """Unfilled Templater stubs whose every unchecked task is boilerplate its folder shares."""
+        found: dict[Path, list[str]] = {}
+        for e in self.unclaimed():
+            if e.path.suffix == ".md" and 0 < e.st.st_size <= TEMPLATE_STUB_MAX_BYTES:
+                text = _text(e.path)
+                tasks = template_stub_tasks(text) if text is not None else None
+                if tasks is not None:
+                    found[e.path] = tasks
+        shared: dict[tuple[Path, str], int] = {}
+        for path, tasks in found.items():
+            for task in set(tasks):
+                shared[(path.parent, task)] = shared.get((path.parent, task), 0) + 1
+        return {path for path, tasks in found.items()
+                if all(shared[(path.parent, t)] >= TEMPLATE_BOILERPLATE_MIN for t in tasks)}
 
     def _prune_empty(self, e: Entry) -> None:
         if e.st.st_size == 0:
             if e.path.name in KEEP_EMPTY_NAMES:
                 return  # a package marker is empty on purpose
             reason = "zero bytes"
+        elif e.path in self.stubs:
+            reason = "unfilled template"
         elif e.path.suffix == ".md" and e.st.st_size <= hygiene.MAX_EMPTY_BYTES:
             text = _text(e.path)
             if text is None or not strictly_empty(text):
