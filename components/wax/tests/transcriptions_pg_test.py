@@ -582,6 +582,10 @@ class TranscriptionsStoreTest(unittest.TestCase):
         self.assertTrue(any(r["outcome"] == "not_applied" for r in hist["pass_runs"]))
         with contextlib.closing(self.app()) as c:
             self.assertEqual(search.resolve(c, "spouses-disagreeing-over-phone"), cls.tid)
+            # `wax tx` and Holocene print the bare id; the shell eats an unquoted '#'.
+            self.assertEqual(search.resolve(c, str(cls.tid)), cls.tid)
+            self.assertEqual(search.resolve(c, f"#{cls.tid}"), cls.tid)
+            self.assertIsNone(search.resolve(c, "#999999999"))
 
     # -------------------------------------------------------------- 11
 

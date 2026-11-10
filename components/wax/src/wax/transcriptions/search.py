@@ -124,13 +124,17 @@ def run(query: str, *, limit: int = 10, since: Any = None, until: Any = None,
 # ---------------------------------------------------------------- show/history --
 
 def resolve(conn: Any, ref: str) -> Optional[int]:
-    """transcript_id for a wax item id, '#<transcript_id>', or a note filename/path (exact, then fuzzy)."""
+    """transcript_id for a wax item id, '#<transcript_id>' or a bare '<transcript_id>', or a note
+    filename/path (exact, then fuzzy). A bare number is what `wax tx` and Holocene display
+    (`#1878`, transcript 1878), and the shell eats an unquoted `#`, so both forms resolve."""
     ref = str(ref or "").strip()
     if not ref:
         return None
-    if ref.startswith("#") and ref[1:].isdigit():
-        row = conn.execute("SELECT transcript_id FROM tx.transcript WHERE transcript_id = %s", (int(ref[1:]),)).fetchone()
-        return row[0] if row else None
+    number = ref[1:] if ref.startswith("#") else ref
+    if number.isdigit() and len(number) < 16:  # 16 digits could also be a wax item id
+        row = conn.execute("SELECT transcript_id FROM tx.transcript WHERE transcript_id = %s", (int(number),)).fetchone()
+        if row or ref.startswith("#"):
+            return row[0] if row else None
     if re.fullmatch(r"[0-9a-f]{16}", ref):
         row = conn.execute("SELECT transcript_id FROM tx.transcript WHERE wax_item_id = %s", (ref,)).fetchone()
         if row:
