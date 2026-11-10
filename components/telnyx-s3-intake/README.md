@@ -117,24 +117,24 @@ install -d -m 700 ~/.config/heyma ~/.config/systemd/user
 cp -n components/telnyx-s3-intake/config.example.json ~/.config/heyma/telnyx-s3-intake.json
 chmod 600 ~/.config/heyma/telnyx-s3-intake.json
 bin/telnyx-s3-intake dry-run
-systemd-analyze --user verify components/telnyx-s3-intake/deploy/telnyx-s3-intake.service components/telnyx-s3-intake/deploy/telnyx-s3-intake.timer components/telnyx-s3-intake/deploy/telnyx-s3-intake-alert.service
-install -m 644 components/telnyx-s3-intake/deploy/telnyx-s3-intake*.service components/telnyx-s3-intake/deploy/telnyx-s3-intake.timer ~/.config/systemd/user/
+systemd-analyze --user verify components/telnyx-s3-intake/deploy/telnyx-s3-intake.service components/telnyx-s3-intake/deploy/telnyx-s3-intake-alert.service
+install -m 644 components/telnyx-s3-intake/deploy/telnyx-s3-intake*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-# The poll cadence is owned by candybar (story 7.11), not this timer. Do not
-# enable telnyx-s3-intake.timer on reinstall: it would double-poll the S3 inbox.
+# The poll cadence is owned by Candybar (story 7.11). There is no timer: it was
+# deleted on 2026-11-10. Never add one back; it would double-poll the S3 inbox.
 # Cutover and rollback: ~/code/33GOD/candybar/deploy/migration/ledger.yaml
 ```
 
 Dry-run performs only credential resolution, LIST, and HEAD; it creates no
 runtime directories, receipts, or inbox files. It does not prove GET or Wax
-processing. **Scheduling is owned by Candybar, not the systemd timer.** The
+processing. **Scheduling is owned by Candybar; there is no systemd timer.** The
 Candybar job `telnyx-s3-intake` (`* * * * *` America/New_York, id
 `01a17952-2ab7-78f1-a008-f994a0aaf1c7`) starts the oneshot service every
-minute; `telnyx-s3-intake.timer` is deliberately **disabled** (verified
-2026-11-05: loaded, disabled, inactive) and exists only as the documented
-rollback path in `~/code/33GOD/candybar/deploy/migration/ledger.yaml` (wave
-7.11, cutover 2026-10-26 — RandomizedDelaySec and OnBootSec were dropped and
-Persistent was replaced by the Candybar misfire policy). Each oneshot has a
+minute. The old `telnyx-s3-intake.timer` was disabled at the cutover (wave
+7.11, 2026-10-26: RandomizedDelaySec and OnBootSec dropped, Persistent replaced
+by the Candybar misfire policy) and its unit file was deleted from the repo and
+`~/.config/systemd/user/` on 2026-11-10, so the ledger's timer rollback in
+`~/code/33GOD/candybar/deploy/migration/ledger.yaml` no longer applies. Each oneshot has a
 240-second internal budget and a 270-second systemd timeout. Overlap fails
 immediately with exit 75. Failure triggers a best-effort desktop alert; the
 journal and CLI status remain the operational evidence on a headless session.
@@ -150,7 +150,7 @@ candybar show telnyx-s3-intake -n 5   # the schedule: last/next runs
 # Publishes real eligible audio; run only after installation review.
 systemctl --user start telnyx-s3-intake.service
 
-# Pause the polling clock (Candybar owns it; the timer stays disabled).
+# Pause the polling clock (Candybar owns it).
 candybar pause telnyx-s3-intake       # resume: candybar resume telnyx-s3-intake
 systemctl --user stop telnyx-s3-intake.service
 ```
@@ -178,8 +178,7 @@ Keep `receipts.db` and prepared stages across upgrades and service restarts.
 Do not delete receipts as a retry mechanism: failed receipts already retry, and
 forgetting delivered receipts permits source downloads again. Back up the DB
 with SQLite's backup facility while intake is stopped, together with staging.
-If state is lost, restore it before resuming the Candybar job (or, in a full
-rollback, before re-enabling the timer); a fresh DB cannot know which remote
+If state is lost, restore it before resuming the Candybar job; a fresh DB cannot know which remote
 recordings were delivered. Never modify Wax's DB to repair intake.
 Intake does not remove remote audio during any recovery.
 
@@ -205,7 +204,7 @@ An isolated real transport run fetched 3 files with verified SHA256 hashes.
 After its inbox was drained, a fresh intake instance using the same receipt DB
 delivered 0. The live service reported success with 3 delivered receipts, each
 with `attempts=1`; the 60-second timer was enabled at the time. (Scheduling
-moved to Candybar on 2026-10-26; the timer is now disabled — see above.)
+moved to Candybar on 2026-10-26; the timer was deleted on 2026-11-10.)
 
 Live Wax items `828c0910089ac082`, `8bb31e5fd6afd629`, and `3592c67bdf4c4841`
 are all `complete`, with existing Markdown transcripts. The first item is speech

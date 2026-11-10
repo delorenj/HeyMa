@@ -333,8 +333,6 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
      "sweeps may touch; each must sit inside an Obsidian vault)", hygiene.DEFAULT_FOLDERS),
     ("WAX_DOC_HYGIENE_MIN_AGE_S", "wax/hygiene.py (a note must be unmodified this long before it is trashed)",
      "300"),
-    ("WAX_EMPTY_DOC_SWEEP_INTERVAL_S", "wax/hygiene.py, wax/worker.py (empty-note sweep cadence)", "300"),
-    ("WAX_UNTITLED_SWEEP_HOUR", "wax/hygiene.py (local hour from which the nightly untitled sweep is due)", "3"),
     ("WAX_UNTITLED_SWEEP_MAX", "wax/hygiene.py (pipeline runs the nightly untitled sweep starts per attempt)",
      "50"),
     ("WAX_VAULT_SWEEP_MIN_AGE_S", "wax/vault_sweep.py (`wax vault sweep` leaves files modified more recently)",
@@ -1284,12 +1282,10 @@ def probe_all() -> list[dict[str, Any]]:
 
     # -- document hygiene -------------------------------------------------------
     # The sweeps move the user's notes, so a silently dead one is worse than a
-    # loud one: the worker records every run's summary in ledger.meta, and this
-    # reads it back instead of trusting that a job exists.
+    # loud one: the nightly vault sweep records every run's summary in
+    # ledger.meta, and this reads it back instead of trusting that a job exists.
     try:
-        verdict = hygiene.health(pipeline_enabled=state.pipeline_enabled(),
-                                 waxd_running=pid is not None,
-                                 worker=documents.read_worker_heartbeat())
+        verdict = hygiene.health()
         add(_probe("document hygiene", verdict["status"], verdict["detail"], verdict["fix"]))
     except Exception as e:  # noqa: BLE001
         add(_probe("document hygiene", FAIL, f"{type(e).__name__}: {e}"))
@@ -2032,6 +2028,15 @@ def render_vault_sweep(out: dict, *, verbose: bool = False) -> None:
         counts = out["counts"].get(action) or {}
         line = ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "nothing"
         print(f"{action:<11} {line}")
+    hygiene_run = out.get("inbox_hygiene")
+    if hygiene_run:
+        if hygiene_run.get("skipped"):
+            print(f"inbox hygiene skipped: {hygiene_run['skipped']}")
+        for kind in ("empty", "untitled"):
+            if kind in hygiene_run:
+                counts = hygiene_run[kind].get("counts") or {}
+                line = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()) if v) or "nothing"
+                print(f"inbox {kind:<5} {line}  (wax documents sweep-{kind}; not undone by unsweep)")
     print(f"{out['files_seen']} files seen in {out['vault']}; {len(out['excluded']['code_projects'])} code "
           f"project(s) and {len(out['excluded']['zones'])} zone(s) excluded; trash: {out['trash']}")
     for skipped in out.get("skipped") or []:

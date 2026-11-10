@@ -16,7 +16,7 @@ Defaults are used when unset.
 | Jev passes | `WAX_JEV_URL`, `WAX_JEV_MODEL` (`jev-1.13.0`), `WAX_JEV_API_KEY_OP`, `WAX_CLASSIFICATION_MIN_P` (0.6), `WAX_PROJECT_MIN_P` (0.6, 0.75 for transcripts over 30K chars), `PJ_REGISTRY_URL` (`http://127.0.0.1:8764`), `WAX_PROJECT_ALIASES` |
 | Dictionary | `WAX_DICTIONARY` (`<WAX_ROOT>/Dictionary.yaml`), `WAX_DICTIONARY_MIN_P` (0.5), `_MIN_P_HEARD` (0.4), `_MIN_P_CASE` (0.65), `_MIN_SCORE` (0.82), `_SPOKEN_DOT` (1), `WAX_DICT_COMMIT` (1). See [passes/dictionary](passes/dictionary.md) |
 | Worker cadence | `WAX_SWEEP_INTERVAL_S` (900), `WAX_DOCUMENT_SCAN_INTERVAL_S` (120), `WAX_DOCUMENT_STALE_RUN_S` (900), `WAX_DOCUMENT_MAX_ATTEMPTS` (3) |
-| Hygiene and PDF | `WAX_DOC_HYGIENE_FOLDERS` (`~/d/Inbox:~/d/Sandbox`), `WAX_DOC_HYGIENE_MIN_AGE_S` (300), `WAX_EMPTY_DOC_SWEEP_INTERVAL_S` (300), `WAX_UNTITLED_SWEEP_HOUR` (3), `WAX_UNTITLED_SWEEP_MAX` (50), `WAX_DOCUMENT_PDF_INTAKE` (`0` disables), `WAX_PDF_INTAKE_*`. See [documents](documents.md) |
+| Hygiene and PDF | `WAX_DOC_HYGIENE_FOLDERS` (`~/d/Inbox:~/d/Sandbox`), `WAX_DOC_HYGIENE_MIN_AGE_S` (300), `WAX_UNTITLED_SWEEP_MAX` (50), `WAX_DOCUMENT_PDF_INTAKE` (`0` disables), `WAX_PDF_INTAKE_*`. See [documents](documents.md) |
 | Vault sweep | `WAX_VAULT_SWEEP_MIN_AGE_S` (86400), `WAX_VAULT_SWEEP_TEMP_MIN_AGE_S` (604800), `WAX_VAULT_SWEEP_MAX_BYTES` (16777216), `WAX_VAULT_SWEEP_EXCLUDE` (`agents`). See [vault-sweep](vault-sweep.md) |
 | Store | `WAX_TRANSCRIPTS` (1; `0` is the rollback), `WAX_TRANSCRIPTS_DSN`, `_OWNER_DSN`, `_RO_DSN`, the `*_PASSWORD_OP` family, `_TICK_S` (15), `_RECONCILE_INTERVAL_S` (600), `_SYNC_BREAKER_S` (300), `_LAG_FAIL_S` (3600), `_LOCAL_TZ` (`America/New_York`), `_UNIT_FILE`, `WAX_HARVEST_DIR`, `WAX_EMBED_URL` (`http://localhost:11434`), `_BATCH` (8), `_KEEP_ALIVE` (2m), `_TIMEOUT_S` (60). See [transcriptions-store](transcriptions-store.md) |
 | Calls | `WAX_TELNYX_VOICEMAIL_HOSTS` (`voice-mail-prod.s3.us-east-1.amazonaws.com`), `WAX_CALLS_ME` (`Me`). See [calls](calls.md) |
@@ -51,7 +51,7 @@ Found a plaintext secret anywhere? Move it into the DeLoSecrets vault, replace i
 | `wax-capture-guard.service` | enabled, active (exited) |
 | `syncthing-audio-policy.service`, `syncthing.service` | enabled |
 | `wax-alert`, `wax-calls-sync`, `telnyx-s3-intake`, `telnyx-s3-intake-alert` | static (started by something else) |
-| `telnyx-s3-intake.timer` | disabled on purpose; Candybar is the clock |
+| `telnyx-s3-intake.timer` | deleted 2026-11-10 (repo and `~/.config/systemd/user/`); Candybar is the clock |
 | `heyma-whisper.service` | not-found; a ghost in old docs |
 
 ## Candybar schedules

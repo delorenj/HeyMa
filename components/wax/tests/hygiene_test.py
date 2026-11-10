@@ -456,7 +456,7 @@ class TrashTest(_Env):
         stored = hygiene.load_summary("empty")
         self.assertEqual(stored["counts"], out["counts"])
         self.assertIsNone(stored["last_error"])
-        self.assertEqual(stored["interval_s"], hygiene.EMPTY_SWEEP_INTERVAL_S)
+        self.assertEqual(stored["interval_s"], hygiene.SWEEP_INTERVAL_S)
         self.assertTrue(stored["last_run_at"].endswith("Z"))
 
     def test_one_bad_note_does_not_stop_the_sweep(self):
@@ -999,25 +999,6 @@ class NightlyGateTest(_Env):
     def _at(self, *args):
         return patch.object(hygiene, "_now_local", return_value=datetime(*args))
 
-    def test_due_from_the_configured_hour_once_per_local_date(self):
-        with self._at(2026, 10, 27, 2, 59):
-            self.assertFalse(hygiene.untitled_due())
-        with self._at(2026, 10, 27, 3, 0):
-            self.assertTrue(hygiene.untitled_due())
-        ledger.meta_set(hygiene.META_UNTITLED_DATE, "2026-10-27")
-        with self._at(2026, 10, 27, 23, 59):
-            self.assertFalse(hygiene.untitled_due())
-        with self._at(2026, 10, 28, 2, 59):
-            self.assertFalse(hygiene.untitled_due())
-        with self._at(2026, 10, 28, 3, 1):
-            self.assertTrue(hygiene.untitled_due())
-
-    def test_hour_knob(self):
-        with patch.object(hygiene, "UNTITLED_SWEEP_HOUR", 22), self._at(2026, 10, 27, 21, 59):
-            self.assertFalse(hygiene.untitled_due())
-        with patch.object(hygiene, "UNTITLED_SWEEP_HOUR", 22), self._at(2026, 10, 27, 22, 0):
-            self.assertTrue(hygiene.untitled_due())
-
     def test_a_completed_run_records_the_local_date_at_its_start(self):
         with self._at(2026, 10, 27, 3, 5), \
                 patch.object(pipelines, "compiled", return_value={hygiene.UNTITLED_PIPELINE: {}}):
@@ -1121,70 +1102,23 @@ class RealUntitledPipelineTest(_Env):
 
 # --------------------------------------------------------------- worker ----
 
-class WorkerCadenceTest(_Env):
-    def setUp(self):
-        super().setUp()
-        self.registered = [
-            patch.object(state, "pipeline_enabled", return_value=True),
-            patch.object(worker, "run_once", return_value=None),
-            patch.object(worker, "sweep_failed_passes", return_value={"candidates": 0}),
-            patch.object(documents, "scan", return_value={}),
-            patch.object(hygiene, "runtime_ledger_is_live", return_value=True),
-            patch.object(pipelines, "compiled",
-                         return_value={hygiene.UNTITLED_PIPELINE: {"definition": {}}}),
-        ]
-        for p in self.registered:
-            p.start()
-            self.addCleanup(p.stop)
+class WorkerHasNoHygieneClockTest(_Env):
+    """Candybar is the only clock (2026-11-10): waxd's worker never runs the
+    document-hygiene sweeps; the nightly vault sweep does."""
 
-    def _worker(self, *, scanned=False):
+    def test_a_tick_never_runs_a_hygiene_sweep(self):
         w = worker.Worker()
-        now = time.monotonic()
-        w._last_sweep = now
-        w._last_doc_scan = now
-        return w
-
-    def test_empty_sweep_runs_once_per_interval_with_the_hygiene_busy_label(self):
-        busy = []
-        w = self._worker()
-        w._last_untitled_try = time.monotonic()
-        with patch.object(hygiene, "sweep_empty",
-                          side_effect=lambda **kw: busy.append(w._busy)) as sweep:
-            w._tick_once()
-            self.assertEqual(sweep.call_count, 1, "first tick runs it")
-            self.assertEqual(sweep.call_args.kwargs, {"record": True})
-            self.assertEqual(busy, ["hygiene"])
-            self.assertIsNone(w._busy)
-            w._tick_once()
-            self.assertEqual(sweep.call_count, 1, "not due again within the interval")
-            w._last_empty_sweep = time.monotonic() - hygiene.EMPTY_SWEEP_INTERVAL_S - 1
-            w._tick_once()
-            self.assertEqual(sweep.call_count, 2)
-
-    def test_both_jobs_run_on_the_first_tick_even_just_after_boot(self):
-        """time.monotonic() counts from boot: a machine up for a minute must not
-        hold an owed sweep back until it has been up for the interval."""
-        with patch.object(worker.time, "monotonic", return_value=60.0), \
-                patch.object(hygiene, "sweep_empty") as empty, \
-                patch.object(hygiene, "sweep_untitled") as nightly, \
+        with patch.object(state, "pipeline_enabled", return_value=True), \
+                patch.object(worker, "run_once", return_value=None), \
+                patch.object(worker, "sweep_failed_passes", return_value={"candidates": 0}), \
+                patch.object(documents, "scan", return_value={}), \
                 patch.object(hygiene, "runtime_ledger_is_live", return_value=True), \
-                patch.object(hygiene, "_now_local", return_value=datetime(2026, 10, 27, 8, 0)), \
-                patch.object(pipelines, "compiled", return_value={}):
-            w = worker.Worker()
-            w._last_sweep = w._last_doc_scan = 60.0
+                patch.object(hygiene, "sweep_empty") as empty, \
+                patch.object(hygiene, "sweep_untitled") as untitled:
             w._tick_once()
-        empty.assert_called_once()
-        nightly.assert_called_once()
-
-    def test_a_ledger_that_is_not_the_runtime_roots_is_never_swept(self):
-        w = self._worker()
-        with patch.object(hygiene, "runtime_ledger_is_live", return_value=False), \
-                patch.object(hygiene, "sweep_empty") as sweep, \
-                patch.object(hygiene, "sweep_untitled") as nightly, \
-                patch.object(hygiene, "_now_local", return_value=datetime(2026, 10, 27, 4, 0)):
             w._tick_once()
-        sweep.assert_not_called()
-        nightly.assert_not_called()
+        empty.assert_not_called()
+        untitled.assert_not_called()
 
     def test_runtime_ledger_check_matches_the_real_layout(self):
         with patch.object(paths, "AUDIO", self.root / "rt"), \
@@ -1194,80 +1128,21 @@ class WorkerCadenceTest(_Env):
                 patch.object(paths, "DB", self.root / "elsewhere" / "wax.db"):
             self.assertFalse(_REAL_LEDGER_IS_LIVE())
 
-    def test_disabled_pipeline_runs_no_hygiene(self):
-        w = worker.Worker()
-        with patch.object(state, "pipeline_enabled", return_value=False), \
-                patch.object(hygiene, "sweep_empty") as sweep:
-            w._tick_once()
-        sweep.assert_not_called()
-
-    def test_hygiene_crash_never_escapes_the_tick_and_is_recorded(self):
-        w = self._worker()
-        with patch.object(hygiene, "sweep_empty", side_effect=RuntimeError("db on fire")), \
-                self.assertLogs("wax.worker", level="ERROR"):
-            w._tick_once()
-        self.assertIn("db on fire", hygiene.load_summary("empty")["last_error"])
-        self.assertIsNone(w._busy)
-
-    def test_nightly_runs_once_per_date_across_a_new_worker(self):
-        a, b = self.note(self.inbox, "Untitled.md", "one"), None
-        fake = _FakePipeline(self)
-        with patch.object(pipelines, "run_document", side_effect=fake):
-            real = hygiene.sweep_untitled
-            with patch.object(hygiene, "sweep_empty"), \
-                    patch.object(hygiene, "sweep_untitled", wraps=real) as nightly:
-                with patch.object(hygiene, "_now_local", return_value=datetime(2026, 10, 27, 2, 30)):
-                    w = self._worker()
-                    w._tick_once()
-                    nightly.assert_not_called()
-                with patch.object(hygiene, "_now_local", return_value=datetime(2026, 10, 27, 3, 10)):
-                    w = self._worker()
-                    w._tick_once()
-                    self.assertEqual(nightly.call_count, 1)
-                    self.assertEqual(nightly.call_args.kwargs, {"nightly": True})
-                    self.assertTrue((self.inbox / "a-great-title.md").is_file())
-                    self.assertEqual(ledger.meta_get(hygiene.META_UNTITLED_DATE), "2026-10-27")
-                with patch.object(hygiene, "_now_local", return_value=datetime(2026, 10, 27, 3, 20)):
-                    restarted = self._worker()
-                    restarted._tick_once()
-                    self.assertEqual(nightly.call_count, 1, "a restarted waxd must not repeat the night")
-                with patch.object(hygiene, "_now_local", return_value=datetime(2026, 10, 28, 3, 5)):
-                    tomorrow = self._worker()
-                    tomorrow._tick_once()
-                    self.assertEqual(nightly.call_count, 2)
-
-    def test_an_incomplete_night_retries_but_not_every_tick(self):
-        with patch.object(hygiene, "sweep_empty"), \
-                patch.object(hygiene, "_now_local", return_value=datetime(2026, 10, 27, 3, 10)), \
-                patch.object(pipelines, "compiled", return_value={}):
-            w = self._worker()
-            w._tick_once()
-            self.assertIsNone(ledger.meta_get(hygiene.META_UNTITLED_DATE))
-            first = hygiene.load_summary("untitled")
-            self.assertIn("is not compiled", first["last_error"])
-            with patch.object(hygiene, "sweep_untitled") as again:
-                w._tick_once()
-                again.assert_not_called()
-                w._last_untitled_try = time.monotonic() - hygiene.UNTITLED_RETRY_S - 1
-                w._tick_once()
-                again.assert_called_once()
-
 
 # --------------------------------------------------------------- doctor ----
 
 class HealthTest(_Env):
     NOW = 1_800_000_000.0
+    DAY = 86400.0
 
-    def _empty(self, *, age=60.0, error=None, interval=300.0):
+    def _empty(self, *, age=3600.0, error=None, interval=86400.0):
         hygiene._record("empty", {
             "kind": "empty", "last_run_at": documents._iso_at(self.NOW - age),
             "interval_s": interval, "counts": {"trashed": 2, "gone_marked": 1},
             "last_error": error})
 
-    def _health(self, **kw):
-        kw.setdefault("pipeline_enabled", True)
-        kw.setdefault("waxd_running", True)
-        return hygiene.health(now=self.NOW, today="2026-10-27", **kw)
+    def _health(self):
+        return hygiene.health(now=self.NOW, today="2026-10-27")
 
     def test_fresh_clean_run_passes(self):
         self._empty()
@@ -1283,34 +1158,24 @@ class HealthTest(_Env):
         self.assertIn("vault went away", out["detail"])
         self.assertTrue(out["fix"])
 
-    def test_stale_run_fails_only_while_enabled_and_running(self):
-        self._empty(age=3 * 300 + 1)
-        self.assertEqual(self._health()["status"], "fail")
-        self._empty(age=3 * 300 - 1)
+    def test_stale_after_three_nights(self):
+        self._empty(age=3 * self.DAY - 60)
         self.assertNotEqual(self._health()["status"], "fail")
-        self._empty(age=10_000)
-        self.assertNotEqual(self._health(pipeline_enabled=False)["status"], "fail")
-        self.assertNotEqual(self._health(waxd_running=False)["status"], "fail")
-
-    def test_stale_run_while_the_worker_is_busy_is_only_a_warning(self):
-        self._empty(age=10_000)
-        out = self._health(worker={"state": "live", "busy": "inbox"})
-        self.assertEqual(out["status"], "warn")
-        self.assertIn("busy", out["detail"])
-        out = self._health(worker={"state": "down"})
+        self._empty(age=3 * self.DAY + 60)
+        out = self._health()
         self.assertEqual(out["status"], "fail")
+        self.assertIn("nightly-vault-sweep", out["fix"])
 
-    def test_uses_the_interval_the_daemon_recorded(self):
-        self._empty(age=2_000, interval=900.0)
+    def test_an_old_five_minute_record_is_judged_by_the_nightly_interval(self):
+        self._empty(age=2 * self.DAY, interval=300.0)
         self.assertNotEqual(self._health()["status"], "fail")
-        self._empty(age=2_800, interval=900.0)
-        self.assertEqual(self._health()["status"], "fail")
 
-    def test_never_ran_fails_when_it_should_be_running(self):
-        self.assertEqual(self._health()["status"], "fail")
-        self.assertEqual(self._health(pipeline_enabled=False)["status"], "pass")
+    def test_never_ran_warns(self):
+        out = self._health()
+        self.assertEqual(out["status"], "warn")
+        self.assertIn("vault sweep", out["fix"])
 
-    def test_stale_nightly_date_warns(self):
+    def test_stale_untitled_date_warns(self):
         self._empty()
         ledger.meta_set(hygiene.META_UNTITLED_DATE, "2026-10-25")
         self.assertEqual(self._health()["status"], "pass", "two days is tolerated")
@@ -1319,12 +1184,11 @@ class HealthTest(_Env):
         self.assertEqual(out["status"], "warn")
         self.assertIn("2026-10-24", out["detail"])
 
-    def test_nightly_error_warns_and_never_run_warns_after_two_days(self):
+    def test_untitled_error_warns_and_never_run_warns_after_two_days(self):
         self._empty()
         hygiene._record("untitled", {"kind": "untitled", "last_run_at": "x",
                                      "last_error": "pipeline 'untitled-standard' is not compiled"})
-        out = self._health()
-        self.assertEqual(out["status"], "warn")
+        self.assertEqual(self._health()["status"], "warn")
         ledger.meta_set(hygiene.META_UNTITLED_DATE, "2026-10-27")
         self.assertEqual(self._health()["status"], "warn", "the error still shows")
         ledger.connect().execute("DELETE FROM meta WHERE k=?", (hygiene.META_UNTITLED_DATE,))
@@ -1365,10 +1229,11 @@ class CliTest(_Env):
     def test_doctor_config_lists_every_new_knob(self):
         text = (COMPONENT / "bin/wax").read_text()
         for knob in ("WAX_DOC_HYGIENE_FOLDERS", "WAX_DOC_HYGIENE_MIN_AGE_S",
-                     "WAX_EMPTY_DOC_SWEEP_INTERVAL_S", "WAX_UNTITLED_SWEEP_HOUR",
                      "WAX_UNTITLED_SWEEP_MAX", "WAX_SWEEP_INTERVAL_S",
                      "WAX_DOCUMENT_SCAN_INTERVAL_S"):
             self.assertIn(f'("{knob}",', text)
+        for retired in ("WAX_EMPTY_DOC_SWEEP_INTERVAL_S", "WAX_UNTITLED_SWEEP_HOUR"):
+            self.assertNotIn(f'("{retired}",', text)
 
 
 if __name__ == "__main__":

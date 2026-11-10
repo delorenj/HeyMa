@@ -1,15 +1,15 @@
 """Document hygiene: keep the vault's inbox folders free of dead notes.
 
 Obsidian creates an empty ``Untitled.md`` every time someone presses "new
-note" and walks away. Two waxd jobs clean that up, and a third gives the
-survivors a name:
+note" and walks away. Two sweeps clean that up and give the survivors a name.
+Both run once a night inside ``wax vault sweep --apply`` (Candybar job
+``nightly-vault-sweep``; Candybar is the only clock, so waxd no longer runs
+them on its own timer since 2026-11-10):
 
-- the **empty-note sweep** (every ``WAX_EMPTY_DOC_SWEEP_INTERVAL_S``) moves
-  empty notes into the vault's Obsidian trash and writes off the ledger rows of
-  files that vanished;
-- the **nightly untitled sweep** (once per local date, from
-  ``WAX_UNTITLED_SWEEP_HOUR``) trashes empty ``Untitled*.md`` notes and runs
-  the ``untitled-standard`` pipeline (summarize, then title-slug) over the rest,
+- the **empty-note sweep** moves empty notes into the vault's Obsidian trash
+  and writes off the ledger rows of files that vanished;
+- the **untitled sweep** trashes empty ``Untitled*.md`` notes and runs the
+  ``untitled-standard`` pipeline (summarize, then title-slug) over the rest,
   renaming each note to its generated ``title-slug``.
 
 These jobs move the user's own notes, so every safety rule lives in ONE choke
@@ -73,17 +73,13 @@ def _env_number(name: str, default: float, cast=float):
 
 DEFAULT_FOLDERS = "~/d/Inbox:~/d/Sandbox"
 DEFAULT_MIN_AGE_S = 300.0
-# Interval job cadence (the worker reads this once; `wax documents sweep-empty`
-# ignores it).
-EMPTY_SWEEP_INTERVAL_S = _env_number("WAX_EMPTY_DOC_SWEEP_INTERVAL_S", 300.0)
-# Nightly job: due from this local hour, once per local date.
-UNTITLED_SWEEP_HOUR = min(23, max(0, int(_env_number("WAX_UNTITLED_SWEEP_HOUR", 3, int))))
-# A run is serial with the inbox drain, so bound how many LLM-backed pipeline
-# runs one night may start; the rest wait for the retry below.
+# Both sweeps run once a night inside `wax vault sweep --apply` (the Candybar job
+# `nightly-vault-sweep`, 2026-11-10); waxd no longer runs them on its own clock.
+# The doctor probe measures freshness against this.
+SWEEP_INTERVAL_S = 86400.0
+# Bound how many LLM-backed pipeline runs one night may start; the rest wait
+# for the next night.
 UNTITLED_MAX_PER_RUN = max(1, int(_env_number("WAX_UNTITLED_SWEEP_MAX", 50, int)))
-# After an incomplete nightly run (pipeline not compiled, folder misconfigured,
-# budget spent) the worker tries again no sooner than this.
-UNTITLED_RETRY_S = 3600.0
 
 UNTITLED_PIPELINE = "untitled-standard"
 UNTITLED_RE = re.compile(r"^untitled(?:[ _-]?\d+)?$", re.IGNORECASE)
@@ -421,7 +417,7 @@ def _summary(kind: str, *, started: float, counts: dict[str, int],
     return {
         "kind": kind, "last_run_at": sentinel.utcnow(),
         "duration_s": round(time.time() - started, 3),
-        "interval_s": EMPTY_SWEEP_INTERVAL_S if kind == "empty" else None,
+        "interval_s": SWEEP_INTERVAL_S if kind == "empty" else None,
         "dry_run": dry_run, "counts": dict(sorted(counts.items())),
         "last_error": ("; ".join(errors[:3])[:500] if errors else None),
         "folders": [str(f.root) for f in resolved.folders],
@@ -441,7 +437,7 @@ def record_failure(kind: str, exc: BaseException) -> None:
     """Best effort: a job that crashed outright still leaves its last_error."""
     try:
         _record(kind, {"kind": kind, "last_run_at": sentinel.utcnow(),
-                       "interval_s": EMPTY_SWEEP_INTERVAL_S if kind == "empty" else None,
+                       "interval_s": SWEEP_INTERVAL_S if kind == "empty" else None,
                        "counts": {}, "last_error": f"{type(exc).__name__}: {exc}"[:500]})
     except Exception:  # noqa: BLE001 - the failure being recorded may be the DB itself
         log.warning("hygiene: could not record the %s sweep failure", kind)
@@ -500,8 +496,8 @@ def sweep_empty(*, dry_run: bool = False, record: bool = False,
     """Trash empty notes in the swept folders and write off vanished rows.
 
     ``record`` stores the summary in ``ledger.meta`` for the doctor probe. The
-    worker records; the CLI does not, because a manual run must not make a dead
-    worker look alive. A dry run never records and changes nothing.
+    nightly vault sweep records; the CLI does not, because a manual run must not
+    make a dead nightly job look alive. A dry run never records and changes nothing.
     """
     started = time.time()
     resolved = resolve_folders(folders_spec)
@@ -749,25 +745,14 @@ def summarize_for_title(path: Path, folder: Folder, budget: dict[str, int]) -> d
     return {"path": str(path), "outcome": "titled", "slug": slug}
 
 
-def untitled_due(now_local: Optional[datetime] = None) -> bool:
-    """Whether the nightly sweep owes a run: from the configured local hour on,
-    and not yet done for today's local date (a durable fact, so a waxd restart
-    neither repeats nor skips the night)."""
-    now_local = now_local or _now_local()
-    if now_local.hour < UNTITLED_SWEEP_HOUR:
-        return False
-    return ledger.meta_get(META_UNTITLED_DATE) != now_local.date().isoformat()
-
-
 def sweep_untitled(*, dry_run: bool = False, nightly: bool = False,
                    folders_spec: Optional[str] = None, min_age: Optional[float] = None,
                    now: Optional[float] = None, max_runs: Optional[int] = None,
                    ) -> dict[str, Any]:
     """Trash empty ``Untitled*.md`` notes; summarize and rename the rest.
 
-    ``nightly`` is the worker's form: it records the summary and, only when the
-    run completed, today's date (a crash or an incomplete run retries). The CLI
-    form runs now, whatever the hour or date, and records nothing.
+    ``nightly`` is the vault sweep's form: it records the summary and, only when
+    the run completed, today's date. The CLI form records nothing.
     """
     started = time.time()
     local_date = _now_local().date().isoformat()
@@ -779,7 +764,7 @@ def sweep_untitled(*, dry_run: bool = False, nightly: bool = False,
     min_age = min_age_s() if min_age is None else min_age
     if UNTITLED_PIPELINE not in pipelines.compiled():
         # Touch nothing: without the pipeline there is no title to rename to,
-        # and trashing alone is the interval job's business.
+        # and trashing alone is the empty-note sweep's business.
         errors.append(f"pipeline {UNTITLED_PIPELINE!r} is not compiled; "
                       f"run `wax pipeline compile {UNTITLED_PIPELINE}`")
         incomplete = True
@@ -834,13 +819,11 @@ def _log_untitled(result: dict[str, Any]) -> None:
 
 # --------------------------------------------------------------- health ----
 
-def health(*, pipeline_enabled: bool, waxd_running: bool,
-           worker: Optional[dict[str, Any]] = None, now: Optional[float] = None,
-           today: Optional[str] = None) -> dict[str, str]:
+def health(*, now: Optional[float] = None, today: Optional[str] = None) -> dict[str, str]:
     """The `wax doctor` "document hygiene" probe, as status/detail/fix.
 
     Green only on evidence: the empty sweep's recorded summary has no error and
-    is fresh (3x its own interval) while the worker is meant to be running it.
+    is fresh (3x its nightly interval). The nightly vault sweep records it.
     """
     now = _now_epoch() if now is None else now
     today_d = date.fromisoformat(today) if today else _now_local().date()
@@ -848,54 +831,47 @@ def health(*, pipeline_enabled: bool, waxd_running: bool,
     fail: list[str] = []
     warn: list[str] = []
     fix = ""
+    nightly = "wax vault sweep --apply   # what Candybar's nightly-vault-sweep runs"
     empty = load_summary("empty")
     untitled = load_summary("untitled")
     if empty is None:
-        if pipeline_enabled and waxd_running:
-            fail.append("the empty-note sweep has never recorded a run")
-            fix = "systemctl --user restart waxd   # the worker runs it on its first tick"
-        else:
-            notes.append("no empty-note sweep recorded yet")
+        warn.append("the empty-note sweep has never recorded a run (the nightly vault sweep records it)")
+        fix = nightly
     else:
         if empty.get("last_error"):
             fail.append(f"last empty-note sweep failed: {empty['last_error']}")
             fix = "wax documents sweep-empty --dry-run"
-        interval = float(empty.get("interval_s") or EMPTY_SWEEP_INTERVAL_S)
+        interval = max(float(empty.get("interval_s") or 0), SWEEP_INTERVAL_S)
         ran = documents._parse_iso(empty.get("last_run_at"))
         age = None if ran is None else max(0.0, now - ran)
         if age is None:
             fail.append("the empty-note sweep's last_run_at is unreadable")
-        elif age > 3 * interval and pipeline_enabled and waxd_running:
-            busy = bool(worker and worker.get("state") == "live" and worker.get("busy"))
-            msg = (f"last empty-note sweep {int(age)}s ago (limit {int(3 * interval)}s)")
-            if busy:
-                warn.append(msg + f"; the worker is busy ({worker.get('busy')})")
-            else:
-                fail.append(msg)
-                fix = fix or "systemctl --user restart waxd"
-        elif age is not None:
+        elif age > 3 * interval:
+            fail.append(f"last empty-note sweep {int(age // 3600)}h ago (limit {int(3 * interval // 3600)}h)")
+            fix = fix or f"candybar history nightly-vault-sweep; {nightly}"
+        else:
             counts = empty.get("counts") or {}
-            notes.append(f"empty sweep {int(age)}s ago: {counts.get('trashed', 0)} trashed, "
+            notes.append(f"empty sweep {int(age // 3600)}h ago: {counts.get('trashed', 0)} trashed, "
                          f"{counts.get('gone_marked', 0)} gone")
     date_s = ledger.meta_get(META_UNTITLED_DATE)
     if untitled and untitled.get("last_error"):
-        warn.append(f"last nightly untitled sweep: {untitled['last_error']}")
+        warn.append(f"last untitled sweep: {untitled['last_error']}")
     if date_s:
         try:
             days = (today_d - date.fromisoformat(date_s)).days
         except ValueError:
             days = None
         if days is None or days > 2:
-            warn.append(f"nightly untitled sweep last completed {date_s}")
+            warn.append(f"untitled sweep last completed {date_s}")
         else:
             notes.append(f"untitled sweep {date_s}")
-    elif pipeline_enabled and waxd_running:
+    else:
         first = ledger.meta_get(META_FIRST_RUN)
         ran = documents._parse_iso(first) if first else None
         if ran is not None and now - ran > 2 * 86400:
-            warn.append("nightly untitled sweep has never completed")
+            warn.append("untitled sweep has never completed")
         else:
-            notes.append("nightly untitled sweep not yet run")
+            notes.append("untitled sweep not yet run")
     status = "fail" if fail else ("warn" if warn else "pass")
     detail = "; ".join(fail + warn + notes) or "ok"
     return {"status": status, "detail": detail, "fix": fix}

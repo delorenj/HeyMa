@@ -26,12 +26,14 @@ Freshness: `wax pipeline bindings` shows `last_scan_at`; `wax catalog --json` ca
 
 `hygiene.py` keeps the vault's `Inbox/` (recursive, so `Inbox/Wax`) and `Sandbox/` free of dead notes. Folders: `WAX_DOC_HYGIENE_FOLDERS` (default `~/d/Inbox:~/d/Sandbox`), each inside an Obsidian vault.
 
+Both sweeps run once a night inside a full `wax vault sweep --apply` (Candybar job `nightly-vault-sweep`, 03:40). waxd ran them on its own clock until 2026-11-10; that loop is retired because Candybar is the only clock. Never add it back.
+
 | Job | Cadence | Does |
 |---|---|---|
-| Empty sweep | every `WAX_EMPTY_DOC_SWEEP_INTERVAL_S` (300 s) | Moves empty notes to `<vault>/.trash/` (never unlinked, nothing overwritten); `documents` rows whose file vanished become `gone` |
-| Untitled sweep | once per local date from `WAX_UNTITLED_SWEEP_HOUR` (3) | Trashes empty `Untitled*.md`; runs the rest through the manual `untitled-standard` pipeline (summarize, then title-slug) and renames to `<title-slug>.md`. At most `WAX_UNTITLED_SWEEP_MAX` (50) per run. An uncompiled pipeline touches nothing |
+| Empty sweep | nightly, with the vault sweep | Moves empty notes to `<vault>/.trash/` (never unlinked, nothing overwritten); `documents` rows whose file vanished become `gone` |
+| Untitled sweep | nightly, with the vault sweep | Trashes empty `Untitled*.md`; runs the rest through the manual `untitled-standard` pipeline (summarize, then title-slug) and renames to `<title-slug>.md`. At most `WAX_UNTITLED_SWEEP_MAX` (50) per run. An uncompiled pipeline touches nothing |
 
-Safety rules, all mandatory: `*.md` only; no dot-directories or dot-files; no symlinks; mtime older than `WAX_DOC_HYGIENE_MIN_AGE_S` (300 s); emptiness re-checked under the document run lock right before the move; unparseable frontmatter is never "empty". `trashed` and `gone` rows no longer count in `passes.failed`. `wax doctor` has a "document hygiene" probe. `wax documents sweep-empty` and `wax documents sweep-untitled` run the same logic now and record nothing; use `--dry-run` first. The vault-wide tidy beyond these two folders (temp, scratch, copies, empty dirs, Untitled chains anywhere) is `wax vault sweep`: [vault-sweep](vault-sweep.md).
+Safety rules, all mandatory: `*.md` only; no dot-directories or dot-files; no symlinks; mtime older than `WAX_DOC_HYGIENE_MIN_AGE_S` (300 s); emptiness re-checked under the document run lock right before the move; unparseable frontmatter is never "empty". `trashed` and `gone` rows no longer count in `passes.failed`. `wax doctor` has a "document hygiene" probe: FAIL on a recorded error or an empty sweep older than 3 days, WARN when the untitled sweep errored or last completed more than 2 days ago. A `documents` row whose file vanished is written off on the second consecutive nightly sweep that misses it. `wax documents sweep-empty` and `wax documents sweep-untitled` run the same logic now and record nothing; use `--dry-run` first. The vault-wide tidy beyond these two folders (temp, scratch, copies, empty dirs, Untitled chains anywhere) is `wax vault sweep`: [vault-sweep](vault-sweep.md).
 
 ## PDF intake
 

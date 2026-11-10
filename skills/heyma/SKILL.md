@@ -107,7 +107,7 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 - `var/wax.db` is WAL: its mtime lies → `subskills/doctor/SUBSKILL.md`
 - waxd holds `var/waxd.singleton.lock`; `var/waxd.lock` is the CLI capture lock → `references/system-map.md`
 - As of 2026-11-05 the chain really is `auto/fast`, then free; GLM and DeepSeek members are unlisted for the token → `references/passes/model-chain.md`
-- `telnyx-s3-intake.timer` is deliberately disabled; Candybar runs it → `references/intake.md`
+- `telnyx-s3-intake` has no timer (deleted 2026-11-10); Candybar runs it → `references/intake.md`
 - `wax-calls-sync` manifest says `enabled = false`, the Candybar registry says enabled → `references/calls.md`
 - Restart `waxd.service` after `src/` changes; the encoder scope survives → `references/config-and-deploy.md`
 - Events that WAX-DESIGN lists but nothing emits, and `wax reset` does not exist → `references/events.md`

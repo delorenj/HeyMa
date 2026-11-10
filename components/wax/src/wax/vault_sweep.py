@@ -1347,15 +1347,52 @@ class _RunLock:
         self.fh.close()
 
 
+def inbox_hygiene(vault: Path) -> dict[str, Any]:
+    """The document-hygiene sweeps (``wax documents sweep-empty`` and ``sweep-untitled``) over the
+    ``WAX_DOC_HYGIENE_FOLDERS`` inside this vault, recorded for the "document hygiene" doctor probe.
+
+    waxd ran them on its own clock until 2026-11-10; a full ``--apply`` run of this sweep (Candybar's
+    ``nightly-vault-sweep``) is now their only clock. They reach ``Inbox/Wax``, which this sweep never
+    touches, and write off ``documents`` rows whose file vanished. Never against a ledger that is not
+    the runtime root's, and never outside the swept vault."""
+    if not hygiene.runtime_ledger_is_live():
+        return {"skipped": "the ledger is not the runtime root's"}
+    resolved = hygiene.resolve_folders()
+    root = vault.resolve()
+    inside = [str(f.root) for f in resolved.folders if Path(f.root).resolve().is_relative_to(root)]
+    if not inside:
+        return {"skipped": "no WAX_DOC_HYGIENE_FOLDERS folder inside this vault"}
+    spec = os.pathsep.join(inside)
+    out: dict[str, Any] = {"folders": inside}
+    for kind in ("empty", "untitled"):
+        try:
+            summary = (hygiene.sweep_empty(record=True, folders_spec=spec) if kind == "empty"
+                       else hygiene.sweep_untitled(nightly=True, folders_spec=spec))
+            out[kind] = {"counts": summary.get("counts") or {}, "error": summary.get("last_error")}
+        except Exception as exc:  # noqa: BLE001 - recorded for the doctor, reported as a sweep error
+            log.exception("vault sweep: inbox hygiene (%s) failed", kind)
+            hygiene.record_failure(kind, exc)
+            out[kind] = {"counts": {}, "error": f"{type(exc).__name__}: {exc}"}
+    return out
+
+
 def sweep(*, apply: bool = False, only: Iterable[str] = (), min_age: Optional[float] = None,
           limit: Optional[int] = None, now: Optional[float] = None) -> dict[str, Any]:
-    """Plan (and with ``apply``, carry out) one vault sweep. Raises VaultSweepError on a refusal."""
+    """Plan (and with ``apply``, carry out) one vault sweep. Raises VaultSweepError on a refusal.
+
+    A full applied run (no ``only``, no ``limit``) also runs the inbox document-hygiene sweeps."""
     job = Sweep(dry_run=not apply, only=only, min_age=min_age, limit=limit, now=now)
     if not apply:
         return job.go()
     with _RunLock():
         job.run = _new_run_id()
         summary = job.go()
+        if set(job.only) == set(ACTIONS) and limit is None:
+            summary["inbox_hygiene"] = inbox_hygiene(job.vault)
+            for kind in ("empty", "untitled"):
+                err = (summary["inbox_hygiene"].get(kind) or {}).get("error")
+                if err:
+                    summary["errors"].append(f"inbox hygiene ({kind}): {err}")
     try:
         ledger.meta_set(META_LAST_RUN, json.dumps({
             "run": summary["run"], "at": sentinel.utcnow(), "changes": summary["changes"],

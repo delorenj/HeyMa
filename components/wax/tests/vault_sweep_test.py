@@ -906,3 +906,38 @@ def test_cli_limit_zero_is_refused_and_a_bad_name_does_not_crash_it(env):
         assert ran.returncode == 0, (argv, ran.stderr[-300:])
     human = _cli(env, "vault", "sweep")
     assert "SKIPPED" in human.stdout and "UTF-8" in human.stdout
+
+
+def test_a_full_applied_run_also_runs_the_inbox_hygiene_sweeps(env):
+    """waxd's own hygiene clock is gone (2026-11-10): the nightly full run is what sweeps Inbox/Wax."""
+    wax_doc = env.put("Inbox/Wax/note.md", "---\ncreated: 2026-01-01\n---\n")
+    env.put("Notes/real.md", "words")
+    folders = os.pathsep.join([str(env.vault / "Inbox"), str(env.root / "elsewhere" / "Inbox")])
+    (env.root / "elsewhere" / ".obsidian").mkdir(parents=True)
+    (env.root / "elsewhere" / "Inbox").mkdir()
+    other = env.root / "elsewhere" / "Inbox" / "empty.md"
+    other.write_text("")
+    os.utime(other, (time.time() - OLD, time.time() - OLD))
+    with patch.object(paths, "AUDIO", env.runtime), \
+            patch.dict(os.environ, {"WAX_DOC_HYGIENE_FOLDERS": folders}), \
+            patch.object(pipelines, "compiled", return_value={hygiene.UNTITLED_PIPELINE: {}}):
+        dry = vault_sweep.sweep()
+        assert "inbox_hygiene" not in dry and wax_doc.exists(), "a dry run never runs it"
+        partial = vault_sweep.sweep(apply=True, only=["prune-empty"])
+        assert "inbox_hygiene" not in partial and wax_doc.exists(), "nor does an --only run"
+        out = vault_sweep.sweep(apply=True)
+    hy = out["inbox_hygiene"]
+    assert hy["folders"] == [str(env.vault / "Inbox")], "a folder outside the swept vault is left alone"
+    assert hy["empty"]["counts"].get("trashed") == 1 and hy["empty"]["error"] is None
+    assert not wax_doc.exists() and env.trash("Inbox/Wax/note.md").is_file()
+    assert other.exists()
+    assert hygiene.load_summary("empty")["counts"]["trashed"] == 1, "recorded for the doctor probe"
+    assert out["errors"] == []
+
+
+def test_inbox_hygiene_never_runs_against_a_foreign_ledger(env):
+    wax_doc = env.put("Inbox/Wax/note.md", "---\ncreated: 2026-01-01\n---\n")
+    with patch.dict(os.environ, {"WAX_DOC_HYGIENE_FOLDERS": str(env.vault / "Inbox")}):
+        out = vault_sweep.sweep(apply=True)     # paths.AUDIO is the real root, the ledger a tmp one
+    assert "runtime root" in out["inbox_hygiene"]["skipped"]
+    assert wax_doc.exists()

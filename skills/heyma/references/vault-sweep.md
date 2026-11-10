@@ -20,7 +20,7 @@ Exit codes: 0 clean, 2 on any error or refusal. That includes another apply run 
 
 One bad file or one failing step never ends the run. It becomes an `errors` line (exit 2) and the rest carries on, so the run id is always printed and `meta.vault_sweep_last_run` is always written. A file or directory whose name is not valid UTF-8 is listed under `skipped` (printed as `SKIPPED`), not fatal.
 
-Nightly scheduling belongs to Candybar (a manifest runs `wax vault sweep --apply`). Never add a timer, cron or waxd loop for it. `wax doctor` has a "vault sweep ran" probe: PASS before the first apply run, WARN when the last run is over 3 days old or recorded errors.
+Nightly scheduling belongs to Candybar (a manifest runs `wax vault sweep --apply`). Never add a timer, cron or waxd loop for it. A full applied run (no `--only`, no `--limit`) then runs the document-hygiene sweeps over the `WAX_DOC_HYGIENE_FOLDERS` inside the vault (`wax documents sweep-empty` and `sweep-untitled`, so `Inbox/Wax` too) and records them for the "document hygiene" probe; their moves are not in the vault-sweep journal, so `unsweep` does not undo them (the trash does). `wax doctor` has a "vault sweep ran" probe: PASS before the first apply run, WARN when the last run is over 3 days old or recorded errors.
 
 ## Rules
 
@@ -84,4 +84,4 @@ Each undone change is journaled as a `restore` line, and the next sweep keeps th
 ## Overlap with the other sweeps
 
 - `wax transcripts prune` owns `Transcripts/`. The vault sweep never enters it.
-- waxd's hygiene sweeps ([documents](documents.md)) keep `Inbox/` and `Sandbox/` clean every few minutes. The vault sweep also covers those folders, behind a longer age floor. Both go through the document run locks.
+- The document-hygiene sweeps ([documents](documents.md)) used to run inside waxd every few minutes; since 2026-11-10 they run only at the end of a full applied vault sweep. Both go through the document run locks.
