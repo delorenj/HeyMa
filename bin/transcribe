@@ -19,7 +19,11 @@
 #   ~/.cache or a ~/.hermes/**/cache or audio_cache dir gets the same OUTPUT placement even without
 #   --ephemeral (a note on stderr says so); S3, the fast lane and the rest stay
 #   as asked. An explicit -o/--output always wins. Audio under $WAX_ROOT
-#   (default ~/HeyMa), where waxd works, is never scratch.
+#   (default ~/HeyMa), where waxd works, is never scratch. Paths are resolved by
+#   resolve_path (portable-path block): `realpath -m` when the host's realpath
+#   proves it does GNU -m, else pure bash, so a Mac (BSD realpath without -m, a
+#   one-operand realpath script, or none) still sees /tmp,
+#   /var/tmp and $TMPDIR (all under /private/...) as scratch.
 #
 # --archive-s3
 #   BACKUP-FIRST POLICY (the audio is the irreplaceable artifact):
@@ -35,6 +39,101 @@
 
 set -euo pipefail
 
+# >>> portable-path (tests/test_transcribe_portable_paths.py extracts this block: keep it self-contained, bash 3.2 syntax)
+# Path resolution that works on Linux (GNU realpath), on a Mac (BSD realpath, no -m) and with no realpath at all.
+#
+# `realpath -m` is GNU-only. macOS 13+ ships /bin/realpath without -m ("illegal option"), older macOS has no
+# realpath, and a `2>/dev/null || true` around it turned both into an empty answer, which silently switched the
+# scratch-audio guard off. resolve_path asks a realpath that PROVES it does GNU -m (_realpath_has_m; Linux resolves
+# exactly as it always did) and otherwise walks the path in pure bash, following symlinks with a plain `readlink` (on
+# GNU and BSD alike). No python: the Mac packages (cask, vinyl-client formula, direct installer) do not put a python3
+# on PATH.
+#
+# resolve_path PATH  sets RESOLVED_PATH to the canonical absolute spelling (symlinks followed, "." ".." "//" folded;
+#                    a missing component is fine, as with `realpath -m`) and returns 0. It returns 1 only for "".
+#                    Call it directly, never inside $(...): it sets PATH_RESOLVE_LEXICAL=1 when a symlink could not
+#                    be followed (no readlink, or a loop), i.e. the answer is only the path's own spelling.
+PATH_RESOLVE_LEXICAL=0
+RESOLVED_PATH=""
+
+_resolve_in_shell() {
+  local rest="$1" cur="/" seg cand target hops=0
+  case "$rest" in /*) ;; *) rest="${PWD}/${rest}" ;; esac
+  while [[ -n "$rest" ]]; do
+    seg="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "$seg" in
+      "" | .) continue ;;
+      ..) cur="${cur%/*}"; [[ -n "$cur" ]] || cur="/"; continue ;;
+    esac
+    if [[ "$cur" == "/" ]]; then cand="/${seg}"; else cand="${cur}/${seg}"; fi
+    if [[ -L "$cand" ]]; then
+      hops=$((hops + 1))
+      target=""
+      if ((hops <= 40)); then target="$(readlink "$cand" 2>/dev/null)" || target=""; fi
+      if [[ -z "$target" ]]; then PATH_RESOLVE_LEXICAL=1; cur="$cand"; continue; fi
+      if [[ -n "$rest" ]]; then rest="${target}/${rest}"; else rest="$target"; fi
+      case "$target" in /*) cur="/" ;; esac
+      continue
+    fi
+    cur="$cand"
+  done
+  RESOLVED_PATH="$cur"
+}
+
+# Does this machine's `realpath` really do GNU `-m` (a missing component is fine, ".." folds)? Probed once. BSD's
+# refuses -m by exit status, but a one-operand `realpath` script (the classic pre-13 macOS shim) takes "-m" for the
+# path and answers "$PWD/-m" with exit 0: an absolute, wrong answer for every input, which "trust any absolute
+# answer" would pass off as the resolved audio file. Only a realpath that passes the probe is asked.
+_REALPATH_M=""
+_realpath_has_m() {
+  local probe
+  if [[ -z "$_REALPATH_M" ]]; then
+    _REALPATH_M=0
+    if command -v realpath >/dev/null 2>&1; then
+      if probe="$(realpath -m -- /rp-probe-missing/x/.. 2>/dev/null)" && [[ "$probe" == "/rp-probe-missing" ]]; then
+        _REALPATH_M=1
+      fi
+    fi
+  fi
+  [[ "$_REALPATH_M" == 1 ]]
+}
+
+resolve_path() {
+  local p="$1"
+  RESOLVED_PATH=""
+  [[ -n "$p" ]] || return 1
+  case "$p" in -*) p="./${p}" ;; esac
+  if _realpath_has_m; then
+    RESOLVED_PATH="$(realpath -m -- "$p" 2>/dev/null)" || RESOLVED_PATH=""
+  fi
+  case "$RESOLVED_PATH" in /*) return 0 ;; esac
+  _resolve_in_shell "$p"
+}
+
+# macOS spells /tmp, /var and /etc two ways (symlinks into /private): the other spelling of $1, or nothing.
+_other_spelling() {
+  case "$1" in
+    /private/tmp | /private/tmp/* | /private/var | /private/var/* | /private/etc | /private/etc/*) printf '%s' "${1#/private}" ;;
+    /tmp | /tmp/* | /var | /var/* | /etc | /etc/*) printf '%s' "/private$1" ;;
+  esac
+}
+
+# path_under CHILD DIR: is CHILD strictly inside DIR? Both should come from resolve_path. "/" and "" are never a
+# DIR (every path would be inside), and each is also tried in its other /private spelling, so a lexical fallback
+# that left one side as /tmp/x and the other as /private/tmp still matches.
+path_under() {
+  local child="$1" dir="$2" c d
+  [[ -n "$child" && -n "$dir" && "$dir" != "/" ]] || return 1
+  for c in "$child" "$(_other_spelling "$child")"; do
+    for d in "$dir" "$(_other_spelling "$dir")"; do
+      if [[ -n "$c" && -n "$d" && "$d" != "/" && "$c" == "$d"/* ]]; then return 0; fi
+    done
+  done
+  return 1
+}
+# <<< portable-path
+
 TRANSCRIBE_HOSTNAME="${TRANSCRIBE_HOSTNAME:-big-chungus}"
 TRANSCRIBE_HOST="${TRANSCRIBE_HOST:-192.168.1.12}"
 TRANSCRIBE_USER="${TRANSCRIBE_USER:-delorenj}"
@@ -45,7 +144,7 @@ TRANSCRIBE_USER="${TRANSCRIBE_USER:-delorenj}"
 # The last-resort default is the LIVE tree: code/HeyMa was retired 2026-08-19
 # (see its STALE-CHECKOUT.md) and no longer holds the diarization runtime, so
 # falling back there would have quietly reproduced the outage it once caused.
-_TRANSCRIBE_SELF="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+if resolve_path "${BASH_SOURCE[0]}"; then _TRANSCRIBE_SELF="$RESOLVED_PATH"; else _TRANSCRIBE_SELF="${BASH_SOURCE[0]}"; fi
 _TRANSCRIBE_DEFAULT_DIR="$(cd "$(dirname "$_TRANSCRIBE_SELF")/.." 2>/dev/null && pwd)" || _TRANSCRIBE_DEFAULT_DIR="/home/delorenj/HeyMa"
 TRANSCRIBE_DIR="${TRANSCRIBE_DIR:-$_TRANSCRIBE_DEFAULT_DIR}"
 REMOTE="${TRANSCRIBE_USER}@${TRANSCRIBE_HOST}"
@@ -185,32 +284,39 @@ while (("$#" > 0)); do
   esac
 done
 
-AUDIO="$(realpath "$AUDIO")"
+PATH_RESOLVE_LEXICAL=0
+if ! resolve_path "$AUDIO" || [[ ! -e "$RESOLVED_PATH" ]]; then
+  # `realpath` used to stop a missing file here; with no GNU realpath it would sail on to a confusing stat/scp error.
+  log "[error] audio file not found: ${AUDIO}"
+  exit 1
+fi
+AUDIO="$RESOLVED_PATH"
 
 # Where a throwaway run's transcript goes (--ephemeral, or a scratch source below).
 EPHEMERAL_DIR="${TRANSCRIBE_EPHEMERAL_DIR:-/tmp/ephemeral_transcripts}"
 
-# Is $1 (a realpath) audio living in a temp/scratch location? Such a file is a throwaway (an agent's voice note,
+# Is $1 (a resolved path) audio living in a temp/scratch location? Such a file is a throwaway (an agent's voice note,
 # a proof clip), never a recording that belongs in the vault. Junk notes (tmp*.md, proof.md) reached ~/d/Transcripts
 # from ad-hoc runs on ~/.claude/tmp, ~/.hermes/**/cache and /tmp audio that did not pass --ephemeral.
 #
 # Wax's own tree is never scratch: waxd transcribes from ${WAX_ROOT}/inbox and /stream, and the wax test suites
 # build a throwaway WAX_ROOT under /tmp that must behave exactly like production.
+#
+# Every directory is resolved with resolve_path (GNU, macOS or no realpath; see the portable-path block), so on a Mac
+# /tmp, /var/tmp and a $TMPDIR like /var/folders/xx/yyyy/T/ meet the audio's /private/... spelling.
 is_scratch_audio() {
-  local p="$1" root home_real dir real
+  local p="$1" root home_real="" dir
   # The same precedence as wax/paths.py: WAX_ROOT, then the legacy WAX_AUDIO_ROOT, then ~/HeyMa.
-  root="$(realpath -m -- "${WAX_ROOT:-${WAX_AUDIO_ROOT:-${HOME}/HeyMa}}" 2>/dev/null || true)"
-  if [[ -n "$root" && "$root" != "/" && "$p" == "$root"/* ]]; then return 1; fi
-  home_real="$(realpath -m -- "${HOME}" 2>/dev/null || true)"
+  if resolve_path "${WAX_ROOT:-${WAX_AUDIO_ROOT:-${HOME}/HeyMa}}"; then root="$RESOLVED_PATH"; else root=""; fi
+  if path_under "$p" "$root"; then return 1; fi
+  if resolve_path "${HOME}"; then home_real="$RESOLVED_PATH"; fi
   for dir in /tmp /var/tmp "${HOME}/.claude/tmp" "${HOME}/.cache"; do
-    real="$(realpath -m -- "$dir" 2>/dev/null || true)"
-    [[ -n "$real" && "$real" != "/" && "$p" == "$real"/* ]] && return 0
+    if resolve_path "$dir" && path_under "$p" "$RESOLVED_PATH"; then return 0; fi
   done
   # $TMPDIR is the caller's say-so: one that is $HOME or an ancestor of it (or "/") would make every file scratch.
-  if [[ -n "${TMPDIR:-}" ]]; then
-    real="$(realpath -m -- "$TMPDIR" 2>/dev/null || true)"
-    if [[ -n "$real" && "$real" != "/" && "$home_real" != "$real" && "$home_real" != "$real"/* \
-          && "$p" == "$real"/* ]]; then return 0; fi
+  if [[ -n "${TMPDIR:-}" ]] && resolve_path "$TMPDIR"; then
+    dir="$RESOLVED_PATH"
+    if [[ "$home_real" != "$dir" ]] && ! path_under "$home_real" "$dir" && path_under "$p" "$dir"; then return 0; fi
   fi
   if [[ -n "$home_real" ]]; then
     case "$p" in
@@ -224,9 +330,14 @@ is_scratch_audio() {
 # Output placement: --ephemeral always, and a scratch source even without it. Only PLACEMENT follows scratch
 # audio: --archive-s3, the fast lane and every other --ephemeral behaviour stay what the caller asked for.
 EPHEMERAL_OUTPUT="$EPHEMERAL"
-if [[ "$EPHEMERAL" != "true" ]] && is_scratch_audio "$AUDIO"; then
-  EPHEMERAL_OUTPUT=true
-  log "[scratch] ${AUDIO} is a temp/scratch file: transcript goes to ${EPHEMERAL_DIR}, not the vault (pass --output to choose)."
+if [[ "$EPHEMERAL" != "true" ]]; then
+  if is_scratch_audio "$AUDIO"; then
+    EPHEMERAL_OUTPUT=true
+    log "[scratch] ${AUDIO} is a temp/scratch file: transcript goes to ${EPHEMERAL_DIR}, not the vault (pass --output to choose)."
+  elif ((PATH_RESOLVE_LEXICAL)); then
+    # Only said when it matters: a "not scratch" verdict that rests on a path whose symlinks could not be followed.
+    log "[warn] could not follow every symlink on ${AUDIO} (no readlink?); the scratch check went by its spelling only."
+  fi
 fi
 
 is_local() { [[ "$(hostname)" == "${TRANSCRIBE_HOSTNAME}" ]]; }
