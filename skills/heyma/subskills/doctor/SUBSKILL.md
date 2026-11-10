@@ -83,9 +83,36 @@ mise x -- ./bin/wax failures        # recent failures grouped by (kind, slug, re
 route served to the gateway token, the Jev ingress and its keys, pass-event
 schemas, the pjangler registry, diarization device policy plus a **real
 Sortformer CUDA forward pass**, the daemon's transcriber pin, state-mirror age,
-outbox staleness, the call log, document hygiene and the transcriptions store.
+outbox staleness, the call log, document hygiene, the transcriptions store and
+the published notes themselves ("transcript notes intact", below).
 Its rules are absolute: it may never report health it has not just verified,
 and it never prints a resolved secret. Treat it as informational, not a gate.
+
+**`transcript notes intact`** (WARN, never FAIL; read-only) is the probe for a
+published note that something outside Wax destroyed. Two real transcripts lost
+their bodies that way (a symlink into the vault written through, and a manual
+paste) and nothing noticed for weeks. One pass over the ledger's `transcripts`
+rows (newest first; `pruned_at` rows and missing files skipped), each note read
+once, flags:
+
+- `body-lost`: the larger of the note's `word-count` and the ledger's
+  `transcripts.word_count` is over 60 and over 4x the speech words now in the
+  body. This is `wax transcripts prune`'s body-lost rule, one definition
+  (`prune.body_lost_claim`), not a copy.
+- `frontmatter-lost`: no frontmatter block, or one that no longer parses. Wax
+  stamps `wax-item-id` and the `wax:` block into every note it publishes.
+
+Up to 10 offenders are listed, each with item id and "N word(s) present, M
+recorded" (`wax doctor --json`: `probes[].notes`, with a `restore` block each).
+The scan stops after 10 s; a partial scan, a note that cannot be read (not UTF-8
+text, or not a regular file: it cannot be judged, so it is named, not skipped
+silently), or a ledger whose notes are all missing (vault moved or unmounted),
+is a WARN too, never green. **Restore** from
+the transcripts store, which keeps every version: `wax transcripts history
+<item>`, then `wax transcripts show <item> --version N --raw`, and write the good
+body back; or rebuild from the ASR text in `var/logs/<item>/asr.json`. Then find
+the writer (a symlink pointing into `~/d/Transcripts` is the first suspect)
+before it happens again.
 
 Then the layered board:
 

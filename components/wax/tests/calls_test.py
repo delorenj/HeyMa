@@ -16,6 +16,13 @@ from wax import calls, ledger, paths
 
 COMPONENT = Path(__file__).resolve().parents[1]
 
+
+def minimal_env(root) -> dict:
+    """A bare subprocess env (no inherited os.environ), so it must carry its OWN vault: without WAX_VAULT and
+    TRANSCRIPTS a spawned `wax` falls back to the real ~/d/Transcripts, which tests/conftest.py cannot pin."""
+    return {"WAX_ROOT": str(root), "WAX_VAULT": f"{root}/vault", "TRANSCRIPTS": f"{root}/vault",
+            "PATH": "/usr/bin:/bin"}
+
 OUT_SESSION, OUT_LEG = "830f689e-d71e-11f1-b19a-4674b796d526", "830f6f6a-d71e-11f1-8b40-4674b796d526"
 IN_SESSION, IN_LEG = "434630aa-d7c1-11f1-ab24-02420a0dda20", "434c5958-d7c1-11f1-8622-02420a0dda20"
 VM_SESSION = "921d12aa-d4a3-11f1-8a51-02420a0dda20"
@@ -515,7 +522,7 @@ class ShadowAdapterCLITest(_Ledger):
 class PassCommandTest(_Ledger):
     def test_a_non_call_recording_is_skipped(self):
         proc = subprocess.run([sys.executable, str(COMPONENT / "config/passes.d/bin/call-metadata"), "x.md", "nope"],
-                              capture_output=True, text=True, env={"WAX_ROOT": self.tmp.name, "PATH": "/usr/bin:/bin"})
+                              capture_output=True, text=True, env=minimal_env(self.tmp.name))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout.strip().splitlines()[-1])["reason_code"], "not_a_call")
 
@@ -525,7 +532,7 @@ class TelephonyCommandTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             proc = subprocess.run([sys.executable, str(COMPONENT / "bin/wax"), "--json", "calls", "telephony"],
                                   capture_output=True, text=True,
-                                  env={"WAX_ROOT": root, "PATH": "/usr/bin:/bin"})
+                                  env=minimal_env(root))
             self.assertEqual(proc.returncode, 0, proc.stderr)
             result = json.loads(proc.stdout)
             self.assertEqual(result["schema"], "heyma.telephony.snapshot.v1")
@@ -534,7 +541,7 @@ class TelephonyCommandTest(unittest.TestCase):
 
     def test_limit_validated_and_tx_parser_still_present(self):
         with tempfile.TemporaryDirectory() as root:
-            env = {"WAX_ROOT": root, "PATH": "/usr/bin:/bin"}
+            env = minimal_env(root)
             proc = subprocess.run([sys.executable, str(COMPONENT / "bin/wax"), "--json", "calls",
                                    "telephony", "--limit", "0"], capture_output=True, text=True, env=env)
             self.assertEqual(proc.returncode, 2)

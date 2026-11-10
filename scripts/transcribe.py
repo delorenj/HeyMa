@@ -752,7 +752,10 @@ def main():
     if args.output:
         output_path = args.output
     else:
-        transcript_dir = Path.home() / "d" / "Transcripts"
+        # Honour the same overrides as bin/transcribe and Wax (TRANSCRIPTS, then WAX_VAULT), so a
+        # sandboxed caller (the test suites pin both) can never fall through to the real vault.
+        transcript_dir = Path(os.environ.get("TRANSCRIPTS") or os.environ.get("WAX_VAULT")
+                              or Path.home() / "d" / "Transcripts").expanduser()
         transcript_dir.mkdir(parents=True, exist_ok=True)
         # Name the transcript after the SOURCE file stem so distinct recordings
         # never collide. The old "<date>-<duration>" scheme silently overwrote

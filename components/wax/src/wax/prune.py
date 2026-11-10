@@ -207,6 +207,20 @@ def _int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def body_lost_claim(fm: dict[str, Any], words: int, recorded_words: int = 0) -> int:
+    """The word count a note claims, when its body holds far less speech than that; else 0.
+
+    The one definition of "body lost", shared by ``classify`` (prune) and
+    ``damage`` (``wax doctor``): the larger of the note's own ``word-count`` and
+    the ledger's ``transcripts.word_count`` must exceed ``SHORT_MAX_WORDS`` and
+    ``BODY_LOST_RATIO`` times the ``words`` of speech now in the body.
+    """
+    claimed = max(_int(fm.get("word-count")), _int(recorded_words))
+    if claimed > SHORT_MAX_WORDS and claimed > BODY_LOST_RATIO * max(words, 1):
+        return claimed
+    return 0
+
+
 def classify(fm: dict[str, Any], body: str, name: str = "", *,
              min_words: int = DEFAULT_MIN_WORDS, recorded_words: int = 0) -> Verdict:
     """Decide whether one note is junk. Pure: no I/O.
@@ -219,8 +233,8 @@ def classify(fm: dict[str, Any], body: str, name: str = "", *,
     title, summary = _text(fm.get("title")), _text(fm.get("summary"))
     is_call = _is_call(fm, name)
 
-    claimed = max(_int(fm.get("word-count")), _int(recorded_words))
-    if claimed > SHORT_MAX_WORDS and claimed > BODY_LOST_RATIO * max(words, 1):
+    claimed = body_lost_claim(fm, words, recorded_words)
+    if claimed:
         return Verdict("body-lost", f"body has {words} spoken words but {claimed} were recorded", words)
 
     if words == 0:
@@ -420,6 +434,135 @@ def _held(item: Optional[dict[str, Any]]):
         from contextlib import nullcontext
         return nullcontext(True)
     return operations.try_item_lock(item["item_id"])
+
+
+# -------------------------------------------------------------- integrity ----
+# `wax doctor` asks a different question than prune: not "is this note junk?"
+# but "did something outside Wax destroy a note Wax published?". Two real notes
+# lost their bodies that way (a symlink written through, a manual paste) and
+# nothing noticed for weeks. Same evidence as the body-lost rule, no new thresholds.
+
+DAMAGE_KINDS = ("body-lost", "frontmatter-lost")
+INTEGRITY_BUDGET_S = 10.0       # a doctor probe never hangs, however big the vault grows
+INTEGRITY_LIST_MAX = 10         # offenders named in full; the total is always counted
+
+
+class Damage(NamedTuple):
+    kinds: tuple[str, ...]      # from DAMAGE_KINDS, in that order
+    claimed: int                # words recorded for the note (its word-count, the ledger's); 0 when none
+    words: int                  # spoken words in the body now
+    detail: str
+
+
+def damage(text: str, *, recorded_words: int = 0) -> Optional[Damage]:
+    """How a note Wax published was damaged outside Wax, or None. Pure: no I/O.
+
+    ``body-lost`` is prune's rule (``body_lost_claim``). ``frontmatter-lost``:
+    the note has no frontmatter block, or one that does not parse. Wax stamps
+    ``wax-item-id`` and the ``wax:`` block into every transcript it publishes,
+    so a published note without them was overwritten or pasted over.
+    """
+    try:
+        fm, body = frontmatter.split(text)
+    except Exception:  # noqa: BLE001 - e.g. `captured: 2026-02-30`: yaml's timestamp constructor raises ValueError, not YAMLError
+        # A block Wax cannot parse is a block Wax cannot read, whatever the reason. One such note must never abort
+        # the scan (and with it every other finding): judge it exactly like frontmatter that is not valid YAML.
+        fm, body = {}, text
+    words = speech_words(body)
+    claimed = body_lost_claim(fm, words, recorded_words)
+    kinds: list[str] = []
+    parts: list[str] = []
+    if claimed:
+        kinds.append("body-lost")
+        parts.append(f"body has {words} spoken words but {claimed} were recorded")
+    if not fm:
+        kinds.append("frontmatter-lost")
+        parts.append("frontmatter does not parse" if text.startswith(frontmatter.DELIM)
+                     else "no frontmatter")
+    if not kinds:
+        return None
+    return Damage(tuple(kinds), max(claimed, _int(recorded_words)), words, "; ".join(parts))
+
+
+def _read_note(path: Path) -> tuple[Optional[str], str]:
+    """(text, "ok"), or (None, why): missing | too_large | unreadable. Bounded, and a FIFO or
+    device can never block it."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "unreadable"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, "unreadable"
+        if st.st_size > MAX_NOTE_BYTES:
+            return None, "too_large"
+        data = b""
+        while len(data) <= st.st_size:
+            block = os.read(fd, st.st_size - len(data) + 1)
+            if not block:
+                break
+            data += block
+    except OSError:
+        return None, "unreadable"
+    finally:
+        os.close(fd)
+    try:
+        return data.decode("utf-8"), "ok"
+    except UnicodeDecodeError:
+        return None, "unreadable"
+
+
+def scan_integrity(*, limit: int = INTEGRITY_LIST_MAX,
+                   budget_s: float = INTEGRITY_BUDGET_S) -> dict[str, Any]:
+    """Look for damaged notes among the ledger's published transcripts. Never writes.
+
+    One pass over the ``transcripts`` rows (newest first, ``pruned_at`` rows
+    skipped: their note is in the trash on purpose), each existing note read
+    once and judged by ``damage``. ``complete`` is False when ``budget_s`` ran
+    out first, so a partial scan can never read as a clean one. Up to ``limit``
+    offenders are listed with their restore sources; ``damaged_total`` counts all.
+    A note that cannot be read (not UTF-8 text, not a regular file) cannot be
+    judged either way, so it is counted and listed apart (``unreadable_notes``).
+    """
+    rows = ledger.connect().execute(
+        "SELECT item_id, md_path, word_count, asr_path FROM transcripts "
+        "WHERE pruned_at IS NULL AND md_path IS NOT NULL AND md_path != '' "
+        "ORDER BY created_at DESC, item_id").fetchall()
+    out: dict[str, Any] = {"ledger_rows": len(rows), "checked": 0, "missing": 0, "unreadable": 0,
+                           "too_large": 0, "damaged_total": 0, "damaged": [], "unreadable_notes": [],
+                           "complete": True}
+    deadline = time.monotonic() + budget_s
+    for row in rows:
+        if time.monotonic() > deadline:
+            out["complete"] = False
+            break
+        path = Path(os.path.expanduser(row["md_path"]))
+        text, why = _read_note(path)
+        if text is None:
+            out[why] += 1
+            if why == "unreadable" and len(out["unreadable_notes"]) < limit:
+                out["unreadable_notes"].append({"item_id": row["item_id"], "path": str(path), "name": path.name})
+            continue
+        out["checked"] += 1
+        found = damage(text, recorded_words=_int(row["word_count"]))
+        if found is None:
+            continue
+        out["damaged_total"] += 1
+        if len(out["damaged"]) < limit:
+            item_id = row["item_id"]
+            asr = row["asr_path"] or str(paths.LOGS / item_id / "asr.json")
+            out["damaged"].append({
+                "item_id": item_id, "path": str(path), "name": path.name,
+                "kinds": list(found.kinds), "claimed": found.claimed, "words": found.words,
+                "detail": found.detail,
+                "restore": {"store_history": f"wax transcripts history {item_id}",
+                            "store_show": f"wax transcripts show {item_id} --version N --raw",
+                            "asr_json": asr, "asr_json_exists": os.path.isfile(asr)},
+            })
+    return out
 
 
 # ------------------------------------------------------------------- prune ---

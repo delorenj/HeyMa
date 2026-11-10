@@ -10,6 +10,17 @@
 #   markdown transcript. All progress/log output goes to stderr. This makes the
 #   script safe to invoke from n8n executeCommand (capture .stdout = path).
 #
+# --ephemeral, and scratch sources
+#   A throwaway run keeps its transcript out of the vault (written under
+#   ${TRANSCRIBE_EPHEMERAL_DIR:-/tmp/ephemeral_transcripts}, never transcribe.py's
+#   default ~/d/Transcripts or $TRANSCRIPTS; a remote run keeps the remote copy in
+#   its staging dir too) and is never archived to S3.
+#   A source whose realpath is under /tmp, /var/tmp, $TMPDIR, ~/.claude/tmp,
+#   ~/.cache or a ~/.hermes/**/cache or audio_cache dir gets the same OUTPUT placement even without
+#   --ephemeral (a note on stderr says so); S3, the fast lane and the rest stay
+#   as asked. An explicit -o/--output always wins. Audio under $WAX_ROOT
+#   (default ~/HeyMa), where waxd works, is never scratch.
+#
 # --archive-s3
 #   BACKUP-FIRST POLICY (the audio is the irreplaceable artifact):
 #   BEFORE transcription runs, upload the source audio to
@@ -176,6 +187,48 @@ done
 
 AUDIO="$(realpath "$AUDIO")"
 
+# Where a throwaway run's transcript goes (--ephemeral, or a scratch source below).
+EPHEMERAL_DIR="${TRANSCRIBE_EPHEMERAL_DIR:-/tmp/ephemeral_transcripts}"
+
+# Is $1 (a realpath) audio living in a temp/scratch location? Such a file is a throwaway (an agent's voice note,
+# a proof clip), never a recording that belongs in the vault. Junk notes (tmp*.md, proof.md) reached ~/d/Transcripts
+# from ad-hoc runs on ~/.claude/tmp, ~/.hermes/**/cache and /tmp audio that did not pass --ephemeral.
+#
+# Wax's own tree is never scratch: waxd transcribes from ${WAX_ROOT}/inbox and /stream, and the wax test suites
+# build a throwaway WAX_ROOT under /tmp that must behave exactly like production.
+is_scratch_audio() {
+  local p="$1" root home_real dir real
+  # The same precedence as wax/paths.py: WAX_ROOT, then the legacy WAX_AUDIO_ROOT, then ~/HeyMa.
+  root="$(realpath -m -- "${WAX_ROOT:-${WAX_AUDIO_ROOT:-${HOME}/HeyMa}}" 2>/dev/null || true)"
+  if [[ -n "$root" && "$root" != "/" && "$p" == "$root"/* ]]; then return 1; fi
+  home_real="$(realpath -m -- "${HOME}" 2>/dev/null || true)"
+  for dir in /tmp /var/tmp "${HOME}/.claude/tmp" "${HOME}/.cache"; do
+    real="$(realpath -m -- "$dir" 2>/dev/null || true)"
+    [[ -n "$real" && "$real" != "/" && "$p" == "$real"/* ]] && return 0
+  done
+  # $TMPDIR is the caller's say-so: one that is $HOME or an ancestor of it (or "/") would make every file scratch.
+  if [[ -n "${TMPDIR:-}" ]]; then
+    real="$(realpath -m -- "$TMPDIR" 2>/dev/null || true)"
+    if [[ -n "$real" && "$real" != "/" && "$home_real" != "$real" && "$home_real" != "$real"/* \
+          && "$p" == "$real"/* ]]; then return 0; fi
+  fi
+  if [[ -n "$home_real" ]]; then
+    case "$p" in
+      "$home_real"/.hermes/cache/* | "$home_real"/.hermes/audio_cache/* \
+        | "$home_real"/.hermes/*/cache/* | "$home_real"/.hermes/*/audio_cache/*) return 0 ;;
+    esac
+  fi
+  return 1
+}
+
+# Output placement: --ephemeral always, and a scratch source even without it. Only PLACEMENT follows scratch
+# audio: --archive-s3, the fast lane and every other --ephemeral behaviour stay what the caller asked for.
+EPHEMERAL_OUTPUT="$EPHEMERAL"
+if [[ "$EPHEMERAL" != "true" ]] && is_scratch_audio "$AUDIO"; then
+  EPHEMERAL_OUTPUT=true
+  log "[scratch] ${AUDIO} is a temp/scratch file: transcript goes to ${EPHEMERAL_DIR}, not the vault (pass --output to choose)."
+fi
+
 is_local() { [[ "$(hostname)" == "${TRANSCRIBE_HOSTNAME}" ]]; }
 
 has_arg() {
@@ -185,6 +238,32 @@ has_arg() {
     [[ "$arg" == "$needle" || "$arg" == "${needle}="* ]] && return 0
   done
   return 1
+}
+
+# The caller named the transcript's destination (transcribe.py -o/--output): that choice is honoured.
+has_output_arg() {
+  local arg
+  if ((${#EXTRA_ARGS[@]} == 0)); then return 1; fi
+  for arg in "${EXTRA_ARGS[@]}"; do
+    [[ "$arg" == "--output" || "$arg" == "--output="* || "$arg" == "-o" || "$arg" == "-o"* ]] && return 0
+  done
+  return 1
+}
+
+# "<stem>-<pid>.md" (".json" for --json, as scripts/transcribe.py names it): the file name of a throwaway transcript.
+ephemeral_name() {
+  local stem ext=md
+  stem="$(basename "$AUDIO")"
+  has_arg --json && ext=json
+  printf '%s-%s.%s\n' "${stem%.*}" "$$" "$ext"
+}
+
+# Local runs: scripts/transcribe.py writes ~/d/Transcripts/<stem>.md unless told otherwise (it never reads
+# $TRANSCRIPTS), so a throwaway run must be told where to write.
+route_output_to_ephemeral_dir() {
+  has_output_arg && return 0
+  mkdir -p "$EPHEMERAL_DIR" || { log "[error] cannot create ${EPHEMERAL_DIR}"; exit 1; }
+  EXTRA_ARGS+=(--output "${EPHEMERAL_DIR}/$(ephemeral_name)")
 }
 
 should_retry_on_cpu() {
@@ -375,6 +454,9 @@ if is_local; then
           rm -f "$LOG_FILE"
         fi' EXIT
 
+  # STEP 0: a throwaway run (--ephemeral, or a scratch source) writes its transcript outside the vault.
+  if [[ "$EPHEMERAL_OUTPUT" == "true" ]]; then route_output_to_ephemeral_dir; fi
+
   # STEP 1 (PRIORITY): back up the source audio to S3 BEFORE transcribing.
   # The audio is the irreplaceable artifact; the transcript can always be
   # regenerated from it. We never delete the source.
@@ -454,10 +536,21 @@ REMOTE_FILE="${REMOTE_STAGING}/${FILENAME}"
 REMOTE_LOG="${REMOTE_STAGING}/${FILENAME}.log"
 TAIL_PID=""
 
+# A throwaway run must not leave its transcript in the REMOTE host's vault either: scripts/transcribe.py there writes
+# ~/d/Transcripts/<stem>.md unless told where, and the scp below only decides where the LOCAL copy lands. Keep the
+# transcript in the staging dir (removed on exit, after the copy-back) unless the caller named a destination.
+REMOTE_EPHEMERAL_MD=""
+if [[ "$EPHEMERAL_OUTPUT" == "true" ]] && ! has_output_arg; then
+  REMOTE_EPHEMERAL_MD="${REMOTE_STAGING}/$(ephemeral_name)"
+  EXTRA_ARGS+=(--output "$REMOTE_EPHEMERAL_MD")
+fi
+
 cleanup() {
+  local also=""
   [[ -n "$TAIL_PID" ]] && kill "$TAIL_PID" 2>/dev/null || true
   wait "$TAIL_PID" 2>/dev/null || true
-  ssh -q "$REMOTE" "rm -f '${REMOTE_FILE}' '${REMOTE_LOG}'" 2>/dev/null || true
+  if [[ -n "$REMOTE_EPHEMERAL_MD" ]]; then also=" '${REMOTE_EPHEMERAL_MD}'"; fi
+  ssh -q "$REMOTE" "rm -f '${REMOTE_FILE}' '${REMOTE_LOG}'${also}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -518,7 +611,7 @@ if [[ -z "$REMOTE_MD" ]]; then
   exit 1
 fi
 
-if [[ "$EPHEMERAL" == "true" ]]; then LOCAL_DIR="/tmp/ephemeral_transcripts"; else LOCAL_DIR="${TRANSCRIPTS:-${HOME}/d/Notes/Transcripts}"; fi
+if [[ "$EPHEMERAL_OUTPUT" == "true" ]]; then LOCAL_DIR="$EPHEMERAL_DIR"; else LOCAL_DIR="${TRANSCRIPTS:-${HOME}/d/Notes/Transcripts}"; fi
 mkdir -p "$LOCAL_DIR"
 LOCAL_MD="${LOCAL_DIR}/$(basename "$REMOTE_MD")"
 scp -q "${REMOTE}:${REMOTE_MD}" "$LOCAL_MD"

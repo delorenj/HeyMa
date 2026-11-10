@@ -82,7 +82,10 @@ at any length. Voicemails include real people's messages: `--keep voicemail`
 spares them all. `body-lost` (a body far smaller than the word count recorded
 for it, in the note's `word-count` or `transcripts.word_count`) is checked first,
 reported and kept: that is a clobbered transcript to recover (the ASR JSON in
-`var/logs/<item>/asr.json`, or `wax transcripts history`), not junk.
+`var/logs/<item>/asr.json`, or `wax transcripts history`), not junk. `wax doctor`
+runs the same rule (one definition, `prune.body_lost_claim`) as its read-only
+"transcript notes intact" probe, so a destroyed body is found without anyone
+running a prune; see the [doctor](../subskills/doctor/SUBSKILL.md) sub-skill.
 
 What a prune writes: the note moves (rename, no-clobber, inode-verified; never
 unlinked; audio untouched), `transcripts.pruned_at` is stamped so the item's

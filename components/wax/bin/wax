@@ -1200,6 +1200,7 @@ def probe_all() -> list[dict[str, Any]]:
                "" if reachable else "start NATS; events queue in the outbox meanwhile (fail-open)"))
     probe_outbox(add)
     probe_transcriptions(add)
+    probe_note_integrity(add)
     probe_calls(add)
 
     # -- contract-A stage health -------------------------------------------
@@ -1355,6 +1356,63 @@ CALLS_SYNC_WARN_S = 30 * 60   # candybar fires wax-calls-sync every 10 min
 CALLS_SYNC_FAIL_S = 3 * 3600
 
 
+def probe_note_integrity(add) -> None:
+    """Published notes still hold what Wax wrote (prune.scan_integrity): the words, and a frontmatter block.
+
+    Two real transcripts lost their bodies outside Wax (a symlink written through, a manual paste) and nothing
+    noticed for weeks; this is the something. One pass over the ledger's transcript rows, each note read once,
+    under a time budget, and it never writes. WARN, not FAIL: the store keeps every version and the ASR JSON
+    keeps the words, so the data is recoverable and nothing is stopped.
+    """
+    name = "transcript notes intact"
+    try:
+        scan = prune.scan_integrity()
+    except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
+        add(_probe(name, WARN, f"{type(e).__name__}: {e}"))
+        return
+    notes = scan["damaged"]
+    skipped = ", ".join(f"{scan[k]} {label}" for k, label in (
+        ("missing", "missing on disk"), ("unreadable", "unreadable"), ("too_large", "too large to read"))
+        if scan[k])
+    skipped = f" ({skipped})" if skipped else ""
+    if scan["damaged_total"]:
+        first = notes[0]
+        listed = "" if len(notes) == scan["damaged_total"] else f"; newest {len(notes)} listed"
+        row = _probe(
+            name, WARN,
+            f"{scan['damaged_total']} of {scan['checked']} published note(s) lost their body or frontmatter "
+            f"outside Wax{listed}{skipped}",
+            f"restore from the store: wax transcripts history {first['item_id']}, then wax transcripts show "
+            f"{first['item_id']} --version N --raw; the ASR text is {first['restore']['asr_json']}"
+            + ("" if first["restore"]["asr_json_exists"] else " (missing)"))
+        row["notes"] = notes
+        row["lines"] = [
+            f"{n['name']}  item {n['item_id']}  {' + '.join(n['kinds'])}: {n['words']} word(s) present, "
+            f"{n['claimed'] or 'none'} recorded" for n in notes]
+        if not scan["complete"]:
+            row["detail"] += f"; scan stopped at its {prune.INTEGRITY_BUDGET_S:.0f}s budget"
+        add(row)
+    elif not scan["complete"]:
+        add(_probe(name, WARN,
+                   f"scan stopped at its {prune.INTEGRITY_BUDGET_S:.0f}s budget after {scan['checked']} of "
+                   f"{scan['ledger_rows']} ledger note(s); none damaged so far{skipped}"))
+    elif scan["unreadable"]:
+        names = ", ".join(n["name"] for n in scan["unreadable_notes"])
+        more = "" if len(scan["unreadable_notes"]) == scan["unreadable"] else ", ..."
+        add(_probe(name, WARN,
+                   f"{scan['unreadable']} published note(s) could not be read (not UTF-8 text, or not a regular "
+                   f"file), so they were not judged: {names}{more}; {scan['checked']} others read{skipped}",
+                   "open the note; restore it from the transcripts store (wax transcripts history <item>)"))
+    elif scan["ledger_rows"] and not scan["checked"]:
+        add(_probe(name, WARN,
+                   f"none of the {scan['ledger_rows']} ledger transcript(s) has a readable note{skipped}",
+                   f"is the vault ({paths.VAULT}) moved or unmounted?"))
+    else:
+        add(_probe(name, PASS,
+                   f"{scan['checked']} published note(s) read; none lost its body or frontmatter{skipped}"
+                   if scan["checked"] else "no published transcripts in the ledger yet"))
+
+
 def calls_snapshot() -> dict[str, Any]:
     """The call log's line in `wax status`. Never synced is reported, not failed: a box with
     no Telnyx line is legitimate. A stale reconcile or a stranded voicemail is an error."""
@@ -1475,6 +1533,8 @@ def doctor(as_json: bool, quiet: bool) -> int:
     print("PROBES")
     for probe in probes:
         print(f"  {probe['status'].upper():<4}  {probe['probe']:<40}  {probe['detail']}")
+        for line in probe.get("lines") or ():
+            print(f"        {'':<40}  - {line}")
         if probe.get("fix"):
             print(f"        {'':<40}  fix: {probe['fix']}")
     print()

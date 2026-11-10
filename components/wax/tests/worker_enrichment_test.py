@@ -18,7 +18,11 @@ class WorkerEnrichmentTest(unittest.TestCase):
             connection.execute.return_value.fetchone.return_value = {"state": "pending"}
             claims = []
             enrichment = [{"ep_slug": "title-slug", "state": "failed", "error": "model offline"}]
+            # worker.process takes the per-item lock under paths.VAR and makes the dated directory under
+            # paths.ARCHIVE; both belong to this test's own root, never to the runtime root.
             with patch.object(worker, "_write_claim", side_effect=lambda _item, _path, stage: claims.append(stage)), \
+                    patch.object(worker.paths, "VAR", root / "var"), \
+                    patch.object(worker.paths, "ARCHIVE", root / "archive"), \
                     patch.object(worker.archive, "archive", return_value={
                         "s3_key": "2026-08-10/hash-recording.ogg",
                         "bytes": audio.stat().st_size,
@@ -62,7 +66,10 @@ class WorkerEnrichmentTest(unittest.TestCase):
             {"item_id": "item-id", "ep_slug": "wikification", "state": "completed"},
         ]
 
-        with patch.object(worker.ledger, "connect", return_value=connection), \
+        # retry_failed_passes takes the per-item lock under paths.VAR: a directory of this test's own.
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(worker.paths, "VAR", Path(directory) / "var"), \
+                patch.object(worker.ledger, "connect", return_value=connection), \
                 patch.object(worker.passes, "run", side_effect=results) as run, \
                 patch.object(worker.finalize, "publish_pass_events", return_value={"pass_events": 0}), \
                 patch.object(worker, "_log_enrichment", return_value=[]), \

@@ -74,9 +74,27 @@ Never hand-edit a compiled pipeline or the gateway token scope; change the sourc
 
 The [telephony](telephony.md) component is disabled by default, with desktop ringing opt-in. Its nonsecret config and local shadow receipts do not authorize Telnyx mutation or ASR suppression; `enforce` is refused. Do not activate a webhook, provision Jev keys, change the main-DID assignment, buy resources or alter recording as part of this release. A source commit does not reload the existing daemon/tray; any presentation restart must be coordinated separately. See `docs/telephony-shadow-contract.md` for the implementation/review boundary.
 
+## Test isolation
+
+The suites cannot write the real vault or the real ledger. The shell exports `TRANSCRIPTS=$HOME/d/Transcripts`, and `WAX_VAULT` and `WAX_ROOT` default to `~/d/Transcripts` and `~/HeyMa`, so an unpinned test run once put fixture notes (`a-first.ogg.md`, `b-second.ogg.md`) into the real vault, and every `bin/transcribe` a test spawns with an inherited env would do the same for a non-ephemeral run (the `tmp*.md` and `proof.md` notes came from ad-hoc agent runs that inherited `TRANSCRIPTS` the same way; see [transcription](transcription.md)). Now `components/wax/tests/conftest.py` (the wax suite) and `tests/conftest.py` (the root suite: `bin/transcribe`, the Hermes adapter) pin these to one temp sandbox before `wax` is imported, so in-process paths and every subprocess that inherits `os.environ` land there:
+
+| Pinned | Why |
+|---|---|
+| `WAX_ROOT`, `WAX_VAULT`, `TRANSCRIPTS` | the ledger (`var/wax.db`), the runtime dirs, the vault, and `bin/transcribe`'s output dir |
+| `WAX_DICTIONARY`, `WAX_DOC_HYGIENE_FOLDERS` (wax suite) | `Dictionary.yaml` lives in the root; the hygiene default sweeps `~/d/Inbox` and `~/d/Sandbox` |
+| `TRANSCRIBE_STASH_DIR`, `TRANSCRIBE_LOCK_FILE`, `TRANSCRIBE_FAST_LOCK_FILE` (both suites) | `bin/transcribe`'s safety copies and the machine-wide transcription slot |
+| `TRANSCRIBE_EPHEMERAL_DIR`, `MC_BIN`, `HERMES_TRANSCRIBE_BIN` (root suite) | scratch transcripts, S3 upload (no client to upload with), the adapter's real wrapper |
+
+Rules for a test:
+
+- Give it its own temp dirs and `patch.object(paths, ...)` for every path it touches: `VAR`, `DB`, `ARCHIVE`, `SKIPPED`, `INBOX`, `VAULT`. An unpatched path lands in the sandbox, never the real tree.
+- A subprocess built with a **minimal** env (`env={"WAX_ROOT": ..., "PATH": ...}`) does not inherit the pins and falls back to the real vault. Carry `WAX_VAULT` and `TRANSCRIPTS` too (see `minimal_env()` in `calls_test.py`).
+- Never override a pin back to a real path. An autouse fixture runs `isolation_leaks()` before every test and fails it if the vault, ledger or runtime root of the process resolve to `~/d/Transcripts`, its realpath `~/code/DeLoDocs/Transcripts`, or `~/HeyMa/var/wax.db`. A pin that is merely dropped counts too: each unset default (`~/d/Inbox:~/d/Sandbox`, `~/audio/recovered`, `~/.cache/heyma-transcribe*.lock`) is the real path. `isolation_guard_test.py` (wax) and `test_isolation_guard.py` (root) keep that check honest.
+- The guard checks where the process *can write*, never what is in the real vault: waxd publishes there while tests run, so a before/after diff would false-positive.
+
 ## Shipping a change
 
-1. Run the suite: `mise run wax:test` (or `cd components/wax && python3 -m pytest tests`). It needs no `PYTHONPATH`. Real-Postgres tests: `mise run wax:test:pg`.
+1. Run the suite: `mise run wax:test` (or `cd components/wax && python3 -m pytest tests`). It needs no `PYTHONPATH`. The root suite (`bin/transcribe`, the Hermes adapter): `python3 -m pytest tests` from the repo root. Real-Postgres tests: `mise run wax:test:pg`. Anything over a minute goes through `heavy`.
 2. **Python under `src/` or `bin/`**: restart `waxd.service`. A plain restart leaves the capture encoder scope running, so it does not cut a recording; still check `wax rec list` first and verify the worker heartbeat after.
 3. **Pass YAML or env**: compiled pipelines froze the old values. Re-import both releases (`wax pipeline import ... --name transcript-standard|doc-standard`); see [pipelines](pipelines.md).
 4. **Unit file**: `install-systemd-user`, then restart waxd. If `wax status` says the store ticks `disabled`, the unit changed after waxd started.

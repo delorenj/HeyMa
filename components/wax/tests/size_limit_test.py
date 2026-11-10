@@ -66,6 +66,7 @@ class TranscriptionSizeLimitTest(unittest.TestCase):
                     patch.object(worker.config, "transcription_size_allowed", return_value=True), \
                     patch.object(worker.sanity, "probe_duration", return_value=50_044.3), \
                     patch.object(worker.paths, "SKIPPED", root / "skipped"), \
+                    patch.object(worker.paths, "VAR", root / "var"), \
                     patch.object(worker.rename, "move_noclobber", return_value=moved), \
                     patch.object(worker.ledger, "connect", return_value=connection), \
                     patch.object(worker.ledger, "set_item_state") as set_state, \

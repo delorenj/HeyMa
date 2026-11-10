@@ -27,7 +27,7 @@ The hotkey must call `~/.local/bin/wax-toggle` (symlink to `components/wax/bin/w
 | `wax history [-n 20] [--machine stream\|inbox\|item]` | Append-only transition log |
 | `wax items` | Ledger item states, all-time. Includes rows whose file is gone, so it can show hundreds of "pending" beside an empty queue (214 on 2026-11-05) |
 | `wax queue [--clear-completed]` | The tray's queue rows; `--clear-completed` removes finished rows |
-| `wax doctor [--quiet]` | Resolved config plus a probe of every dependency. Exit 2 fail, 1 warn, 0 clean. Warnings are informational, not a gate |
+| `wax doctor [--quiet]` | Resolved config plus a probe of every dependency. Exit 2 fail, 1 warn, 0 clean. Warnings are informational, not a gate. Includes `transcript notes intact`: a WARN naming published notes whose body or frontmatter was destroyed outside Wax, with the restore sources ([doctor](../subskills/doctor/SUBSKILL.md)) |
 
 ## Inbox control
 
