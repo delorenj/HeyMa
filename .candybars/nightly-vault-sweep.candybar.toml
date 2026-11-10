@@ -1,0 +1,12 @@
+[candybar]
+name = "nightly-vault-sweep"
+description = "Vault-wide junk sweep of ~/d: trash empty, temp, scratch and stamp-only Untitled notes, title Untitled chains, drop identical copies, move loose root notes to Inbox, remove empty folders. Undo with `wax vault unsweep --run <id>`."
+tags = ["nightly", "HeyMa", "vault", "maintenance"]
+schedule = "40 3 * * *"
+timezone = "America/New_York"
+enabled = false
+
+[candybar.runner]
+kind = "exec"
+argv = ["/home/delorenj/HeyMa/bin/wax", "vault", "sweep", "--apply"]
+timeout_s = 10800
