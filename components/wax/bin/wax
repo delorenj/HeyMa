@@ -1961,8 +1961,9 @@ def transcripts_command(args, J: bool) -> int:
             for err in out["errors"]:
                 print(f"ERROR  {err}")
             if not (out["restored"] or out["skipped"] or out["errors"]):
-                print("nothing in the prune manifest matches")
-        return 2 if out["errors"] or not (out["restored"] or out["skipped"]) else 0
+                print("nothing to restore: no pruned note in var/prune.jsonl matches "
+                      "(already restored, or never pruned)")
+        return 2 if out["errors"] or out["skipped"] or not out["restored"] else 0
     if args.sub == "search":
         try:
             out = transcriptions.search.run(

@@ -140,6 +140,44 @@ class ClassifyTest(unittest.TestCase):
         self.assertIsNone(self.reason(fm_body))
 
 
+    def test_long_note_whose_title_mentions_voicemail_is_kept(self):
+        fm_body = _note("title: Designing Voicemail Spam Filtering", "**A (00:00):** " + "word " * 3000)
+        self.assertIsNone(self.reason(fm_body))
+
+    def test_non_latin_speech_counts(self):
+        self.assertEqual(prune.speech_words("**Me (00:00):** Привет, как дела сегодня"), 4)
+        self.assertGreater(prune.speech_words("**Me (00:00):** 你好，我想预订明天的会议室"), 0)
+
+    def test_ledger_word_count_reveals_a_clobbered_body(self):
+        fm, body = _note("pipeline-status: new", "./BRAINDUMP.md -")
+        self.assertEqual(prune.classify(fm, body, "x.md").reason, "too-short")
+        self.assertEqual(prune.classify(fm, body, "x.md", recorded_words=3040).reason, "body-lost")
+        vm, vbody = _note("title: Jarad Voicemail Greeting", "**A (00:00):** Hi, you've reached Jarad.")
+        self.assertEqual(prune.classify(vm, vbody, "v.md", recorded_words=4).reason, "voicemail")
+
+    def test_greeting_opening_a_call_is_a_voicemail(self):
+        fm_body = _note("classification: phone_call\ntitle: Personal Loan Pre-Approval Offer",
+                        "**Speaker 1 (00:00):** Hi, you've reached Jarad. Leave a message after the tone. "
+                        + "word " * 100)
+        self.assertEqual(self.reason(fm_body), "voicemail")
+        dictation = _note("title: Notes", "**Speaker 1 (00:00):** Hi, you've reached Jarad. "
+                          "Leave a message after the tone. " + "word " * 100)
+        self.assertIsNone(self.reason(dictation))
+
+    def test_floor_no_content_needs_a_fragment(self):
+        floor = "classification-detail: no_content\nclassification-source: rule:floor\ntitle: Pjangler"
+        self.assertIsNone(self.reason(_note(floor, "This is great. How can we incorporate this into Pjangler?")))
+        self.assertEqual(self.reason(_note(floor, "We're talking to me")), "no-content")
+
+    def test_untitled_test_utterance(self):
+        self.assertEqual(self.reason(_note("pipeline-status: new",
+                                           "All right. Now let's see if this works. Coconuts.")), "no-content")
+
+    def test_automated_call_menu_title_is_believed_past_the_short_fence(self):
+        fm_body = _note("classification: phone_call\ntitle: Automated Wells Fargo Auto Account Identification Menu",
+                        "**A (00:00):** " + "press one " * 100)
+        self.assertEqual(self.reason(fm_body), "no-content")
+
     def test_queued_states_mirror_the_worker(self):
         import ast
         tree = ast.parse((COMPONENT / "src/wax/worker.py").read_text())
@@ -288,6 +326,41 @@ class PruneSweepTest(_Vault):
         with self.assertRaises(prune.PruneError):
             prune.prune(reasons=["nope"])
 
+    def test_suspect_quarantine_is_never_touched(self):
+        self.note("x.suspect.md", JUNK)
+        out = prune.prune(apply=True, sync_store=False)
+        self.assertEqual(out["counts"].get("scanned"), None)
+        self.assertTrue((self.folder_path / "x.suspect.md").is_file())
+
+    def test_ledger_word_count_holds_back_a_clobbered_note(self):
+        path = self.note("lost.md", "---\nwax-item-id: {item}\n---\n\n./BRAINDUMP.md -\n", item="dddd4444")
+        self.conn.execute("UPDATE transcripts SET word_count=3040 WHERE item_id='dddd4444'")
+        out = prune.prune(apply=True, sync_store=False)
+        self.assertNotIn("pruned", out["counts"])
+        self.assertEqual(out["held_back"][0]["reason"], "body-lost")
+        self.assertTrue(path.is_file())
+
+    def test_manifest_survives_a_failed_ledger_update(self):
+        junk = self.note("vm.md", JUNK, item="aaaa1111")
+        with patch.object(prune.ledger, "record_transition", side_effect=RuntimeError("database is locked")):
+            out = prune.prune(apply=True, sync_store=False)
+        self.assertEqual(out["counts"].get("errors"), 1)
+        self.assertIn(str(self.trashed("vm.md")), out["errors"][0])
+        prune.restore(run=out["run"])
+        self.assertTrue(junk.is_file())
+
+    def test_store_sync_reports_vanished_marks(self):
+        self.note("vm.md", JUNK)
+        from wax.transcriptions import reconcile as store_reconcile
+        with patch.object(store_reconcile, "sweep", return_value={"vanished_marked": 1, "errors": []}):
+            out = prune.prune(apply=True)
+        self.assertEqual(out["store"], {"ok": True, "vanished_marked": 1, "errors": []})
+        with patch.object(store_reconcile, "sweep", side_effect=RuntimeError("store down")):
+            self.note("vm2.md", JUNK)
+            out = prune.prune(apply=True)
+        self.assertFalse(out["store"]["ok"])
+        self.assertEqual(out["errors"], [])
+
     def test_no_obsidian_vault_refuses(self):
         (self.vault / ".obsidian").rmdir()
         with self.assertRaises(prune.PruneError):
@@ -321,6 +394,28 @@ class PrunedLedgerTest(_Vault):
         self.assertIsNone(row["pruned_at"])
         self.assertEqual(ledger.passes_failed()["failed"], 1)
         self.assertEqual(prune.restore(names=["vm.md"])["restored"], [])   # newest entry is the restore
+
+    def test_pruned_items_never_dead_letter(self):
+        self.note("vm.md", JUNK, item="aaaa1111")
+        self.conn.execute(
+            "INSERT INTO passes(item_id,ep_slug,version,state,attempt,updated_at,detail,reason_code) "
+            "VALUES('aaaa1111','title-slug',3,'failed',3,'2026-11-09T00:00:00.000Z','boom','x')")
+        prune.prune(apply=True, sync_store=False)
+        with patch.object(passes, "_emit_exhausted", return_value=True) as emit:
+            passes.sweep_exhaustions(3)
+        emit.assert_not_called()
+
+    def test_unprune_keeps_the_ledger_spelling_of_the_path(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.vault)
+        junk = self.note("vm.md", JUNK, item="aaaa1111")
+        spelled = str(alias / "Transcripts" / "vm.md")
+        self.conn.execute("UPDATE transcripts SET md_path=? WHERE item_id='aaaa1111'", (spelled,))
+        run = prune.prune(apply=True, sync_store=False)["run"]
+        self.assertFalse(junk.exists())
+        prune.restore(run=run)
+        row = self.conn.execute("SELECT md_path FROM transcripts WHERE item_id='aaaa1111'").fetchone()
+        self.assertEqual(row["md_path"], spelled)
 
     def test_unprune_by_name_and_requires_a_selector(self):
         junk = self.note("vm.md", JUNK)

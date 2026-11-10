@@ -525,7 +525,8 @@ def sweep_exhaustions(max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> list[dict[str
     rows = conn.execute(
         "SELECT item_id, ep_slug, version, attempt, reason_code, detail, command_id "
         "FROM passes WHERE state='failed' AND attempt>=? AND exhausted_at IS NULL "
-        "AND COALESCE(reason_code,'') != 'dependency_failed'",
+        "AND COALESCE(reason_code,'') != 'dependency_failed' "
+        f"AND item_id NOT IN ({ledger._PRUNED_ITEMS})",   # no note: nobody can act on it
         (max_attempts,)).fetchall()
     fired = []
     for row in rows:

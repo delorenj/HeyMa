@@ -11,7 +11,9 @@ Classification believes the title and summary first: the title-slug and
 summarize passes already read the transcript, and when a note's title says
 "Voicemail Greeting" or "Insufficient Transcript Content" that is the best
 evidence there is. Every title/summary rule is fenced by a word count, so a long
-meeting that happens to mention a voicemail is never touched. Rules, first hit
+meeting that happens to mention a voicemail is never touched; only structure
+(``call-outcome: voicemail``, a ``telnyx-vm-*`` source, a call that opens on a
+voicemail greeting) is believed at any length. Rules, first hit
 wins:
 
 ==============  ============================================================
@@ -26,8 +28,9 @@ wins:
                 ``no_content``, on a short note
 ``too-short``   fewer than ``min_words`` spoken words
 ``call-noise``  a phone call with at most ``CALL_NOISE_MAX_WORDS`` spoken words
-``body-lost``   (reported, not pruned by default) an empty body on a note
-                whose ``word-count`` says it once held a real transcript
+``body-lost``   (reported, not pruned by default, checked first) a body far
+                smaller than the word count recorded for it (the note's
+                ``word-count`` or the ledger's): a clobbered transcript
 ==============  ============================================================
 
 Safety, all in ``prune_note`` (the one choke point the CLI and dry run share):
@@ -79,7 +82,7 @@ DEFAULT_REASONS = REASONS[:-1]
 
 DEFAULT_MIN_WORDS = 4            # fewer spoken words than this is "too-short"
 DEFAULT_MIN_AGE_S = 1800.0       # leave notes alone while enrichment may still title them
-CALL_NOISE_MAX_WORDS = 15        # a call with no more than this said is connection noise
+CALL_NOISE_MAX_WORDS = 20        # a call with no more than this said is connection noise
 SHORT_MAX_WORDS = 60             # title/summary rules only judge notes this short...
 VOICEMAIL_SUMMARY_MAX_WORDS = 300  # ...except a voicemail named by its summary
 MAX_NOTE_BYTES = 4 << 20         # never classify (or move) a giant file
@@ -124,12 +127,33 @@ NO_CONTENT_RE = re.compile(
     r"|\bnonsense\b"
     r"|\b(?:automated|system) (?:message|prompt|readout|announcement)\b"
     r"|\bverification system\b"
-    r"|\bmenu prompt\b",
+    r"|\bmenu prompt\b"
+    r"|\bheyma probe\b|\bprobe (?:call|test)\b|\bphone answering\b"
+    r"|\btesting (?:voice note|message)\b"
+    r"|\b(?:message|voice note|button|audio quality|quality comparison)\b.{0,30}\btest\b"
+    r"|\btest\b.{0,30}\b(?:delivery|transmission)\b",
     re.IGNORECASE)
 
 _LABEL_RE = re.compile(r"^\*\*[^*\n]{1,80}?\*\*:?\s*")   # **Speaker 1 (00:00):**
 _META_LINE_RE = re.compile(r"^[-*] \*\*[^*\n]{1,40}\*\*:")   # - **Duration**: 2.8s (legacy header)
-_WORD_RE = re.compile(r"[A-Za-z0-9]")
+# A voicemail greeting that opens the recording: the call rolled to voicemail
+# and whatever follows is the message. Searched in the first lines of a call.
+VM_GREETING_RE = re.compile(
+    r"\byou'?ve reached\b[^.\n]{0,40}[.!]\s*(?:please\s+)?leave (?:a |your )?message\b", re.IGNORECASE)
+# A call title naming an automated phone system: believed up to the long fence.
+AUTOMATED_CALL_TITLE_RE = re.compile(
+    r"^automated\b.*\b(?:menu|greeting|prompt|system|announcement)\b", re.IGNORECASE)
+# Untitled test utterances ("let's see if this works").
+TEST_BODY_RE = re.compile(
+    r"\b(?:this is a test|let'?s see if (?:it|this) works|if it works,? then|count to (?:three|four|ten))\b",
+    re.IGNORECASE)
+TEST_BODY_MAX_WORDS = 20
+# Jev's classification floor tags anything under 15 words and 10 s no_content
+# without reading it; believed alone only for fragments this short.
+FLOOR_NO_CONTENT_MAX_WORDS = 7
+# A body this many times smaller than the word count recorded for it was
+# clobbered, not short.
+BODY_LOST_RATIO = 4
 
 
 class Verdict(NamedTuple):
@@ -157,7 +181,7 @@ def speech_words(body: str) -> int:
             continue
         s = _LABEL_RE.sub("", s)
         for tok in s.split():
-            if "://" in tok or not _WORD_RE.search(tok):
+            if "://" in tok or not any(ch.isalnum() for ch in tok):
                 continue
             n += 1
     return n
@@ -179,41 +203,62 @@ def _source_names(fm: dict[str, Any], body: str, name: str) -> str:
     return " ".join([name, head, _text(fm.get("source-audio")), _text(fm.get("source-s3-key"))]).lower()
 
 
+def _int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def classify(fm: dict[str, Any], body: str, name: str = "", *,
-             min_words: int = DEFAULT_MIN_WORDS) -> Verdict:
-    """Decide whether one note is junk. Pure: no I/O."""
+             min_words: int = DEFAULT_MIN_WORDS, recorded_words: int = 0) -> Verdict:
+    """Decide whether one note is junk. Pure: no I/O.
+
+    ``recorded_words`` is the word count Wax recorded for this transcript when
+    it was written (``transcripts.word_count``); with the note's own
+    ``word-count`` it is the evidence that a short body was clobbered.
+    """
     words = speech_words(body)
     title, summary = _text(fm.get("title")), _text(fm.get("summary"))
+    is_call = _is_call(fm, name)
+
+    claimed = max(_int(fm.get("word-count")), _int(recorded_words))
+    if claimed > SHORT_MAX_WORDS and claimed > BODY_LOST_RATIO * max(words, 1):
+        return Verdict("body-lost", f"body has {words} spoken words but {claimed} were recorded", words)
 
     if words == 0:
-        claimed = fm.get("word-count")
-        if isinstance(claimed, int) and not isinstance(claimed, bool) and claimed > SHORT_MAX_WORDS:
-            return Verdict("body-lost", f"body is empty but word-count says {claimed}", words)
         return Verdict("empty", "no spoken words in the body", words)
 
     if _text(fm.get("call-outcome")).lower() == "voicemail":
         return Verdict("voicemail", "call-outcome: voicemail", words)
     if "telnyx-vm-" in _source_names(fm, body, name):
         return Verdict("voicemail", "telnyx voicemail recording", words)
-    m = VOICEMAIL_RE.search(title)
-    if m:
-        return Verdict("voicemail", f"title says {m.group(0)!r}", words)
-    m = VOICEMAIL_RE.search(summary)
-    if m and words <= VOICEMAIL_SUMMARY_MAX_WORDS:
-        return Verdict("voicemail", f"summary says {m.group(0)!r}", words)
+    if is_call and VM_GREETING_RE.search(body[:700]):
+        return Verdict("voicemail", "voicemail greeting opens the call", words)
+    if words <= VOICEMAIL_SUMMARY_MAX_WORDS:
+        for field, text in (("title", title), ("summary", summary)):
+            m = VOICEMAIL_RE.search(text)
+            if m:
+                return Verdict("voicemail", f"{field} says {m.group(0)!r}", words)
+        m = AUTOMATED_CALL_TITLE_RE.search(title)
+        if m and is_call:
+            return Verdict("no-content", f"title says {m.group(0)!r}", words)
 
     if words <= SHORT_MAX_WORDS:
         for field, text in (("title", title), ("summary", summary)):
             m = NO_CONTENT_RE.search(text)
             if m:
                 return Verdict("no-content", f"{field} says {m.group(0)!r}", words)
-        if _text(fm.get("classification-detail")) == "no_content":
+        if _text(fm.get("classification-detail")) == "no_content" and (
+                _text(fm.get("classification-source")) != "rule:floor"
+                or words <= FLOOR_NO_CONTENT_MAX_WORDS):
             return Verdict("no-content", "classification-detail: no_content", words)
+    if words <= TEST_BODY_MAX_WORDS:
+        m = TEST_BODY_RE.search(body)
+        if m:
+            return Verdict("no-content", f"test utterance {m.group(0)!r}", words)
 
     if words < min_words:
         return Verdict("too-short", f"{words} spoken word{'s' if words != 1 else ''}", words)
 
-    if words <= CALL_NOISE_MAX_WORDS and _is_call(fm, name):
+    if words <= CALL_NOISE_MAX_WORDS and is_call:
         return Verdict("call-noise", f"phone call with {words} spoken words", words)
 
     return Verdict(None, "", words)
@@ -247,7 +292,10 @@ def iter_notes(folder: hygiene.Folder) -> Iterable[Path]:
     except OSError as exc:
         raise PruneError(f"cannot list {folder.root}: {exc}") from exc
     for path in entries:
-        if path.suffix == ".md" and not path.name.startswith("."):
+        # *.suspect.md is a sanity-gate quarantine: the evidence behind a
+        # `suspect` item, not a transcript (reconcile.list_notes skips it too).
+        if (path.suffix == ".md" and not path.name.startswith(".")
+                and not path.name.endswith(".suspect.md")):
             yield path
 
 
@@ -288,12 +336,13 @@ def look(path: Path, folder: hygiene.Folder, *, min_age: float, now: float) -> L
         return Look("unreadable", st, "", "not valid UTF-8")
 
 
-def judge(path: Path, text: str, *, min_words: int) -> tuple[dict[str, Any], Verdict]:
+def judge(path: Path, text: str, *, min_words: int,
+          recorded_words: int = 0) -> tuple[dict[str, Any], Verdict]:
     fm, body = frontmatter.split(text)
     if not fm and text.startswith(frontmatter.DELIM):
         # Frontmatter that does not parse: we cannot believe a title we cannot read.
         return fm, Verdict(None, "unparseable frontmatter", speech_words(body))
-    return fm, classify(fm, body, path.name, min_words=min_words)
+    return fm, classify(fm, body, path.name, min_words=min_words, recorded_words=recorded_words)
 
 
 # ----------------------------------------------------------------- ledger ----
@@ -307,13 +356,13 @@ def _transcript_item(path: Path, fm: dict[str, Any]) -> Optional[dict[str, Any]]
     """
     conn = ledger.connect()
     rows = conn.execute(
-        "SELECT t.item_id, t.md_path, t.pruned_at, i.state FROM transcripts t "
+        "SELECT t.item_id, t.md_path, t.pruned_at, t.word_count, i.state FROM transcripts t "
         "LEFT JOIN items i USING(item_id) WHERE t.md_path=?", (str(path),)).fetchall()
     if not rows:
         claimed = fm.get(frontmatter.ITEM_KEY)
         if isinstance(claimed, str) and claimed:
             rows = conn.execute(
-                "SELECT t.item_id, t.md_path, t.pruned_at, i.state FROM transcripts t "
+                "SELECT t.item_id, t.md_path, t.pruned_at, t.word_count, i.state FROM transcripts t "
                 "LEFT JOIN items i USING(item_id) WHERE t.item_id=?", (claimed,)).fetchall()
             rows = [r for r in rows if r["md_path"]
                     and os.path.realpath(r["md_path"]) == os.path.realpath(path)]
@@ -392,14 +441,16 @@ def prune_note(path: Path, folder: hygiene.Folder, *, reasons: Iterable[str] = D
     first = look(path, folder, min_age=min_age, now=now)
     if first.verdict != "ok":
         return {"path": str(path), "outcome": first.verdict, "detail": first.detail}
-    fm, verdict = judge(path, first.text, min_words=min_words)
+    fm, _ = frontmatter.split(first.text)
+    item = _transcript_item(path, fm)
+    recorded = _int((item or {}).get("word_count"))
+    fm, verdict = judge(path, first.text, min_words=min_words, recorded_words=recorded)
     base = {"path": str(path), "name": path.name, "title": frontmatter_title(fm),
             "reason": verdict.reason, "detail": verdict.detail, "words": verdict.words}
-    if verdict.reason is None or verdict.reason not in reasons:
-        return {**base, "outcome": "keep"}
-    item = _transcript_item(path, fm)
     if item is not None:
         base["item_id"] = item["item_id"]
+    if verdict.reason is None or verdict.reason not in reasons:
+        return {**base, "outcome": "keep"}
     busy = _busy_reason(item)
     if busy:
         return {**base, "outcome": "in_flight", "detail": busy}
@@ -417,7 +468,7 @@ def prune_note(path: Path, folder: hygiene.Folder, *, reasons: Iterable[str] = D
         second = look(path, folder, min_age=min_age, now=time.time())
         if second.verdict != "ok":
             return {**base, "outcome": "changed", "detail": second.verdict}
-        _, again = judge(path, second.text, min_words=min_words)
+        _, again = judge(path, second.text, min_words=min_words, recorded_words=recorded)
         if again.reason != verdict.reason:
             return {**base, "outcome": "changed",
                     "detail": f"now {again.reason or 'not junk'}"}
@@ -435,17 +486,24 @@ def prune_note(path: Path, folder: hygiene.Folder, *, reasons: Iterable[str] = D
         if restored:
             return {**base, "outcome": "restored", "to": str(used)}
         at = sentinel.utcnow()
-        if item is not None:
-            ledger.connect().execute("UPDATE transcripts SET pruned_at=? WHERE item_id=?",
-                                     (at, item["item_id"]))
-            ledger.record_transition("transcript", item["item_id"], "published", "pruned",
-                                     verdict.reason or "", f"{path} -> {used}")
-        for row in rows:
-            documents.mark_state(row["binding_id"], row["doc_id"], "trashed")
+        # The manifest is the only undo path: write it before anything else
+        # can fail, so a note in the trash is always findable by unprune.
         _append_manifest({"action": "prune", "run": run_id, "at": at, "from": str(path),
                           "to": str(used), "reason": verdict.reason, "detail": verdict.detail,
                           "words": verdict.words, "item_id": item and item["item_id"],
+                          "md_path": item and item["md_path"],
                           "documents": [[r["binding_id"], r["doc_id"], r.get("state")] for r in rows]})
+        try:
+            if item is not None:
+                ledger.connect().execute("UPDATE transcripts SET pruned_at=? WHERE item_id=?",
+                                         (at, item["item_id"]))
+                ledger.record_transition("transcript", item["item_id"], "published", "pruned",
+                                         verdict.reason or "", f"{path} -> {used}")
+            for row in rows:
+                documents.mark_state(row["binding_id"], row["doc_id"], "trashed")
+        except Exception as exc:
+            raise PruneError(f"moved to {used} (run {run_id}) but the ledger update failed: "
+                             f"{type(exc).__name__}: {exc}") from exc
         log.info("prune: %s (%s) -> %s", path, verdict.reason, used)
         return {**base, "outcome": "pruned", "to": str(used)}
 
@@ -466,7 +524,7 @@ def _sync_store() -> dict[str, Any]:
         out = store_reconcile.sweep()
     except Exception as exc:  # noqa: BLE001 - store outages never fail a prune
         return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"[:300]}
-    return {"ok": not out.get("errors"), "vanished": out.get("vanished"),
+    return {"ok": not out.get("errors"), "vanished_marked": out.get("vanished_marked"),
             "errors": (out.get("errors") or [])[:5]}
 
 
@@ -562,8 +620,12 @@ def restore(*, run: Optional[str] = None, names: Iterable[str] = (),
         item_id = entry.get("item_id")
         if item_id:
             conn = ledger.connect()
+            # Keep the ledger's own spelling of the path (~/d/... rather than
+            # the resolved vault path) unless no-clobber had to rename it.
+            recorded = entry.get("md_path") or str(used)
+            md_path = recorded if used == original else str(Path(recorded).with_name(used.name))
             conn.execute("UPDATE transcripts SET pruned_at=NULL, md_path=? WHERE item_id=?",
-                         (str(used), item_id))
+                         (md_path, item_id))
             ledger.record_transition("transcript", item_id, "pruned", "published", "restored",
                                      f"{trashed} -> {used}")
         for binding_id, doc_id, *prior in entry.get("documents") or []:
