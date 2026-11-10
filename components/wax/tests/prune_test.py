@@ -198,10 +198,29 @@ class ClassifyTest(unittest.TestCase):
             self.assertEqual(self.reason(_note(fm, greeting + "word " * 200)), "voicemail", title)
 
     def test_meaningful_title(self):
-        self.assertTrue(prune.meaningful_title("Upgrading to Node.js 22"))
-        self.assertTrue(prune.meaningful_title("Route 23 Honda Registration"))
-        self.assertFalse(prune.meaningful_title("Hours"))
-        self.assertFalse(prune.meaningful_title("Unavailable Recipient Response"))
+        for title in ("Upgrading to Node.js 22", "Route 23 Honda Registration", "Route 23",
+                      "Transcription Software Pricing Quote", "Transcriptionist Job Offer",
+                      "Empty Storefront Lease Inquiry", "Blank Check Donation Request",
+                      "Mailbox Delivery Complaint From Postal Carrier",
+                      "Sound Check Schedule for Saturday Gig", "Message About Driving Test Appointment",
+                      "Notification System Message Integration Request", "Fix README.md",
+                      "GPT-5 Pricing Call", "会议纪要讨论"):
+            self.assertTrue(prune.meaningful_title(title, "x.md"), title)
+        for title in ("", "Hours", "Costco", "Unavailable Recipient Response", "Voicemail from Damian",
+                      "Personal Greeting", "Greeting Message", "Phone Greeting", "Standard Carrier Greeting",
+                      "Voice Message", "Missed Call", "Recorded Message", "Untitled Note", "Untitled 5",
+                      "Call Back", "Empty Transmission", "Unable to Hear Caller",
+                      "Transcription: rec.ogg", "rec.ogg", "audio_2d86e0cd8d19", "telnyx-vm-abc123def",
+                      "20260903-092132-rec", "Automated Bank Menu Prompt"):
+            self.assertFalse(prune.meaningful_title(title, "x.md"), title)
+        self.assertFalse(prune.meaningful_title("Lunch Plans", "lunch plans.md"))
+
+    def test_long_voicemail_word_boundary(self):
+        fm = "call-outcome: voicemail\ntitle: Damian Miller Recruits Jarad for AI Venture"
+        at = _note(fm, "**A (00:00):** " + "word " * prune.LONG_VOICEMAIL_MIN_WORDS)
+        over = _note(fm, "**A (00:00):** " + "word " * (prune.LONG_VOICEMAIL_MIN_WORDS + 1))
+        self.assertEqual(self.reason(at), "voicemail")
+        self.assertIsNone(self.reason(over))
 
     def test_floor_no_content_needs_a_fragment(self):
         floor = "classification-detail: no_content\nclassification-source: rule:floor\ntitle: Pjangler"

@@ -152,8 +152,30 @@ TEST_BODY_RE = re.compile(
     r"\b(?:this is a test|let'?s see if (?:it|this) works|if it works,? then|count to (?:three|four|ten))\b",
     re.IGNORECASE)
 TEST_BODY_MAX_WORDS = 20
-# A title that is just the audio or note file name ("20261005-rec.ogg").
-AUDIO_NAME_RE = re.compile(r"\.(?:md|mp3|ogg|oga|opus|wav|m4a|aac|flac|webm|amr)$", re.IGNORECASE)
+# Titles ``meaningful_title`` refuses on a long voicemail. A title that is
+# just an audio file name ("20261005-rec.ogg"):
+AUDIO_NAME_RE = re.compile(
+    r"\.(?:mp3|mp4|ogg|oga|opus|wav|m4a|aac|aiff?|caf|3gp|wma|flac|webm|amr)$", re.IGNORECASE)
+# ...an audio stem ("audio_2d86e0cd8d19", "telnyx-vm-abc123", "20260903-092132-rec"):
+FILE_STEM_TITLE_RE = re.compile(
+    r"^(?:audio|telnyx|rec|recording|clip|voice|vm)?[\w-]*?(?:[0-9a-f]{8,}|\d{6,}[\w-]*)$|^\S*[_-]\S*\d\S*$",
+    re.IGNORECASE)
+# ...a generic label that says nothing about the message:
+GENERIC_TITLE_RE = re.compile(
+    r"^(?:(?:my|jarad'?s|personal|standard|default|custom|carrier|phone|outgoing|new|unknown|"
+    r"incoming|brief|short|recorded|voice|audio|missed|untitled|greeting)\s+)*"
+    r"(?:greeting|message|voice ?message|missed call|call|call ?back|caller|recording|note|memo|"
+    r"untitled(?: note)?|unknown caller)s?\.?$",
+    re.IGNORECASE)
+# ...or a title that says the recording is empty. Narrower than NO_CONTENT_RE,
+# which judges short notes and would refuse "Empty Storefront Lease Inquiry".
+LONG_NO_CONTENT_TITLE_RE = re.compile(
+    r"\bno (?:spoken|speech|content|audio|dialogue|words|message)\b"
+    r"|\b(?:can'?t|cannot|could not|unable to) hear\b"
+    r"|\binsufficient (?:transcript|content|audio|information|text)\b"
+    r"|\b(?:empty|blank|silent) (?:transmission|recording|file|message|audio|call|note|transcript)\b"
+    r"|\b(?:dead air|silence only|only silence)\b",
+    re.IGNORECASE)
 # Jev's classification floor tags anything under 15 words and 10 s no_content
 # without reading it; believed alone only for fragments this short.
 FLOOR_NO_CONTENT_MAX_WORDS = 7
@@ -227,19 +249,34 @@ def body_lost_claim(fm: dict[str, Any], words: int, recorded_words: int = 0) -> 
     return 0
 
 
-def meaningful_title(title: str) -> bool:
+def meaningful_title(title: str, name: str = "") -> bool:
     """A title that says what a message is about, not that it is a voicemail or empty.
 
-    Placeholders (no title, a file name, ``Transcription: ...``, fewer than two
-    words with letters) and titles the voicemail, no-content or automated-call
-    rules would match are not meaningful.
+    Not meaningful: no title; a placeholder nobody chose (``hygiene.placeholder_title``:
+    ``Untitled N``, ``Transcription: <file>.ogg``); the note's or audio's own
+    file name or stem; a generic label (``GENERIC_TITLE_RE``: "Personal
+    Greeting", "Missed Call", "Voice Message"); fewer than two words; or a title
+    that names a voicemail, carrier intercept, automated system or an empty
+    recording (``VOICEMAIL_RE``, ``AUTOMATED_CALL_TITLE_RE``,
+    ``LONG_NO_CONTENT_TITLE_RE``). The short-note ``NO_CONTENT_RE`` is not
+    used: on a long message "Empty Storefront Lease Inquiry" is a topic.
     """
     t = title.strip()
-    if not t or t.lower().startswith("transcription") or AUDIO_NAME_RE.search(t):
+    if not t or hygiene.placeholder_title(t) or AUDIO_NAME_RE.search(t) or GENERIC_TITLE_RE.match(t):
         return False
-    if sum(1 for w in re.split(r"[\s_-]+", t) if any(ch.isalpha() for ch in w)) < 2:
+    stem = Path(name).stem.lower() if name else ""
+    if stem and t.lower() in (stem, Path(name).name.lower()):
         return False
-    return not (VOICEMAIL_RE.search(t) or NO_CONTENT_RE.search(t) or AUTOMATED_CALL_TITLE_RE.search(t))
+    if FILE_STEM_TITLE_RE.match(t):
+        return False
+    tokens = [w for w in re.split(r"[\s_]+", t) if any(ch.isalnum() for ch in w)]
+    wide = any(ch.isalpha() and ord(ch) >= 0x2E80 for ch in t)   # CJK: no spaces between words
+    if not any(ch.isalpha() for ch in t) or (len(tokens) < 2 and not (wide and len(t) >= 4)):
+        return False
+    vm = VOICEMAIL_RE.search(t)
+    if vm and vm.group(0).lower() != "mailbox":   # "Mailbox Delivery Complaint" is a topic
+        return False
+    return not (AUTOMATED_CALL_TITLE_RE.search(t) or LONG_NO_CONTENT_TITLE_RE.search(t))
 
 
 def classify(fm: dict[str, Any], body: str, name: str = "", *,
@@ -261,7 +298,7 @@ def classify(fm: dict[str, Any], body: str, name: str = "", *,
     if words == 0:
         return Verdict("empty", "no spoken words in the body", words)
 
-    long_titled = words > LONG_VOICEMAIL_MIN_WORDS and meaningful_title(title)
+    long_titled = words > LONG_VOICEMAIL_MIN_WORDS and meaningful_title(title, name)
     structural = None
     if _text(fm.get("call-outcome")).lower() == "voicemail":
         structural = "call-outcome: voicemail"
