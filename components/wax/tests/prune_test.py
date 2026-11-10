@@ -156,13 +156,52 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(prune.classify(vm, vbody, "v.md", recorded_words=4).reason, "voicemail")
 
     def test_greeting_opening_a_call_is_a_voicemail(self):
-        fm_body = _note("classification: phone_call\ntitle: Personal Loan Pre-Approval Offer",
+        fm_body = _note("classification: phone_call\ntitle: Missed Call",
                         "**Speaker 1 (00:00):** Hi, you've reached Jarad. Leave a message after the tone. "
-                        + "word " * 100)
+                        + "word " * 30)
         self.assertEqual(self.reason(fm_body), "voicemail")
         dictation = _note("title: Notes", "**Speaker 1 (00:00):** Hi, you've reached Jarad. "
                           "Leave a message after the tone. " + "word " * 100)
         self.assertIsNone(self.reason(dictation))
+
+    def test_long_voicemail_with_a_meaningful_title_is_kept(self):
+        # Operator order 2026-11-10: the two real messages the first prune run
+        # trashed (a press-conference invitation, a recruiting pitch). Long
+        # sales pitches with a descriptive title are kept too, by design.
+        greeting = "**Speaker 1 (00:00):** Hi, you've reached Jarad. Leave a message after the tone. "
+        for title in ("Invitation to Speak at Healthcare Press Conference",
+                      "Damian Miller Recruits Jared for AI Venture",
+                      "Personal Loan Pre-Approval Offer"):
+            summary = "summary: The caller leaves a voicemail asking for a call back."
+            self.assertIsNone(self.reason(_note(f"classification: phone_call\ntitle: {title}\n{summary}",
+                                                greeting + "word " * 100)), title)
+            self.assertIsNone(self.reason(_note(f"call-outcome: voicemail\ntitle: {title}",
+                                                "**A (00:00):** " + "word " * 100)), title)
+            self.assertIsNone(self.reason(_note(f"title: {title}",
+                                                "# Transcription: telnyx-vm-2026.wav\n\n**A (00:00):** "
+                                                + "word " * 100)), title)
+            self.assertIsNone(self.reason(_note(f"title: {title}\n{summary}",
+                                                "**A (00:00):** " + "word " * 100)), title)
+            # Short, it is still a voicemail.
+            self.assertEqual(self.reason(_note(f"classification: phone_call\ntitle: {title}",
+                                               greeting + "word " * 20)), "voicemail", title)
+            self.assertEqual(self.reason(_note(f"title: {title}\n{summary}",
+                                               "**A (00:00):** " + "word " * 40)), "voicemail", title)
+
+    def test_long_voicemail_without_a_meaningful_title_is_pruned(self):
+        greeting = "**Speaker 1 (00:00):** Hi, you've reached Jarad. Leave a message after the tone. "
+        for title in ("", "Voicemail Offering 40,000 Personal Loan Options",
+                      "Jarad's Voicemail Greeting", "Empty Transmission", "rec",
+                      "20260903-092132-rec.ogg", "Transcription: telnyx-2026.mp3",
+                      "Automated Bank Menu Prompt"):
+            fm = "classification: phone_call" + (f"\ntitle: {title!r}" if title else "")
+            self.assertEqual(self.reason(_note(fm, greeting + "word " * 200)), "voicemail", title)
+
+    def test_meaningful_title(self):
+        self.assertTrue(prune.meaningful_title("Upgrading to Node.js 22"))
+        self.assertTrue(prune.meaningful_title("Route 23 Honda Registration"))
+        self.assertFalse(prune.meaningful_title("Hours"))
+        self.assertFalse(prune.meaningful_title("Unavailable Recipient Response"))
 
     def test_floor_no_content_needs_a_fragment(self):
         floor = "classification-detail: no_content\nclassification-source: rule:floor\ntitle: Pjangler"

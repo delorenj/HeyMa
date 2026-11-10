@@ -11,17 +11,20 @@ Classification believes the title and summary first: the title-slug and
 summarize passes already read the transcript, and when a note's title says
 "Voicemail Greeting" or "Insufficient Transcript Content" that is the best
 evidence there is. Every title/summary rule is fenced by a word count, so a long
-meeting that happens to mention a voicemail is never touched; only structure
+meeting that happens to mention a voicemail is never touched. Structure
 (``call-outcome: voicemail``, a ``telnyx-vm-*`` source, a call that opens on a
-voicemail greeting) is believed at any length. Rules, first hit
-wins:
+voicemail greeting) marks a voicemail at any length, except a long one
+(over ``LONG_VOICEMAIL_MIN_WORDS``) whose title says what the message is about
+(``meaningful_title``): that is a real person's message and is kept. Rules,
+first hit wins:
 
 ==============  ============================================================
 ``empty``       the body has no spoken words (header only, metadata only, a
                 lone URL)
 ``voicemail``   a voicemail by structure (``call-outcome: voicemail``, a
                 ``telnyx-vm-*`` source), by title, or by summary on a short
-                note: greetings, carrier intercepts and left messages alike
+                note: greetings, carrier intercepts and left messages alike,
+                except a long message with a meaningful title (kept)
 ``no-content``  the title or summary says there is nothing there ("empty",
                 "no spoken content", "unable to hear", "repeated hello",
                 "automated system message"), or Jev classified it
@@ -85,6 +88,7 @@ DEFAULT_MIN_AGE_S = 1800.0       # leave notes alone while enrichment may still 
 CALL_NOISE_MAX_WORDS = 20        # a call with no more than this said is connection noise
 SHORT_MAX_WORDS = 60             # title/summary rules only judge notes this short...
 VOICEMAIL_SUMMARY_MAX_WORDS = 300  # ...except a voicemail named by its summary
+LONG_VOICEMAIL_MIN_WORDS = SHORT_MAX_WORDS  # a structural voicemail longer than this keeps a meaningful title
 MAX_NOTE_BYTES = 4 << 20         # never classify (or move) a giant file
 MANIFEST = "prune.jsonl"
 # worker.WORK_STATES (not imported: worker drags in the whole daemon). An item
@@ -148,6 +152,8 @@ TEST_BODY_RE = re.compile(
     r"\b(?:this is a test|let'?s see if (?:it|this) works|if it works,? then|count to (?:three|four|ten))\b",
     re.IGNORECASE)
 TEST_BODY_MAX_WORDS = 20
+# A title that is just the audio or note file name ("20261005-rec.ogg").
+AUDIO_NAME_RE = re.compile(r"\.(?:md|mp3|ogg|oga|opus|wav|m4a|aac|flac|webm|amr)$", re.IGNORECASE)
 # Jev's classification floor tags anything under 15 words and 10 s no_content
 # without reading it; believed alone only for fragments this short.
 FLOOR_NO_CONTENT_MAX_WORDS = 7
@@ -221,6 +227,21 @@ def body_lost_claim(fm: dict[str, Any], words: int, recorded_words: int = 0) -> 
     return 0
 
 
+def meaningful_title(title: str) -> bool:
+    """A title that says what a message is about, not that it is a voicemail or empty.
+
+    Placeholders (no title, a file name, ``Transcription: ...``, fewer than two
+    words with letters) and titles the voicemail, no-content or automated-call
+    rules would match are not meaningful.
+    """
+    t = title.strip()
+    if not t or t.lower().startswith("transcription") or AUDIO_NAME_RE.search(t):
+        return False
+    if sum(1 for w in re.split(r"[\s_-]+", t) if any(ch.isalpha() for ch in w)) < 2:
+        return False
+    return not (VOICEMAIL_RE.search(t) or NO_CONTENT_RE.search(t) or AUTOMATED_CALL_TITLE_RE.search(t))
+
+
 def classify(fm: dict[str, Any], body: str, name: str = "", *,
              min_words: int = DEFAULT_MIN_WORDS, recorded_words: int = 0) -> Verdict:
     """Decide whether one note is junk. Pure: no I/O.
@@ -240,16 +261,30 @@ def classify(fm: dict[str, Any], body: str, name: str = "", *,
     if words == 0:
         return Verdict("empty", "no spoken words in the body", words)
 
+    long_titled = words > LONG_VOICEMAIL_MIN_WORDS and meaningful_title(title)
+    structural = None
     if _text(fm.get("call-outcome")).lower() == "voicemail":
-        return Verdict("voicemail", "call-outcome: voicemail", words)
-    if "telnyx-vm-" in _source_names(fm, body, name):
-        return Verdict("voicemail", "telnyx voicemail recording", words)
-    if is_call and VM_GREETING_RE.search(body[:700]):
-        return Verdict("voicemail", "voicemail greeting opens the call", words)
+        structural = "call-outcome: voicemail"
+    elif "telnyx-vm-" in _source_names(fm, body, name):
+        structural = "telnyx voicemail recording"
+    elif is_call and VM_GREETING_RE.search(body[:700]):
+        structural = "voicemail greeting opens the call"
+    if structural:
+        # A long message whose title names what it is about is someone's real
+        # message (a press-conference invitation, a recruiting pitch), not a
+        # greeting: believe the title and keep it (operator order 2026-11-10).
+        if long_titled:
+            return Verdict(None, f"{structural}, but a long message titled {title!r}", words)
+        return Verdict("voicemail", structural, words)
     if words <= VOICEMAIL_SUMMARY_MAX_WORDS:
         for field, text in (("title", title), ("summary", summary)):
             m = VOICEMAIL_RE.search(text)
             if m:
+                if field == "summary" and long_titled:
+                    # "Damian leaves a voicemail about ..." under a title that
+                    # says what: the same long titled message, kept.
+                    return Verdict(None, f"summary says {m.group(0)!r}, but a long message "
+                                         f"titled {title!r}", words)
                 return Verdict("voicemail", f"{field} says {m.group(0)!r}", words)
         m = AUTOMATED_CALL_TITLE_RE.search(title)
         if m and is_call:

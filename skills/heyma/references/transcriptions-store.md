@@ -76,10 +76,15 @@ silent notes, self-declared "no content" notes, one-to-three-word misfires and
 "Hello? Hello?" calls from `~/d/Transcripts` to `<vault>/.trash/Transcripts/`.
 It believes the title and summary (the passes already read the transcript),
 but every title/summary rule only judges short notes, so a long meeting that
-mentions a voicemail is never touched; only structure (`call-outcome: voicemail`,
-a `telnyx-vm-*` source, a call that opens on the voicemail greeting) is believed
-at any length. Voicemails include real people's messages: `--keep voicemail`
-spares them all. `body-lost` (a body far smaller than the word count recorded
+mentions a voicemail is never touched. Structure (`call-outcome: voicemail`,
+a `telnyx-vm-*` source, a call that opens on the voicemail greeting) marks a
+voicemail at any length, except a long one: over 60 spoken words
+(`LONG_VOICEMAIL_MIN_WORDS`) with a title that says what the message is about
+(`prune.meaningful_title`: not a file name, and not itself "voicemail",
+"greeting", "empty" or an automated-system title) is a real person's message
+and is kept, even when its summary says "voicemail" (operator order
+2026-11-10). That keeps long sales pitches too. Short messages still go, and
+`--keep voicemail` spares every voicemail. `body-lost` (a body far smaller than the word count recorded
 for it, in the note's `word-count` or `transcripts.word_count`) is checked first,
 reported and kept: that is a clobbered transcript to recover (the ASR JSON in
 `var/logs/<item>/asr.json`, or `wax transcripts history`), not junk. `wax doctor`
