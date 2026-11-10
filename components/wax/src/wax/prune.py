@@ -24,7 +24,8 @@ first hit wins:
 ``voicemail``   a voicemail by structure (``call-outcome: voicemail``, a
                 ``telnyx-vm-*`` source), by title, or by summary on a short
                 note: greetings, carrier intercepts and left messages alike,
-                except a long message with a meaningful title (kept)
+                except a long message with a meaningful title (kept) that is
+                not a loan or debt pitch (``LOAN_PITCH_RE``)
 ``no-content``  the title or summary says there is nothing there ("empty",
                 "no spoken content", "unable to hear", "repeated hello",
                 "automated system message"), or Jev classified it
@@ -176,6 +177,19 @@ LONG_NO_CONTENT_TITLE_RE = re.compile(
     r"|\b(?:empty|blank|silent) (?:transmission|recording|file|message|audio|call|note|transcript)\b"
     r"|\b(?:dead air|silence only|only silence)\b",
     re.IGNORECASE)
+# An unsolicited loan or debt pitch, matched against a voicemail's title and
+# summary only: a long titled voicemail is kept unless it is one of these
+# (operator order 2026-11-10: "add a spam rule for long loan pitches"). Never
+# applied outside a voicemail, so a real call about a loan payoff is untouched.
+LOAN_PITCH_RE = re.compile(
+    r"\bpre-?\s?(?:approv\w*|select\w*|qualif\w*|screen\w*)\b"
+    r"|\bdebt (?:consolidation|relief|settlement|reduction)\b"
+    r"|\b(?:personal|business|hardship|unsecured|installment) loans?\b"
+    r"|\bloan (?:offers?|options?|opportunit\w*|eligibility)\b"
+    r"|\b(?:funding|lending) (?:group|offers?|options?|solutions?)\b"
+    r"|\btax (?:relief|debt|resolution)\b"
+    r"|\bcredit card (?:debt|relief|consolidation)\b",
+    re.IGNORECASE)
 # Jev's classification floor tags anything under 15 words and 10 s no_content
 # without reading it; believed alone only for fragments this short.
 FLOOR_NO_CONTENT_MAX_WORDS = 7
@@ -299,6 +313,8 @@ def classify(fm: dict[str, Any], body: str, name: str = "", *,
         return Verdict("empty", "no spoken words in the body", words)
 
     long_titled = words > LONG_VOICEMAIL_MIN_WORDS and meaningful_title(title, name)
+    pitch = next((f"{field} says {m.group(0)!r}" for field, text in (("title", title), ("summary", summary))
+                  for m in [LOAN_PITCH_RE.search(text)] if m), "")
     structural = None
     if _text(fm.get("call-outcome")).lower() == "voicemail":
         structural = "call-outcome: voicemail"
@@ -309,7 +325,10 @@ def classify(fm: dict[str, Any], body: str, name: str = "", *,
     if structural:
         # A long message whose title names what it is about is someone's real
         # message (a press-conference invitation, a recruiting pitch), not a
-        # greeting: believe the title and keep it (operator order 2026-11-10).
+        # greeting: believe the title and keep it (operator order 2026-11-10),
+        # unless it is a loan pitch.
+        if long_titled and pitch:
+            return Verdict("voicemail", f"{structural}; loan pitch ({pitch})", words)
         if long_titled:
             return Verdict(None, f"{structural}, but a long message titled {title!r}", words)
         return Verdict("voicemail", structural, words)
@@ -317,6 +336,8 @@ def classify(fm: dict[str, Any], body: str, name: str = "", *,
         for field, text in (("title", title), ("summary", summary)):
             m = VOICEMAIL_RE.search(text)
             if m:
+                if field == "summary" and long_titled and pitch:
+                    return Verdict("voicemail", f"summary says {m.group(0)!r}; loan pitch ({pitch})", words)
                 if field == "summary" and long_titled:
                     # "Damian leaves a voicemail about ..." under a title that
                     # says what: the same long titled message, kept.

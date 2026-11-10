@@ -166,12 +166,11 @@ class ClassifyTest(unittest.TestCase):
 
     def test_long_voicemail_with_a_meaningful_title_is_kept(self):
         # Operator order 2026-11-10: the two real messages the first prune run
-        # trashed (a press-conference invitation, a recruiting pitch). Long
-        # sales pitches with a descriptive title are kept too, by design.
+        # trashed (a press-conference invitation, a recruiting pitch).
         greeting = "**Speaker 1 (00:00):** Hi, you've reached Jarad. Leave a message after the tone. "
         for title in ("Invitation to Speak at Healthcare Press Conference",
                       "Damian Miller Recruits Jared for AI Venture",
-                      "Personal Loan Pre-Approval Offer"):
+                      "GoodLeap Customer Support Offer and Hours"):
             summary = "summary: The caller leaves a voicemail asking for a call back."
             self.assertIsNone(self.reason(_note(f"classification: phone_call\ntitle: {title}\n{summary}",
                                                 greeting + "word " * 100)), title)
@@ -187,6 +186,28 @@ class ClassifyTest(unittest.TestCase):
                                                greeting + "word " * 20)), "voicemail", title)
             self.assertEqual(self.reason(_note(f"title: {title}\n{summary}",
                                                "**A (00:00):** " + "word " * 40)), "voicemail", title)
+
+    def test_long_loan_pitch_voicemail_is_pruned(self):
+        # Operator order 2026-11-10: "add a spam rule for long loan pitches".
+        greeting = "**Speaker 1 (00:00):** Hi, you've reached Jarad. Leave a message after the tone. "
+        for title in ("Personal Loan Pre-Approval Offer from Michelle Wilson",
+                      "Expiring $53,000 Personal Loan Pre-Approval Offer",
+                      "Loan Pre-Approval Offer for $49,000", "Norwell Capital Debt Consolidation Offer",
+                      "Prescott Funding Group Loan Pre-Approval Offer",
+                      "Hardship Personal Loan Pre-Selection Follow-Up Offer",
+                      "Tax Relief Options and Account Verification Notice"):
+            long_vm = _note(f"classification: phone_call\ntitle: {title!r}", greeting + "word " * 150)
+            self.assertEqual(self.reason(long_vm), "voicemail", title)
+            self.assertEqual(self.reason(_note(f"call-outcome: voicemail\ntitle: {title!r}",
+                                               "**A (00:00):** " + "word " * 150)), "voicemail", title)
+        # A pitch named only by the summary, under a neutral title.
+        fm = ("classification: phone_call\ntitle: Follow-Up From Anna Smith\n"
+              "summary: Anna leaves a voicemail about a pre-approved $40,000 personal loan.")
+        self.assertEqual(self.reason(_note(fm, "**A (00:00):** " + "word " * 150)), "voicemail")
+        # Never outside a voicemail: a real call about a loan is kept.
+        call = _note("classification: phone_call\ntitle: Totaled Vehicle Personal Loan Payoff",
+                     "**Speaker 1 (00:00):** " + "word " * 150)
+        self.assertIsNone(self.reason(call))
 
     def test_long_voicemail_without_a_meaningful_title_is_pruned(self):
         greeting = "**Speaker 1 (00:00):** Hi, you've reached Jarad. Leave a message after the tone. "

@@ -85,7 +85,10 @@ name/stem, not a generic label like "Personal Greeting" or "Missed Call", and
 not itself a voicemail, automated-system or empty-recording title) is a real
 person's message and is kept, even when its summary says "voicemail" (operator
 order 2026-11-10). Topic words are fine on a long message ("Empty Storefront
-Lease Inquiry"). That keeps long sales pitches too. Short messages still go, and
+Lease Inquiry"). A long voicemail whose title or summary is a loan or debt
+pitch (`LOAN_PITCH_RE`: pre-approved/pre-selected, personal loan, loan offer,
+funding group, debt consolidation, tax relief) is still pruned; that rule is
+never applied outside a voicemail. Short messages still go, and
 `--keep voicemail` spares every voicemail. `body-lost` (a body far smaller than the word count recorded
 for it, in the note's `word-count` or `transcripts.word_count`) is checked first,
 reported and kept: that is a clobbered transcript to recover (the ASR JSON in
