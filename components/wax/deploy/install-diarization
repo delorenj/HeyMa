@@ -27,4 +27,11 @@ from wax.diarization_sortformer import cuda_smoke
 
 result = cuda_smoke()
 print(f"CUDA diarization ready: {result}")
+
+# Fetch the word aligner now, not on the first diarization pass (1.2 GB).
+import torchaudio
+from wax.word_alignment import MODEL_FILE
+
+torchaudio.pipelines.MMS_FA.get_model(with_star=False, dl_kwargs={"file_name": MODEL_FILE})
+print(f"word aligner cached: {MODEL_FILE}")
 PY

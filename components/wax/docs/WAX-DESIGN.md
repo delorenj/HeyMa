@@ -80,7 +80,9 @@ model, and each run loads exactly one model on the resolved device. The pinned
 runtime manifest is `components/wax/requirements-diarization.txt`, rebuilt with
 `mise run wax:diarization:install`. Both that installer and `wax doctor` execute
 a real Sortformer streaming forward pass on CUDA—an import or green tray alone
-is not device evidence. Successful transcripts persist requested and actual
+is not device evidence. Inference is NeMo's whole-file `forward`; speaker
+attribution is per force-aligned word (`wax.speaker_attribution`,
+`wax.word_alignment`), not per Whisper segment (2026-11-09). Successful transcripts persist requested and actual
 diarization device in their frontmatter and in-band metadata.
 
 **Channel-separated calls.** A Telnyx dual-channel recording (`telnyx-*.mp3`, not

@@ -308,6 +308,9 @@ def run_whisper(model, audio_path: str, language: str | None,
         language=language,
         beam_size=5,
         vad_filter=True,  # skip silence
+        # No word_timestamps: on the shared GPU it needs more VRAM than decoding
+        # (OOM at 5.2 GB free, 2026-11-09). The diarization pass aligns words
+        # after Whisper exits (wax.word_alignment).
     )
 
     slot, slots = progress_scale
@@ -430,14 +433,16 @@ def resolve_diarization_device(requested: str, torch_module):
 
 
 def diarize_local(audio_path: str, requested_device: str = "cuda") -> tuple[list, str | None]:
-    """Identify speakers using Sortformer and report the proven device."""
+    """Identify speakers using Sortformer and report the proven device.
+
+    Returns speech-only turns [{start_time, end_time, speaker}]: frames where no
+    speaker clears the activity threshold are silence, not the last speaker.
+    """
     try:
         import librosa
         import torch
-        from wax.diarization_sortformer import (
-            load_model,
-            init_streaming_state,
-        )
+        from wax.diarization_sortformer import frame_probabilities, load_model
+        from wax.speaker_attribution import turns_from_frames
     except ImportError as e:
         log(f"Error: Missing dependency for diarization: {e}")
         log("Please install librosa and nemo_toolkit[asr].")
@@ -452,7 +457,7 @@ def diarize_local(audio_path: str, requested_device: str = "cuda") -> tuple[list
     log(f"  Loading diarization model (Sortformer) on {target_device}...")
     report_progress("diarize", 0, detail=f"loading Sortformer on {target_device}")
     try:
-        diar_model, audio2mel = load_model(device=target_device)
+        diar_model = load_model(device=target_device)
         actual_device = torch.device(diar_model.device)
         if actual_device.type != target_device.type:
             raise RuntimeError(
@@ -478,101 +483,37 @@ def diarize_local(audio_path: str, requested_device: str = "cuda") -> tuple[list
     report_progress("diarize", 0, detail=f"running on {device_detail}")
     try:
         signal, _ = librosa.load(audio_path, sr=16000)
-
-        # Process in one-second chunks, but never retain the full feature or
-        # prediction history. The old implementation accumulated every mel
-        # tensor and passed a growing `total_preds` back into every step, then
-        # copied that entire history to NumPy. That made long recordings
-        # quadratic and left the UI apparently frozen at ASR 99% for hours.
-        chunk_size = 16000
-        total_chunks = max(1, (len(signal) + chunk_size - 1) // chunk_size)
-
-        previous_chunk = None
-        batch_size = 1
-        streaming_state = init_streaming_state(
-            diar_model.sortformer_modules,
-            batch_size=batch_size,
-            async_streaming=True,
-            device=diar_model.device
-        )
-        empty_preds = torch.zeros(
-            (batch_size, 0, diar_model.sortformer_modules.n_spk),
-            device=diar_model.device,
-        )
-
-        chunk_duration_seconds = diar_model.sortformer_modules.chunk_len * diar_model.sortformer_modules.subsampling_factor * diar_model.preprocessor._cfg.window_stride
-
-        l_speakers = []
-        left_offset = 0
-        right_offset = 8
-        last_pct = -1
-        last_heartbeat = time.monotonic()
-
-        for i, start in enumerate(range(0, len(signal), chunk_size)):
-            chunk = signal[start:start + chunk_size]
-            audio_signal_chunk = torch.tensor(chunk).unsqueeze(0).to(diar_model.device)
-            audio_signal_length_chunk = torch.tensor(
-                [audio_signal_chunk.shape[1]], device=diar_model.device,
-            )
-            processed_signal_chunk, _ = audio2mel.get_features(
-                audio_signal_chunk, audio_signal_length_chunk,
-            )
-            if previous_chunk is not None:
-                features = torch.concat(
-                    [previous_chunk[:, :, -99:], processed_signal_chunk], dim=2,
-                )
-            else:
-                features = processed_signal_chunk
-            previous_chunk = processed_signal_chunk
-            chunk_feat_seq_t = torch.transpose(features, 1, 2)
-
-            with torch.inference_mode():
-                # `forward_streaming_step` only uses total_preds as an output
-                # accumulator; speaker alignment lives in streaming_state. Give
-                # it an empty accumulator each time so work stays O(chunks).
-                streaming_state, chunk_preds = diar_model.forward_streaming_step(
-                    processed_signal=chunk_feat_seq_t,
-                    processed_signal_length=torch.tensor(
-                        [chunk_feat_seq_t.shape[1]], device=diar_model.device,
-                    ),
-                    streaming_state=streaming_state,
-                    total_preds=empty_preds,
-                    left_offset=left_offset,
-                    right_offset=right_offset,
-                )
-                left_offset = 8
-                active_speakers = torch.argmax(chunk_preds[0], dim=1).cpu().tolist()
-                if not active_speakers:
-                    continue
-                frame_duration = chunk_duration_seconds / len(active_speakers)
-                for idx, spk in enumerate(active_speakers):
-                    curr_start = i * chunk_duration_seconds + idx * frame_duration
-                    curr_end = i * chunk_duration_seconds + (idx + 1) * frame_duration
-                    if not l_speakers or spk != l_speakers[-1]['speaker']:
-                        l_speakers.append({
-                            'start_time': curr_start,
-                            'end_time': curr_end,
-                            'speaker': spk
-                        })
-                    else:
-                        l_speakers[-1]['end_time'] = curr_end
-
-            pct = int((i + 1) / total_chunks * 100)
-            now = time.monotonic()
-            if pct > last_pct or now - last_heartbeat >= 30:
-                last_pct = pct
-                last_heartbeat = now
-                report_progress(
-                    "diarize", pct, chunks_done=i + 1,
-                    chunks_total=total_chunks,
-                )
-
-        report_progress("diarize", 100, chunks_total=total_chunks)
-        return l_speakers, str(actual_device)
+        # One call over the whole file: NeMo's forward_streaming owns chunking,
+        # context offsets and the speaker cache (about 10 s per hour of audio on the 3090).
+        frames, frame_s = frame_probabilities(diar_model, signal)
+        turns = turns_from_frames(frames, frame_s)
+        report_progress("diarize", 100, frames=len(frames))
+        return turns, str(actual_device)
     except Exception as e:
         log(f"Error: Diarization failed: {e}")
         log("Continuing without speaker labels.")
         return [], None
+
+
+def align_words(audio_path: str, segments: list, device: str | None) -> list:
+    """Segments with per-word times, so attribution can split a segment at a turn change.
+
+    Never fails the transcript: without torchaudio, the model or VRAM, the
+    segments come back unchanged and attribution interpolates word times.
+    """
+    try:
+        import librosa
+        from wax.word_alignment import align_segments
+    except ImportError as e:
+        log(f"Warning: word alignment unavailable ({e}); speaker splits will be interpolated")
+        return list(segments)
+    report_progress("diarize", 100, detail="aligning words to speakers")
+    try:
+        signal, _ = librosa.load(audio_path, sr=16000)
+    except Exception as e:
+        log(f"Warning: word alignment could not read audio ({e})")
+        return list(segments)
+    return align_segments(signal, segments, device or "cpu", log=log)
 
 
 def format_timestamp(seconds: float) -> str:
@@ -641,34 +582,29 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
                 lines.append("")
             lines.append(f"**{turn['speaker_label']} ({format_timestamp(turn['start'])}):** {turn['text']}")
     elif result["segments"]:
+        if diarization:
+            # Per-word attribution: a segment that spans a turn change is split
+            # there instead of going whole to whichever speaker overlapped most.
+            from wax.speaker_attribution import attribute_segments
+
+            pieces = attribute_segments(result["segments"], diarization)
+        else:
+            pieces = [{"speaker": None, "start": seg["start"], "text": seg["text"]}
+                      for seg in result["segments"]]
         current_speaker = None
-        for seg in result["segments"]:
-            ts = format_timestamp(seg["start"])
-
+        for piece in pieces:
+            ts = format_timestamp(piece["start"])
+            speaker = piece["speaker"]
             speaker_label = ""
-            if diarization:
-                # Find the speaker that overlaps most with this segment
-                seg_start = seg["start"]
-                seg_end = seg["end"]
-                overlaps = []
-                for dseg in diarization:
-                    overlap_start = max(seg_start, dseg["start_time"])
-                    overlap_end = min(seg_end, dseg["end_time"])
-                    if overlap_end > overlap_start:
-                        overlaps.append((overlap_end - overlap_start, dseg["speaker"]))
-
-                if overlaps:
-                    speaker = max(overlaps, key=lambda x: x[0])[1]
-                    if speaker != current_speaker:
-                        current_speaker = speaker
-                        speaker_label = f"**Speaker {speaker+1} ({ts}):** "
-                    else:
-                        # Same speaker, but maybe we want to show timestamp if requested
-                        if include_timestamps:
-                            speaker_label = f"**({ts})** "
-                else:
-                    if include_timestamps:
-                        speaker_label = f"**({ts})** "
+            if diarization and speaker is not None:
+                if speaker != current_speaker:
+                    current_speaker = speaker
+                    speaker_label = f"**Speaker {speaker+1} ({ts}):** "
+                elif include_timestamps:
+                    speaker_label = f"**({ts})** "
+            elif diarization:
+                if include_timestamps:
+                    speaker_label = f"**({ts})** "
             elif include_timestamps:
                 speaker_label = f"**[{ts}]** "
 
@@ -676,13 +612,13 @@ def to_markdown(result: dict, audio_path: str, include_timestamps: bool, diariza
                 # If we have a speaker change or forced timestamp, start a new paragraph
                 if lines and lines[-1] != "":
                     lines.append("")
-                lines.append(f"{speaker_label}{seg['text']}")
+                lines.append(f"{speaker_label}{piece['text']}")
             else:
                 # Append to current paragraph
                 if lines and lines[-1] != "" and not lines[-1].startswith("#") and not lines[-1].startswith("-") and not lines[-1].startswith("---"):
-                    lines[-1] += f" {seg['text']}"
+                    lines[-1] += f" {piece['text']}"
                 else:
-                    lines.append(seg['text'])
+                    lines.append(piece['text'])
     else:
         lines.append(result["text"])
 
@@ -795,6 +731,8 @@ def main():
         diarization_device = None
     elif args.diarization:
         diarization, diarization_device = diarize_local(audio_path, args.diarization_device)
+        if diarization:
+            result = dict(result, segments=align_words(audio_path, result["segments"], diarization_device))
     else:
         diarization = None
         diarization_device = None

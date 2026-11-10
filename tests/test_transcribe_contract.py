@@ -66,56 +66,10 @@ class TranscribeArtifactContractTest(unittest.TestCase):
         record = json.loads(line[len(TRANSCRIBE._PROGRESS_PREFIX):])
         self.assertEqual(record, {"stage": "diarize", "percent": 100, "chunks_done": 10})
 
-    def test_diarization_keeps_prediction_history_constant(self):
-        class FakeTensor:
-            def __init__(self, shape, values=None):
-                self.shape = shape
-                self.values = values or []
-
-            def unsqueeze(self, _dim):
-                return FakeTensor((1, self.shape[0]), self.values)
-
-            def to(self, _device):
-                return self
-
-            def cpu(self):
-                return self
-
-            def tolist(self):
-                return list(self.values)
-
-            def __getitem__(self, _key):
-                return self
-
-        class InferenceMode:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
+    def test_diarization_returns_speech_only_turns_from_one_whole_file_call(self):
+        """NeMo owns chunking (one call per file), and silence is not a speaker."""
         calls = []
-        modules = types.SimpleNamespace(
-            n_spk=4, chunk_len=10, subsampling_factor=10,
-        )
-        model = types.SimpleNamespace(
-            device="cpu",
-            sortformer_modules=modules,
-            preprocessor=types.SimpleNamespace(
-                _cfg=types.SimpleNamespace(window_stride=0.01),
-            ),
-        )
 
-        def forward_streaming_step(**kwargs):
-            calls.append(kwargs["total_preds"].shape[1])
-            return kwargs["streaming_state"], FakeTensor((1, 2, 4), [0, 1])
-
-        model.forward_streaming_step = forward_streaming_step
-        model.to = lambda _device: model
-        audio2mel = types.SimpleNamespace(
-            to=lambda _device: audio2mel,
-            get_features=lambda *_args: (FakeTensor((1, 128, 100)), None),
-        )
         class FakeDevice:
             def __init__(self, name):
                 self.name = str(name)
@@ -124,32 +78,28 @@ class TranscribeArtifactContractTest(unittest.TestCase):
             def __str__(self):
                 return self.name
 
+        model = types.SimpleNamespace(device="cpu")
         fake_torch = types.ModuleType("torch")
         fake_torch.device = FakeDevice
-        fake_torch.tensor = lambda value, **_kwargs: FakeTensor((len(value),))
-        fake_torch.zeros = lambda shape, **_kwargs: FakeTensor(shape)
-        fake_torch.concat = lambda _values, dim=0: FakeTensor((1, 128, 199))
-        fake_torch.transpose = lambda _value, _a, _b: FakeTensor((1, 199, 128))
-        fake_torch.inference_mode = InferenceMode
-        fake_torch.argmax = lambda value, dim=0: FakeTensor((len(value.values),), value.values)
         fake_librosa = types.ModuleType("librosa")
         fake_librosa.load = lambda *_args, **_kwargs: ([0.0] * 48_000, 16_000)
-        fake_backend = types.ModuleType(
-            "wax.diarization_sortformer"
-        )
-        fake_backend.load_model = lambda device=None: (model, audio2mel)
-        fake_backend.init_streaming_state = lambda *_args, **_kwargs: object()
+        fake_backend = types.ModuleType("wax.diarization_sortformer")
+        fake_backend.load_model = lambda device=None: model
 
-        modules_patch = {
-            "librosa": fake_librosa,
-            "torch": fake_torch,
-            "wax.diarization_sortformer": fake_backend,
-        }
-        with patch.dict(sys.modules, modules_patch), contextlib.redirect_stderr(io.StringIO()):
-            segments, device = TRANSCRIBE.diarize_local("fake.ogg", "cpu")
+        def frame_probabilities(_model, signal):
+            calls.append(len(signal))
+            silent, a, b = [0.1, 0.1, 0.0, 0.0], [0.9, 0.1, 0.0, 0.0], [0.1, 0.8, 0.0, 0.0]
+            return [a, a, silent, silent, b], 0.5
 
-        self.assertEqual(calls, [0, 0, 0])
-        self.assertTrue(segments)
+        fake_backend.frame_probabilities = frame_probabilities
+        with patch.dict(sys.modules, {"librosa": fake_librosa, "torch": fake_torch,
+                                      "wax.diarization_sortformer": fake_backend}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            turns, device = TRANSCRIBE.diarize_local("fake.ogg", "cpu")
+
+        self.assertEqual(calls, [48_000])
+        self.assertEqual(turns, [{"start_time": 0.0, "end_time": 1.0, "speaker": 0},
+                                 {"start_time": 2.0, "end_time": 2.5, "speaker": 1}])
         self.assertEqual(device, "cpu")
 
     def test_cuda_diarization_never_silently_falls_back(self):

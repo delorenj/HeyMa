@@ -1,23 +1,41 @@
 """Owned, side-effect-free adapter for NeMo's streaming Sortformer model.
 
-Wax only needs three operations from the old vendored WhisperLiveKit backend:
-load a model, configure its streaming parameters, and allocate streaming state.
-Keeping that tiny contract here makes the runtime reproducible from tracked Wax
-source and prevents an import check from allocating a hidden model on the GPU.
+Wax needs two things from Sortformer: load it, and get per-frame speaker
+activity for a whole recording. Keeping that contract here makes the runtime
+reproducible from tracked Wax source and keeps an import check from allocating a
+hidden model on the GPU.
+
+Inference is NeMo's own ``forward`` (``forward_streaming`` in streaming mode),
+which handles chunk offsets, left/right context and the speaker cache. Wax used
+to hand-roll a one-second loop inherited from WhisperLiveKit; it re-fed most of
+the previous second as context but told the model only one frame of it was
+context, overrode ``subsampling_factor`` to 10 while the encoder subsamples by 8,
+and so smeared timing and split one voice into extra speakers (transcript 1878,
+2026-11-09). Wax diarizes finished files, so it uses NVIDIA's high-latency
+"batch" setting from the model card instead of the one-second-lag one.
 """
 
 import json
 
 import torch
 from nemo.collections.asr.models import SortformerEncLabelModel
-from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
 
 
 MODEL_NAME = "nvidia/diar_streaming_sortformer_4spk-v2"
 
+# Model card, "30.4 s latency" row (best DER). Units are 80 ms output frames.
+STREAMING_CONFIG = {
+    "chunk_len": 340,
+    "chunk_right_context": 40,
+    "chunk_left_context": 1,
+    "fifo_len": 40,
+    "spkcache_update_period": 300,
+    "spkcache_len": 188,
+}
+
 
 def load_model(device):
-    """Load exactly one Sortformer and its preprocessor on ``device``."""
+    """Load exactly one Sortformer on ``device``, configured for whole-file inference."""
     target = torch.device(device)
     if target.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError(
@@ -27,108 +45,38 @@ def load_model(device):
     model = SortformerEncLabelModel.from_pretrained(MODEL_NAME)
     model.eval()
     model = model.to(target)
-
-    # One-second-lag streaming configuration inherited from the proven
-    # WhisperLiveKit implementation. Wax feeds one second of audio per step.
     modules = model.sortformer_modules
-    modules.chunk_len = 10
-    modules.subsampling_factor = 10
-    modules.chunk_right_context = 0
-    modules.chunk_left_context = 10
-    modules.spkcache_len = 188
-    modules.fifo_len = 188
-    modules.spkcache_update_period = 144
+    for name, value in STREAMING_CONFIG.items():
+        setattr(modules, name, value)
     modules.log = False
     modules._check_streaming_parameters()
-
-    audio2mel = AudioToMelSpectrogramPreprocessor(
-        window_size=0.025,
-        normalize="NA",
-        n_fft=512,
-        features=128,
-        pad_to=0,
-    ).to(target)
-    return model, audio2mel
+    return model
 
 
-class StreamingSortformerState:
-    """Mutable state expected by ``forward_streaming_step``."""
-
-    def __init__(self):
-        self.spkcache = None
-        self.spkcache_lengths = None
-        self.spkcache_preds = None
-        self.fifo = None
-        self.fifo_lengths = None
-        self.fifo_preds = None
-        self.spk_perm = None
-        self.mean_sil_emb = None
-        self.n_sil_frames = None
+def frame_seconds(model) -> float:
+    """Seconds per output frame: encoder subsampling x mel hop (8 x 10 ms)."""
+    return model.sortformer_modules.subsampling_factor * model.preprocessor._cfg.window_stride
 
 
-def init_streaming_state(modules, *, batch_size=1, async_streaming=False, device=None):
-    """Allocate the state tensors on the same device as Sortformer."""
-    state = StreamingSortformerState()
-    if async_streaming:
-        state.spkcache = torch.zeros(
-            (batch_size, modules.spkcache_len, modules.fc_d_model), device=device
-        )
-        state.spkcache_preds = torch.zeros(
-            (batch_size, modules.spkcache_len, modules.n_spk), device=device
-        )
-        state.spkcache_lengths = torch.zeros(
-            (batch_size,), dtype=torch.long, device=device
-        )
-        state.fifo = torch.zeros(
-            (batch_size, modules.fifo_len, modules.fc_d_model), device=device
-        )
-        state.fifo_lengths = torch.zeros(
-            (batch_size,), dtype=torch.long, device=device
-        )
-    else:
-        state.spkcache = torch.zeros(
-            (batch_size, 0, modules.fc_d_model), device=device
-        )
-        state.fifo = torch.zeros(
-            (batch_size, 0, modules.fc_d_model), device=device
-        )
-    state.mean_sil_emb = torch.zeros(
-        (batch_size, modules.fc_d_model), device=device
-    )
-    state.n_sil_frames = torch.zeros(
-        (batch_size,), dtype=torch.long, device=device
-    )
-    return state
+def frame_probabilities(model, signal):
+    """Speaker activity for a 16 kHz mono signal: ([[p_spk0..p_spk3] per frame], frame_s)."""
+    with torch.inference_mode():
+        audio = torch.as_tensor(signal, dtype=torch.float32, device=model.device).unsqueeze(0)
+        length = torch.tensor([audio.shape[1]], device=model.device)
+        preds = model.forward(audio_signal=audio, audio_signal_length=length)
+    return preds[0].float().cpu().tolist(), frame_seconds(model)
 
 
 def cuda_smoke() -> dict:
-    """Load Sortformer and execute one real streaming step on CUDA."""
+    """Load Sortformer and run real inference over one second of audio on CUDA."""
     if not torch.cuda.is_available():
         raise RuntimeError("torch CUDA unavailable")
 
-    model, audio2mel = load_model("cuda")
-    signal = torch.zeros((1, 16000), device=model.device)
-    signal_length = torch.tensor([16000], device=model.device)
-    features, _ = audio2mel.get_features(signal, signal_length)
-    state = init_streaming_state(
-        model.sortformer_modules,
-        batch_size=1,
-        async_streaming=True,
-        device=model.device,
-    )
-    empty = torch.zeros(
-        (1, 0, model.sortformer_modules.n_spk), device=model.device
-    )
+    model = load_model("cuda")
     with torch.inference_mode():
-        _, predictions = model.forward_streaming_step(
-            processed_signal=torch.transpose(features, 1, 2),
-            processed_signal_length=torch.tensor(
-                [features.shape[2]], device=model.device
-            ),
-            streaming_state=state,
-            total_preds=empty,
-            left_offset=0,
-            right_offset=8,
+        audio = torch.zeros((1, 16000), device=model.device)
+        predictions = model.forward(
+            audio_signal=audio, audio_signal_length=torch.tensor([16000], device=model.device)
         )
     torch.cuda.synchronize()
     if predictions.device.type != "cuda":
@@ -138,6 +86,7 @@ def cuda_smoke() -> dict:
         "gpu": torch.cuda.get_device_name(predictions.device),
         "model": MODEL_NAME,
         "prediction_shape": list(predictions.shape),
+        "frame_s": frame_seconds(model),
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
     }

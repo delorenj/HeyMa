@@ -11,6 +11,41 @@ the code still matches; where the code has since moved, the entry says so.
 
 ---
 
+## 2026-11-09 · Transcript 1878 speaker blocks wrong · *segment-level attribution over a mis-fed Sortformer loop*
+
+**Signature.** An 83-minute three-person meeting (`#1878`, item
+`74853e78bac48801`) rendered four speakers, blocks where two people alternate,
+and blocks that begin mid-sentence ("…two versions of the admin" / "**Speaker
+2:** page which is our space state let's say that your booking…"). The pass
+completed; `wax doctor` was green. Shape 3: a quality failure no probe measures.
+
+**Cause.** Three stacked defects, measured on the same audio:
+
+1. `to_markdown` gave each Whisper segment (median 5 s, lowercase, no
+   punctuation) to the single speaker overlapping it most. Segments do not end at
+   turns, so a turn change inside one went whole to one person. 151 of 744
+   segments had at least 1 s of a second speaker.
+2. `diarize_local` hand-rolled Sortformer streaming one second at a time: it
+   prepended ~1 s of the previous chunk but passed `left_offset=8` (one encoder
+   frame), a phantom `right_offset=8`, and `subsampling_factor=10` against the
+   encoder's 8. Timing smeared and the speaker cache drifted.
+3. Turns came from `argmax`, so 878 s of silence went to a speaker (Speaker 1
+   owned 2506 s against 1119 s once thresholded).
+
+**Fix.** Sortformer runs through NeMo's own `forward` with the model card's
+batch setting (14 s instead of 123 s for 83 min); frames below 0.5 are silence;
+the pass force-aligns words (torchaudio MMS_FA, 739 of 744 segments aligned)
+and splits segments at speaker changes. Whisper `word_timestamps` was tried
+first and rejected: it OOMs on the shared GPU where plain decoding fits. The
+fourth voice that remains in 1878 is real: the Spanish translation demo
+(~77–81 min).
+
+**Not changed.** Already-diarized notes. `#1878` was hand-edited (v9, v10 by
+reconcile), so the pass would skip it with `human_edits`; a re-render sits at
+`var/logs/74853e78bac48801/diarization-preview-20261109.md`.
+
+**Check.** The `diarization` pass evidence now records `speakers`, `speaker_turns` and `segments_word_aligned`/`segments`.
+
 ## 2026-11-09 · No call transcripts for two days · *the intake job was paused from Holocene*
 
 **Signature.** Phone calls settled, announced and showed in `wax calls list`

@@ -63,18 +63,30 @@ attribution.
 | Fact | Value |
 |---|---|
 | Model | NVIDIA Sortformer, through the tracked, side-effect-free `wax.diarization_sortformer` adapter (the vendored `whisperlivekit` is gone) |
+| Inference | NeMo's own `forward` over the whole file (`forward_streaming` owns chunking, context and the speaker cache) with the model card's high-latency batch setting (`chunk_len 340`, right context 40). About 10 s per hour of audio. Never hand-roll `forward_streaming_step` again: the old one-second loop mis-stated its context and overrode `subsampling_factor`, which smeared turns and invented speakers (2026-11-09) |
+| Turns | A frame is speech only when a speaker's probability clears 0.5 (`wax.speaker_attribution.turns_from_frames`); silence belongs to nobody |
+| Attribution | **Per word, not per segment.** The pass force-aligns the stored ASR text to the audio (`wax.word_alignment`, torchaudio MMS_FA, ~1.2 GB, cached as `~/.cache/torch/hub/checkpoints/mms_fa_ctc_alignment_mling_uroman.pt`), gives each word the speaker it overlaps, absorbs one-word flickers and splits a Whisper segment where the speaker changes. Speakers are numbered by first word, so labels have no gaps. Without the aligner it interpolates word times by length (worse, never fatal); evidence `segments_word_aligned` of `segments` shows which |
+| Whisper word timestamps | **Off on purpose.** With 5.2 GB free (above the 5 GB floor) large-v3 decoded fine and OOMed with `word_timestamps=True`; alignment runs after Whisper exits instead |
 | Runtime | `~/HeyMa/.venv-diarization` (`DIARIZATION_PYTHON` overrides). Rebuild a deleted or damaged one with `mise run wax:diarization:install` (`components/wax/deploy/install-diarization`) |
 | Device | **Required and GPU-strict by default**: `WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`. Independent of Whisper's device, so an ASR CPU retry cannot move Sortformer off CUDA |
 | Input | The durable timed ASR (`logs/<item>/asr.json`, checked against the item's `source_sha256`). It never repeats Whisper |
 | Output | `diarized: true`, `diarization-requested`, `diarization-device-requested`, `diarization-device` (the proven device, with GPU name) and a replaced body. Requested and actual device are recorded |
 | Human edits | If the body no longer hashes to the stored `body_sha256`, the pass records `skipped`/`human_edits` and leaves the human text |
-| Failure | Raises `diarization_failed` (for example CUDA out of memory at Sortformer load). Needs about 3000 MiB free VRAM; on 2026-11-05 the 3090 had 7.6 GB free |
+| Failure | Raises `diarization_failed` (for example CUDA out of memory at Sortformer load). Needs about 3000 MiB free VRAM for Sortformer plus ~1.3 GB for the aligner (an aligner OOM only degrades to interpolation); on 2026-11-05 the 3090 had 7.6 GB free |
 | Doctor proof | `wax doctor` and `doctor.sh` run a **real Sortformer CUDA forward pass**, not an import-only check |
 
 Body edits by passes other than speaker labelling no longer mark a transcript as
 diarized (2026-11-04). A recurring trap: with a stale `diarized: false` do not
 re-run ASR; run `wax ep run diarization <item>` (a frozen plan, per
 [passes/index](passes/index.md)).
+
+Transcripts diarized before 2026-11-09 carry the old loop's turns and
+segment-level blocks (two people in one block, the next block starting
+mid-sentence). Re-running `diarization` re-renders from `asr.json`, so it
+drops dictionary corrections (run `dictionary-correction` after it) and it
+skips a hand-edited body (`human_edits`). To compare without touching the
+note, load `scripts/transcribe.py` in `.venv-diarization` and call
+`diarize_local`, `align_words`, `to_markdown`, as the pass does.
 
 ## Dual-channel phone calls
 

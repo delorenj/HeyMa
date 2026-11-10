@@ -63,9 +63,17 @@ def build_result(md, item_id):
     turns, device = module.diarize_local(row["path"], "cuda")
     if not turns or not device or not device.startswith("cuda"):
         raise RuntimeError("Sortformer did not produce CUDA speaker turns")
-    rendered = module.to_markdown(asr["result"], row["path"], asr.get("timestamps", False), turns, True, "cuda", device)
+    # Word times (forced alignment) let a segment split where the speaker changes.
+    result = dict(asr["result"], segments=module.align_words(row["path"], asr["result"]["segments"], device))
+    rendered = module.to_markdown(result, row["path"], asr.get("timestamps", False), turns, True, "cuda", device)
     _, replacement = frontmatter.split(rendered)
+    segments = result["segments"]
     return {"wax_ep_version": 1,
+            # Interpolated word times are a quieter, worse split; make the degrade readable.
+            "evidence": {"speaker_turns": len(turns),
+                         "speakers": len({t["speaker"] for t in turns}),
+                         "segments": len(segments),
+                         "segments_word_aligned": sum(1 for seg in segments if seg.get("words"))},
             "frontmatter": {"diarized": True, "diarization-requested": True,
                             "diarization-device-requested": "cuda", "diarization-device": device},
             "body_replace": {"sha256": digest, "text": replacement}}
