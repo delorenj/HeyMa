@@ -76,20 +76,12 @@ silent notes, self-declared "no content" notes, one-to-three-word misfires and
 "Hello? Hello?" calls from `~/d/Transcripts` to `<vault>/.trash/Transcripts/`.
 It believes the title and summary (the passes already read the transcript),
 but every title/summary rule only judges short notes, so a long meeting that
-mentions a voicemail is never touched. Structure (`call-outcome: voicemail`,
-a `telnyx-vm-*` source, a call that opens on the voicemail greeting) marks a
-voicemail at any length, except a long one: over 60 spoken words
-(`LONG_VOICEMAIL_MIN_WORDS`) with a title that says what the message is about
-(`prune.meaningful_title`: at least two words, not a placeholder or file
-name/stem, not a generic label like "Personal Greeting" or "Missed Call", and
-not itself a voicemail, automated-system or empty-recording title) is a real
-person's message and is kept, even when its summary says "voicemail" (operator
-order 2026-11-10). Topic words are fine on a long message ("Empty Storefront
-Lease Inquiry"). A long voicemail whose title or summary is a loan or debt
-pitch (`LOAN_PITCH_RE`: pre-approved/pre-selected, personal loan, loan offer,
-funding group, debt consolidation, tax relief) is still pruned; that rule is
-never applied outside a voicemail. Short messages still go, and
-`--keep voicemail` spares every voicemail. `body-lost` (a body far smaller than the word count recorded
+mentions a voicemail is never touched; only structure (`call-outcome: voicemail`,
+a `telnyx-vm-*` source, a call that opens on the voicemail greeting) is believed
+at any length, including long messages from real people and loan or sales
+pitches: the operator wants no voicemail in the vault (2026-11-10; a brief
+keep-long-titled-voicemails rule was reverted). `--keep voicemail`
+spares them all. `body-lost` (a body far smaller than the word count recorded
 for it, in the note's `word-count` or `transcripts.word_count`) is checked first,
 reported and kept: that is a clobbered transcript to recover (the ASR JSON in
 `var/logs/<item>/asr.json`, or `wax transcripts history`), not junk. `wax doctor`
