@@ -52,6 +52,7 @@ See [cli](cli.md) for every flag. The shapes you use most:
 | Schema | `wax transcripts migrate [--dry-run]` |
 | Embed now | `wax transcripts embed [--limit N]` |
 | Harvest links | `wax transcripts link-harvest [--report]` |
+| Clear junk notes out of the vault | `wax transcripts prune` (dry run), then `--apply`; undo `wax transcripts unprune --run <id>` |
 
 mise: `wax:transcripts:sync`, `wax:transcripts:search`, `wax:transcripts:migrate`, `wax:test:pg`.
 
@@ -67,6 +68,27 @@ mise: `wax:transcripts:sync`, `wax:transcripts:search`, `wax:transcripts:migrate
 | `error` | Queue older than `WAX_TRANSCRIPTS_LAG_FAIL_S` (3600), embed backlog older than 6 h, or a model digest mismatch. `wax status` exits 2 |
 
 `wax doctor` has seven `transcripts *` probes: store reachable and schema current, projection drained, parity, invariants, embeddings current, embedder digest, and the vector index. The index probe fails only when the canonical ANN plan cannot use `chunk_vector_current_hnsw`; its detail says whether `tx.search` (at its own `ef_search = 200`) plans HNSW or an exact scan.
+
+## Pruning junk notes
+
+`wax transcripts prune` (`src/wax/prune.py`) moves voicemails, header-only and
+silent notes, self-declared "no content" notes, one-to-three-word misfires and
+"Hello? Hello?" calls from `~/d/Transcripts` to `<vault>/.trash/Transcripts/`.
+It believes the title and summary (the passes already read the transcript),
+but every title/summary rule only judges short notes, so a long meeting that
+mentions a voicemail is never touched. `body-lost` (an empty body on a note whose
+`word-count` says it once had a transcript) is reported and kept: that is a bug
+to recover with `wax transcripts history`, not junk.
+
+What a prune writes: the note moves (rename, no-clobber, inode-verified; never
+unlinked; audio untouched), `transcripts.pruned_at` is stamped so the item's
+leftover failed passes leave `wax status`, `wax doctor`, `wax failures` and the
+sweep, document rows at the path become `trashed`, and one line per note goes to
+`var/prune.jsonl` with the run id. The store is not written: the reconcile sweep
+(run once at the end of an applied prune, else waxd's 10-minute tick) stamps
+`note_missing_at`, so browse, Holocene and `wax tx` drop the note while
+`wax transcripts show/history/search` still find it. `unprune` moves the note
+back, clears `pruned_at`, and the next sweep un-stamps the store.
 
 ## Provisioning a fresh host
 

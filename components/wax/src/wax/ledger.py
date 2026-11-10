@@ -148,7 +148,10 @@ def connect() -> sqlite3.Connection:
         additions = {
             "passes": {"reason_code": "TEXT", "result": "TEXT", "definition_id": "TEXT",
                        "exhausted_at": "TEXT"},
-            "transcripts": {"asr_path": "TEXT", "body_sha256": "TEXT", "processing_seconds": "REAL"},
+            # pruned_at: `wax transcripts prune` moved the note to the vault
+            # trash (prune.py); its leftover pass rows are history.
+            "transcripts": {"asr_path": "TEXT", "body_sha256": "TEXT", "processing_seconds": "REAL",
+                            "pruned_at": "TEXT"},
             # Receipts surface through the catalog (Holocene/n8n): the raw
             # last_error stays operator-only, the machine cause travels in
             # reason_code. Additive for ledgers that predate the column.
@@ -624,6 +627,12 @@ _SUPERSEDED_DOC_KEYS = (
     "AND n.state='processed' AND n.first_seen > d.first_seen)")
 
 
+# An item whose note `wax transcripts prune` moved to the vault trash can never
+# run a pass again (passes.md_for finds no file), so its failed pass rows are
+# history too. Restoring the note clears pruned_at and they count again.
+_PRUNED_ITEMS = "SELECT item_id FROM transcripts WHERE pruned_at IS NOT NULL"
+
+
 def passes_failed() -> dict[str, Any]:
     """Distinct items whose latest attempt of a current, enabled pass failed.
 
@@ -634,7 +643,7 @@ def passes_failed() -> dict[str, Any]:
     rows = connect().execute(
         "SELECT DISTINCT item_id, ep_slug FROM passes "
         f"WHERE state='failed' AND {gate} AND item_id NOT IN ({_VANISHED_DOC_KEYS}) "
-        f"AND item_id NOT IN ({_SUPERSEDED_DOC_KEYS})",
+        f"AND item_id NOT IN ({_SUPERSEDED_DOC_KEYS}) AND item_id NOT IN ({_PRUNED_ITEMS})",
         params,
     ).fetchall()
     return {
@@ -711,7 +720,7 @@ def failed_passes_for_sweep(max_attempts: int, min_age_s: float = 0.0) -> list[t
         "SELECT p.item_id, p.ep_slug, p.attempt FROM passes p JOIN transcripts t USING(item_id) "
         f"WHERE p.state='failed' AND p.ep_slug IN ({placeholders}) "
         "AND (p.attempt < ? OR p.reason_code='dependency_failed') "
-        "AND p.updated_at <= ? "
+        "AND p.updated_at <= ? AND t.pruned_at IS NULL "
         "ORDER BY p.updated_at",
         (*slugs, max_attempts, _age_cutoff(min_age_s)),
     ).fetchall()
@@ -742,6 +751,7 @@ def tray_items(active_item: Optional[str] = None,
     ).fetchall()
     completed = conn.execute(
         select + "WHERE i.state IN ('complete','enrichment_pending') AND i.updated_at>? AND t.md_path IS NOT NULL "
+        "AND t.pruned_at IS NULL "
         "ORDER BY i.updated_at DESC",
         (*gate_params, completed_after),
     ).fetchall()

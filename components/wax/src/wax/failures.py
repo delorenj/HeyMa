@@ -219,7 +219,7 @@ def _subject_context(conn: sqlite3.Connection, key: str) -> tuple[Optional[str],
 def _collect_passes(conn, tables, *, cutoff, now, since_s, grace_s) -> list[dict[str, Any]]:
     """Failed pass rows on the SAME definition `wax status` uses (ledger.passes_failed):
     an enabled pass at its current registry version, behind no vanished or superseded
-    document. Unlike passes_failed, exhausted rows are the point here, not noise."""
+    document and no pruned transcript. Unlike passes_failed, exhausted rows are the point here, not noise."""
     if "passes" not in tables:
         return []
     # _current_pass_gate() swallows a broken registry as "nothing failed"; for a
@@ -231,6 +231,8 @@ def _collect_passes(conn, tables, *, cutoff, now, since_s, grace_s) -> list[dict
     switched_off = operator_settings.disabled_passes()
     exclusions = (f" AND item_id NOT IN ({ledger._VANISHED_DOC_KEYS})"
                   f" AND item_id NOT IN ({ledger._SUPERSEDED_DOC_KEYS})") if "documents" in tables else ""
+    if "transcripts" in tables and "pruned_at" in _columns(conn, "transcripts"):
+        exclusions += f" AND item_id NOT IN ({ledger._PRUNED_ITEMS})"
     exhausted = "exhausted_at" if "exhausted_at" in _columns(conn, "passes") else "NULL AS exhausted_at"
     rows = conn.execute(
         f"SELECT item_id, ep_slug, attempt, reason_code, {exhausted}, updated_at, detail FROM passes "

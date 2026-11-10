@@ -104,6 +104,8 @@ Detail: [documents](documents.md).
 | `wax transcripts migrate [--dry-run]` | Apply schema migrations |
 | `wax transcripts embed [--limit N]` | Embed pending chunks |
 | `wax transcripts link-harvest [PATH...] [--report] [--dry-run]` | Load px harvest artifacts into `tx.harvest_*`. Default `$WAX_HARVEST_DIR` |
+| `wax transcripts prune [--apply] [--reason R]... [--keep R]... [--min-words 4] [--min-age 1800] [--limit N] [-v]` | Find junk notes in `~/d/Transcripts` and, with `--apply`, move them to the vault `.trash` (never unlink, never touch audio). Dry run by default. Reasons: `empty`, `voicemail`, `no-content`, `too-short`, `call-noise` (default set), and `body-lost` (reported only, unless named). Believes the title and summary, fenced by word counts. Exit 2 on errors |
+| `wax transcripts unprune [NOTE...] [--run ID] [--dry-run]` | Put pruned notes back from the trash, by note name or a whole run (`var/prune.jsonl`) |
 | `wax transcripts browse [--view K] [--include-hermes] [--limit N] [--since D] [--until D] [--project P] [--id N]` | Holocene's read-only feed (ro role, no bodies). `--view` is a classification, `unsorted` or `all`; limit defaults to 1000, max 2000 |
 
 Detail: [transcriptions-store](transcriptions-store.md).

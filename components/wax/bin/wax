@@ -30,8 +30,8 @@ COMPONENT_ROOT = next(
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 from wax import (archive, catalog, capture, component, config, documents, events, failures, finalize,
-                 frontmatter, hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, reconcile,
-                 sanity, sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
+                 frontmatter, hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, prune,
+                 reconcile, sanity, sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
 from wax import telephony as telephony_shadow  # noqa: E402
@@ -1885,6 +1885,44 @@ def _is_pg_error(exc: BaseException) -> bool:
         return False
 
 
+def render_prune(out: dict, *, verbose: bool = False) -> None:
+    dry = out["dry_run"]
+    verb = "WOULD PRUNE" if dry else "PRUNED"
+    notes = out["notes"]
+    width = max((len(n["reason"]) for n in notes), default=0)
+    for n in sorted(notes, key=lambda n: (prune.REASONS.index(n["reason"]), n["name"])):
+        title = f"  \"{n['title']}\"" if n.get("title") else ""
+        words = "" if "spoken word" in n["detail"] else f" ({n['words']} words)"
+        print(f"{verb}  {n['reason']:<{width}}  {n['name']}{title}  -- {n['detail']}{words}")
+    held = out["held_back"]
+    lost = [h for h in held if h.get("reason") == "body-lost"]
+    for h in (held if verbose else lost):
+        why = h.get("reason") or h["outcome"]
+        detail = h.get("detail") or ""
+        print(f"HELD BACK  {why}  {Path(h['path']).name}  -- {h['outcome']}{': ' + detail if detail else ''}")
+    by = ", ".join(f"{k} {v}" for k, v in sorted(out["by_reason"].items(), key=lambda kv: prune.REASONS.index(kv[0])))
+    print()
+    print(f"{'would prune' if dry else 'pruned'} {len(notes)} of {out['counts'].get('scanned', 0)} notes"
+          + (f" ({by})" if by else "") + f"; trash: {out['trash']}")
+    others = {k: v for k, v in out["counts"].items()
+              if k not in ("scanned", "keep", "pruned", "would_prune") and v}
+    if others:
+        print("held back: " + ", ".join(f"{k} {v}" for k, v in sorted(others.items()))
+              + ("" if verbose else "  (-v lists them)"))
+    if lost:
+        print(f"{len(lost)} note(s) lost their transcript body (body-lost): recover from "
+              "`wax transcripts history <note>`, or prune with --reason body-lost")
+    for err in out["errors"]:
+        print(f"ERROR  {err}")
+    if dry and notes:
+        print("dry run: nothing moved. Re-run with --apply to move them (undo: wax transcripts unprune --run <id>)")
+    elif not dry and out.get("run"):
+        print(f"run {out['run']}; undo with: wax transcripts unprune --run {out['run']}")
+        store = out.get("store")
+        if store and not store.get("ok"):
+            print(f"store reconcile deferred to waxd's next tick: {store.get('detail') or store.get('errors')}")
+
+
 def transcripts_command(args, J: bool) -> int:
     """`wax transcripts …` (docs/TRANSCRIPTIONS-STORE.md D.7). StoreUnavailable is a RuntimeError,
     so an unreachable store reaches the handler under __main__: `error: …`, exit 2."""
@@ -1892,6 +1930,39 @@ def transcripts_command(args, J: bool) -> int:
         out = transcriptions.sync(dry_run=args.dry_run, check=args.check, embed=args.embed, limit=args.limit)
         _emit(out, J)
         return 2 if out.get("drift") or out.get("errors") else 0
+    if args.sub == "prune":
+        reasons = args.reason or list(prune.DEFAULT_REASONS)
+        reasons = [r for r in reasons if r not in set(args.keep or ())]
+        try:
+            out = prune.prune(apply=args.apply, reasons=reasons, min_words=args.min_words,
+                              min_age=args.min_age, limit=args.limit)
+        except prune.PruneError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        if J:
+            _emit(out, True)
+        else:
+            render_prune(out, verbose=args.verbose)
+        return 2 if out.get("errors") else 0
+    if args.sub == "unprune":
+        try:
+            out = prune.restore(run=args.run, names=args.names, dry_run=args.dry_run)
+        except prune.PruneError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        if J:
+            _emit(out, True)
+        else:
+            verb = "WOULD RESTORE" if out["dry_run"] else "RESTORED"
+            for row in out["restored"]:
+                print(f"{verb}  {row['path']}")
+            for row in out["skipped"]:
+                print(f"SKIPPED  {row['path']}  ({row['detail']})")
+            for err in out["errors"]:
+                print(f"ERROR  {err}")
+            if not (out["restored"] or out["skipped"] or out["errors"]):
+                print("nothing in the prune manifest matches")
+        return 2 if out["errors"] or not (out["restored"] or out["skipped"]) else 0
     if args.sub == "search":
         try:
             out = transcriptions.search.run(
@@ -2410,6 +2481,27 @@ def main() -> int:
     tsy.add_argument("--check", action="store_true", help="parity report only; exit 2 on drift")
     tsy.add_argument("--embed", action="store_true", help="also run the embed sweep until nothing is pending")
     tsy.add_argument("--limit", type=int, default=0, help="reconcile at most N notes (0 = all)")
+    tpr = trx.add_parser("prune", parents=[common],
+                         help="move junk notes (voicemail, empty, no-content, too-short, call noise) from the "
+                              "transcripts folder to the vault .trash; a dry run unless --apply")
+    tpr.add_argument("--apply", action="store_true", help="move the notes (default: report only)")
+    tpr.add_argument("--reason", action="append", choices=list(prune.REASONS), metavar="REASON",
+                     help=f"only these reasons (repeatable; default: {', '.join(prune.DEFAULT_REASONS)}; "
+                          "body-lost only when named)")
+    tpr.add_argument("--keep", action="append", choices=list(prune.REASONS), metavar="REASON",
+                     help="never prune this reason (repeatable), e.g. --keep voicemail")
+    tpr.add_argument("--min-words", type=int, default=prune.DEFAULT_MIN_WORDS,
+                     help=f"fewer spoken words than this is too-short (default {prune.DEFAULT_MIN_WORDS})")
+    tpr.add_argument("--min-age", type=float, default=prune.DEFAULT_MIN_AGE_S,
+                     help=f"leave notes modified in the last N seconds (default {int(prune.DEFAULT_MIN_AGE_S)})")
+    tpr.add_argument("--limit", type=int, default=0, help="act on at most N notes (0 = all)")
+    tpr.add_argument("--verbose", "-v", action="store_true",
+                     help="also list notes held back (young, in flight, locked, body-lost)")
+    tun = trx.add_parser("unprune", parents=[common],
+                         help="put pruned notes back from the vault .trash (by run id or note name)")
+    tun.add_argument("names", nargs="*", metavar="NOTE", help="note file name or path, as pruned")
+    tun.add_argument("--run", help="restore every note of one prune run (its id is printed by prune --apply)")
+    tun.add_argument("--dry-run", action="store_true", help="report only; change nothing")
     tse = trx.add_parser("search", parents=[common], help="hybrid semantic + keyword search over latest versions")
     tse.add_argument("query", nargs="+")
     tse.add_argument("-n", "--limit", type=int, default=10)
