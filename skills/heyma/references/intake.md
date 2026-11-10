@@ -24,6 +24,8 @@ Telnyx native call recordings land in MinIO; `telnyx-s3-intake` (code `component
 
 Operator commands: `bin/telnyx-s3-intake {run|dry-run|status}`.
 
+**A paused job fails silently.** From 2026-11-07 13:07 to 2026-11-09 19:02 EST the job was paused from the Holocene Candybar page. Calls still synced and announced, but 25 recordings never reached `inbox/`. `candybar list` hides paused jobs by default (`--all` shows them). The doctor probe "call recordings delivered" now catches this from the ledger. Fix: `candybar resume telnyx-s3-intake`. Incident: [incident-log](../subskills/doctor/references/incident-log.md).
+
 ## Source 4: manual drop
 
 Copy any media file into `inbox/` (at any depth). Respect the dot-name-then-rename rule above.

@@ -338,6 +338,17 @@ def _collect_recordings(conn, tables, *, cutoff, now, since_s, grace_s) -> list[
                             at=ev["occurred_at"], final=False, ref=f"vm:{event_id}", label=ev["call_session_id"],
                             detail="voicemail event carries a recording URL but no audio reached the inbox",
                             hints={"call_session_id": ev["call_session_id"]}))
+    if "call_recordings" in tables and "items" in tables:
+        from . import calls
+        # Trunk call audio that never became an item: the 2026-11-07 paused-intake outage.
+        for r in calls.undelivered_recordings(conn):
+            if not _recent(r["ended_at"], cutoff):
+                continue
+            fix = "candybar resume telnyx-s3-intake" if r["has_object"] else "wax calls backfill"
+            out.append(_row("recording", "trunk", "recording_undelivered", r["recording_key"],
+                            at=r["ended_at"], final=False, ref=r["recording_key"], label=r["call_session_id"],
+                            detail=f"call recording {r['finding']} never reached the inbox ({fix})",
+                            hints={"call_session_id": r["call_session_id"], "call_leg_id": r["call_leg_id"]}))
     return out
 
 

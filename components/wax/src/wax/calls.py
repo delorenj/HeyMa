@@ -697,7 +697,53 @@ def health(days: int = 7) -> dict[str, Any]:
     counts = {r["outcome"] or "unknown": r["n"] for r in conn.execute(
         "SELECT outcome, COUNT(*) AS n FROM calls WHERE started_at >= ? GROUP BY outcome", (since,))}
     return {"last_sync": last_sync(), "last_webhook_at": webhook["at"] if webhook else None,
-            "voicemail_unfetched": stranded, "outcomes": counts, "days": days}
+            "voicemail_unfetched": stranded, "recordings_undelivered": recordings_undelivered(conn),
+            "recordings_days": RECORDING_WINDOW_DAYS, "outcomes": counts, "days": days}
+
+
+RECORDING_GRACE_S = 15 * 60   # telnyx-s3-intake runs every minute; a settled object lands well inside this
+RECORDING_STUB_MS = 3000      # backfill's own --min-seconds default; shorter legs are ring/hangup noise
+RECORDING_WINDOW_DAYS = 30    # trunk audio has no 7-day expiry (MinIO keeps it, Telnyx retains it);
+                              # a short window would let a stranded call age out to green
+
+
+def recordings_undelivered(conn: sqlite3.Connection, days: int = RECORDING_WINDOW_DAYS) -> list[str]:
+    """Trunk recordings Telnyx made that never became a Wax item.
+
+    The call log learns of every recording from the API, but the audio itself reaches the
+    inbox only through telnyx-s3-intake (object in MinIO) or `wax calls backfill` (no
+    object: Telnyx never wrote it to our bucket). When either path is not taken, every
+    call still settles, announces and syncs, so nothing else turns red: 2026-11-07 to
+    2026-11-09 the Candybar job sat paused and 25 calls never reached Transcripts while
+    doctor passed, and four 2026-11-04/05 calls with no S3 object sat unfetched.
+
+    Delivered means `file_name` is set (backfill wrote it), or an item carries the object
+    stem `<leg>-<epoch>` followed by `-` (intake's `-<receipt>`) or `.` (backfill's
+    extension); the delimiter keeps a RecordVerb twin's longer epoch from matching. With
+    no object, any item carrying `<leg>-` counts. Each finding names the object, or
+    `<leg> (no S3 object)`.
+    """
+    return [r["finding"] for r in undelivered_recordings(conn, days)]
+
+
+def undelivered_recordings(conn: sqlite3.Connection, days: int = RECORDING_WINDOW_DAYS) -> list[sqlite3.Row]:
+    """The rows behind recordings_undelivered(): finding, recording_key, call_leg_id,
+    call_session_id, ended_at, has_object. `wax failures` files them as one signature."""
+    now = datetime.now(timezone.utc)
+    since = _iso(now - timedelta(days=days))
+    cutoff = _iso(now - timedelta(seconds=RECORDING_GRACE_S))
+    return conn.execute(
+        "SELECT COALESCE(r.object_name, r.call_leg_id || ' (no S3 object)') AS finding, r.recording_key, "
+        "r.call_leg_id, r.call_session_id, r.ended_at, r.object_name IS NOT NULL AS has_object "
+        "FROM call_recordings r "
+        "WHERE r.kind='trunk' AND r.file_name IS NULL AND r.fetch_error IS NULL AND r.call_leg_id IS NOT NULL "
+        "AND COALESCE(r.duration_millis, 0) >= ? AND r.ended_at >= ? AND r.ended_at <= ? "
+        "AND NOT EXISTS (SELECT 1 FROM items i WHERE CASE WHEN r.object_name LIKE '%.mp3' THEN "
+        "i.orig_name LIKE 'telnyx-%' || substr(r.object_name, 1, length(r.object_name) - 4) || '-%' "
+        "OR i.orig_name LIKE 'telnyx-%' || substr(r.object_name, 1, length(r.object_name) - 4) || '.%' "
+        "ELSE i.orig_name LIKE 'telnyx-%' || r.call_leg_id || '-%' END) "
+        "ORDER BY r.ended_at",
+        (RECORDING_STUB_MS, since, cutoff)).fetchall()
 
 
 # ------------------------------------------------------------ audio <-> call --

@@ -257,6 +257,11 @@ class _Ledger(unittest.TestCase):
         for key, err in (("rec-bad", "recording_bad_name"), ("vm:empty", "voicemail_empty")):
             conn.execute("INSERT INTO call_recordings(recording_key,kind,call_session_id,fetch_error,raw,updated_at) "
                          "VALUES(?,?,?,?,?,?)", (key, "trunk", "sess-1", err, "{}", ago(7200)))
+        # a trunk recording in S3 that never became an item (2026-11-07 paused intake)
+        conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,ended_at,"
+                     "duration_millis,object_name,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     ("rec-stranded", "trunk", "leg-stranded", "sess-2", ago(7200), 60000,
+                      "leg-stranded-1794000000.mp3", "{}", ago(7200)))
         conn.execute("INSERT INTO calls(call_session_id,outcome,hangup_cause,started_at,first_seen,updated_at) "
                      "VALUES(?,?,?,?,?,?)", ("sess-rejected", "failed", "CALL_REJECTED", ago(7200), ago(7200),
                                              ago(7200)))
@@ -305,6 +310,8 @@ class CollectorTest(_Ledger):
         self.assertIn(("item", "suspect", "duration_mismatch"), keys)
         self.assertIn(("recording", "trunk", "recording_bad_name"), keys)
         self.assertIn(("recording", "voicemail", "voicemail_unfetched"), keys)
+        self.assertIn(("recording", "trunk", "recording_undelivered", "rec-stranded"), got)
+        self.assertNotIn(("recording", "trunk", "recording_undelivered", "rec-bad"), got)  # fetch_error owns it
         self.assertIn(("outbox", "bloodbank", "outbox_stale"), keys)
         self.assertIn(("snapshot", "transcriptions", "snapshot_rejected"), keys)
         self.assertIn(("snapshot", "transcriptions", "projection_failed"), keys)

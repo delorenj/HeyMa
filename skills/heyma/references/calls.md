@@ -83,10 +83,11 @@ The `call-metadata` pass (see [passes/catalog](passes/catalog.md)) joins a `teln
 
 ## Runbook
 
-Start with `wax calls list` and `wax calls show <ref>`; `wax status` has a calls line (`ok synced N min ago`, or `error` when voicemails are unfetched or the last sync is over 3 h old), and `wax doctor` probes "call log synced" (WARN > 30 min, FAIL > 3 h or never), "voicemails fetched", and "telnyx api key" (`GET /v2/balance`).
+Start with `wax calls list` and `wax calls show <ref>`; `wax status` has a calls line (`ok synced N min ago`, or `error` when voicemails are unfetched, call recordings never reached the inbox, or the last sync is over 3 h old), and `wax doctor` probes "call log synced" (WARN > 30 min, FAIL > 3 h or never), "voicemails fetched", "call recordings delivered" (FAIL when a trunk recording ≥ 3 s that ended 15+ min ago in the last 30 d has no `telnyx-*` item and no backfill `file_name`; with no S3 object it is named `<leg> (no S3 object)` and the fix is `wax calls backfill`), and "telnyx api key" (`GET /v2/balance`).
 
 | Symptom | Likely cause | Do this |
 |---|---|---|
+| Calls show `[1 audio]` in `wax calls list` but no transcript; doctor FAILs "call recordings delivered" | S3 intake stopped. On 2026-11-07 the Candybar job `telnyx-s3-intake` was paused from the Holocene Candybar page and calls went untranscribed for two days | `candybar show telnyx-s3-intake` (state `paused`?), `candybar resume telnyx-s3-intake`, then `bin/telnyx-s3-intake status`. The backlog delivers in one run. See [intake](intake.md). A finding named `<leg> (no S3 object)` means Telnyx never wrote it to our bucket: `wax calls backfill --dry-run`, then without it |
 | A missed call shows nothing | Working as designed: missed and declined calls are rows only, never announced, no ntfy | `wax calls list --outcome missed` |
 | A voicemail was not fetched | Check `fetch_error`: `voicemail_empty` is final; `voicemail_expired` means the 7-day link died | Otherwise `wax calls sync --since 7d` retries the fetch. Doctor hint: the Telnyx link dies 7 days after the call, so sync promptly |
 | A call was not announced | The webhook path missed it (n8n down, workflow error, broken working tree) and only the sync — which never announces — saw it | Confirm in the n8n `9BkQCtKxdEtPWLAn` execution log. Rows recover via `wax calls sync`; the announcement does not. Prevention is the only fix |

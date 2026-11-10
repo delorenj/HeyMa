@@ -11,6 +11,44 @@ the code still matches; where the code has since moved, the entry says so.
 
 ---
 
+## 2026-11-09 · No call transcripts for two days · *the intake job was paused from Holocene*
+
+**Signature.** Phone calls settled, announced and showed in `wax calls list`
+with `[1 audio]`, but no `telnyx-*` item reached the ledger after
+2026-11-07T17:20Z. Holocene Transcripts → Phone calls showed only one entry for
+the day: a 0.56 s voicemail titled "Insufficient Transcript Content".
+Voicemails kept working because they use the webhook/sync fetch, not S3
+intake. `wax doctor` reported 46 pass, 0 fail.
+
+**Cause.** Candybar job `telnyx-s3-intake` was paused at 2026-11-07 13:07:37
+EST by a `POST /api/modules/candybar/01a17952…/enabled` from the Holocene
+Candybar page. Holocene does not record who clicked. In the same two minutes the
+same page paused `telephony-damian-call-watch` and archived
+`honda-hunt-daily-check`. The service's last run was 13:07:31. 25 trunk
+recordings (77 MB) waited in MinIO.
+
+**Fix.** `candybar resume telnyx-s3-intake`. The first run at
+2026-11-10T00:02Z delivered all 25, and waxd processed them in order.
+
+**Prevention.** New doctor probe **"call recordings delivered"**
+(`calls.recordings_undelivered()`). It FAILs when a trunk recording of 3 s or
+more that ended 15+ minutes ago, inside a 30-day window, has no `telnyx-*` item
+and no backfill `file_name`. `wax status` turns the calls line to `error` for
+the same reason. Trunk audio does not expire the way the 7-day voicemail link
+does, hence the longer window. The adversarial review of the probe found a
+second gap the first draft missed: four answered calls on 2026-11-04/05 whose
+recordings never got an S3 object and were never backfilled (Groundwire-era
+double recordings, A-leg plus the SIP-forward B-leg). The probe now covers
+those as `<leg> (no S3 object)`, and `wax calls backfill` fetched all eight.
+The B-leg halves have no CDR, so `call-metadata` reports `call_not_found` on
+them. They are duplicates of the A-leg transcripts, not lost calls.
+
+**Lesson.** Shape 3. The intake had no path from "stopped" to "a human is
+told". Candybar shows paused jobs as hidden rather than failed, and every
+downstream check was green because it only checked what had arrived.
+
+---
+
 ## 2026-11-05 · HEYMA-12 call-metadata `call_not_found` · *an observer picked the wrong leg*
 
 **Signature.** `wax failures` filed `[wax] pass call-metadata: call_not_found

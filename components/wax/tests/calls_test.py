@@ -364,6 +364,104 @@ class SyncTest(_Ledger):
         self.assertEqual((again["file_name"], again["empty"]), (None, True))
         self.assertEqual(calls.health(days=3650)["voicemail_unfetched"], [])
 
+    def _recording(self, rid, leg, epoch, *, ended="2026-11-03T00:38:17Z", millis=123000, initiated="Trunking",
+                   s3=True):
+        urls = {"mp3": f"s3://recordings/x/2026-11-03/{leg}-{epoch}.mp3"} if s3 else \
+            {"mp3": f"https://telnyx.example/{leg}-{epoch}.mp3"}
+        calls.upsert_recording(self.conn, {
+            "id": rid, "call_leg_id": leg, "call_session_id": OUT_SESSION, "channels": "dual",
+            "initiated_by": initiated, "recording_started_at": "2026-11-03T00:36:14Z",
+            "recording_ended_at": ended, "duration_millis": millis, "download_urls": urls})
+
+    def _item(self, name):
+        self.conn.execute("INSERT INTO items(item_id,sha256,path,orig_name,state,first_seen,updated_at) "
+                          "VALUES(?,?,?,?,?,?,?)", (name[-24:], "0" * 64, f"/x/{name}", name, "complete",
+                                                    "2026-11-03T00:40:00Z", "2026-11-03T00:40:00Z"))
+
+    def _undelivered(self, days=3650):
+        # The fixtures are dated; a wide window keeps the test independent of the wall clock.
+        return calls.recordings_undelivered(self.conn, days=days)
+
+    def test_names_a_call_recording_that_never_reached_the_inbox(self):
+        # 2026-11-07..09: telnyx-s3-intake paused in Candybar; calls synced, audio never arrived.
+        self._recording("r1", OUT_LEG, 1793666147)
+        self._recording("r2", IN_LEG, 1793666200)
+        self._recording("stub", "11111111-d71e-11f1-8b40-4674b796d526", 1793666300, millis=2900)
+        self._recording("twin", "22222222-d71e-11f1-8b40-4674b796d526", 1793666400123456, initiated="RecordVerb")
+        self.assertEqual(self._undelivered(), [f"{OUT_LEG}-1793666147.mp3", f"{IN_LEG}-1793666200.mp3"])
+        self._item(f"telnyx-2026-11-03-{OUT_LEG}-1793666147-{'a' * 64}.mp3")  # intake name
+        self._item(f"telnyx-2026-11-03-{IN_LEG}-1793666200.mp3")              # backfill-shaped name
+        self.assertEqual(self._undelivered(), [])
+        self.assertIn("recordings_undelivered", calls.health())
+
+    def test_a_record_verb_twin_item_does_not_mask_the_trunk_recording(self):
+        self._recording("r1", OUT_LEG, 1793666147)
+        # Same leg, same second: the twin's microsecond epoch starts with the trunk epoch.
+        self._item(f"telnyx-2026-11-03-{OUT_LEG}-1793666147440788-{'b' * 64}.mp3")
+        self.assertEqual(self._undelivered(), [f"{OUT_LEG}-1793666147.mp3"])
+
+    def test_a_recording_with_no_s3_object_is_a_finding_until_backfilled(self):
+        # 2026-11-04/05: four answered calls never got an object in our bucket; only backfill fetches them.
+        self._recording("r-none", OUT_LEG, 1793666147, s3=False)
+        self.assertEqual(self._undelivered(), [f"{OUT_LEG} (no S3 object)"])
+        self.conn.execute("UPDATE call_recordings SET file_name=? WHERE recording_key='r-none'",
+                          (f"telnyx-2026-11-03-{OUT_LEG}-1793666147123.mp3",))
+        self.assertEqual(self._undelivered(), [])
+
+    def test_the_grace_and_the_window(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._recording("fresh", OUT_LEG, 1793666147, ended=now)
+        self.assertEqual(self._undelivered(), [], "intake gets 15 minutes before it counts")
+        self._recording("old", IN_LEG, 1793666200)
+        self.assertEqual(self._undelivered(days=1), [])
+        self.assertEqual(self._undelivered(), [f"{IN_LEG}-1793666200.mp3"])
+
+
+def _load_wax_cli():
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    loader = SourceFileLoader("wax_cli_calls", str(COMPONENT / "bin" / "wax"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class RecordingsProbeWiringTest(unittest.TestCase):
+    """bin/wax: the doctor row and the `wax status` calls line read recordings_undelivered."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.wax = _load_wax_cli()
+
+    def _health(self, lost):
+        return {"last_sync": {"at": "2026-11-09T23:50:00Z"}, "last_webhook_at": None,
+                "voicemail_unfetched": [], "recordings_undelivered": lost, "recordings_days": 30,
+                "outcomes": {}, "days": 7}
+
+    def _probes(self, lost):
+        rows = []
+        with patch.object(self.wax.telephony, "health", return_value=self._health(lost)), \
+                patch.object(self.wax.telephony, "_get", return_value={}), \
+                patch.object(self.wax.telephony, "api_key", return_value="k"):
+            self.wax.probe_calls(rows.append)
+        return {r["probe"]: r for r in rows}
+
+    def test_doctor_fails_and_status_errors_on_a_stranded_recording(self):
+        probes = self._probes([f"{OUT_LEG}-1793666147.mp3"])
+        row = probes["call recordings delivered"]
+        self.assertEqual(row["status"], self.wax.FAIL)
+        self.assertIn("candybar resume telnyx-s3-intake", row["fix"])
+        with patch.object(self.wax.telephony, "health", return_value=self._health(["x.mp3"])), \
+                patch.object(self.wax, "_age_seconds", return_value=60):
+            snap = self.wax.calls_snapshot()
+        self.assertEqual((snap["state"], snap["recordings_undelivered"]), ("error", 1))
+
+    def test_doctor_passes_when_every_recording_is_an_item(self):
+        row = self._probes([])["call recordings delivered"]
+        self.assertEqual(row["status"], self.wax.PASS)
+
 
 class BackfillTest(_Ledger):
     def test_backfill_fetches_trunk_recordings_once_and_leaves_twins_and_stubs(self):

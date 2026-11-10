@@ -1363,13 +1363,17 @@ def calls_snapshot() -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         return {"state": "error", "detail": f"{type(e).__name__}: {e}"}
     synced = (h["last_sync"] or {}).get("at")
-    out: dict[str, Any] = {"outcomes": h["outcomes"], "voicemail_unfetched": len(h["voicemail_unfetched"])}
+    out: dict[str, Any] = {"outcomes": h["outcomes"], "voicemail_unfetched": len(h["voicemail_unfetched"]),
+                           "recordings_undelivered": len(h["recordings_undelivered"])}
     if not synced:
         return out | {"state": "off", "detail": "never synced"}
     age = _age_seconds(synced)
     out["sync_age_s"] = int(age)
     if out["voicemail_unfetched"]:
         return out | {"state": "error", "detail": f"{out['voicemail_unfetched']} voicemail(s) not fetched"}
+    if out["recordings_undelivered"]:
+        return out | {"state": "error",
+                      "detail": f"{out['recordings_undelivered']} call recording(s) not in the inbox"}
     if age > CALLS_SYNC_FAIL_S:
         return out | {"state": "error", "detail": f"last sync {int(age // 3600)} h ago"}
     return out | {"state": "ok", "detail": f"synced {int(age // 60)} min ago"}
@@ -1397,6 +1401,16 @@ def probe_calls(add) -> None:
     except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
         add(_probe("call log synced", FAIL, f"{type(e).__name__}: {e}"))
         return
+    try:
+        lost, days = h["recordings_undelivered"], h["recordings_days"]
+        add(_probe("call recordings delivered", PASS if not lost else FAIL,
+                   f"{len(lost)} call recording(s) from the last {days}d have no Wax item (oldest {lost[0]})"
+                   if lost else f"every call recording from the last {days}d is a Wax item",
+                   "" if not lost else
+                   "object in S3: candybar show telnyx-s3-intake (paused?); candybar resume telnyx-s3-intake; "
+                   "bin/telnyx-s3-intake status.  no S3 object: wax calls backfill --dry-run, then without it"))
+    except Exception as e:  # noqa: BLE001
+        add(_probe("call recordings delivered", FAIL, f"{type(e).__name__}: {e}"))
     try:
         telephony._get("/balance", {}, telephony.api_key())
         add(_probe("telnyx api key", PASS, "GET /v2/balance answered"))
