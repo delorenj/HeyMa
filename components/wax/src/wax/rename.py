@@ -12,6 +12,7 @@ import ctypes.util
 import errno
 import os
 from pathlib import Path
+from typing import Callable, Optional
 
 RENAME_NOREPLACE = 1 << 0
 
@@ -57,19 +58,25 @@ def renameat2_noreplace(src: Path, dst: Path) -> None:
     raise OSError(err, os.strerror(err), str(src), None, str(dst))
 
 
-def move_noclobber(src: Path, dst: Path, max_attempts: int = 50) -> Path:
+def move_noclobber(src: Path, dst: Path, max_attempts: int = 50,
+                   on_destination: Optional[Callable[[Path], None]] = None) -> Path:
     """Move src to dst, uniquifying with -1, -2, ... on collision.
 
     Returns the path actually used. Never overwrites, never deletes.
+
+    ``on_destination`` (optional) is called with each candidate right BEFORE the
+    attempt to move there, so a caller can journal where the file is about to
+    land before it lands (the vault sweep's undo manifest). With a hook, a
+    candidate that already exists is skipped without an attempt, so the hook
+    is not called for names that are plainly taken.
     """
-    try:
-        renameat2_noreplace(src, dst)
-        return dst
-    except RenameCollision:
-        pass
     stem, suffix = dst.stem, dst.suffix
-    for n in range(1, max_attempts + 1):
-        cand = dst.with_name(f"{stem}-{n}{suffix}")
+    candidates = [dst] + [dst.with_name(f"{stem}-{n}{suffix}") for n in range(1, max_attempts + 1)]
+    for cand in candidates:
+        if on_destination is not None:
+            if os.path.lexists(cand):
+                continue
+            on_destination(cand)
         try:
             renameat2_noreplace(src, cand)
             return cand

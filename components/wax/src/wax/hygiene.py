@@ -340,11 +340,14 @@ def trash_destination(path: Path, folder: Folder) -> Path:
     return folder.vault / TRASH_DIR / os.path.relpath(path, folder.vault)
 
 
-def _move_to_trash(path: Path, folder: Folder, before: os.stat_result) -> tuple[Path, bool]:
+def _move_to_trash(path: Path, folder: Folder, before: os.stat_result,
+                   on_destination=None) -> tuple[Path, bool]:
     """The one place a note leaves the vault proper. Returns (final path, restored).
 
-    Private on purpose: callers reach it only through ``trash_note``, which has
-    run every gate under the document's run lock.
+    Private on purpose: callers reach it only through ``trash_note`` (or the
+    vault sweep's journaled trash), which has run every gate under the
+    document's run lock. ``on_destination`` is ``rename.move_noclobber``'s
+    journal hook.
     """
     trash_root = folder.vault / TRASH_DIR
     if trash_root.is_symlink():
@@ -355,7 +358,7 @@ def _move_to_trash(path: Path, folder: Folder, before: os.stat_result) -> tuple[
     real_dst_parent = os.path.realpath(dst.parent)
     if real_dst_parent != real_vault and not real_dst_parent.startswith(real_vault + os.sep):
         raise HygieneError(f"trash destination {dst.parent} resolves outside the vault")
-    used = rename.move_noclobber(path, dst)
+    used = rename.move_noclobber(path, dst, on_destination=on_destination)
     after = os.lstat(used)
     same = ((after.st_ino, after.st_dev, after.st_size, after.st_mtime_ns)
             == (before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns))
@@ -559,11 +562,12 @@ def safe_title_name(slug: Any) -> Optional[str]:
     return slug + ".md"
 
 
-def rename_note(path: Path, folder: Folder, slug: Any) -> dict[str, Any]:
+def rename_note(path: Path, folder: Folder, slug: Any, *, on_destination=None) -> dict[str, Any]:
     """Rename a processed note to ``<title-slug>.md`` in its own folder.
 
     Under the run locks of every ledger row at the old path; afterwards each of
     those rows is re-pointed at the new path with the file's current hash.
+    ``on_destination`` is ``rename.move_noclobber``'s journal hook.
     """
     name = safe_title_name(slug)
     if name is None:
@@ -579,7 +583,7 @@ def rename_note(path: Path, folder: Folder, slug: Any) -> dict[str, Any]:
         refused = static_verdict(path, folder)
         if refused is not None or not path.is_file():
             return {"path": str(path), "outcome": refused.verdict if refused else "vanished"}
-        used = rename.move_noclobber(path, path.with_name(name))
+        used = rename.move_noclobber(path, path.with_name(name), on_destination=on_destination)
         try:
             digest: Optional[str] = documents.sha256_file(used)
         except OSError:
@@ -705,6 +709,24 @@ def _process_untitled(path: Path, folder: Folder, *, min_age: float, now: float,
         return {"path": str(path), "outcome": insp.kind, "detail": insp.detail}
     if dry_run:
         return {"path": str(path), "outcome": "would_summarize"}
+    titled = summarize_for_title(path, folder, budget)
+    if titled["outcome"] != "titled":
+        return titled
+    renamed = rename_note(path, folder, titled["slug"])
+    if renamed["outcome"] == "renamed":
+        return {"path": str(path), "outcome": "renamed", "to": renamed["to"]}
+    return {"path": str(path), "outcome": "summarized_" + renamed["outcome"],
+            "detail": renamed.get("detail", "")}
+
+
+def summarize_for_title(path: Path, folder: Folder, budget: dict[str, int]) -> dict[str, Any]:
+    """Run ``untitled-standard`` over one content note and read back its slug.
+
+    Shared by the nightly untitled sweep and ``wax vault sweep``. Returns
+    ``{"outcome": "titled", "slug": ...}`` or a refusal (``deferred`` once
+    ``budget["executed"]`` reaches ``budget["max"]``, ``skipped``, ``failed``,
+    ``no_title``). The caller decides whether, and how, to rename.
+    """
     if budget["executed"] >= budget["max"]:
         return {"path": str(path), "outcome": "deferred"}
     clear_placeholder_title(path, folder)
@@ -724,11 +746,7 @@ def _process_untitled(path: Path, folder: Folder, *, min_age: float, now: float,
     slug = frontmatter.read(path)[0].get("title-slug")
     if not (isinstance(slug, str) and slug.strip()):
         return {"path": str(path), "outcome": "no_title"}
-    renamed = rename_note(path, folder, slug)
-    if renamed["outcome"] == "renamed":
-        return {"path": str(path), "outcome": "renamed", "to": renamed["to"]}
-    return {"path": str(path), "outcome": "summarized_" + renamed["outcome"],
-            "detail": renamed.get("detail", "")}
+    return {"path": str(path), "outcome": "titled", "slug": slug}
 
 
 def untitled_due(now_local: Optional[datetime] = None) -> bool:

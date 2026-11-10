@@ -85,6 +85,15 @@ Detail: [pipelines](pipelines.md).
 
 Detail: [documents](documents.md).
 
+## Vault sweep
+
+| Command | What it does |
+|---|---|
+| `wax vault sweep [--apply] [--only ACTION]... [--min-age S] [--limit N] [-v]` | The vault-wide tidy (the vault holding `WAX_VAULT`). Dry run by default. `--limit` must be at least 1. Actions: `prune-empty`, `prune-temp`, `untitled`, `consolidate`, `organize`. `--apply` moves files to `.trash`, a new name or `Inbox/`, and removes empty dirs, journaling each change to `var/vault-sweep.jsonl` before it happens. Exit 2 on errors or refusals |
+| `wax vault unsweep --run ID [--dry-run]` | Undo one apply run, newest change first. Exit 2 if anything was skipped or nothing was restored |
+
+Detail: [vault-sweep](vault-sweep.md).
+
 ## Transcript retrieval (`wax tx`)
 
 | Command | What it does |

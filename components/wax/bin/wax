@@ -31,7 +31,8 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 from wax import (archive, catalog, capture, component, config, documents, events, failures, finalize,
                  frontmatter, hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, prune,
-                 reconcile, sanity, sentinel, state, transcribe_adapter, transcriptions, worker)  # noqa: E402
+                 reconcile, sanity, sentinel, state, transcribe_adapter, transcriptions, vault_sweep,
+                 worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
 from wax import telephony as telephony_shadow  # noqa: E402
@@ -336,6 +337,13 @@ ENV_SPECS: tuple[tuple[str, str, str], ...] = (
     ("WAX_UNTITLED_SWEEP_HOUR", "wax/hygiene.py (local hour from which the nightly untitled sweep is due)", "3"),
     ("WAX_UNTITLED_SWEEP_MAX", "wax/hygiene.py (pipeline runs the nightly untitled sweep starts per attempt)",
      "50"),
+    ("WAX_VAULT_SWEEP_MIN_AGE_S", "wax/vault_sweep.py (`wax vault sweep` leaves files modified more recently)",
+     "86400"),
+    ("WAX_VAULT_SWEEP_TEMP_MIN_AGE_S", "wax/vault_sweep.py (age floor for temp/scratch files; the larger of this "
+     "and the min age wins)", "604800"),
+    ("WAX_VAULT_SWEEP_MAX_BYTES", "wax/vault_sweep.py (files larger than this are never touched)", str(16 << 20)),
+    ("WAX_VAULT_SWEEP_EXCLUDE", "wax/vault_sweep.py (os.pathsep-separated vault-relative paths the sweep never "
+     "touches)", vault_sweep.DEFAULT_EXCLUDE),
     ("OP_SERVICE_ACCOUNT_TOKEN", "`op read` inside title-slug", "<unset>"),
     ("TRANSCRIBE_DIR", "bin/transcribe", "<dirname(realpath(transcribe))/..>"),
     ("DIARIZATION_VENV", "bin/transcribe", "<TRANSCRIBE_DIR>/.venv-diarization"),
@@ -1202,6 +1210,7 @@ def probe_all() -> list[dict[str, Any]]:
     probe_transcriptions(add)
     probe_note_integrity(add)
     probe_calls(add)
+    probe_vault_sweep(add)
 
     # -- contract-A stage health -------------------------------------------
     # The two blocks that were unrepresentable during both outages. They are the
@@ -1350,6 +1359,29 @@ def probe_transcriptions(add) -> None:
             add(row)
     except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
         add(_probe("transcripts store", FAIL, f"{type(e).__name__}: {e}"))
+
+
+VAULT_SWEEP_STALE_S = 3 * 86400   # candybar applies `wax vault sweep` nightly
+
+
+def probe_vault_sweep(add) -> None:
+    """The vault sweep's last apply run (meta `vault_sweep_last_run`, written by `wax vault sweep --apply`).
+    A nightly job that stopped, or ran and failed, must show here: an unscheduled sweep reads as 'no run yet'."""
+    try:
+        raw = ledger.meta_get(vault_sweep.META_LAST_RUN)
+        if not raw:
+            add(_probe("vault sweep ran", PASS, "no apply run yet (`wax vault sweep` is a dry run until Candybar applies it)"))
+            return
+        last = json.loads(raw)
+        age = _age_seconds(last.get("at") or "")
+        errors = int(last.get("errors") or 0)
+        detail = (f"run {last.get('run')} {int(age // 3600)}h ago: {last.get('changes', 0)} change(s), "
+                  f"{errors} error(s)")
+        bad = errors > 0 or age > VAULT_SWEEP_STALE_S
+        add(_probe("vault sweep ran", WARN if bad else PASS, detail,
+                   "" if not bad else "wax vault sweep -v  (a dry run shows what is stuck); then the Candybar job that runs `wax vault sweep --apply`"))
+    except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
+        add(_probe("vault sweep ran", WARN, f"{type(e).__name__}: {e}"))
 
 
 CALLS_SYNC_WARN_S = 30 * 60   # candybar fires wax-calls-sync every 10 min
@@ -1981,6 +2013,73 @@ def render_prune(out: dict, *, verbose: bool = False) -> None:
         store = out.get("store")
         if store and not store.get("ok"):
             print(f"store reconcile deferred to waxd's next tick: {store.get('detail') or store.get('errors')}")
+
+
+VAULT_SHOWN = vault_sweep.CHANGES | vault_sweep.WOULD | {"report", "error", "refused", "failed"}
+
+
+def render_vault_sweep(out: dict, *, verbose: bool = False) -> None:
+    dry = out["dry_run"]
+    for action in out["only"]:
+        for item in out["actions"][action]:
+            if not verbose and item["outcome"] not in VAULT_SHOWN:
+                continue
+            to = f"  -> {item['to']}" if item.get("to") else ""
+            detail = f"  -- {item['detail']}" if item.get("detail") else ""
+            print(f"{item['outcome'].upper():<14} {action:<11} {item['path']}{to}{detail}")
+    print()
+    for action in out["only"]:
+        counts = out["counts"].get(action) or {}
+        line = ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "nothing"
+        print(f"{action:<11} {line}")
+    print(f"{out['files_seen']} files seen in {out['vault']}; {len(out['excluded']['code_projects'])} code "
+          f"project(s) and {len(out['excluded']['zones'])} zone(s) excluded; trash: {out['trash']}")
+    for skipped in out.get("skipped") or []:
+        print(f"SKIPPED  {skipped['path']}  ({skipped['reason']})")
+    if out.get("limit_reached"):
+        print(f"limit of {out['limit']} change(s) reached")
+    if not verbose:
+        print("(-v also lists held files)")
+    for err in out["errors"]:
+        print(f"ERROR  {err}")
+    if dry:
+        print(f"dry run: nothing changed ({out['changes']} change(s) planned). --apply makes them "
+              "(undo: wax vault unsweep --run <id>)")
+    elif out.get("run"):
+        print(f"run {out['run']}: {out['changes']} change(s); undo with: wax vault unsweep --run {out['run']}")
+
+
+def vault_command(args, J: bool) -> int:
+    """`wax vault sweep|unsweep` (skills/heyma/references/vault-sweep.md). A refusal is exit 2, never 0."""
+    try:
+        if args.sub == "sweep":
+            out = vault_sweep.sweep(apply=args.apply, only=args.only or (), min_age=args.min_age,
+                                    limit=args.limit)
+        else:
+            out = vault_sweep.restore(run=args.run, dry_run=args.dry_run)
+    except vault_sweep.VaultSweepError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 - a fault must read as exit 2 with a reason, never as a bare traceback (1)
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+    if args.sub == "sweep":
+        if J:
+            _emit(out, True)
+        else:
+            render_vault_sweep(out, verbose=args.verbose)
+        return 2 if out["errors"] else 0
+    if J:
+        _emit(out, True)
+    else:
+        verb = "WOULD RESTORE" if out["dry_run"] else "RESTORED"
+        for row in out["restored"]:
+            print(f"{verb}  {row['op']}  {row['path']}")
+        for row in out["skipped"]:
+            print(f"SKIPPED  {row['path']}  ({row['detail']})")
+        for err in out["errors"]:
+            print(f"ERROR  {err}")
+    return 2 if out["errors"] or out["skipped"] or not out["restored"] else 0
 
 
 def transcripts_command(args, J: bool) -> int:
@@ -2698,6 +2797,23 @@ def main() -> int:
     dfx.add_argument("--dry-run", action="store_true", help="list the notes; change nothing")
     dfx.add_argument("--limit", type=int, help="at most this many notes")
 
+    vlt = sub.add_parser("vault", parents=[common],
+                         help="vault-wide hygiene: prune, title, consolidate and organize the Obsidian vault")
+    vls = vlt.add_subparsers(dest="sub", required=True)
+    vsw = vls.add_parser("sweep", parents=[common],
+                         help="plan (or with --apply, do) the vault sweep; dry run by default")
+    vsw.add_argument("--apply", action="store_true", help="move files (to .trash, a new name, or Inbox/)")
+    vsw.add_argument("--only", action="append", choices=vault_sweep.ACTIONS, metavar="ACTION",
+                     help=f"run only this action (repeatable): {', '.join(vault_sweep.ACTIONS)}")
+    vsw.add_argument("--min-age", type=float, default=None,
+                     help="leave files modified in the last N seconds (default $WAX_VAULT_SWEEP_MIN_AGE_S, 86400)")
+    vsw.add_argument("--limit", type=int, default=None, help="make at most N changes (at least 1; 0 is refused, "
+                     "not 'unlimited')")
+    vsw.add_argument("--verbose", "-v", action="store_true", help="also list held files (young, linked, locked)")
+    vun = vls.add_parser("unsweep", parents=[common], help="undo one vault sweep run from var/vault-sweep.jsonl")
+    vun.add_argument("--run", required=True, help="the run id printed by `wax vault sweep --apply`")
+    vun.add_argument("--dry-run", action="store_true", help="report only; change nothing")
+
     doc = sub.add_parser(
         "doctor", parents=[common],
         help="resolved config + probe every dependency (exit 2 fail, 1 warn, 0 clean)")
@@ -3170,6 +3286,9 @@ def main() -> int:
 
     if args.cmd == "transcripts":
         return transcripts_command(args, J)
+
+    if args.cmd == "vault":
+        return vault_command(args, J)
 
     if args.cmd == "calls":
         return calls_command(args, J)
