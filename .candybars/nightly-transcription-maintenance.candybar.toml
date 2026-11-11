@@ -1,0 +1,10 @@
+[candybar]
+name = "nightly-transcription-maintenance"
+description = "Prunes junk notes from ~/d/Transcripts (voicemails, probe and test calls, empty, no-content, too-short, call noise) into the vault .trash; nothing is deleted. Undo with `wax transcripts unprune --run <id>`."
+tags = ["nightly", "HeyMa", "transcriptions", "maintenance"]
+schedule = "12 3 * * *"
+timezone = "America/New_York"
+
+[candybar.runner]
+kind = "exec"
+argv = ["/home/delorenj/HeyMa/bin/wax", "transcripts", "prune", "--apply"]
