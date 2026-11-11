@@ -75,6 +75,10 @@ def regions_for(body: str, asr: dict | None, duration: float) -> tuple[str, dict
                          for label, spans in voiceprint.turn_regions(turns, duration).items()}
     spans = [(s["start"], s["end"]) for s in result.get("segments") or []
              if s.get("start") is not None and s.get("end") is not None]
+    if not spans and body.strip() and duration > 0:
+        # No timed ASR kept (most notes before October): the whole recording is the voice. The
+        # fingerprint child cuts it to the signal's real length and drops the windows that disagree.
+        spans = [(0.0, float(duration))]
     return ("whole", {WHOLE: {"channel": None, "spans": spans}}) if spans else ("none", {})
 
 

@@ -70,7 +70,9 @@ class TurnsTest(unittest.TestCase):
         self.assertEqual((mode, sorted(regions)), ("turns", ["Speaker 1", "Speaker 2"]))
         mode, regions = voice_id_pass.regions_for("just words", {"result": {"segments": [{"start": 1, "end": 4}]}}, 4)
         self.assertEqual((mode, regions), ("whole", {voice_id_pass.WHOLE: {"channel": None, "spans": [(1, 4)]}}))
-        self.assertEqual(voice_id_pass.regions_for("just words", None, 4), ("none", {}))
+        self.assertEqual(voice_id_pass.regions_for("just words", None, 4),
+                         ("whole", {voice_id_pass.WHOLE: {"channel": None, "spans": [(0.0, 4.0)]}}))
+        self.assertEqual(voice_id_pass.regions_for("", None, 4), ("none", {}))
 
 
 class MatchTest(unittest.TestCase):

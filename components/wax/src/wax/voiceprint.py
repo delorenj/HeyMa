@@ -307,7 +307,9 @@ def decide(*, label: str, mode: str, channel: int | None, vec: np.ndarray | None
         one = against(owner_id)
         rival = m.voice_id != owner_id and classify(m, seconds, consistency, t) == "matched"
         if not rival and one.score >= (t.owner_solo_cross if one.cross else t.owner_solo):
-            return Decision("owner", owner_id, None, not cached, m)
+            # Learn only from a recording whose windows agree: one voice, not a muddle of several.
+            steady = consistency is None or consistency >= t.min_consistency
+            return Decision("owner", owner_id, None, not cached and steady, m)
 
     verdict = classify(m, seconds, consistency, t)
     if verdict == "matched":
