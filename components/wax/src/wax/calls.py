@@ -855,10 +855,13 @@ def party_label(call: dict[str, Any]) -> str:
 def channel_parties(audio_name: str, *, fetch: bool = True) -> Optional[tuple[str, str]]:
     """Speaker labels for channel 0 and channel 1 of a dual-channel recording.
 
-    Telnyx dual recording puts the FIRST leg on channel A. On an outbound call
-    from Groundwire that is our SIP leg (verified 2026-11-02 against a known
-    voicemail greeting). On an inbound call the first leg is the PSTN caller's
-    — inferred from the docs, not yet verified with a real answered inbound call.
+    Channel A is always our side (Groundwire's SIP leg), whichever way the call
+    went. Outbound: verified 2026-11-02 against a known voicemail greeting.
+    Inbound: verified 2026-11-11 against answered calls, after the documented
+    "first leg on A" reading (the PSTN caller on an inbound call) had labelled
+    23 inbound notes the wrong way round: in the GoodLeap call (item
+    3e3edb7f252bf6a2) channel 1 carries "This is Ravon with GoodLeap" and
+    channel 0 the answering "Hello?".
     """
     try:
         call = call_for_audio(audio_name, fetch=fetch)
@@ -867,8 +870,7 @@ def channel_parties(audio_name: str, *, fetch: bool = True) -> Optional[tuple[st
         return None
     if not call or not call.get("direction"):
         return None
-    other = party_label(call)
-    return (ME, other) if call["direction"] == "outbound" else (other, ME)
+    return ME, party_label(call)
 
 
 def frontmatter_for(call: dict[str, Any]) -> dict[str, Any]:

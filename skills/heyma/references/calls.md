@@ -79,7 +79,7 @@ Ledger state 2026-11-05: 140 calls since 2026-10-05; outcomes answered 98 (72 in
 
 ## Audio to call
 
-The `call-metadata` pass (see [passes/catalog](passes/catalog.md)) joins a `telnyx-*` inbox item to its call and stamps 14 `call-*` frontmatter keys; unknown values are absent. Join order for a session: `call_legs`, then recordings, then events. A row with no CDR or no `ended_at` is provisional and triggers a bounded refetch (-10 min to +4 h, no voicemail fetch, no sync advance). Dual-channel (non-voicemail) call audio is transcribed per channel and labeled by party — outbound is (Me, other), inbound is (other, Me); the inbound mapping is inferred and not yet verified against a real answered inbound call (code comment, 2026-11-02) — see [transcription](transcription.md).
+The `call-metadata` pass (see [passes/catalog](passes/catalog.md)) joins a `telnyx-*` inbox item to its call and stamps 14 `call-*` frontmatter keys; unknown values are absent. Join order for a session: `call_legs`, then recordings, then events. A row with no CDR or no `ended_at` is provisional and triggers a bounded refetch (-10 min to +4 h, no voicemail fetch, no sync advance). Dual-channel (non-voicemail) call audio is transcribed per channel and labeled by party: channel A is always `Me` (our SIP leg) and channel B the other party, in both directions. Inbound was first mapped the other way, from Telnyx's "first leg on A" docs; answered calls proved that wrong on 2026-11-11 (the GoodLeap caller's "This is Ravon" was on channel B), and the 23 live inbound notes plus 40 `asr.json` files transcribed that way were relabelled (incident log). See [transcription](transcription.md).
 
 ## Runbook
 

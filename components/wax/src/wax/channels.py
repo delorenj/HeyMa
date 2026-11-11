@@ -1,7 +1,8 @@
 """Channel-separated transcription for dual-channel phone-call recordings.
 
-A Telnyx dual-channel recording puts the first call leg on channel A and the
-rest on channel B, so the carrier already knows who spoke. Transcribing each
+A Telnyx dual-channel recording puts our side (the Groundwire SIP leg) on
+channel A and the other party on channel B, in both call directions, so the
+carrier already knows who spoke. Transcribing each
 channel on its own and interleaving by time gives speaker attribution that
 cannot flip mid-sentence, which a Sortformer guess over a mono mixdown can.
 
@@ -154,7 +155,7 @@ def extract_channel(audio: Path | str, index: int, out: Path | str, sample_rate:
 def merge_segments(per_channel: list[list[dict]], labels: tuple[str, str]) -> list[dict]:
     """Interleave per-channel segments by start time, stamping who spoke.
 
-    Ties go to channel 0 (the first leg), keeping the order deterministic.
+    Ties go to channel 0 (our side), keeping the order deterministic.
     """
     merged: list[dict] = []
     for index, segments in enumerate(per_channel):

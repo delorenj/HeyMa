@@ -266,6 +266,13 @@ class AudioJoinTest(_Ledger):
         self.assertEqual(calls.channel_parties(name, fetch=False), ("Me", "+16099203094"))
         self.assertIsNone(calls.channel_parties("meeting.ogg", fetch=False))
 
+    def test_channel_a_is_our_side_whichever_way_the_call_went(self):
+        """Inbound too (verified 2026-11-11): the caller is on channel B, not A."""
+        for direction in ("outbound", "inbound"):
+            with self.subTest(direction=direction), patch.object(
+                    calls, "call_for_audio", return_value={"direction": direction, "remote_name": "GoodLeap"}):
+                self.assertEqual(calls.channel_parties("telnyx-x.mp3", fetch=False), ("Me", "GoodLeap"))
+
 
 class VoicemailTest(_Ledger):
     def test_voicemail_is_fetched_once_into_the_inbox(self):

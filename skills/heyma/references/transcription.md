@@ -91,8 +91,9 @@ note, load `scripts/transcribe.py` in `.venv-diarization` and call
 
 ## Dual-channel phone calls
 
-A Telnyx dual-channel recording puts the first leg on channel A and the rest on
-channel B, so the carrier already knows who spoke. `scripts/transcribe.py` then
+A Telnyx dual-channel recording puts our side (Groundwire's SIP leg, labelled `Me`) on
+channel A and the other party on channel B, in both directions (inbound verified
+2026-11-11, see [calls](calls.md)), so the carrier already knows who spoke. `scripts/transcribe.py` then
 transcribes each channel separately and interleaves by time, which cannot flip a
 speaker mid-sentence the way Sortformer over a mono mixdown can
 (`components/wax/src/wax/channels.py`).

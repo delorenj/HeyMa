@@ -86,8 +86,8 @@ attribution is per force-aligned word (`wax.speaker_attribution`,
 diarization device in their frontmatter and in-band metadata.
 
 **Channel-separated calls.** A Telnyx dual-channel recording (`telnyx-*.mp3`, not
-`telnyx-vm-*`) carries one party per channel (first leg on channel A, the rest
-on B), so the carrier's split replaces the Sortformer guess.
+`telnyx-vm-*`) carries one party per channel (our side on channel A, the other party
+on B, in both directions), so the carrier's split replaces the Sortformer guess.
 `scripts/transcribe.py` asks `wax.channels.plan()`: the name starts with
 `telnyx-` and not `telnyx-vm-`, ffprobe reports exactly 2 channels, and ffmpeg
 `astats` puts BOTH channels above -60 dB RMS (an old one-sided recording has
