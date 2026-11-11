@@ -11,6 +11,39 @@ the code still matches; where the code has since moved, the entry says so.
 
 ---
 
+## 2026-11-11 · 29 notes "missing on disk", one of them a real conversation · *a note and its ASR both gone, audio only in S3*
+
+**Signature.** `transcript notes intact` passes but reports `(29 missing on
+disk)`. Most of these are deliberate, so triage before restoring anything.
+
+**Triage.** 16 were moved to `~/code/DeLoDocs/.trash/Transcripts` by the
+2026-11-03 duplicate clean-up. `c8c5a3c55e8bf5b6` was moved by hand to
+`Projects/33GOD/Holocene/`, so its ledger `md_path` is stale. The rest were July
+test artefacts, junk or voicemails, and should stay gone. One was a real loss:
+`798731fdd81e97a7`, a 21-minute household conversation from 2026-09-03. Its note
+was gone, it had no `asr.json` and no store version, `transcripts.asr_path` and
+`body_sha256` were NULL, and `archive/2026/09/` no longer existed locally.
+
+**Fix (the recipe when nothing but S3 is left).**
+
+1. Download `s3://recordings/<date>/<id12>-<name>.ogg` and check its sha256
+   against `items.sha256`. Copy it back to `items.path`; diarization reads the
+   audio from there.
+2. Run `heavy bin/transcribe <ogg> --no-diarization --asr-output <ABS>/asr.json`.
+   Use absolute paths, because relative ones land in the repo root. Then copy
+   the result to `var/logs/<item>/asr.json`.
+3. Render the note with `scripts/transcribe.py` `to_markdown(result, items.path, False)`
+   at the ledger `md_path`, opening it with `x` mode so nothing is overwritten.
+4. If `transcripts.asr_path`/`body_sha256` are NULL, set them, guarded by
+   `IS NULL`: `asr_path` to the file, `body_sha256` to the sha256 of the
+   rendered body. Without them diarization fails with "timed ASR is unavailable".
+5. Run `wax ep run diarization <item>`, then
+   `wax ep run dictionary-correction <item> --live` and `wax ep run title-slug <item> --live`
+   (title-slug renames the note), and finally `wax transcripts sync`.
+
+The missing count dropped to 28. Backups of the restored note and its ASR are in
+`~/backups/heyma-transcripts/restored-798731fdd81e97a7-20261111/`.
+
 ## 2026-11-11 · Inbound call notes had Me and the caller swapped · *a documented channel order that was never verified*
 
 **Signature.** On answered **inbound** calls the `Me` turns said what the caller
