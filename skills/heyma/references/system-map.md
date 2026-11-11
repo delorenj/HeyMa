@@ -71,7 +71,7 @@ Red while recording (flashing yellow if the input is silent). Yellow for failed 
 
 | Path | Points to |
 |---|---|
-| `~/HeyMa/bin/{wax,waxd,transcribe}` | Shims resolving `components/wax` relative to themselves |
+| `~/HeyMa/bin/{wax,waxd,transcribe}` | Shims resolving `components/wax` relative to themselves (`wax` also holds Ctrl-C across Python start-up, via perl, so an early Ctrl-C exits 130 quietly) |
 | `~/.local/bin/wax` | `~/HeyMa/bin/wax` |
 | `~/.local/bin/transcribe` | `~/HeyMa/bin/transcribe` |
 | `~/.local/bin/wax-toggle` | `components/wax/bin/wax-toggle` (GNOME `custom3`, `<Control>backslash`) |

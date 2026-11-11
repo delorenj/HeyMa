@@ -2,4 +2,21 @@
 set -eu
 launcher=$(readlink -f "$0")
 repo_root=$(dirname "$(dirname "$launcher")")
-exec "$repo_root/components/wax/bin/wax" "$@"
+wax="$repo_root/components/wax/bin/wax"
+# Ctrl-C is held (blocked, not ignored) while Python starts, so it can never land in
+# the interpreter's own start-up as a traceback; wax (told by WAX_SIGINT_HELD) unblocks
+# it once its handler is in place and exits 130 at once. A mask the caller already set
+# is left to the caller. PERL_BADLANG=0 keeps perl quiet about an ungenerated locale;
+# a failed exec exits 127/126 like the shell would. Without perl, Python starts as before.
+if command -v perl >/dev/null 2>&1; then
+    PERL_BADLANG=0 exec perl -MPOSIX -e '
+        my $before = POSIX::SigSet->new;
+        sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGINT), $before);
+        $ENV{WAX_SIGINT_HELD} = 1 unless $before->ismember(SIGINT);
+        delete $ENV{PERL_BADLANG};
+        exec { $ARGV[0] } @ARGV;
+        print STDERR "wax: $ARGV[0]: $!\n";
+        exit($!{ENOENT} ? 127 : 126);
+    ' -- "$wax" "$@"
+fi
+exec "$wax" "$@"

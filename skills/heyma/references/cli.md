@@ -2,7 +2,7 @@
 
 `wax` is the one operator surface. Every command accepts `--json` at any position (`wax --json catalog` and `wax catalog --json` are equal). Resolve it as `~/HeyMa/bin/wax` (`~/.local/bin/wax` points there and is first on PATH). `/usr/bin/wax` is a stale 2026-09-03 copy: never trust it. The tree below was read from the argparse definition in `components/wax/bin/wax` on 2026-11-05; `components/wax/tests/skill_hub_test.py` fails if a subcommand is missing here.
 
-Exit codes: 0 clean, 2 failure or unhealthy where noted. There is no exit 3 (WAX-DESIGN mentions one; it is not implemented). `wax reset` and `wax pipeline start|stop` do not exist.
+Exit codes: 0 clean, 2 failure or unhealthy where noted, 130 interrupted (Ctrl-C, one line `interrupted`, no traceback, from the first millisecond when launched through the repo-root `bin/wax`: it holds Ctrl-C blocked across Python's own start-up, and wax releases it once its handler is in. The cost: if Python's start-up itself hangs, Ctrl-C waits; Ctrl-\ still quits. A caller that ignores or blocks SIGINT keeps it that way; a Ctrl-C after the command finished, during interpreter shutdown, can still traceback). A launcher that cannot run wax exits 127 (missing) or 126 (not runnable), like the shell. There is no exit 3 (WAX-DESIGN mentions one; it is not implemented). `wax reset` and `wax pipeline start|stop` do not exist.
 
 ## Capture
 

@@ -7,10 +7,36 @@ Works with or without the daemon. `state --cold` is a pure function of the
 filesystem, so it answers correctly even after waxd has been SIGKILLed.
 """
 
+import os
+import signal
+
+
+def _interrupted_while_starting(_signum, _frame):
+    """Ctrl-C before main() runs: nothing has happened yet, so leave quietly (no traceback)."""
+    try:
+        os.write(2, b"interrupted\n")
+    except OSError:
+        pass
+    os._exit(130)
+
+
+# Only when run as the command: importing this file (tests, SourceFileLoader) leaves the
+# host's signal handling alone. Installed before every other import (hence the file-level
+# `ruff: noqa: E402` below), and kept until main() is inside its try.
+if __name__ == "__main__":
+    # Only when Ctrl-C would otherwise raise: a launcher that ignores SIGINT keeps it ignored.
+    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        signal.signal(signal.SIGINT, _interrupted_while_starting)
+    # The repo-root launcher holds Ctrl-C blocked across Python's own start-up and says so
+    # here; a press that came in meanwhile is delivered now, to the handler above. A mask the
+    # launcher found already in place belongs to whoever started wax and stays.
+    if os.environ.pop("WAX_SIGINT_HELD", None) == "1":
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+
+# ruff: noqa: E402
 import argparse
 import fcntl
 import json
-import os
 import re
 import shlex
 import shutil
@@ -3350,8 +3376,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
+        # From here Ctrl-C is a KeyboardInterrupt again, so cleanup (the scan's pool) runs.
+        if signal.getsignal(signal.SIGINT) is _interrupted_while_starting:
+            signal.signal(signal.SIGINT, signal.default_int_handler)
         sys.exit(main())
     except KeyboardInterrupt:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second press must not traceback here
         print("interrupted", file=sys.stderr)
         sys.exit(130)
     except (capture.CaptureError, archive.ArchiveError, passes.PassError,
