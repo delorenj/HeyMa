@@ -1,0 +1,19 @@
+slug: voice-id
+version: 1
+description: Fingerprint each speaker's voice, match the voice registry, name known voices and register new ones for you to name.
+capabilities: [audio]      # needs the recording, its timed ASR and the ledger
+enabled: true
+auto: true
+# Ordered after dictionary-correction by the pipeline (transcript-standard), not
+# here, so switching the dictionary pass off never quarantines this one: after
+# diarization (which renders the Speaker N turns this pass renames), never
+# racing another body replace, and last beside clipboard-copy so its ~10 s model
+# load never delays a dictation reaching the clipboard. A monolog (no
+# diarization) still gets a whole-recording voice.
+requires: []
+body_mutation: compare-and-replace
+clobber: [voices]
+timeout_s: 900
+env:
+  WAX_VOICE_OWNER: Jarad
+command: ["{component_root}/config/passes.d/bin/voice-id", "{md_path}", "{item_id}"]

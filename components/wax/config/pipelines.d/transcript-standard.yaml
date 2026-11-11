@@ -14,7 +14,9 @@ enabled: true
 failure_policy: independent
 # dictionary-correction respells the speaker's own words after diarization
 # (which re-renders the body); title, clipboard and projects are ordered after
-# it (ordering only, never a gate) so they read the corrected text. The edges
+# it (ordering only, never a gate) so they read the corrected text, and so is
+# voice-id (two body replacements never race; its model load never delays the
+# clipboard). The edges
 # live here, not in those passes' registry `after:`, so switching the
 # dictionary pass off never quarantines them.
 passes:
@@ -26,3 +28,4 @@ passes:
   - {slug: project-extraction, after: [dictionary-correction]}
   - call-metadata
   - dictionary-correction
+  - {slug: voice-id, after: [dictionary-correction]}

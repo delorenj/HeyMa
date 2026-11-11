@@ -59,6 +59,7 @@ exactly one route.
 | `dropoff/` | Syncthing receive-only device feed (folder `audio`) |
 | `archive/`, `skipped/`, `quarantine/`, `recovered/` | parked audio; preserved, never deleted |
 | `Dictionary.yaml` | words ASR mangles; edit with `wax dict` |
+| `~/d/Voices/` | the voice registry's notes and clips (`voice-id` pass); name a voice there or with `wax voices` |
 | `var/wax.db` | SQLite ledger (items, passes, outbox, calls, documents, …) |
 | `var/state.json`, `var/waxd.sock` | live mirror and status socket; waxd's singleton is `var/waxd.singleton.lock` |
 | `~/d/Transcripts/` | where transcripts land (`WAX_VAULT`) |

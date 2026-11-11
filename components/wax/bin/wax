@@ -2388,6 +2388,94 @@ class _ScanInterrupted(Exception):
     pass
 
 
+def voices_command(args, J: bool) -> int:
+    from wax import voices
+
+    conn = voices.connect()
+
+    def find(ref: str):
+        found = voices.resolve(conn, ref)
+        if found is None:
+            print(f"no single voice matches {ref!r} (wax voices list)", file=sys.stderr)
+        return found
+
+    def relabel(items: list[str]) -> int:
+        failed = 0
+        for item_id in items:
+            try:
+                result = passes.run(item_id, "voice-id", live=True, operator_toggle=False)
+            except passes.PassError as exc:
+                result = {"state": f"refused: {exc}"}
+            state = result.get("state") if isinstance(result, dict) else result
+            if not J:
+                print(f"  {item_id}  {state}")
+            failed += state not in ("completed", "skipped")
+        return failed
+
+    if args.sub == "list":
+        rows = voices.listing(conn)
+        if J:
+            _emit(rows, True)
+            return 0
+        print(f"  {'VOICE':<14}{'NAME':<22}{'STATUS':<10}{'ITEMS':>6}{'MINUTES':>9}  NOTE")
+        for r in rows:
+            status = "merged" if r["merged_into"] else r["status"]
+            print(f"  {r['voice_id']:<14}{(r['name'] or '—'):<22}{status:<10}{r['items']:>6}"
+                  f"{r['seconds'] / 60:>9.1f}  {r['note_path']}")
+        unnamed = sum(1 for r in rows if r["status"] == voices.STATUS_UNNAMED and not r["merged_into"])
+        print(f"\n{len(rows)} voices, {unnamed} waiting for a name")
+        return 0
+    if args.sub == "show":
+        voice = find(args.voice)
+        if voice is None:
+            return 1
+        heard = voices.heard_in(conn, voice["voice_id"])
+        if J:
+            _emit({**voice, "heard_in": heard}, True)
+            return 0
+        for key in ("voice_id", "name", "status", "note_path", "created_at", "merged_into"):
+            print(f"  {key:<12} {voice[key] if voice[key] is not None else '—'}")
+        print(f"\n  heard in {len(heard)} speaker turn set(s):")
+        for h in heard:
+            score = f"{h['score']:.2f}" if h["score"] is not None else "  — "
+            print(f"    {h['item_id']}  {h['verdict']:<9} {score}  {h['seconds']:>6.0f}s  "
+                  f"{h['label']} -> {h['rendered']}  {h['md_path'] or ''}")
+        return 0
+    if args.sub == "name":
+        voice = find(args.voice)
+        if voice is None:
+            return 1
+        voices.set_name(conn, voice["voice_id"], args.name)
+        print(f"{voice['voice_id']} is {args.name}")
+        for keep, drop in voices.merge_namesakes(conn):
+            print(f"{drop} merged into {keep}, the voice already named {args.name}")
+        if args.no_sync:
+            return 0
+        return 1 if relabel(voices.needs_relabel(conn)) else 0
+    if args.sub == "merge":
+        keep, drop = find(args.keep), find(args.drop)
+        if keep is None or drop is None:
+            return 1
+        moved = voices.merge(conn, keep["voice_id"], drop["voice_id"])
+        print(f"{drop['voice_id']} merged into {keep['voice_id']} ({moved} sightings moved)")
+        return 1 if relabel(voices.needs_relabel(conn)) else 0
+    if args.sub == "sync":
+        if not args.dry_run:
+            for keep, drop in voices.merge_namesakes(conn):
+                print(f"{drop} merged into {keep} (same name)")
+        items = voices.needs_relabel(conn)
+        if J and args.dry_run:
+            _emit(items, True)
+            return 0
+        print(f"{len(items)} transcript(s) to relabel")
+        if args.dry_run:
+            for item_id in items:
+                print(f"  {item_id}")
+            return 0
+        return 1 if relabel(items) else 0
+    return 1
+
+
 def dict_command(args, J: bool) -> int:
     try:
         if args.sub == "list":
@@ -2868,6 +2956,23 @@ def main() -> int:
     dfx.add_argument("term")
     dfx.add_argument("--dry-run", action="store_true", help="list the notes; change nothing")
     dfx.add_argument("--limit", type=int, help="at most this many notes")
+
+    vo_ = sub.add_parser("voices", parents=[common],
+                         help="the voice registry: who the voice-id pass has heard, and naming them"
+                         ).add_subparsers(dest="sub", required=True)
+    vo_.add_parser("list", parents=[common], help="every registered voice, most heard first")
+    vosh = vo_.add_parser("show", parents=[common], help="one voice: its note and every transcript it was heard in")
+    vosh.add_argument("voice", help="voice id (or a unique prefix) or name")
+    von = vo_.add_parser("name", parents=[common], help="name a voice (writes its note), then relabel its transcripts")
+    von.add_argument("voice", help="voice id (or a unique prefix) or current name")
+    von.add_argument("name", help="who it is, as it should appear in transcripts")
+    von.add_argument("--no-sync", action="store_true", help="do not relabel transcripts now")
+    vom = vo_.add_parser("merge", parents=[common], help="the same person registered twice: fold one voice into another")
+    vom.add_argument("keep", help="the voice to keep")
+    vom.add_argument("drop", help="the voice folded into it (its note is marked merged, never deleted)")
+    vosy = vo_.add_parser("sync", parents=[common],
+                          help="relabel transcripts whose voices were named or renamed since they were processed")
+    vosy.add_argument("--dry-run", action="store_true", help="list the transcripts; change nothing")
 
     vlt = sub.add_parser("vault", parents=[common],
                          help="vault-wide hygiene: prune, title, consolidate and organize the Obsidian vault")
@@ -3367,6 +3472,9 @@ def main() -> int:
 
     if args.cmd == "dict":
         return dict_command(args, J)
+
+    if args.cmd == "voices":
+        return voices_command(args, J)
 
     if args.cmd == "doctor":
         return doctor(J, args.quiet)

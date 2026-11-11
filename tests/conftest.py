@@ -59,8 +59,10 @@ PINNED_ENV = {
     "TRANSCRIBE_EPHEMERAL_DIR": str(SANDBOX / "ephemeral"),
     "MC_BIN": "/nonexistent/heyma-root-tests/mc",
     "HERMES_TRANSCRIBE_BIN": "/nonexistent/heyma-root-tests/transcribe",
+    "WAX_VOICES_DIR": str(SANDBOX / "voices"),     # the voice registry's notes (default ~/d/Voices)
 }
 os.environ.update(PINNED_ENV)
+os.environ["WAX_VOICE_NOTIFY"] = "0"  # the voice-id pass never announces a new voice from a test
 os.environ.pop("WAX_AUDIO_ROOT", None)  # legacy alias of WAX_ROOT; the shell may export the real root
 
 # ---------------------------------------------------------------------------------------------------------

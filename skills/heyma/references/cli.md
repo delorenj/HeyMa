@@ -138,8 +138,13 @@ Detail: [transcriptions-store](transcriptions-store.md).
 | `wax dict list [filter]` | List terms |
 | `wax dict show <term> [--no-scan]` | One term and how it fares against the vault |
 | `wax dict fix <term> [--dry-run] [--limit N]` | Rewrite existing notes for a term |
+| `wax voices list [--json]` | Every registered voice, most heard first, and how many wait for a name |
+| `wax voices show <voice>` | One voice (id, id prefix or name) and every sighting |
+| `wax voices name <voice> <name> [--no-sync]` | Name a voice (its note and the cache), merge namesakes, relabel its transcripts |
+| `wax voices merge <keep> <drop>` | Fold a voice registered twice into the other; nothing is deleted |
+| `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id` on transcripts still showing an old label |
 
-Detail: [failures](failures.md), [events](events.md), [calls](calls.md), [passes/dictionary](passes/dictionary.md).
+Detail: [failures](failures.md), [events](events.md), [calls](calls.md), [passes/dictionary](passes/dictionary.md), [passes/voice-id](passes/voice-id.md).
 
 ## mise wrappers (`mise.toml` at the repo root)
 

@@ -83,6 +83,7 @@ with its outcome. Full chain semantics are in
 | `ticketable` | `no_project` (skipped) | Disabled today. |
 | `dictionary-correction` | `dictionary_missing`, `dictionary_invalid`, plus Jev provider codes | See [passes/dictionary](../../../references/passes/dictionary.md). |
 | `diarization` | `diarization_failed`, `human_edits` (skipped: a human changed the body after labelling), `channel_separated` (skipped: dual-channel `telnyx-*`) | The old "CUDA out of memory at Sortformer load" failure shows as `diarization_failed`. |
+| `voice-id` | `audio_missing`, `voice_id_failed`, `no_speech` (skipped) | `voice_id_failed` carries the GPU child's stderr tail; see [passes/voice-id](../../../references/passes/voice-id.md). |
 | `call-metadata` | `not_a_call` (skipped), `call_not_found`, `telnyx_auth_failed`, `telnyx_http_error`, `telnyx_unreachable` | Telnyx key is an `op://` reference by item UUID. |
 | `frontmatter-stamp`, `clipboard-copy` | runner codes only | `clipboard-copy` is a desk effect. |
 

@@ -64,6 +64,7 @@
 			"dist/nodes/WaxPassTicketable/WaxPassTicketable.node.js",
 			"dist/nodes/WaxPassTitleSlug/WaxPassTitleSlug.node.js",
 			"dist/nodes/WaxPassTranscriptionEnhance/WaxPassTranscriptionEnhance.node.js",
+			"dist/nodes/WaxPassVoiceId/WaxPassVoiceId.node.js",
 			"dist/nodes/WaxPassWikification/WaxPassWikification.node.js"
 		]
 	},

@@ -6,13 +6,13 @@ Live instance (2026-11-05): n8n 2.18.4 under PM2 (`pm2`, name `n8n`, pm_id 0, `P
 
 ## The node package: `components/n8n-nodes-heyma`
 
-Version **0.3.0**, **18 node types** in the manifest (2026-11-05). Installed into n8n as a `file:` link: `~/.n8n/nodes/package.json` has `"n8n-nodes-heyma": "file:../../HeyMa/components/n8n-nodes-heyma"`, so `node_modules/n8n-nodes-heyma` is a **symlink to the working tree** and n8n loads the repo's `dist/` — after any `src` change run `npm run build` in the component and `pm2 restart n8n`. The tarballs in `~/.local/share/wax/packages/` (`0.2.0-1f77a72`, `0.3.0-74755f5`) are archived artifacts, not what is loaded.
+Version **0.3.0**, **19 node types** in the manifest (2026-11-11). Installed into n8n as a `file:` link: `~/.n8n/nodes/package.json` has `"n8n-nodes-heyma": "file:../../HeyMa/components/n8n-nodes-heyma"`, so `node_modules/n8n-nodes-heyma` is a **symlink to the working tree** and n8n loads the repo's `dist/` — after any `src` change run `npm run build` in the component and `pm2 restart n8n`. The tarballs in `~/.local/share/wax/packages/` (`0.2.0-1f77a72`, `0.3.0-74755f5`) are archived artifacts, not what is loaded.
 
 | Node | Purpose |
 |---|---|
 | **HeyMa** (Recording) | `wax rec start` / `rec stop` via `--json`; label ≤ 120 chars; bitrates 16k–64k |
 | **WaxEp** (Wax Enrichment Pass) | One node, pass chosen live from `wax catalog --json`. Operations: **Author (Graph Only)** (default; pure authoring, zero side effects) and **Run (Preview One Item)** (`wax ep run`) |
-| **WaxPass\*** ×14 (`wax-pass-*`) | Generated per-pass shells of WaxEp — TitleSlug, Classification, DictionaryCorrection, Diarization, CallMetadata, ClipboardCopy, FrontmatterStamp, ProjectExtraction, Summarize, Ticketable, DomainCuration, MemOps, TranscriptionEnhance, Wikification. Regenerate with `npm run nodes:passes` after the pass registry changes |
+| **WaxPass\*** ×15 (`wax-pass-*`) | Generated per-pass shells of WaxEp — TitleSlug, Classification, DictionaryCorrection, Diarization, VoiceId, CallMetadata, ClipboardCopy, FrontmatterStamp, ProjectExtraction, Summarize, Ticketable, DomainCuration, MemOps, TranscriptionEnhance, Wikification. Regenerate with `npm run nodes:passes` after the pass registry changes |
 | **WaxPipeline** | Compile, Configure (authoring), Import Workflow, Show, Scan Documents, Run Document |
 | **WaxCalls** | `event` (default; ingest one Telnyx webhook event), `sync` (`--since`, default 2d), `show` (call ref) |
 

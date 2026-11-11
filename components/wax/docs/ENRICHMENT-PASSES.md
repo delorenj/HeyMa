@@ -708,6 +708,20 @@ API before the pass fails with `call_not_found`; an API failure is `telnyx_auth_
 dual-channel Telnyx call (`calls.channel_parties`: outbound ch0 is Me, inbound ch0 is the
 caller) for channel-separated transcription.
 
+## voice-id (TitaNet, the voice registry)
+
+Fingerprints every speaker with NeMo TitaNet-large on CUDA (in
+`.venv-diarization`), matches the voice registry (`voices`,
+`voice_exemplars`, `voice_sightings` in `var/wax.db`; one note per voice in
+`~/d/Voices`), renames a known voice's generic `Speaker N` turns
+(`compare-and-replace`) and lists the voices heard in `voices:`. A stranger
+with enough clean speech is registered with an empty `name:` and a clip, and
+the operator is notified to name it. A call's channel A is the owner
+(`WAX_VOICE_OWNER`) and a contact-named far channel is that contact, by
+construction. It is the one pass that writes state of its own outside the
+runner: the three `voice*` tables and `~/d/Voices`. Calibration, thresholds and
+`wax voices`: `skills/heyma/references/passes/voice-id.md`.
+
 ## summarize and the untitled-standard pipeline
 
 `summarize` (`config/passes.d/summarize.yaml`, `passes.d/bin/summarize`) gives a

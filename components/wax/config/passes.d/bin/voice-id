@@ -1,0 +1,20 @@
+#!/usr/bin/python3
+"""voice-id: fingerprint each speaker, match the voice registry, register and announce strangers."""
+import json
+import sys
+from pathlib import Path
+
+component = next(parent for parent in Path(__file__).resolve().parents if (parent / "pyproject.toml").is_file())
+sys.path.insert(0, str(component / "src"))
+from wax.voice_id_pass import AudioMissing, main
+
+try:
+    print(json.dumps(main(Path(sys.argv[1]), sys.argv[2]), ensure_ascii=False))
+except AudioMissing as exc:
+    print("reason_code=audio_missing", file=sys.stderr)
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)
+except (OSError, RuntimeError, ValueError) as exc:
+    print("reason_code=voice_id_failed", file=sys.stderr)
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)

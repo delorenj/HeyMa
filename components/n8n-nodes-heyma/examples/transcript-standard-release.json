@@ -109,8 +109,19 @@
       ]
     },
     {
+      "parameters": {},
+      "id": "wax-tr-voice-id",
+      "name": "Voice ID",
+      "type": "n8n-nodes-heyma.wax-pass-voice-id",
+      "typeVersion": 1,
+      "position": [
+        940,
+        460
+      ]
+    },
+    {
       "parameters": {
-        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN, output 0 'continue': ordering only, never a gate. Classify → Diarize → Dictionary → Title, Clipboard and Projects.\n\nClassify (v2, Jev) stores monolog, meeting, phone_call or other, or abstains and stores none (the note shows as Unsorted). Diarize skips a transcript classified as a monolog (its registry `when`), and still runs for a meeting, phone call, other, an abstain, or when Classify fails, since the field is then absent. Dictionary (dictionary-correction, Jev over ~/HeyMa/Dictionary.yaml) respells the speaker's own words after Diarize, which re-renders the body and would otherwise skip a corrected one as human_edits; Title, Clipboard and Projects run after it so they read the corrected text, and run anyway if it fails. Projects (project-extraction, Jev over the pjangler registry) keeps an existing project-ids. Call Metadata (call-metadata) is independent: it stamps call-* frontmatter from the Wax call log for a Telnyx recording or voicemail and skips anything else (not_a_call). Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
+        "content": "## Wax Transcription Standard\n\nAll edges are stock MAIN, output 0 'continue': ordering only, never a gate. Classify → Diarize → Dictionary → Title, Clipboard, Projects and Voice ID.\n\nClassify (v2, Jev) stores monolog, meeting, phone_call or other, or abstains and stores none (the note shows as Unsorted). Diarize skips a transcript classified as a monolog (its registry `when`), and still runs for a meeting, phone call, other, an abstain, or when Classify fails, since the field is then absent. Dictionary (dictionary-correction, Jev over ~/HeyMa/Dictionary.yaml) respells the speaker's own words after Diarize, which re-renders the body and would otherwise skip a corrected one as human_edits; Title, Clipboard and Projects run after it so they read the corrected text, and run anyway if it fails. Projects (project-extraction, Jev over the pjangler registry) keeps an existing project-ids. Voice ID (voice-id, TitaNet on CUDA, no chat model) fingerprints each speaker, matches the voice registry, renames a known voice's Speaker N turns, and registers a stranger in ~/d/Voices with a notification to name it; it runs after Dictionary so the two body replacements never race and the clipboard never waits for its model. Call Metadata (call-metadata) is independent: it stamps call-* frontmatter from the Wax call log for a Telnyx recording or voicemail and skips anything else (not_a_call). Wax owns execution: `wax pipeline import` compiles this graph into the frozen plan authority; n8n never schedules it.",
         "height": 400,
         "width": 400
       },
@@ -162,6 +173,11 @@
           },
           {
             "node": "Projects",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Voice ID",
             "type": "main",
             "index": 0
           }

@@ -8,7 +8,8 @@ retry and event; a pass owns only its answer. The design of record is
 verified against `passes.py`, `worker.py`, `finalize.py` and the registry on
 2026-11-05. Per-pass rows are in [passes/catalog](catalog.md); the chat-model
 route is in [passes/model-chain](model-chain.md); the dictionary pass has its own
-page, [passes/dictionary](dictionary.md). To author one, load the
+page, [passes/dictionary](dictionary.md), and so does the voice registry,
+[passes/voice-id](voice-id.md). To author one, load the
 create-enrichment-pass sub-skill
 ([SUBSKILL](../../subskills/create-enrichment-pass/SUBSKILL.md)); its
 [contract](../../subskills/create-enrichment-pass/references/contract.md) is the
@@ -32,8 +33,8 @@ linked to its transcript, the audio is parked, and `finalize.finalize` writes
 
 ## What runs today (2026-11-05)
 
-New audio plans come from the compiled **`transcript-standard` v12** pipeline
-(eight passes); documents from **`doc-standard` v10** (classification,
+New audio plans come from the compiled **`transcript-standard` v14** pipeline
+(nine passes; v13 added `voice-id` on 2026-11-11, v14 re-froze it with the edge moved into the pipeline); documents from **`doc-standard` v10** (classification,
 title-slug, project-extraction on the folder `~/d/Inbox/Wax`). Ordering edges
 live in the pipeline, not in the registry YAML.
 
@@ -43,7 +44,7 @@ live in the pipeline, not in the registry YAML.
 | 2 | `classification` | none |
 | 3 | `diarization` | registry `after: [classification]`; skips a `monolog` |
 | 4 | `dictionary-correction` | after diarization |
-| 5 | `title-slug`, `project-extraction`, `clipboard-copy` | each after `dictionary-correction` |
+| 5 | `title-slug`, `project-extraction`, `clipboard-copy`, `voice-id` | each after `dictionary-correction` |
 | any | `call-metadata` | none; skips non-calls with `not_a_call` |
 
 Manual pipelines (all `in_sync`): `title-only` v1, `dictionary-only` v1 and
@@ -156,7 +157,8 @@ pass's own `requires` subgraph completes, with id
 - **Executable bytes are not frozen.** Editing `passes.d/bin/<slug>` changes
   behavior for every plan that invokes it.
 - **A pass is not a place for a host effect.** Renames, ledger writes and S3
-  linkage belong to the runner.
+  linkage belong to the runner. The one exception is `voice-id`'s own registry
+  (the `voice*` tables and `~/d/Voices`), see [passes/voice-id](voice-id.md).
 - **No Anthropic model anywhere** (operator order 2026-10-22). Chat passes use
   `wax.provider.run_chain` ([passes/model-chain](model-chain.md)); Jev passes
   (`classification`, `project-extraction`, `dictionary-correction`) go through

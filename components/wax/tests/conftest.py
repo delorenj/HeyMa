@@ -66,8 +66,12 @@ PINNED_ENV = {
     "TRANSCRIBE_STASH_DIR": str(SANDBOX / "stash"),
     "TRANSCRIBE_LOCK_FILE": str(SANDBOX / "transcribe.lock"),
     "TRANSCRIBE_FAST_LOCK_FILE": str(SANDBOX / "transcribe-fast.lock"),
+    "WAX_VOICES_DIR": str(SANDBOX / "voices"),     # the voice registry's notes (default ~/d/Voices)
 }
 os.environ.update(PINNED_ENV)
+# The voice-id pass announces new voices on the desktop and by ntfy; a test never does.
+os.environ["WAX_VOICE_NOTIFY"] = "0"
+os.environ["WAX_VOICE_NTFY_ALERT"] = "/nonexistent/wax-test-suite/ntfy-alert"
 os.environ.pop("WAX_AUDIO_ROOT", None)  # legacy alias of WAX_ROOT; the shell may export the real root
 
 os.environ["WAX_TRANSCRIPTS_UNIT_FILE"] = NO_UNIT
@@ -118,6 +122,7 @@ UNSET_DEFAULTS = {
     "TRANSCRIBE_STASH_DIR": "~/audio/recovered",
     "TRANSCRIBE_LOCK_FILE": "~/.cache/heyma-transcribe.lock",
     "TRANSCRIBE_FAST_LOCK_FILE": "~/.cache/heyma-transcribe-fast.lock",
+    "WAX_VOICES_DIR": "~/d/Voices",
 }
 
 
@@ -127,6 +132,7 @@ def real_runtime() -> dict[str, list[Path]]:
     vault = [_REAL_HOME / "d" / "Transcripts", _REAL_HOME / "code" / "DeLoDocs" / "Transcripts"]
     # The hygiene sweeps (WAX_DOC_HYGIENE_FOLDERS) rewrite and trash notes in these two vault folders.
     vault += [_REAL_HOME / "d" / "Inbox", _REAL_HOME / "d" / "Sandbox"]
+    vault += [_REAL_HOME / "d" / "Voices"]  # the voice registry's notes and clips
     vault += [_real(p) for p in vault]  # the realpath of ~/d/Transcripts today; follows the symlink if it moves
     ledger = [_REAL_ROOT / "var" / "wax.db"]
     ledger += [_real(p) for p in ledger]
@@ -171,7 +177,7 @@ def isolation_leaks(environ=None) -> list[str]:
         elif real_path_hit(environ[name]):
             found.append(f"${name}: {real_path_hit(environ[name])}")
     for name in ("WAX_AUDIO_ROOT", "WAX_DICTIONARY", "WAX_DOC_HYGIENE_FOLDERS", "TRANSCRIBE_STASH_DIR",
-                 "TRANSCRIBE_LOCK_FILE", "TRANSCRIBE_FAST_LOCK_FILE"):
+                 "TRANSCRIBE_LOCK_FILE", "TRANSCRIBE_FAST_LOCK_FILE", "WAX_VOICES_DIR"):
         raw = environ.get(name) or ""
         for part in (raw or UNSET_DEFAULTS.get(name, "")).split(os.pathsep):
             if real_path_hit(part):
@@ -181,6 +187,8 @@ def isolation_leaks(environ=None) -> list[str]:
         "HEYMA", "AUDIO", "STREAM", "INBOX", "DROPOFF", "ARCHIVE", "QUARANTINE", "RECOVERED", "SKIPPED",
         "VAR", "LOGS", "LOCK", "SOCK", "DB", "STATE_JSON", "VAULT")}
     effective["dictionary.default_path()"] = dictionary.default_path()
+    from wax import voices
+    effective["voices.VOICES_DIR"] = voices.VOICES_DIR
     for name, value in effective.items():
         if real_path_hit(value):
             found.append(f"wax.paths.{name}: {real_path_hit(value)}")

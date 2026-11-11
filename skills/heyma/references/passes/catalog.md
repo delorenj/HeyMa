@@ -21,6 +21,7 @@ the pass is in the post-transcription flow, `manual` when it runs only by name
 | `title-slug` | yes | auto | 3 | audio, document | none | gateway chain `WAX_TITLE_*` | `title`, `summary`, `title-slug`; renames an audio transcript |
 | `project-extraction` | yes | auto | 1 | document | none | Jev ingress, `jev-1.13.0`, key alias `heyma-wax-project-extraction` | `project-ids`, `projects` |
 | `clipboard-copy` | yes | auto | 1 | audio | none | none | nothing in the note (desk effect: clipboard and a sound) |
+| `voice-id` | yes | auto | 1 | audio | none (pipeline: after `dictionary-correction`) | local TitaNet-large on CUDA, no chat model | `voices` (links to `~/d/Voices` notes), named speaker turns (`body_replace`); the voice registry |
 | `call-metadata` | yes | auto | 1 | audio | none | none; Telnyx call-log API | 14 `call-*` keys (direction, outcome, remote number and name, line, forwarding, times, session and leg ids) |
 | `summarize` | yes | manual | 1 | document | none | gateway chain `WAX_SUMMARY_*` | `summary` and a `## Summary` section prepended to the body |
 | `ticketable` | no | manual | 1 | document | `title-slug`, `project-extraction` | gateway chain `WAX_TICKETS_*` | declares `intake.detected` events (one per ticket) |
@@ -50,6 +51,7 @@ is at an older one. It is time-sensitive; re-read `wax ep list`.
 | project-extraction | 120 | 533 / 0 / 0 |
 | summarize | 390 | 2 / 0 / 0 |
 | title-slug | 390 | 459 / 3 / 69 |
+| voice-id | 900 | new 2026-11-11 |
 | ticketable, domain-curation, mem-ops, transcription-enhance, wikification | 1800, 900, 900, 900, 900 | 0 / 0 / 0 |
 
 `title-slug` carries the only current failures (rate limits and bad responses
@@ -60,8 +62,8 @@ deadline.
 ## Per-pass notes
 
 **Edges that live in the pipeline, not the registry.** In `transcript-standard`
-v12, `dictionary-correction` runs after `diarization`, and `title-slug`,
-`project-extraction` and `clipboard-copy` each run after `dictionary-correction`.
+v14, `dictionary-correction` runs after `diarization`, and `title-slug`,
+`project-extraction`, `clipboard-copy` and `voice-id` each run after `dictionary-correction`.
 The registry YAML for `title-slug` has no `after`. `doc-standard` v10 is
 `classification`, `title-slug`, `project-extraction`. See
 [pipelines](../pipelines.md).
@@ -100,6 +102,13 @@ notes. `body_mutation: compare-and-replace`.
 **`ticketable`.** Implemented but disabled. Each ticket becomes one
 `bloodbank.audio.intake.detected`, relayed to ntfy `audio`. Skips with
 `no_project`. See [events](../events.md).
+
+**`voice-id`.** Fingerprints each speaker (TitaNet in `.venv-diarization`),
+matches the voice registry, names known voices' `Speaker N` turns and registers
+strangers in `~/d/Voices` with a notification to name them. A call's channel A
+is the owner and a contact-named far channel is that contact, by construction.
+Codes: `audio_missing`, `voice_id_failed`, `no_speech` (skipped). Calibration,
+thresholds, the registry and `wax voices` are in [passes/voice-id](voice-id.md).
 
 **`call-metadata`.** Joins a `telnyx-*` recording's file name to the Telnyx call
 log and stamps `call-*` keys; skips non-calls with `not_a_call`. Codes:
