@@ -276,6 +276,95 @@ class ScanTest(Base):
             dictedit.scan("Nope", book=dictionary.load(self.book), vault=self.root, workers=1)
 
 
+FIRST_LOOK_BOOK = BOOK + (
+    "  GorillaDesk: [gorilla desk]\n"
+    '  AutomaticAI: {heard: [automatic a i], about: "the consultancy"}\n'
+    "  delo.sh: the homelab domain\n"
+    "  Damian: [damien]\n")
+FIRST_LOOK_BODIES = [
+    "We said skill x, then skillix, and Skillexs, and skill ex's too.",
+    "Two gorilla desks and a gorilla desk; blood banks and the blood bank.",
+    "Automatic a i, automatic ai, and the automatic a i thing.",
+    "Go to delo dot sh, or dilo dot sh, or drive dot delo dot sh.",
+    "Dami and Damien and damion and dami has the Plain plane, Jarad's and jared.",
+    "**Speaker 1 (00:01):** skill x said in code `skill x` and [[skill x]] and https://skill.x/y",
+    "Then skilex, the gorila desk and automatc ai synced it to bloodbnk.",  # shorter than the term
+    "Nothing here sounds like anything in that book at all.",
+]
+
+
+def _die_in_worker(path):
+    os._exit(9)  # as the OOM killer would end it
+
+
+class FirstLookTest(Base):
+    """`dictionary.may_offer` lets the scan skip notes; it must never skip one the full match flags."""
+
+    def setUp(self):
+        super().setUp()
+        self.book.write_text(FIRST_LOOK_BOOK)
+        self.loaded = dictionary.load(self.book)
+        self.assertEqual(len(self.loaded.terms), 8)
+
+    def test_every_term_the_full_match_offers_passes_the_first_look(self):
+        floor = min(dictionary.DEFAULT_MIN_SCORE, dictedit.NEAR_MISS_MIN_SCORE)
+        offered = 0
+        for body in FIRST_LOOK_BODIES:
+            for score, dot in ((dictionary.DEFAULT_MIN_SCORE, True), (dictedit.NEAR_MISS_MIN_SCORE, False)):
+                for c in dictionary.candidates(body, self.loaded, min_score=score, spoken_dot=dot):
+                    if c.term is None:
+                        continue
+                    offered += 1
+                    with self.subTest(body=body, said=c.said, term=c.term.term):
+                        self.assertTrue(dictionary.may_offer(body, self.loaded, c.term, min_score=floor))
+        self.assertGreater(offered, 15)
+
+    def test_a_note_with_nothing_like_the_term_is_skipped(self):
+        for term in self.loaded.terms:
+            with self.subTest(term=term.term):
+                self.assertFalse(dictionary.may_offer(FIRST_LOOK_BODIES[-1], self.loaded, term))
+
+    def test_the_scan_reports_exactly_what_the_unfiltered_match_does(self):
+        vault = self.root / "vault"
+        vault.mkdir()
+        for i, body in enumerate(FIRST_LOOK_BODIES):
+            (vault / f"n{i}.md").write_text(body + "\n")
+        for term in self.loaded.terms:
+            with self.subTest(term=term.term):
+                fast = dictedit.scan(term.term, book=self.loaded, vault=vault, workers=1)
+                with patch.object(dictionary, "may_offer", return_value=True):
+                    full = dictedit.scan(term.term, book=self.loaded, vault=vault, workers=1)
+                self.assertEqual(fast, full)
+
+    def test_a_pooled_scan_matches_a_serial_one_and_reports_progress(self):
+        vault = self.root / "vault"
+        vault.mkdir()
+        for i in range(60):  # more than the 50 a pool waits for
+            (vault / f"n{i:02}.md").write_text(FIRST_LOOK_BODIES[i % len(FIRST_LOOK_BODIES)] + "\n")
+        ticks = []
+        pooled = dictedit.scan("Skillex", book=self.loaded, vault=vault, workers=2,
+                               progress=lambda done, total: ticks.append((done, total)))
+        self.assertEqual(pooled, dictedit.scan("Skillex", book=self.loaded, vault=vault, workers=1))
+        self.assertEqual(ticks[0], (0, 60))
+        self.assertEqual(ticks[-1], (60, 60))
+        self.assertEqual([d for d, _ in ticks], sorted(d for d, _ in ticks))
+
+    def test_a_worker_killed_outright_fails_the_scan_instead_of_hanging_it(self):
+        from concurrent.futures.process import BrokenProcessPool
+        vault = self.root / "vault"
+        vault.mkdir()
+        for i in range(60):
+            (vault / f"n{i:02}.md").write_text("skill x\n")
+        with patch.object(dictedit, "_scan_note", _die_in_worker):
+            with self.assertRaises(BrokenProcessPool):
+                dictedit.scan("Skillex", book=self.loaded, vault=vault, workers=2)
+
+    def test_an_already_listed_heard_form_says_so(self):
+        change = dictedit.add("Damian", heard=("Damien",), update=True, path=self.book)
+        self.assertEqual(change.action, "unchanged")
+        self.assertEqual(change.lint.notes, ["'Damien' is already listed for Damian (as 'damien'; case does not matter)"])
+
+
 class FixPlanTest(Base):
     def test_items_documents_and_strangers(self):
         db = sqlite3.connect(":memory:")
@@ -319,6 +408,17 @@ class CliTest(Base):
                                    "section": "Added with wax dict"}])
         self.assertEqual(self.run_wax("dict", "remove", "Kapture").returncode, 0)
         self.assertNotIn("Kapture", self.terms())
+
+    def test_show_works_with_stderr_closed(self):
+        (self.root / "vault").mkdir(exist_ok=True)
+        (self.root / "vault" / "a.md").write_text("then skill x again\n")
+        env = dict(os.environ, WAX_DICTIONARY=str(self.book), WAX_ROOT=str(self.root),
+                   WAX_VAULT=str(self.root / "vault"), WAX_DICT_COMMIT="0")
+        out = subprocess.run([sys.executable, str(WAX), "--json", "dict", "show", "Skillex"],
+                             stdout=subprocess.PIPE, text=True, env=env, timeout=120,
+                             preexec_fn=lambda: os.close(2))
+        self.assertEqual(out.returncode, 0)
+        self.assertEqual(json.loads(out.stdout)["scan"]["caught_total"], 1)
 
 
 if __name__ == "__main__":

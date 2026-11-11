@@ -341,20 +341,25 @@ def _spelled_out(said: str) -> bool:
 
 
 def _match(said: str, book: Dictionary, words: frozenset[str],
-           min_score: float) -> Optional[tuple[Term, str, float]]:
-    """(term, source, score) for one run of words, or None."""
-    keys = _keys(said)
-    sq = keys[0]
+           min_score: float, only: Optional[Term] = None) -> Optional[tuple[Term, str, float]]:
+    """(term, source, score) for one run of words, or None.
+
+    With `only`, the sound step compares the run with that one term instead of
+    every term (a scan's cheap first look; see `may_offer`). Steps 1 and 2 are
+    unchanged, so whenever the full match is `only`, this is too; it may also
+    name `only` where another term would have scored higher.
+    """
+    sq, ex = squash(said), _expanded(said)
     if not sq or _spelled_out(said):
         return None
     # 1. The speaker's own list of mis-hearings.
     if _function_edge(said, book):
         return None
-    term = book.heard_index.get(sq) or book.heard_index.get(keys[1])
+    term = book.heard_index.get(sq) or book.heard_index.get(ex)
     if term is not None:
         return (term, "heard", 1.0) if said != term.term else None
     # 2. Same letters, wrong case or spacing ("Delo net", "delonet").
-    term = book.exact_index.get(sq) or book.exact_index.get(keys[1])
+    term = book.exact_index.get(sq) or book.exact_index.get(ex)
     if term is not None:
         if said == term.term or _sentence_case(said, term.term):
             return None
@@ -372,6 +377,8 @@ def _match(said: str, book: Dictionary, words: frozenset[str],
         # "GoHighLevel2 plumbers", "Vox CPM2": a number the term does not end in
         # is another word (or another version), never the term mis-heard.
         return None
+    if only is not None and not _could_fit(said, sq, only):
+        return None
     parts = [squash(w) for w in re.findall(r"[A-Za-z0-9]+", said)]
     all_english = bool(words) and all(p in words for p in parts)
     if all_english and len(parts) == 1:
@@ -379,10 +386,12 @@ def _match(said: str, book: Dictionary, words: frozenset[str],
         # sound alone; a listed mis-hearing or a respelling still is.
         return None
     floor = max(min_score, ENGLISH_RUN_MIN_SCORE) if all_english else min_score
+    keys = (sq, ex, phonetic(said), phonetic(ex))
     pool: dict[str, tuple[Term, tuple[str, ...]]] = {}
     for first in {k[0] for k in keys if k}:
         for t, tkeys in book.buckets.get(first, ()):
-            pool[t.term] = (t, tkeys)
+            if only is None or t.term == only.term:
+                pool[t.term] = (t, tkeys)
     best: Optional[tuple[float, Term]] = None
     for t, tkeys in pool.values():
         tl = len(tkeys[0])
@@ -393,6 +402,68 @@ def _match(said: str, book: Dictionary, words: frozenset[str],
         if score >= floor and (best is None or score > best[0]):
             best = (score, t)
     return (best[1], "fuzzy", round(best[0], 3)) if best is not None else None
+
+
+def _could_fit(said: str, sq: str, term: Term) -> bool:
+    """The cheap half of the sound step's per-term filter, before any sound key is computed."""
+    tsq = squash(term.term)
+    return len(tsq) >= MIN_FUZZY_LEN and 0.6 * len(tsq) <= len(sq) <= 1.5 * len(tsq) + 2 \
+        and _shape_fits(said, term.term) and sq[0].isdigit() == tsq[0].isdigit()
+
+
+def _spans(body: str, tokens: list[tuple[int, int]]) -> Iterable[tuple[int, int, str]]:
+    """Every run of one to MAX_NGRAM joinable words: (start, end, text)."""
+    for i in range(len(tokens)):
+        for n in range(1, MAX_NGRAM + 1):
+            if i + n > len(tokens):
+                break
+            if n > 1:
+                gap = body[tokens[i + n - 2][1]:tokens[i + n - 1][0]]
+                if not _JOINABLE.fullmatch(gap) or "\n" in gap:
+                    break
+            start = tokens[i][0]
+            end = _possessive_split(body, start, tokens[i + n - 1][1])
+            yield start, end, body[start:end]
+
+
+def _hit(said: str, book: Dictionary, words: frozenset[str], min_score: float,
+         memo: dict[str, Optional[tuple[Term, str, float]]], only: Optional[Term] = None,
+         ) -> tuple[Optional[tuple[Term, str, float]], str]:
+    """A run's match and the suffix its replacement keeps (a plural of a listed form)."""
+    if said not in memo:
+        memo[said] = _match(said, book, words, min_score, only)
+    hit = memo[said]
+    if (hit is None or hit[1] == "fuzzy") and len(said) > 4 and said.endswith("s"):
+        # "gorilla desks" is GorillaDesk's plural; the replacement keeps the "s".
+        stem = said[:-1]
+        if stem not in memo:
+            memo[stem] = _match(stem, book, words, min_score, only)
+        if memo[stem] is not None and memo[stem][1] in ("heard", "exact"):
+            return memo[stem], "s"
+    return hit, ""
+
+
+def may_offer(body: str, book: Dictionary, term: Term, *, min_score: float = DEFAULT_MIN_SCORE,
+              memo: Optional[dict[str, Optional[tuple[Term, str, float]]]] = None) -> bool:
+    """False only when `candidates(body, book, min_score=s)` offers nothing for `term`, for any s >= min_score.
+
+    A vault scan for one term runs this on every note and `candidates` only on
+    the notes it lets through: the sound step, which is nearly all of the cost,
+    is tried against `term` alone. `memo` is this function's own (keyed on the
+    same runs, but holding different answers from `candidates`' memo).
+    """
+    if memo is None:
+        memo = {}
+    mask = protected_mask(body)
+    words = english()
+    for _start, _end, said in _spans(body, _tokens(body, mask)):
+        hit, _suffix = _hit(said, book, words, min_score, memo, term)
+        if hit is not None and hit[0].term == term.term:
+            return True
+    if "." in term.term.strip("."):
+        return any(d.term is not None and d.term.term == term.term
+                   for d in dot_candidates(body, mask, book, min_score))
+    return False
 
 
 def candidates(body: str, book: Dictionary, *, min_score: float = DEFAULT_MIN_SCORE,
@@ -419,31 +490,11 @@ def candidates(body: str, book: Dictionary, *, min_score: float = DEFAULT_MIN_SC
         if key not in found or c.score > found[key].score:
             found[key] = c
 
-    for i in range(len(tokens)):
-        for n in range(1, MAX_NGRAM + 1):
-            if i + n > len(tokens):
-                break
-            if n > 1:
-                gap = body[tokens[i + n - 2][1]:tokens[i + n - 1][0]]
-                if not _JOINABLE.fullmatch(gap) or "\n" in gap:
-                    break
-            start = tokens[i][0]
-            end = _possessive_split(body, start, tokens[i + n - 1][1])
-            said = body[start:end]
-            if said not in memo:
-                memo[said] = _match(said, book, words, min_score)
-            hit = memo[said]
-            suffix = ""
-            if (hit is None or hit[1] == "fuzzy") and len(said) > 4 and said.endswith("s"):
-                # "gorilla desks" is GorillaDesk's plural; the replacement keeps the "s".
-                stem = said[:-1]
-                if stem not in memo:
-                    memo[stem] = _match(stem, book, words, min_score)
-                if memo[stem] is not None and memo[stem][1] in ("heard", "exact"):
-                    hit, suffix = memo[stem], "s"
-            if hit is not None:
-                term, source, score = hit
-                offer(Candidate(start, end, said, term.term + suffix, term, source, score))
+    for start, end, said in _spans(body, tokens):
+        hit, suffix = _hit(said, book, words, min_score, memo)
+        if hit is not None:
+            term, source, score = hit
+            offer(Candidate(start, end, said, term.term + suffix, term, source, score))
 
     out = _dominant(list(found.values()))
     if spoken_dot:

@@ -129,6 +129,18 @@ reports how often the term is already right, what the pass would already offer
 Jev (those need no `heard:`), and the **near misses** (fuzzy 0.72 up to the bar):
 a near miss that really is the term is the only `heard:` form worth listing.
 
+The scan (`show`, `add`, `heard`, `fix`) reads every note in `~/d/Transcripts`.
+It takes a few seconds and shows a live `n/total` count on a terminal. It first
+compares each run of words with the one term (`dictionary.may_offer`), and runs
+the full match against every term only on the notes that pass. That check never
+skips a note the full match would flag; the tests and an old-versus-new comparison
+over the whole vault confirm it. Ctrl-C (once or repeatedly) stops it at once
+with exit 130 and leaves no worker behind. A worker killed outright, by the OOM
+killer for example, fails the scan with exit 2 rather than hanging it. After
+`add` or `heard`, the change is already saved and committed, so only the report
+is lost (exit 130 still). A `heard` form that is already listed, in any case, is reported as such
+("already listed for Damian (as 'damien')"), not a bare "nothing to change".
+
 The linter refuses without `--force` a single ordinary English word and a
 fragment of the term ("jangler" for pjangler). It warns on phrases of ordinary
 words ("candy bar" caught a snack) and on forms that begin or end with a function

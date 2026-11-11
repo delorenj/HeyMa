@@ -30,13 +30,15 @@ import json
 import multiprocessing
 import os
 import re
+import signal
 import tempfile
+import threading
 import unicodedata
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import yaml
 
@@ -504,7 +506,12 @@ def add(term: str, *, about: str = "", heard: tuple[str, ...] = (), section: Opt
         new_heard = list(cur_heard)
         for form in heard:
             form = " ".join(str(form).split())
-            if not form or any(form.casefold() == h.casefold() for h in new_heard):
+            if not form:
+                continue
+            listed = next((h for h in new_heard if form.casefold() == h.casefold()), None)
+            if listed is not None:
+                lint.notes.append(f"{form!r} is already listed for {term}"
+                                  + ("" if listed == form else f" (as {listed!r}; case does not matter)"))
                 continue
             lint.extend(lint_heard(term, form, book))
             if not redundant(term, form, book):  # a no-op form is reported, not written
@@ -591,8 +598,27 @@ def notes(vault: Optional[Path] = None) -> list[Path]:
 _SCAN: dict[str, Any] = {}
 
 
-def _scan_init(book: dictionary.Dictionary, term: str, min_score: float) -> None:
-    _SCAN.update(book=book, term=term, min_score=min_score, memo={}, loose_memo={})
+@contextlib.contextmanager
+def _sigint_ignored() -> Iterator[None]:
+    """SIGINT ignored for the block (only the main thread may change handlers; elsewhere, a no-op)."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _scan_init(book: dictionary.Dictionary, term: str, min_score: float, worker: bool = False) -> None:
+    if worker:
+        # Ctrl-C belongs to the parent, which stops the pool; a worker that died of
+        # it too would leave the pool waiting on a result that never comes.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    found = next(t for t in book.terms if t.term == term)
+    _SCAN.update(book=book, term=term, found=found, min_score=min_score, memo={}, loose_memo={},
+                 first_look={})
 
 
 def _scan_note(path_str: str) -> dict[str, Any]:
@@ -606,6 +632,13 @@ def _scan_note(path_str: str) -> dict[str, Any]:
     for m in re.finditer(r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])", body):
         if not any(mask[m.start():m.end()]):
             right += 1
+    # Most notes never come near the term: a look that sounds out each run against
+    # this one term (not all of them) clears those, and is never wrong about the
+    # rest (dictionary.may_offer). Only what it lets through gets the full match.
+    if not dictionary.may_offer(body, book, _SCAN["found"],
+                                min_score=min(_SCAN["min_score"], NEAR_MISS_MIN_SCORE),
+                                memo=_SCAN["first_look"]):
+        return {"path": path_str, "caught": [], "near": [], "right": right}
     caught = [(c.said, c.source, c.score, dictionary.excerpt(body, c.start, c.end, 70, mask))
               for c in dictionary.candidates(body, book, min_score=_SCAN["min_score"],
                                              memo=_SCAN["memo"])
@@ -622,8 +655,13 @@ def _scan_note(path_str: str) -> dict[str, Any]:
 
 
 def scan(term: str, *, book: Optional[dictionary.Dictionary] = None, vault: Optional[Path] = None,
-         min_score: Optional[float] = None, workers: int = WORKERS) -> dict[str, Any]:
-    """How `term` fares across the vault: spelled right, caught by the pass, and near misses."""
+         min_score: Optional[float] = None, workers: int = WORKERS,
+         progress: Optional[Callable[[int, int], None]] = None) -> dict[str, Any]:
+    """How `term` fares across the vault: spelled right, caught by the pass, and near misses.
+
+    `progress(done, total)` is called as notes finish. Interrupting (Ctrl-C)
+    stops the worker processes at once and re-raises KeyboardInterrupt.
+    """
     book = book or _book(dictionary.default_path())
     found = next((t for t in book.terms if t.term.casefold() == term.casefold()), None)
     if found is None:
@@ -632,14 +670,40 @@ def scan(term: str, *, book: Optional[dictionary.Dictionary] = None, vault: Opti
     if min_score is None:
         min_score = float(os.environ.get("WAX_DICTIONARY_MIN_SCORE") or dictionary.DEFAULT_MIN_SCORE)
     files = [str(p) for p in notes(vault)]
+    results: list[dict[str, Any]] = []
+
+    def tick() -> None:
+        if progress is not None:
+            progress(len(results), len(files))
+
+    tick()
     if workers > 1 and len(files) > 50:
-        ctx = multiprocessing.get_context("fork")
-        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, initializer=_scan_init,
-                                 initargs=(book, term, min_score)) as pool:
-            results = list(pool.map(_scan_note, files, chunksize=16))
+        # Workers fork with SIGINT ignored, so a Ctrl-C reaches only this process,
+        # which then stops them. ProcessPoolExecutor (not multiprocessing.Pool) so a
+        # worker killed outright (OOM) fails the scan instead of hanging it.
+        with _sigint_ignored():
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork"),
+                                       initializer=_scan_init, initargs=(book, term, min_score, True))
+            mapped = pool.map(_scan_note, files, chunksize=8)
+        try:
+            for r in mapped:
+                results.append(r)
+                tick()
+        except BaseException:
+            with _sigint_ignored():  # a second Ctrl-C must not leave the pool half stopped
+                workers_left = list((getattr(pool, "_processes", None) or {}).values())
+                pool.shutdown(wait=False, cancel_futures=True)
+                for proc in workers_left:
+                    proc.terminate()
+                for proc in workers_left:
+                    proc.join(5)
+            raise
+        pool.shutdown()
     else:
         _scan_init(book, term, min_score)
-        results = [_scan_note(f) for f in files]
+        for f in files:
+            results.append(_scan_note(f))
+            tick()
     return summarise(term, results, len(files), min_score)
 
 

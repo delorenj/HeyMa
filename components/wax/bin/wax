@@ -2333,6 +2333,35 @@ def _print_lint(lint) -> None:
         print(f"  note: {n}")
 
 
+def _dict_scan(term: str, **kw) -> dict:
+    """dictedit.scan with a live count on a terminal: it reads every transcript, which takes seconds."""
+    try:
+        show = sys.stderr is not None and sys.stderr.isatty()
+    except (OSError, ValueError):
+        show = False
+    last = [0.0]
+
+    def progress(done: int, total: int) -> None:
+        now = time.monotonic()
+        if done == total or now - last[0] >= 0.1:
+            last[0] = now
+            sys.stderr.write(f"\r\033[Kscanning {total} transcripts for {term}: {done}/{total}")
+            sys.stderr.flush()
+
+    try:
+        return dictedit.scan(term, progress=progress if show else None, **kw)
+    except KeyboardInterrupt:
+        raise _ScanInterrupted() from None
+    finally:
+        if show:
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+
+
+class _ScanInterrupted(Exception):
+    pass
+
+
 def dict_command(args, J: bool) -> int:
     try:
         if args.sub == "list":
@@ -2360,7 +2389,7 @@ def dict_command(args, J: bool) -> int:
                 print(f"{args.term!r} is not in the dictionary (wax dict add {shlex.quote(args.term)})",
                       file=sys.stderr)
                 return 1
-            report = None if args.no_scan else dictedit.scan(found.term)
+            report = None if args.no_scan else _dict_scan(found.term)
             if J:
                 _emit({"term": found.term, "heard": list(found.listed), "about": found.about,
                        "scan": report}, True)
@@ -2394,10 +2423,10 @@ def dict_command(args, J: bool) -> int:
                 verb = {"added": "add", "updated": "update", "removed": "remove"}[change.action]
                 out["git"] = _commit_dictionary(change.path, f"dictionary: {verb} {change.term}")
             scan_it = change.action in ("added", "updated") and not getattr(args, "no_scan", True)
-            if scan_it:
-                if change.written:
-                    out["scan"] = dictedit.scan(change.term)
-                else:
+            try:
+                if scan_it and change.written:
+                    out["scan"] = _dict_scan(change.term)
+                elif scan_it:
                     # A dry run scans the dictionary as it WOULD be.
                     import tempfile
                     with tempfile.TemporaryDirectory() as tmp:
@@ -2407,10 +2436,14 @@ def dict_command(args, J: bool) -> int:
                         draft.write_text(dictedit._replace_line(current, change.term, change.line)
                                          if change.term in lay.entries
                                          else dictedit._insert(current, change.line, getattr(args, "section", None)))
-                        out["scan"] = dictedit.scan(change.term, book=dictedit.dictionary.load(draft))
+                        out["scan"] = _dict_scan(change.term, book=dictedit.dictionary.load(draft))
+            except _ScanInterrupted:
+                # The change is already written (and committed); only the report is lost.
+                out["scan_interrupted"] = True
+            interrupted = 130 if out.get("scan_interrupted") else 0
             if J:
                 _emit(out, True)
-                return 0
+                return interrupted
             prefix = "would be " if args.dry_run else ""
             if change.action == "unchanged":
                 print(f"{change.term}: nothing to change")
@@ -2422,6 +2455,10 @@ def dict_command(args, J: bool) -> int:
             _print_lint(change.lint)
             if out.get("scan"):
                 _print_scan(out["scan"])
+            elif out.get("scan_interrupted"):
+                again = "run the same command again" if args.dry_run else \
+                    f"`wax dict show {shlex.quote(change.term)}` runs it again"
+                print(f"\ntranscript scan interrupted; {again}")
             g = out.get("git")
             if g:
                 if g.get("committed"):
@@ -2429,13 +2466,13 @@ def dict_command(args, J: bool) -> int:
                                                           else f"; push failed: {g.get('push_error', '')}"))
                 else:
                     print(f"\nnot committed: {g.get('why')}")
-            return 0
+            return interrupted
         if args.sub == "fix":
             found = dictedit.lookup(args.term)
             if found is None:
                 print(f"{args.term!r} is not in the dictionary", file=sys.stderr)
                 return 1
-            report = dictedit.scan(found.term)
+            report = _dict_scan(found.term)
             plan = dictedit.fix_plan(report["notes_to_fix"])
             if args.limit:
                 plan = plan[:args.limit]
@@ -2481,6 +2518,10 @@ def dict_command(args, J: bool) -> int:
         if exc.hint:
             print(f"  {exc.hint}", file=sys.stderr)
         return 2
+    except _ScanInterrupted:
+        print("interrupted the transcript scan" + (" (--no-scan skips it)" if hasattr(args, "no_scan") else ""),
+              file=sys.stderr)
+        return 130
     return 1
 
 
@@ -3310,6 +3351,9 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        sys.exit(130)
     except (capture.CaptureError, archive.ArchiveError, passes.PassError,
             pipelines.PipelineError,
             transcribe_adapter.TranscribeError, RuntimeError, SystemExit) as e:
