@@ -19,7 +19,9 @@ Code: `components/wax/src/wax/voiceprint.py` (fingerprints, matching and the
    (`channels` mode: `Me` on channel A, the caller's name or number on B). A
    diarized note uses its `**Speaker N (mm:ss):**` turns, each running to the
    next turn (`turns`). A single voice (a monolog: diarization skipped it) uses
-   every timed ASR segment (`whole`, label `(whole recording)`).
+   every timed ASR segment (`whole`, label `(whole recording)`); a note with no
+   timed ASR kept (most notes before October have no `asr.json`) uses the
+   whole recording, and the fingerprint drops the windows that disagree.
 2. **Fingerprint.** In `.venv-diarization` (`DIARIZATION_PYTHON`), NeMo
    TitaNet-large (`nvidia/speakerverification_en_titanet_large`) on CUDA embeds
    each speaker's speech in 1.5 to 10 s windows (edges trimmed 0.15 s, at most 60
@@ -58,8 +60,12 @@ scored 0.55 and a caller scored 0.74 against the owner. So each fingerprint has
 its channel's average voice (`call` or `room`) subtracted before scoring
 (`config/voiceprint-domains.json`, measured from 100 call and 228 room
 fingerprints with at least 15 s of speech). A voice's score is the mean of its
-two best exemplar cosines. Exemplars from the probe's own channel are preferred;
-a voice heard only on the other channel is scored with the `_cross` bars.
+two best exemplar cosines. Each voice is scored twice, on its exemplars from the
+probe's own channel against the plain bars and on its other-channel exemplars
+against the `_cross` bars, and keeps whichever clears its bar by more. (Scoring
+only the own channel when it had any let one odd room exemplar outvote forty
+call exemplars: the owner's memos then scored 0.14 against him and the first
+backfill registered his desk voice as 21 strangers.)
 
 | Pair (centred, top-2) | Median | Spread |
 |---|---|---|
@@ -86,6 +92,30 @@ sighting instead of only strong ones. Replaying all 385 calibration
 fingerprints (calls, then memos, then conversations) gave one owner voice with
 40 call and 36 room exemplars, one Damian voice holding all 28 of his calls, 38
 new voices (about half heard once) and 72 uncertain sightings.
+
+## Backfill (2026-11-11)
+
+Every transcript with local audio was run once, `WAX_VOICE_NOTIFY=0`, in the
+order calls (46), single-voice memos (126), conversations (253); 430 runs, no
+failures. Result: 63 voices, 3 named (the owner in 279 recordings with 40 call
+and 40 room exemplars, Damian Miller, Dariusz Czaplic), 60 unnamed (12 heard in
+three or more recordings, 42 heard once); 145 notes had `Speaker N` turns
+renamed, almost all to the owner. Sightings: 406 matched, 232 uncertain, 60
+new, 52 too short, 123 owner, 28 caller ID.
+
+- **Hand-named turns are the best naming hints.** `wax voices show <voice>`
+  lists every label a voice was heard under; a note where you typed `Damian`
+  or `Gershon` over a turn says who that voice is. On 2026-11-11 `Damian`
+  matched `voice-825bf3` (his in-person voice; his phone voice is a separate
+  cluster), `Gershon` `voice-6a12fa`, `Chaya` `voice-d38edd`, `Cait`
+  `voice-91ce9f`.
+- **A diarizer cluster that mixes people takes its majority voice's name.** In
+  a remote meeting the diarizer split the owner into three `Speaker N` and
+  folded a laptop-speaker voice into them; all three became the owner. The
+  sighting keeps the original label, so `wax voices show` still tells them
+  apart.
+- **Order matters on a cold registry**: calls, then memos, then conversations.
+- Items with no local audio (`audio_missing`) were not run; restore them first.
 
 ## The registry
 
