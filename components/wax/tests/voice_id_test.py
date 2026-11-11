@@ -125,6 +125,14 @@ class MatchTest(unittest.TestCase):
         self.assertEqual(voiceprint.classify(same, 30, 0.8), "uncertain")   # under the same-channel bar
         self.assertEqual(voiceprint.classify(cross, 30, 0.8), "matched")    # over the other-channel bar
 
+    def test_one_odd_same_channel_exemplar_does_not_outvote_the_other_channel(self):
+        a = unit(1)
+        registry = {"voice-a": [("call", near(a, 0.2, s)) for s in range(5)] + [("room", unit(77))]}
+        m = voiceprint.match(near(a, 0.3, 9), "room", registry)
+        self.assertTrue(m.cross)
+        self.assertGreater(m.score, T.match_cross)
+        self.assertEqual(voiceprint.classify(m, 30, 0.8), "matched")
+
     def test_same_channel_exemplars_win_over_the_other_channel(self):
         a = unit(1)
         registry = {"voice-a": [("room", unit(50)), ("call", near(a, 0.2, 6))]}

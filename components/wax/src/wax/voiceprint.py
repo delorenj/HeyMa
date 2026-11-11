@@ -194,24 +194,29 @@ def match(fingerprint: np.ndarray, domain: str, voices: dict[str, list[tuple[str
     """The registered voice this raw fingerprint sounds most like.
 
     `voices` maps a voice id to its exemplars as (domain, raw vector). Each
-    voice is scored on its same-channel exemplars when it has any, otherwise on
-    the others with the cross-channel thresholds; voices are ranked by
-    headroom over their own match threshold.
+    voice is scored on its same-channel exemplars against the same-channel bars
+    and on its other-channel exemplars against the cross-channel bars, and keeps
+    whichever clears its bar by more; voices are ranked by that headroom.
     """
     if not voices:
         return NO_MATCH
     probe = center(fingerprint, domain)
     ranked, stranger = [], True
     for voice_id, exemplars in voices.items():
-        same = [center(v, d) for d, v in exemplars if d == domain]
-        cross = not same
-        pool = same or [center(v, d) for d, v in exemplars]
-        if not pool:
-            continue
-        score = voice_score(probe, np.stack(pool))
-        if score >= (t.new_cross if cross else t.new):
-            stranger = False
-        ranked.append((score - (t.match_cross if cross else t.match), score, cross, voice_id))
+        best = None
+        for cross in (False, True):
+            pool = [center(v, d) for d, v in exemplars if (d == domain) != cross]
+            if not pool:
+                continue
+            score = voice_score(probe, np.stack(pool))
+            if score >= (t.new_cross if cross else t.new):
+                stranger = False
+            option = (score - (t.match_cross if cross else t.match), score, cross, voice_id)
+            # A voice is judged on whichever channel it is best known on: one odd same-channel
+            # exemplar (the owner's first desk memo) must not outvote forty from his phone.
+            best = option if best is None or option[0] > best[0] else best
+        if best is not None:
+            ranked.append(best)
     if not ranked:
         return NO_MATCH
     ranked.sort(reverse=True)
