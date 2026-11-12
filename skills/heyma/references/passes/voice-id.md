@@ -110,7 +110,7 @@ as room audio. After the unfold and the telephone domain (below) and a rerun of
 194 recordings: 44 context namings, both errors withdrawn, and 8 earlier
 `Jarad` namings that had been asked about under that name went back to
 `Speaker N`, because asked fairly the transcript did not point clearly enough.
-In home recordings the owner and Laura both score at the likelihood-ratio cap,
+In home recordings the owner and his wife Carrie (`voice-707163`) both score at the likelihood-ratio cap,
 so there the context alone decides, and it stays cautious.
 
 The evidence (`evidence.speakers.<label>.context`) shows each candidate's voice

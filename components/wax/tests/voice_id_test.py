@@ -297,6 +297,17 @@ class PassTest(_Registry):
         renamed = self.run_pass(md, "a1", prints)
         self.assertIn("**Mama (00:52):**", renamed["body_replace"]["text"])
 
+    def test_a_rename_reaches_a_note_that_only_links_the_voice(self):
+        voice = voices.register(self.conn, item_id="seed", label="Speaker 1", domain="room", seconds=60,
+                                vec=unit(1), note="---\nname: Mom\nstatus: named\n---\n", voice_id="voice-aaaaaa")
+        md = self.note("linked.md", "**Me (00:00):** hello there\n", item="l1")
+        md.write_text("---\ntitle: A call\nvoices:\n- '[[voice-aaaaaa|Mom]]'\n---\n**Me (00:00):** hello there\n")
+        voices.record_sighting(self.conn, item_id="l1", label="Me", rendered="Me", voice_id=voice.voice_id,
+                               verdict="owner", score=0.9, runner_up=None, domain="call", seconds=30, vec=unit(1))
+        self.assertEqual(voices.needs_relabel(self.conn), [])
+        voices.set_name(self.conn, voice.voice_id, "Mama")
+        self.assertEqual(voices.needs_relabel(self.conn), ["l1"])
+
     def test_a_known_voice_in_a_new_recording_is_named_and_learned(self):
         jarad = unit(1)
         md1 = self.note("one.md", self.BODY, item="b1")

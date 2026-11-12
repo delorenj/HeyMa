@@ -397,14 +397,26 @@ def merge_namesakes(conn) -> list[tuple[str, str]]:
 
 
 def needs_relabel(conn) -> list[str]:
-    """Items whose transcript still shows an old label for a voice that has (or changed) a name."""
+    """Items whose transcript still shows an old name for a voice: a `Speaker N` turn the voice
+    was confidently named on, or a `voices:` link whose name is not the voice's name now."""
     voices_now = {v.voice_id: v for v in load(conn).values()}
     stale = set()
     for row in conn.execute("SELECT item_id, label, rendered, voice_id FROM voice_sightings "
-                            "WHERE voice_id IS NOT NULL AND verdict IN ('matched','new')"):
+                            "WHERE voice_id IS NOT NULL AND verdict IN ('matched','new','context')"):
         voice = voices_now.get(row["voice_id"])
         if voice is None or voice.status == STATUS_IGNORE or not voice.name:
             continue
         if GENERIC_LABEL.match(row["label"]) and row["rendered"] != voice.name:
             stale.add(row["item_id"])
+    link = re.compile(r"\[\[(voice-[0-9a-f]{6})\|([^\]]*)\]\]")
+    for row in conn.execute("SELECT DISTINCT s.item_id, t.md_path FROM voice_sightings s "
+                            "JOIN transcripts t USING(item_id) WHERE s.voice_id IS NOT NULL"):
+        if row["item_id"] in stale or not row["md_path"] or not Path(row["md_path"]).exists():
+            continue
+        fm, _ = frontmatter.read(Path(row["md_path"]))
+        for voice_id, shown in link.findall(" ".join(str(x) for x in fm.get("voices") or [])):
+            voice = voices_now.get(voice_id)
+            if voice is not None and shown != voice.display:
+                stale.add(row["item_id"])
+                break
     return sorted(stale)
