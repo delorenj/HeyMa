@@ -1,0 +1,24 @@
+# HeyMa PM pass (heyma-pm), hourly at :17, 08:00-22:00 ET.
+#
+# interval-driver pattern (~/.agents/skills/interval-driver):
+#   monitor  agents/hermes/pm/pm-pass.py --monitor  (open HEYMA tickets: lane | owner comments
+#            waiting | stale claim; plus every FAILING `wax doctor` probe by name);
+#            unchanged = the agent never starts (0 tokens)
+#   brief    agents/hermes/pm/pm-pass.py --brief    (pass contract + runtime/pm-roadmap.md +
+#            open tickets, waiting owner comments, non-passing doctor probes with fixes)
+#   apply    agents/hermes/pm/pm-pass.py --apply    (px-apply.py: lease, [pm] tag, comment/move/
+#            release/create, max 6 writes, roadmap write)
+#   lean     toolsets terminal,file,no_mcp; no skills; max_iterations 10; medium effort; no continuity
+# Hermes job 67bae6bf859f is pinned scheduler=external: Candybar is its only clock.
+[candybar]
+name = "heyma-pm-pass"
+schedule = "17 8-22 * * *"
+timezone = "America/New_York"
+enabled = true
+tags = ["hermes-agent", "pm"]
+
+[candybar.runner]
+kind = "hermes"
+profile = "heyma-pm"
+job_id = "67bae6bf859f"
+timeout_s = 1500
