@@ -82,7 +82,10 @@ def rows() -> list[dict]:
 
 def doctor() -> list[dict]:
     """Non-passing `wax doctor` probes. Raises when the doctor itself cannot run."""
-    out = subprocess.run([str(WAX), "doctor", "--json"], cwd=ROOT, capture_output=True, text=True, timeout=180)
+    # Hermes runs this with its own PYTHONPATH; never let it reach wax or its venvs.
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
+    out = subprocess.run([str(WAX), "doctor", "--json"], cwd=ROOT, capture_output=True, text=True,
+                         timeout=180, env=env)
     return [p for p in json.loads(out.stdout)["probes"] if p.get("status") != "pass"]
 
 
