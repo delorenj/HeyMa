@@ -116,7 +116,7 @@ terms:
   DeLorenzo: {heard: [dilorenzo, di lorenzo, de lorenzo, delorenz, de lourenzo], about: "the speaker's surname"}
   Damian: {heard: [damien], about: "Damian Miller, an AutomaticAI collaborator"}
   Chaya: "an IntelliForia colleague (chaya.delo.sh)"
-  Cait: "a colleague (cait.delo.sh)"
+  Cait: {heard: [Kate], about: "a colleague (cait.delo.sh)"}
   Simcha: {heard: [simca, simka], about: "a stakeholder in IntelliForia"}
   Gershon: {heard: [gerson], about: "an IntelliForia colleague"}
 
