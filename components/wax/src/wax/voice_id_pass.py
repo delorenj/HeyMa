@@ -145,15 +145,20 @@ def main(md: Path, item_id: str) -> dict:
     if row["asr_path"] and Path(row["asr_path"]).exists():
         asr = json.loads(Path(row["asr_path"]).read_text())
     duration = float(row["audio_duration"] or fm.get("audio-duration-seconds") or 0) or 1e9
-    mode, regions = regions_for(body, asr, duration)
+    conn = voices.connect()
+    rows = voices.sighting_rows(conn, item_id)
+    # Work on the diarizer's own labels: names this pass wrote earlier come back off their turns,
+    # so every speaker is judged again on its own and a name it no longer believes is withdrawn.
+    work, unfolded = unfold(body, rows)
+    mode, regions = regions_for(work, asr, duration)
     if not regions:
         return {"wax_ep_version": 1, "frontmatter": {}, "state": "skipped", "reason_code": "no_speech"}
 
     t = thresholds()
-    domain = "call" if mode == "channels" else "room"
+    domain = "call" if mode == "channels" or telephone(row["path"]) else "room"
     owner = os.environ.get("WAX_VOICE_OWNER", "").strip() or None
-    conn = voices.connect()
-    cached = voices.sightings(conn, item_id)
+    cached = {(r["label"] if r["label"] in unfolded else r["rendered"]): r for r in rows}
+    folded = _folded(rows, unfolded)
     refresh = os.environ.get("WAX_VOICE_REFINGERPRINT", "0") in ("1", "true", "yes")
     prints: dict[str, dict] = {}
     original: dict[str, str] = {}
@@ -170,6 +175,9 @@ def main(md: Path, item_id: str) -> dict:
                 fp["vec"] = np.asarray(fp["vec"], dtype=np.float32) if fp.get("vec") is not None else None
                 prints[label] = fp
         evidence, found, renames, heard = {}, [], {}, []
+        heads: dict[str, list[str]] = {}
+        for who, at in TURN_HEAD_RE.findall(work):
+            heads.setdefault(who.strip(), []).append(at)
         title = fm.get("title") or md.stem
         settings = voice_context.Settings.from_env()
         order = sorted(prints, key=lambda lb: -prints[lb]["seconds"])
@@ -188,8 +196,8 @@ def main(md: Path, item_id: str) -> dict:
 
             # The voice alone first; then, outside any ledger transaction, the context for the
             # speakers it could not settle (`voice_context`).
-            context, context_info = _context(fm, body, order, prints, regions, decide, registry, conn, item_id,
-                                             domain, owner, t, settings)
+            context, context_info = _context(fm, work, order, prints, regions, decide, registry, conn, item_id,
+                                             domain, owner, t, settings, skip=folded)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 for label in order:
@@ -208,7 +216,7 @@ def main(md: Path, item_id: str) -> dict:
                         clip = voices.write_clip(Path(fp["clip"]), voice_id) if fp.get("clip") else None
                         voice = voices.register(conn, item_id=item_id, label=first, domain=domain, seconds=seconds,
                                                 vec=vec, name=name, voice_id=voice_id,
-                                                note=_note(voice_id, md, title, label, body, clip, name=name,
+                                                note=_note(voice_id, md, title, label, work, clip, name=name,
                                                            how=verdict))
                         registry[voice.voice_id] = voice
                         if not name:
@@ -226,7 +234,7 @@ def main(md: Path, item_id: str) -> dict:
                     voices.record_sighting(conn, item_id=item_id, label=first, rendered=rendered,
                                            voice_id=voice.voice_id if voice else None, verdict=verdict,
                                            score=score, runner_up=m.runner_up, domain=domain, seconds=seconds,
-                                           vec=vec)
+                                           vec=vec, turns=heads.get(label) if mode == "turns" and label not in folded else None)
                     evidence[label] = {"verdict": verdict, "voice": voice.voice_id if voice else None,
                                        "name": voice.name if voice else None,
                                        "score": round(score, 3) if score is not None else None,
@@ -254,7 +262,9 @@ def main(md: Path, item_id: str) -> dict:
                            "model": voiceprint.MODEL_NAME}}
     if context_info:
         result["evidence"]["context"] = {k: v for k, v in context_info.items() if k != "speakers"}
-    new_body = relabel(body, renames)
+    new_body = relabel(work, renames)
+    if unfolded:
+        result["evidence"]["unfolded"] = sorted(unfolded)
     if new_body != body:
         result["body_replace"] = {"sha256": digest, "text": new_body}
     return result
@@ -262,7 +272,8 @@ def main(md: Path, item_id: str) -> dict:
 
 def _context(fm: dict, body: str, order: list[str], prints: dict, regions: dict, decide, registry: dict, conn,
              item_id: str, domain: str, owner: str | None, t: voiceprint.Thresholds,
-             settings: voice_context.Settings) -> tuple[dict[str, voice_context.Candidate], dict]:
+             settings: voice_context.Settings, skip: frozenset = frozenset()
+             ) -> tuple[dict[str, voice_context.Candidate], dict]:
     """Ask Jev about every speaker the voice left uncertain (or would register) that a named voice
     could be. ({label: the candidate context names}, evidence). A failed Jev call names nobody,
     and says so in the evidence: the voice's own verdict stands."""
@@ -278,7 +289,7 @@ def _context(fm: dict, body: str, order: list[str], prints: dict, regions: dict,
         voice = registry.get(d.voice_id) if d.voice_id else None
         if voice is not None and voice.name and voice.status != voices.STATUS_IGNORE:
             shown[label] = voice.name
-        if d.verdict in ("uncertain", "new") and fp["vec"] is not None:
+        if d.verdict in ("uncertain", "new") and fp["vec"] is not None and label not in skip:
             cands = voice_context.candidates(fp["vec"], domain, exemplars, names, t)
             if cands:
                 pending[label] = cands
@@ -308,6 +319,50 @@ def _context(fm: dict, body: str, order: list[str], prints: dict, regions: dict,
         if v.voice_id:
             named[label] = next(c for c in cands if c.voice_id == v.voice_id)
     return named, info
+
+
+TURN_HEAD_RE = re.compile(r"^\*\*(.+?) \(([0-9:]+)\):\*\*", re.M)
+TELEPHONE_PREFIXES = ("telnyx-",)
+
+
+def telephone(path: str | None) -> bool:
+    """A telephone recording mixed to one track (a Telnyx call): phone audio, so the `call` domain."""
+    return bool(path) and Path(path).name.lower().startswith(TELEPHONE_PREFIXES)
+
+
+def unfold(body: str, rows: list[dict]) -> tuple[str, set[str]]:
+    """Put each diarizer label back on the turns it owned where this pass renamed them.
+
+    A sighting records the turn heads (`mm:ss`) its generic label owned. Where such a turn still
+    shows the name this pass rendered (not a hand edit), the generic label returns. Two speakers
+    folded into one name come apart again. (body, {labels unfolded}).
+    """
+    unfolded: set[str] = set()
+    for row in rows:
+        label, rendered, turns = row["label"], row["rendered"], row.get("turns")
+        if not turns or label == rendered or not voices.GENERIC_LABEL.match(label):
+            continue
+        stamps = set(turns)
+
+        def back(m: re.Match) -> str:
+            return f"**{label} ({m.group(1)}):**" if m.group(1) in stamps else m.group(0)
+
+        new = re.sub(rf"^\*\*{re.escape(rendered)} \(([0-9:]+)\):\*\*", back, body, flags=re.M)
+        if new != body:
+            body = new
+            unfolded.add(label)
+    return body, unfolded
+
+
+def _folded(rows: list[dict], unfolded: set[str]) -> frozenset:
+    """Names this pass gave to more than one diarizer label, with no turn map to part them: the
+    turns under such a name mix speakers, so the context cannot judge whose they are."""
+    count: dict[str, int] = {}
+    for row in rows:
+        if (row["label"] not in unfolded and row["label"] != row["rendered"]
+                and voices.GENERIC_LABEL.match(row["label"])):
+            count[row["rendered"]] = count.get(row["rendered"], 0) + 1
+    return frozenset(name for name, n in count.items() if n > 1)
 
 
 def _ours(label: str, cached: dict) -> bool:

@@ -48,6 +48,16 @@ Code: `components/wax/src/wax/voiceprint.py` (fingerprints, matching and the
    change is a `compare-and-replace`. Frontmatter `voices:` (clobberable) lists
    every non-ignored voice heard as `[[voice-id|Name]]` links.
 
+**A name the pass wrote can be taken back.** Each sighting keeps the turn heads
+(`mm:ss`) its diarizer label owned (`voice_sightings.turns`). Every run first
+puts `Speaker N` back on those turns wherever they still show the name it wrote
+(`voice_id_pass.unfold`; a hand edit is left alone), judges each diarizer label
+again on its own cached fingerprint, and writes the names it stands behind now.
+So two speakers it once folded into one name (the wife taken for the owner
+before her voice was known) come apart, and a name it no longer believes goes
+back to `Speaker N`. `evidence.unfolded` lists the labels put back. A fold with
+no turn map is never put to the context (its turns mix speakers).
+
 The owner's desk-mic voice is learned from his phone voice: once channel A has
 taught the registry his call voice, voice memos score against it across
 channels (median 0.52) and become owner exemplars on the room channel, after
@@ -106,7 +116,8 @@ Phone audio drags every voice toward one corner: raw, two different callers
 scored 0.55 and a caller scored 0.74 against the owner. So each fingerprint has
 its channel's average voice (`call` or `room`) subtracted before scoring
 (`config/voiceprint-domains.json`, measured from 100 call and 228 room
-fingerprints with at least 15 s of speech). A voice's score is the mean of its
+fingerprints with at least 15 s of speech; a Telnyx recording mixed to one
+track is `call` audio too). A voice's score is the mean of its
 two best exemplar cosines. Each voice is scored twice, on its exemplars from the
 probe's own channel against the plain bars and on its other-channel exemplars
 against the `_cross` bars, and keeps whichever clears its bar by more. (Scoring
@@ -170,7 +181,7 @@ new, 52 too short, 123 owner, 28 caller ID.
 |---|---|
 | `var/wax.db` `voices` | One row per voice: id (`voice-<6 hex>`), cached name and status, note path, model, first item and label, `merged_into` |
 | `var/wax.db` `voice_exemplars` | Up to 40 fingerprints per voice and channel; one within cosine 0.92 of a kept one adds nothing |
-| `var/wax.db` `voice_sightings` | Every (item, label): verdict, voice, score, runner-up, channel, seconds, fingerprint, and `rendered` (the label the note shows now) |
+| `var/wax.db` `voice_sightings` | Every (item, label): verdict, voice, score, runner-up, channel, seconds, fingerprint, `rendered` (the label the note shows now) and `turns` (the turn heads the diarizer label owned) |
 | `~/d/Voices/<voice-id>.md` (`WAX_VOICES_DIR`) | **The truth for who a voice is.** Frontmatter `name`, `relationship`, `status` (`unnamed`, `named`, `ignore`, `merged`), where it was first heard, a few quotes |
 | `~/d/Voices/<voice-id>.ogg` | Up to 15 s of the voice's most typical speech (Opus 32k), embedded in the note |
 

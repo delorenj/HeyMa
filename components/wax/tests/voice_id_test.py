@@ -388,6 +388,65 @@ class PassTest(_Registry):
         self.assertEqual(sorted(voices.load(self.conn)), ["voice-aaaaaa"])
 
 
+class UnfoldTest(PassTest):
+    """A name the pass wrote comes back off exactly the turns it was written on."""
+
+    FOLD = ("**Speaker 1 (00:00):** I gave him a drink at like one in the morning\n\n"
+            "**Speaker 2 (00:52):** another show at like one that is too late\n\n"
+            "**Speaker 1 (01:30):** fine, one more and then bed for real\n")
+
+    def write(self, md, result):
+        md.write_text("---\ntitle: A chat\n---\n" + result["body_replace"]["text"])
+
+    def test_two_speakers_folded_into_one_name_come_apart(self):
+        jarad = unit(1)
+        voices.register(self.conn, item_id="seed", label="Speaker 1", domain="room", seconds=60, vec=jarad,
+                        note="---\nname: Jarad\nstatus: named\n---\n", voice_id="voice-jarad1")
+        wife = near(jarad, 1.5, 4)   # over his match bar, under learn: taken for him until she is known
+        md = self.note("fold.md", self.FOLD, item="u1")
+        prints = {"Speaker 1": (near(jarad, 0.05, 3), 300.0), "Speaker 2": (wife, 200.0)}
+        first = self.run_pass(md, "u1", prints)
+        self.assertEqual(first["body_replace"]["text"].count("**Jarad ("), 3)   # folded
+        self.write(md, first)
+        rows = {r["label"]: r for r in voices.sighting_rows(self.conn, "u1")}
+        self.assertEqual(rows["Speaker 1"]["turns"], ["00:00", "01:30"])
+        self.assertEqual(rows["Speaker 2"]["turns"], ["00:52"])
+        # She becomes known; the rerun parts the two and names her turn alone.
+        voices.register(self.conn, item_id="seed2", label="Speaker 1", domain="room", seconds=60, vec=wife,
+                        note="---\nname: Laura\nstatus: named\n---\n", voice_id="voice-laura1")
+        again = self.run_pass(md, "u1", prints)
+        self.assertEqual(self.asked, [])   # each label's own cached fingerprint, no GPU
+        text = again["body_replace"]["text"]
+        self.assertIn("**Jarad (00:00):**", text)
+        self.assertIn("**Laura (00:52):**", text)
+        self.assertIn("**Jarad (01:30):**", text)
+        self.assertEqual(again["evidence"]["unfolded"], ["Speaker 1", "Speaker 2"])
+        self.write(md, again)
+        # A name the pass no longer stands behind is withdrawn; a hand edit is left alone.
+        md.write_text(md.read_text().replace("**Jarad (01:30):**", "**Dad (01:30):**"))
+        self.conn.execute("UPDATE voices SET status='ignore' WHERE voice_id='voice-laura1'")
+        Path(voices.load(self.conn)["voice-laura1"].note_path).write_text(
+            "---\nname: Laura\nstatus: ignore\n---\n")
+        third = self.run_pass(md, "u1", {**prints, "Dad": prints["Speaker 1"]})
+        text = third["body_replace"]["text"]
+        self.assertIn("**Speaker 2 (00:52):**", text)
+        self.assertIn("**Jarad (00:00):**", text)
+        self.assertIn("**Dad (01:30):**", text)
+
+    def test_a_fold_with_no_turn_map_is_never_put_to_the_context(self):
+        rows = [{"label": "Speaker 1", "rendered": "Jarad", "turns": None},
+                {"label": "Speaker 2", "rendered": "Jarad", "turns": None},
+                {"label": "Speaker 3", "rendered": "Laura", "turns": None}]
+        self.assertEqual(voice_id_pass._folded(rows, set()), frozenset({"Jarad"}))
+        self.assertEqual(voice_id_pass._folded(rows, {"Speaker 1", "Speaker 2"}), frozenset())
+
+    def test_a_telephone_recording_on_one_track_is_call_audio(self):
+        self.assertTrue(voice_id_pass.telephone("/x/archive/2026/10/telnyx-2026-10-30-57a0.mp3"))
+        self.assertTrue(voice_id_pass.telephone("/x/telnyx-vm-2026-11-11-f523.wav"))
+        self.assertFalse(voice_id_pass.telephone("/x/20260909-094902.m4a"))
+        self.assertFalse(voice_id_pass.telephone(None))
+
+
 class DecideTest(unittest.TestCase):
     def setUp(self):
         voiceprint._means = {"call": np.zeros(voiceprint.DIM, np.float32), "room": np.zeros(voiceprint.DIM, np.float32)}
@@ -518,6 +577,22 @@ class ContextTest(_Registry):
                                               "Speaker 2": (self.uncertain_laura(4), 40.0)})
         self.assertEqual(result["evidence"]["speakers"]["Speaker 2"]["verdict"], "uncertain")
         self.assertIn("provider_unreachable", result["evidence"]["context"]["error"])
+
+    def test_jev_sees_the_diarizer_label_not_a_name_this_pass_wrote(self):
+        md = self.note("salt7.md", self.BODY, item="k7")
+        first = self.run_ctx(md, "k7", {"Speaker 1": (unit(1), 30.0), "Speaker 2": (self.laura, 40.0)}, {})
+        self.assertIn("**Laura (00:10):**", first["body_replace"]["text"])
+        md.write_text("---\ntitle: A chat\n---\n" + first["body_replace"]["text"])
+        # A second named voice too close to hers: the voice can no longer tell the two apart.
+        voices.register(self.conn, item_id="seed3", label="Speaker 1", domain="room", seconds=60,
+                        vec=near(self.laura, 0.15, 8), note="---\nname: Chaya\nstatus: named\n---\n",
+                        voice_id="voice-chaya1")
+        again = self.run_ctx(md, "k7", {}, {"Speaker 2": {"Laura": 0.8}})
+        state = self.calls[-1]["state"]
+        self.assertIn("Speaker 2", state["unidentified_speakers"])
+        self.assertNotIn("Laura", state["unidentified_speakers"])
+        self.assertEqual(again["evidence"]["speakers"]["Speaker 2"]["verdict"], "context")
+        self.assertNotIn("body_replace", again)   # still Laura, now on the context's word
 
     def test_off_switch_and_no_candidates_never_call_jev(self):
         md = self.note("salt5.md", self.BODY, item="k5")

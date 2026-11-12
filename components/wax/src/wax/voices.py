@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import json
 import re
 import secrets
 import shutil
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS voice_sightings (
     vec       BLOB,
     model     TEXT NOT NULL,
     at        TEXT NOT NULL,
+    turns     TEXT,
     PRIMARY KEY (item_id, label)
 );
 CREATE INDEX IF NOT EXISTS voice_sightings_voice ON voice_sightings(voice_id);
@@ -89,6 +91,10 @@ def now() -> str:
 def connect():
     conn = ledger.connect()
     conn.executescript(SCHEMA)
+    if "turns" not in {row[1] for row in conn.execute("PRAGMA table_info(voice_sightings)")}:
+        # The turn heads (`mm:ss`) a diarizer label owned, so a name this pass wrote can be taken
+        # back off exactly those turns (`voice_id_pass.unfold`). Added 2026-11-11.
+        conn.execute("ALTER TABLE voice_sightings ADD COLUMN turns TEXT")
     return conn
 
 
@@ -197,21 +203,29 @@ def register(conn, *, item_id: str, label: str, domain: str, seconds: float, vec
 
 def record_sighting(conn, *, item_id: str, label: str, rendered: str, voice_id: str | None, verdict: str,
                     score: float | None, runner_up: float | None, domain: str, seconds: float,
-                    vec: np.ndarray | None) -> None:
-    conn.execute("INSERT OR REPLACE INTO voice_sightings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    vec: np.ndarray | None, turns: list[str] | None = None) -> None:
+    conn.execute("INSERT OR REPLACE INTO voice_sightings (item_id, label, rendered, voice_id, verdict, score, "
+                 "runner_up, domain, seconds, vec, model, at, turns) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                  (item_id, label, rendered, voice_id, verdict, score, runner_up, domain, float(seconds),
-                  to_blob(vec) if vec is not None else None, voiceprint.MODEL_NAME, now()))
+                  to_blob(vec) if vec is not None else None, voiceprint.MODEL_NAME, now(),
+                  json.dumps(turns) if turns is not None else None))
+
+
+def sighting_rows(conn, item_id: str) -> list[dict]:
+    """This item's sightings, `vec` decoded and `turns` (the turn heads its label owned) parsed."""
+    out = []
+    for row in conn.execute("SELECT * FROM voice_sightings WHERE item_id=? AND model=? ORDER BY at",
+                            (item_id, voiceprint.MODEL_NAME)):
+        record = dict(row)
+        record["vec"] = from_blob(row["vec"]) if row["vec"] else None
+        record["turns"] = json.loads(row["turns"]) if record.get("turns") else None
+        out.append(record)
+    return out
 
 
 def sightings(conn, item_id: str) -> dict[str, dict]:
     """This item's sightings keyed by the label the speaker has in the note NOW."""
-    out = {}
-    for row in conn.execute("SELECT * FROM voice_sightings WHERE item_id=? AND model=?",
-                            (item_id, voiceprint.MODEL_NAME)):
-        record = dict(row)
-        record["vec"] = from_blob(row["vec"]) if row["vec"] else None
-        out[row["rendered"]] = record
-    return out
+    return {record["rendered"]: record for record in sighting_rows(conn, item_id)}
 
 
 # ---- the vault note -------------------------------------------------------
