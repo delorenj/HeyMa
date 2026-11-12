@@ -335,6 +335,12 @@ def set_name(conn, voice_id: str, name: str) -> None:
     note = Path(row["note_path"])
     if note.exists():
         frontmatter.merge(note, {"name": name, "status": STATUS_NAMED})
+        fm, body = frontmatter.read(note)
+        # The heading the pass wrote for an unnamed voice follows the name; anything else is yours.
+        retitled = re.sub(rf"^# (?:Unnamed voice|.+?) `{re.escape(voice_id)}`$|^# .+? \(`{re.escape(voice_id)}`\)$",
+                          f"# {name} (`{voice_id}`)", body, count=1, flags=re.M)
+        if retitled != body:
+            note.write_text(frontmatter.render(fm, retitled), encoding="utf-8")
     conn.execute("UPDATE voices SET name=?, status=? WHERE voice_id=?", (name, STATUS_NAMED, voice_id))
 
 

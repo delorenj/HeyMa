@@ -71,6 +71,7 @@ PINNED_ENV = {
 os.environ.update(PINNED_ENV)
 # The voice-id pass announces new voices on the desktop and by ntfy; a test never does.
 os.environ["WAX_VOICE_NOTIFY"] = "0"
+os.environ["WAX_VOICE_CONTEXT"] = "0"  # voice-id never calls Jev from a test; the context tests opt in with a fake
 os.environ["WAX_VOICE_NTFY_ALERT"] = "/nonexistent/wax-test-suite/ntfy-alert"
 os.environ.pop("WAX_AUDIO_ROOT", None)  # legacy alias of WAX_ROOT; the shell may export the real root
 

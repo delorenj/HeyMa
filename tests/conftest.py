@@ -63,6 +63,7 @@ PINNED_ENV = {
 }
 os.environ.update(PINNED_ENV)
 os.environ["WAX_VOICE_NOTIFY"] = "0"  # the voice-id pass never announces a new voice from a test
+os.environ["WAX_VOICE_CONTEXT"] = "0"  # ... nor asks Jev about a speaker (tests that do pass a fake)
 os.environ.pop("WAX_AUDIO_ROOT", None)  # legacy alias of WAX_ROOT; the shell may export the real root
 
 # ---------------------------------------------------------------------------------------------------------

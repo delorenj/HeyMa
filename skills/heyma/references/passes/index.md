@@ -33,8 +33,8 @@ linked to its transcript, the audio is parked, and `finalize.finalize` writes
 
 ## What runs today (2026-11-05)
 
-New audio plans come from the compiled **`transcript-standard` v14** pipeline
-(nine passes; v13 added `voice-id` on 2026-11-11, v14 re-froze it with the edge moved into the pipeline); documents from **`doc-standard` v10** (classification,
+New audio plans come from the compiled **`transcript-standard` v15** pipeline
+(nine passes; v13 added `voice-id` on 2026-11-11, v14 re-froze it with the edge moved into the pipeline, v15 froze its context env); documents from **`doc-standard` v10** (classification,
 title-slug, project-extraction on the folder `~/d/Inbox/Wax`). Ordering edges
 live in the pipeline, not in the registry YAML.
 

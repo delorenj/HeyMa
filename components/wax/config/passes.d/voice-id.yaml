@@ -16,4 +16,15 @@ clobber: [voices]
 timeout_s: 900
 env:
   WAX_VOICE_OWNER: Jarad
+  # Context-assisted naming (voice_context): a speaker the voice leaves uncertain,
+  # or would register as a stranger, is named when the transcript points at a
+  # named voice the voice does not rule out. One Jev call per such recording,
+  # through the fleet Jev ingress on HeyMa's own virtual key (alias
+  # heyma-wax-voice-id, $0.50/day, 120 rpm). Bars measured 2026-11-11.
+  WAX_VOICE_CONTEXT: "1"
+  WAX_JEV_URL: https://jev.delo.sh/typesafe/v1/systemone
+  WAX_JEV_MODEL: jev-1.13.0
+  WAX_VOICE_JEV_API_KEY_OP: op://DeLoSecrets/u4dk64drlzi3fd2q3qzpw3ox24/credential
+  WAX_VOICE_CONTEXT_MIN_P: "0.85"        # posterior of the person, context x voice
+  WAX_VOICE_CONTEXT_MIN_CONTEXT: "0.30"  # ... and the transcript alone must give them this much
 command: ["{component_root}/config/passes.d/bin/voice-id", "{md_path}", "{item_id}"]

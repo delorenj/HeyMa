@@ -14,6 +14,7 @@ Defaults are used when unset.
 | Bus and logs | `WAX_NATS_HOST` (127.0.0.1), `WAX_NATS_PORT` (4222), `WAX_LOG_LEVEL` (INFO), `WAX_BLOODBANK_SCHEMAS` |
 | Chat passes | `WAX_TITLE_*`, `WAX_SUMMARY_*`, `WAX_TICKETS_*`: `_API_BASE`, `_MODEL`, `_MODEL_FALLBACKS`, `_API_KEY_OP`, `_REQUEST_TIMEOUT_S`; `WAX_PASS_TIMEOUT_S` is set by the runner. See [passes/model-chain](passes/model-chain.md) |
 | Jev passes | `WAX_JEV_URL`, `WAX_JEV_MODEL` (`jev-1.13.0`), `WAX_JEV_API_KEY_OP`, `WAX_CLASSIFICATION_MIN_P` (0.6), `WAX_PROJECT_MIN_P` (0.6, 0.75 for transcripts over 30K chars), `PJ_REGISTRY_URL` (`http://127.0.0.1:8764`), `WAX_PROJECT_ALIASES` |
+| Voice ID | `WAX_VOICE_OWNER`, `WAX_VOICES_DIR` (`~/d/Voices`), `WAX_VOICE_NOTIFY` (1), `WAX_VOICE_<THRESHOLD>`, `WAX_VOICE_CONTEXT` (1), `WAX_VOICE_CONTEXT_MIN_P` (0.85), `WAX_VOICE_CONTEXT_MIN_CONTEXT` (0.30), `WAX_VOICE_JEV_API_KEY_OP`. See [passes/voice-id](passes/voice-id.md) |
 | Dictionary | `WAX_DICTIONARY` (`<WAX_ROOT>/Dictionary.yaml`), `WAX_DICTIONARY_MIN_P` (0.5), `_MIN_P_HEARD` (0.4), `_MIN_P_CASE` (0.65), `_MIN_SCORE` (0.82), `_SPOKEN_DOT` (1), `WAX_DICT_COMMIT` (1). See [passes/dictionary](passes/dictionary.md) |
 | Worker cadence | `WAX_SWEEP_INTERVAL_S` (900), `WAX_DOCUMENT_SCAN_INTERVAL_S` (120), `WAX_DOCUMENT_STALE_RUN_S` (900), `WAX_DOCUMENT_MAX_ATTEMPTS` (3) |
 | Hygiene and PDF | `WAX_DOC_HYGIENE_FOLDERS` (`~/d/Inbox:~/d/Sandbox`), `WAX_DOC_HYGIENE_MIN_AGE_S` (300), `WAX_UNTITLED_SWEEP_MAX` (50), `WAX_DOCUMENT_PDF_INTAKE` (`0` disables), `WAX_PDF_INTAKE_*`. See [documents](documents.md) |
@@ -35,6 +36,7 @@ Always `op://` item-UUID references, never values, and never a file. Resolved at
 | Jev key, project-extraction | `op://DeLoSecrets/4y3hlfp2dowbzpi6ncp67kdm5i/credential` |
 | Jev key, classification | `op://DeLoSecrets/lmtarsmlr35gqyydjsw245mvra/credential` |
 | Jev key, dictionary-correction | `op://DeLoSecrets/sazfdn52xd3a3uyatrbo43hiei/credential` |
+| Jev key, voice-id context (`WAX_VOICE_JEV_API_KEY_OP`) | `op://DeLoSecrets/u4dk64drlzi3fd2q3qzpw3ox24/credential` |
 | Telnyx API key | `op://DeLoSecrets/74k7nz3xkryqns4lpf65a323ue/credential` |
 | Transcripts Postgres owner, app, ro | see [transcriptions-store](transcriptions-store.md) |
 | n8n API, ntfy | see [n8n](n8n.md) |

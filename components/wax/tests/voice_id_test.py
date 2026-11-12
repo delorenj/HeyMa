@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from wax import ledger, paths, voice_id_pass, voiceprint, voices
+from wax import jev, ledger, paths, provider, voice_context, voice_id_pass, voiceprint, voices
 
 RNG = np.random.default_rng(7)
 T = voiceprint.Thresholds()
@@ -202,6 +202,9 @@ class RegistryTest(_Registry):
         with self.assertRaises(Exception):
             voices.register(self.conn, item_id="i2", label="Speaker 1", domain="room", seconds=30, vec=unit(2),
                             note="x", voice_id="voice-abc123")
+        voices.set_name(self.conn, "voice-abc123", "Damian Miller")   # the heading follows the name
+        self.assertIn("# Damian Miller (`voice-abc123`)", voice.note_path.read_text())
+        self.assertNotIn("Unnamed voice", voice.note_path.read_text())
 
     def test_ignore_status_and_exemplar_diversity(self):
         voice = voices.register(self.conn, item_id="i1", label="Speaker 1", domain="room", seconds=30,
@@ -423,3 +426,136 @@ class DecideTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContextTest(_Registry):
+    """voice_context: the transcript names a speaker the voice could not settle (Jev faked at the wire)."""
+
+    note = PassTest.note
+    run_pass = PassTest.run_pass
+
+    BODY = ("**Speaker 1 (00:00):** Laura can you pass the salt please, it is right next to you\n\n"
+            "**Speaker 2 (00:10):** here you go, and do not forget we have the school meeting at four\n")
+
+    def setUp(self):
+        super().setUp()
+        self.laura = unit(5)
+        voices.register(self.conn, item_id="seed", label="Speaker 1", domain="room", seconds=60, vec=self.laura,
+                        note="---\nname: Laura\nrelationship: wife\nstatus: named\n---\n", voice_id="voice-laura1")
+        self.calls = []
+
+    def jev(self, verdicts):
+        """A Jev ingress answering each speaker's choice with `verdicts[label]` ({name or someone_else: p})."""
+        def post(url, payload, *, key, timeout, response_headers=None):
+            self.calls.append(payload)
+            answers = {}
+            for qname, q in payload["questions"].items():
+                label = q["instructions"].split("Who is ", 1)[1].split(" in this recording")[0]
+                wanted = verdicts.get(label, {})
+                probs = {}
+                for option, meaning in q["criteria"].items():
+                    who = voice_context.SOMEONE_ELSE if option == voice_context.SOMEONE_ELSE else meaning.split(" is ", 1)[1].split(" (")[0]
+                    probs[option] = wanted.get(who, 0.0)
+                rest = 1.0 - sum(probs.values())
+                probs[voice_context.SOMEONE_ELSE] += max(0.0, rest)
+                answers[qname] = {"type": "choice", "choice": max(probs, key=probs.get), "probabilities": probs}
+            return {"answers": answers, "model": "jev-1.13.0"}
+        return post
+
+    def run_ctx(self, md, item, prints, verdicts, env=None):
+        environ = {"WAX_VOICE_CONTEXT": "1", **(env or {})}
+        with patch.object(provider, "resolve_key", lambda **kw: "k"), \
+                patch.object(provider, "post_json", self.jev(verdicts)), patch.dict("os.environ", environ):
+            return self.run_pass(md, item, prints)
+
+    def uncertain_laura(self, seed):
+        return near(self.laura, 1.6, seed)   # cosine about 0.53: under the match bar, over `new`
+
+    def test_the_transcript_names_an_uncertain_voice(self):
+        md = self.note("salt.md", self.BODY, item="k1")
+        result = self.run_ctx(md, "k1", {"Speaker 1": (unit(1), 30.0), "Speaker 2": (self.uncertain_laura(1), 40.0)},
+                              {"Speaker 2": {"Laura": 0.7}})
+        speaker = result["evidence"]["speakers"]["Speaker 2"]
+        self.assertEqual((speaker["verdict"], speaker["name"]), ("context", "Laura"))
+        self.assertGreaterEqual(speaker["context"]["posterior"], 0.85)
+        self.assertIn("**Laura (00:10):**", result["body_replace"]["text"])
+        self.assertIn("[[voice-laura1|Laura]]", result["frontmatter"]["voices"])
+        self.assertEqual(len(voices.load(self.conn)["voice-laura1"].exemplars), 1)   # context never teaches the voice
+        state = self.calls[0]["state"]
+        self.assertEqual(state["people"]["voice-laura1"]["relationship"], "wife")
+        self.assertTrue(any("THIS SPEAKER" in line for line in state["unidentified_speakers"]["Speaker 2"]))
+        self.assertNotIn("score", json.dumps(state))   # Jev never sees the voice evidence
+
+    def test_a_context_that_points_nowhere_names_nobody(self):
+        md = self.note("salt2.md", self.BODY, item="k2")
+        result = self.run_ctx(md, "k2", {"Speaker 1": (unit(1), 30.0), "Speaker 2": (self.uncertain_laura(2), 40.0)},
+                              {"Speaker 2": {"Laura": 0.2}})
+        speaker = result["evidence"]["speakers"]["Speaker 2"]
+        self.assertEqual(speaker["verdict"], "uncertain")
+        self.assertIsNone(speaker["context"]["named"])
+        self.assertNotIn("body_replace", result)
+
+    def test_context_names_a_would_be_stranger_instead_of_registering_it(self):
+        md = self.note("salt3.md", self.BODY, item="k3")
+        faint = near(self.laura, 2.3, 3)   # cosine about 0.40: the voice alone would register a stranger
+        self.assertEqual(voiceprint.classify(voiceprint.match(faint, "room", {"v": [("room", self.laura)]}), 40.0, 0.8),
+                         "new")
+        result = self.run_ctx(md, "k3", {"Speaker 1": (unit(1), 30.0), "Speaker 2": (faint, 40.0)},
+                              {"Speaker 2": {"Laura": 0.95}})
+        speaker = result["evidence"]["speakers"]["Speaker 2"]
+        self.assertEqual((speaker["verdict"], speaker["voice"]), ("context", "voice-laura1"))
+        # Only Speaker 1, whom no named voice resembles, is registered.
+        self.assertEqual(result["evidence"]["registered"], [result["evidence"]["speakers"]["Speaker 1"]["voice"]])
+
+    def test_a_failed_jev_call_leaves_the_voice_verdict_and_says_so(self):
+        md = self.note("salt4.md", self.BODY, item="k4")
+
+        def down(*a, **kw):
+            raise provider.ProviderError("connection refused", "provider_unreachable")
+        with patch.object(provider, "resolve_key", lambda **kw: "k"), patch.object(provider, "post_json", down), \
+                patch.object(jev, "RETRY_BACKOFF_S", 0), patch.dict("os.environ", {"WAX_VOICE_CONTEXT": "1"}):
+            result = self.run_pass(md, "k4", {"Speaker 1": (unit(1), 30.0),
+                                              "Speaker 2": (self.uncertain_laura(4), 40.0)})
+        self.assertEqual(result["evidence"]["speakers"]["Speaker 2"]["verdict"], "uncertain")
+        self.assertIn("provider_unreachable", result["evidence"]["context"]["error"])
+
+    def test_off_switch_and_no_candidates_never_call_jev(self):
+        md = self.note("salt5.md", self.BODY, item="k5")
+        self.run_ctx(md, "k5", {"Speaker 1": (unit(1), 2.0), "Speaker 2": (self.uncertain_laura(5), 40.0)}, {},
+                     env={"WAX_VOICE_CONTEXT": "0"})
+        md2 = self.note("salt6.md", self.BODY, item="k6")
+        # Nobody named sounds remotely like either speaker.
+        self.run_ctx(md2, "k6", {"Speaker 1": (unit(1), 2.0), "Speaker 2": (unit(77), 40.0)}, {})
+        self.assertEqual(self.calls, [])
+
+
+class CombineTest(unittest.TestCase):
+    def cand(self, vid, lr):
+        return voice_context.Candidate(vid, vid.title(), 0.5, False, lr)
+
+    def test_likelihood_ratio_rises_with_the_score_and_is_capped(self):
+        lrs = [voice_context.likelihood_ratio(s, False) for s in (0.0, 0.3, 0.45, 0.6, 0.95)]
+        self.assertEqual(lrs, sorted(lrs))
+        self.assertEqual((lrs[0], lrs[-1]), (voice_context.LR_MIN, voice_context.LR_MAX))
+        self.assertGreater(voice_context.likelihood_ratio(0.3, True), voice_context.likelihood_ratio(0.3, False))
+
+    def test_context_must_point_and_the_voice_must_not_argue(self):
+        s = voice_context.Settings()
+        both = voice_context.combine({"laura": 0.6, "someone_else": 0.4}, [self.cand("laura", 7.0)], s)
+        self.assertEqual(both.voice_id, "laura")
+        weak_context = voice_context.combine({"laura": 0.2, "someone_else": 0.8}, [self.cand("laura", 20.0)], s)
+        self.assertIsNone(weak_context.voice_id)   # posterior 0.83: the voice carries it, not the transcript
+        weak_voice = voice_context.combine({"laura": 0.9, "someone_else": 0.1}, [self.cand("laura", 0.3)], s)
+        self.assertIsNone(weak_voice.voice_id)
+        split = voice_context.combine({"laura": 0.45, "chaya": 0.45, "someone_else": 0.1},
+                                      [self.cand("laura", 5.0), self.cand("chaya", 5.0)], s)
+        self.assertIsNone(split.voice_id)
+
+    def test_excerpt_puts_name_mentions_first_and_marks_the_speaker(self):
+        body = ("**Speaker 1 (00:00):** hello\n\n**Speaker 2 (00:05):** weather is nice\n\n"
+                "**Speaker 1 (00:09):** Laura, the kids are home\n\n**Speaker 2 (00:12):** great\n")
+        lines = voice_context.excerpt(body, "Speaker 2", {"Speaker 1": "Jarad"}, ["Laura"])
+        self.assertIn("[00:09] Jarad: Laura, the kids are home", lines)
+        self.assertIn("[00:12] THIS SPEAKER: great", lines)
+        self.assertEqual(voice_context.excerpt(body, "Speaker 2", {}, [], limit=70),
+                         ["[00:00] Speaker 1: hello", "[00:05] THIS SPEAKER: weather is nice"])

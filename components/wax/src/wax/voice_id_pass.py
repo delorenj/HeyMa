@@ -32,12 +32,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
 
-from . import component, frontmatter, ledger, voiceprint, voices
+from . import component, frontmatter, ledger, provider, voice_context, voiceprint, voices
 
 WHOLE = "(whole recording)"
 
@@ -170,21 +171,35 @@ def main(md: Path, item_id: str) -> dict:
                 prints[label] = fp
         evidence, found, renames, heard = {}, [], {}, []
         title = fm.get("title") or md.stem
+        settings = voice_context.Settings.from_env()
+        order = sorted(prints, key=lambda lb: -prints[lb]["seconds"])
         voices.merge_namesakes(conn)  # a voice you named the same as another is that person
         with voices.locked():
             registry = voices.load(conn)
+
+            def decide(label: str) -> voiceprint.Decision:
+                fp = prints[label]
+                return voiceprint.decide(
+                    label=original.get(label, label), mode=mode, channel=regions[label]["channel"], vec=fp["vec"],
+                    seconds=float(fp["seconds"]), consistency=fp.get("consistency"), domain=domain,
+                    voices={vid: v.exemplars for vid, v in registry.items()},
+                    names={vid: v.name for vid, v in registry.items()}, owner=owner, t=t,
+                    cached=bool(fp.get("cached")))
+
+            # The voice alone first; then, outside any ledger transaction, the context for the
+            # speakers it could not settle (`voice_context`).
+            context, context_info = _context(fm, body, order, prints, regions, decide, registry, conn, item_id,
+                                             domain, owner, t, settings)
             conn.execute("BEGIN IMMEDIATE")
             try:
-                for label in sorted(prints, key=lambda lb: -prints[lb]["seconds"]):
+                for label in order:
                     fp = prints[label]
                     vec, seconds = fp["vec"], float(fp["seconds"])
                     first = original.get(label, label)
-                    d = voiceprint.decide(
-                        label=first, mode=mode, channel=regions[label]["channel"], vec=vec, seconds=seconds,
-                        consistency=fp.get("consistency"), domain=domain,
-                        voices={vid: v.exemplars for vid, v in registry.items()},
-                        names={vid: v.name for vid, v in registry.items()}, owner=owner, t=t,
-                        cached=bool(fp.get("cached")))
+                    d = decide(label)  # again, live: a voice registered for an earlier speaker counts
+                    named_by = context.get(label)
+                    if named_by is not None and d.verdict in ("uncertain", "new") and named_by.voice_id in registry:
+                        d = voiceprint.Decision("context", named_by.voice_id, None, False, d.match)
                     m, verdict = d.match, d.verdict
                     voice = registry.get(d.voice_id) if d.voice_id else None
                     if d.register_as is not None:
@@ -207,18 +222,22 @@ def main(md: Path, item_id: str) -> dict:
                         renames[label] = rendered
                     if voice is not None and voice.status != voices.STATUS_IGNORE:
                         heard.append(voice)
+                    score = named_by.score if verdict == "context" else m.score
                     voices.record_sighting(conn, item_id=item_id, label=first, rendered=rendered,
                                            voice_id=voice.voice_id if voice else None, verdict=verdict,
-                                           score=m.score, runner_up=m.runner_up, domain=domain, seconds=seconds,
+                                           score=score, runner_up=m.runner_up, domain=domain, seconds=seconds,
                                            vec=vec)
                     evidence[label] = {"verdict": verdict, "voice": voice.voice_id if voice else None,
                                        "name": voice.name if voice else None,
-                                       "score": round(m.score, 3) if m.score is not None else None,
+                                       "score": round(score, 3) if score is not None else None,
                                        "runner_up": round(m.runner_up, 3) if m.runner_up is not None else None,
-                                       "cross_channel": m.cross, "seconds": round(seconds, 1),
+                                       "cross_channel": named_by.cross if verdict == "context" else m.cross,
+                                       "seconds": round(seconds, 1),
                                        "consistency": (round(fp["consistency"], 3)
                                                        if fp.get("consistency") is not None else None),
                                        "cached": bool(fp.get("cached"))}
+                    if label in context_info.get("speakers", {}):
+                        evidence[label]["context"] = context_info["speakers"][label]
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
@@ -233,10 +252,62 @@ def main(md: Path, item_id: str) -> dict:
               "evidence": {"mode": mode, "speakers": evidence, "registered": [f["voice_id"] for f in found],
                            "domain": domain, "thresholds": dataclasses.asdict(t),
                            "model": voiceprint.MODEL_NAME}}
+    if context_info:
+        result["evidence"]["context"] = {k: v for k, v in context_info.items() if k != "speakers"}
     new_body = relabel(body, renames)
     if new_body != body:
         result["body_replace"] = {"sha256": digest, "text": new_body}
     return result
+
+
+def _context(fm: dict, body: str, order: list[str], prints: dict, regions: dict, decide, registry: dict, conn,
+             item_id: str, domain: str, owner: str | None, t: voiceprint.Thresholds,
+             settings: voice_context.Settings) -> tuple[dict[str, voice_context.Candidate], dict]:
+    """Ask Jev about every speaker the voice left uncertain (or would register) that a named voice
+    could be. ({label: the candidate context names}, evidence). A failed Jev call names nobody,
+    and says so in the evidence: the voice's own verdict stands."""
+    if not settings.enabled:
+        return {}, {}
+    names = {vid: (v.name if v.status != voices.STATUS_IGNORE else None) for vid, v in registry.items()}
+    exemplars = {vid: v.exemplars for vid, v in registry.items()}
+    pending: dict[str, list[voice_context.Candidate]] = {}
+    shown: dict[str, str] = {}
+    for label in order:
+        fp = prints[label]
+        d = decide(label)
+        voice = registry.get(d.voice_id) if d.voice_id else None
+        if voice is not None and voice.name and voice.status != voices.STATUS_IGNORE:
+            shown[label] = voice.name
+        if d.verdict in ("uncertain", "new") and fp["vec"] is not None:
+            cands = voice_context.candidates(fp["vec"], domain, exemplars, names, t)
+            if cands:
+                pending[label] = cands
+    if not pending:
+        return {}, {}
+    people = {c.voice_id: voice_context.profile(conn, c.voice_id, c.name, registry[c.voice_id].note_path, item_id)
+              for cands in pending.values() for c in cands}
+    state = voice_context.state(fm, body, pending, shown, people, owner)
+    info: dict = {"asked": sorted(pending), "min_posterior": settings.min_posterior,
+                  "min_context": settings.min_context, "speakers": {}}
+    try:
+        answers, decision = voice_context.ask(state, pending, people)
+    except provider.ProviderError as exc:
+        info["error"] = f"{exc.reason_code}: {str(exc)[:300]}"
+        print(f"voice-id: context not consulted ({info['error']})", file=sys.stderr)
+        return {}, info
+    info.update({"model": decision.model, "request_id": decision.request_id})
+    named: dict[str, voice_context.Candidate] = {}
+    for label, cands in pending.items():
+        v = voice_context.combine(answers.get(label, {}), cands, settings)
+        info["speakers"][label] = {"named": registry[v.voice_id].name if v.voice_id else None,
+                                   "posterior": v.posterior, "context": v.context,
+                                   "candidates": {c.name: {"score": round(c.score, 3), "lr": round(c.lr, 2),
+                                                           "context": round(answers.get(label, {}).get(c.voice_id, 0.0), 3)}
+                                                  for c in cands},
+                                   "someone_else": round(answers.get(label, {}).get(voice_context.SOMEONE_ELSE, 0.0), 3)}
+        if v.voice_id:
+            named[label] = next(c for c in cands if c.voice_id == v.voice_id)
+    return named, info
 
 
 def _ours(label: str, cached: dict) -> bool:

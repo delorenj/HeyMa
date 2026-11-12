@@ -6,13 +6,13 @@ A pipeline is an authored graph compiled, explicitly, into an immutable versione
 
 | Pipeline | Trigger | Version | Source | State |
 |---|---|---|---|---|
-| `transcript-standard` | `transcription` | v14 | n8n export, `exported_snapshot` | enabled; 9 passes, independent |
+| `transcript-standard` | `transcription` | v15 | n8n export, `exported_snapshot` | enabled; 9 passes, independent |
 | `doc-standard` | `documents` | v10 | n8n export, `exported_snapshot` | enabled; classification, title-slug, project-extraction |
 | `title-only` | `manual` | v1 | YAML, `in_sync` | enabled; title-slug alone |
 | `dictionary-only` | `manual` | v1 | YAML, `in_sync` | enabled; dictionary-correction alone |
 | `untitled-standard` | `manual` | v1 | YAML, `in_sync` | enabled; summarize then title-slug, policy `halt` |
 
-`transcript-standard` runs frontmatter-stamp, classification, diarization (`when classification not_equals monolog`), dictionary-correction (after diarization), clipboard-copy, title-slug, project-extraction, voice-id (each after dictionary-correction; v13/v14, 2026-11-11) and call-metadata. `doc-standard` showed no registry drift on 2026-11-05 (`drift.state` is `exported_snapshot` with empty detail and no per-node drift, on both n8n-sourced pipelines). When drift does appear it is reported beside the frozen graph and is informational while the frozen and live versions match. Check any of this with `wax pipeline list`, `wax pipeline show <name>`, `wax catalog --json`.
+`transcript-standard` runs frontmatter-stamp, classification, diarization (`when classification not_equals monolog`), dictionary-correction (after diarization), clipboard-copy, title-slug, project-extraction, voice-id (each after dictionary-correction; v13/v14, 2026-11-11; v15 froze voice-id's context env) and call-metadata. `doc-standard` showed no registry drift on 2026-11-05 (`drift.state` is `exported_snapshot` with empty detail and no per-node drift, on both n8n-sourced pipelines). When drift does appear it is reported beside the frozen graph and is informational while the frozen and live versions match. Check any of this with `wax pipeline list`, `wax pipeline show <name>`, `wax catalog --json`.
 
 ## Triggers and authority
 

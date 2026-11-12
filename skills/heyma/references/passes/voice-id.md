@@ -3,7 +3,7 @@
 The `voice-id` pass fingerprints every speaker in a recording, matches each
 one against the **voice registry**, renames a known voice's `Speaker N` turns
 to its name, and registers a voice it has never heard: it writes a note for you
-to fill in and notifies you. Added 2026-11-11, in `transcript-standard` v14
+to fill in and notifies you. Added 2026-11-11, in `transcript-standard` v14 (v15 with the context step)
 after `dictionary-correction`.
 
 Code: `components/wax/src/wax/voiceprint.py` (fingerprints, matching and the
@@ -38,6 +38,7 @@ Code: `components/wax/src/wax/voiceprint.py` (fingerprints, matching and the
 | `caller_id` / `caller_id_new` | A call's far channel labelled with a **contact name** (not a number, `Channel B`, `Unassigned`, `Unknown...`) | That contact's voice, registered **named, with no notification**; learns every sighting. Overridden only when the voice clearly matches a different named voice (someone else on that phone) |
 | `matched` | Best voice over its match bar and beating the next by the margin | Names the speaker; learns the fingerprint when the score is over `learn` |
 | `new` | Every voice below its `new` bar, at least 20 s of speech, windows agreeing (consistency at least 0.5) | **Registers** a voice, writes its note and clip, and **notifies you** |
+| `context` | A speaker that would be `uncertain` or `new`, where the transcript points at a named voice the voice does not rule out (see [Context](#context-when-the-voice-is-not-enough)) | Names and relabels the speaker; never registers, never learns an exemplar |
 | `uncertain` | Between the bars, or two voices too close to call | Sighting recorded; nothing named or registered |
 | `too_short` | Under 4 s of usable speech (or under 20 s for a stranger) | Sighting recorded |
 
@@ -52,6 +53,52 @@ taught the registry his call voice, voice memos score against it across
 channels (median 0.52) and become owner exemplars on the room channel, after
 which conversations at the desk match him directly. Process calls and memos
 before conversations in any backfill.
+
+## Context: when the voice is not enough
+
+Step 3 leaves some speakers `uncertain` and registers others as strangers when
+the recording itself says who they are: the others call her by name, the
+summary says "Gershon asked", the meeting is about a project only one known
+person works on. For those speakers (`voice_context.py`) the pass makes **one
+Jev call per recording** (the Jev ingress, `jev-1.13.0`, key alias
+`heyma-wax-voice-id`) with a `choice` per speaker over the named voices the
+voice does not rule out (likelihood ratio at least 0.25, at most five) plus
+`someone_else`. Jev reads the title, summary, classification, projects, who is
+already identified, each unidentified speaker's lines with the turns around
+them (turns near a candidate's name first), and a profile per candidate: the
+`relationship` from their note, the titles, projects and kinds of recordings
+they were confidently heard in. It never hears audio or sees a voice score.
+
+The two pieces of evidence combine as
+
+    posterior(person) ∝ P_context(person) × LR_voice(person),  posterior(nobody listed) ∝ P_context(someone_else)
+
+where `LR_voice` is how much likelier the voice score is for the same person
+than for another, fitted on 185 known-identity speakers (owner channels, caller
+IDs, hand-typed turn names; each scored without its own recording): about 2 at
+0.40 on the same channel, 7 at 0.50, 23 at 0.60, capped at 20. A speaker is
+named (`context`) only when the posterior is at least **0.85** and the context
+alone gives that person at least **0.30**: the transcript must point, the voice
+must not argue. Context never registers a voice, never adds an exemplar, and
+only names voices that have a name; a would-be stranger it does not name is
+registered as before.
+
+**Measured (2026-11-11, labels masked).** Jev gave the true person a median 0.29
+against 0.04 for a wrong or unregistered person (AUC 0.86): cautious, but it
+discriminates. At the bars above, none of 34 speakers who are nobody named got
+a name, and of 70 known speakers given an uncertain voice (likelihood ratio 7)
+19 were named, with one disagreement on a turn whose hand label the voice also
+disputed. Most speakers stay unnamed because most transcripts do not say who is
+talking; context wins where they do.
+
+The evidence (`evidence.speakers.<label>.context`) shows each candidate's voice
+score, likelihood ratio and context probability, and `someone_else`;
+`evidence.context` has the Jev model and request id. A failed Jev call (no key,
+ingress down) names nobody, is printed to stderr and recorded as
+`evidence.context.error`, and the voice's own verdict stands.
+`WAX_VOICE_CONTEXT=0` switches the step off; the bars are
+`WAX_VOICE_CONTEXT_MIN_P` and `WAX_VOICE_CONTEXT_MIN_CONTEXT`. Filling in a
+voice's `relationship` gives Jev more to go on.
 
 ## Calibration (2026-11-11, this vault)
 
@@ -161,4 +208,5 @@ the test suites pin it off.
 | `voice_id_failed` | The GPU child or the registry failed (CUDA unavailable, a bad file); stderr tail in `detail` |
 | `no_speech` (skipped) | No turns, channels or timed segments to fingerprint |
 
-The pass never calls a chat model, and no Anthropic model anywhere.
+The pass never calls a chat model (its only model call besides TitaNet is the Jev
+decision model, for context), and no Anthropic model anywhere.

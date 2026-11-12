@@ -189,38 +189,45 @@ class Match:
 NO_MATCH = Match(None, None, None, False, True, True)
 
 
-def match(fingerprint: np.ndarray, domain: str, voices: dict[str, list[tuple[str, np.ndarray]]],
-          t: Thresholds = Thresholds()) -> Match:
-    """The registered voice this raw fingerprint sounds most like.
+def voice_scores(fingerprint: np.ndarray, domain: str, voices: dict[str, list[tuple[str, np.ndarray]]],
+                 t: Thresholds = Thresholds()) -> list[tuple[float, float, bool, str, bool]]:
+    """(headroom, score, cross, voice_id, near) for every voice, best headroom first.
 
-    `voices` maps a voice id to its exemplars as (domain, raw vector). Each
-    voice is scored on its same-channel exemplars against the same-channel bars
-    and on its other-channel exemplars against the cross-channel bars, and keeps
-    whichever clears its bar by more; voices are ranked by that headroom.
+    Each voice is scored on its same-channel exemplars against the same-channel
+    bars and on its other-channel exemplars against the cross-channel bars, and
+    keeps whichever clears its bar by more. `near`: either channel reached its
+    `new` bar, so the voice is not a stranger to this one.
     """
-    if not voices:
-        return NO_MATCH
     probe = center(fingerprint, domain)
-    ranked, stranger = [], True
+    ranked = []
     for voice_id, exemplars in voices.items():
-        best = None
+        best, near = None, False
         for cross in (False, True):
             pool = [center(v, d) for d, v in exemplars if (d == domain) != cross]
             if not pool:
                 continue
             score = voice_score(probe, np.stack(pool))
-            if score >= (t.new_cross if cross else t.new):
-                stranger = False
+            near = near or score >= (t.new_cross if cross else t.new)
             option = (score - (t.match_cross if cross else t.match), score, cross, voice_id)
             # A voice is judged on whichever channel it is best known on: one odd same-channel
             # exemplar (the owner's first desk memo) must not outvote forty from his phone.
             best = option if best is None or option[0] > best[0] else best
         if best is not None:
-            ranked.append(best)
+            ranked.append((*best, near))
+    ranked.sort(reverse=True)
+    return ranked
+
+
+def match(fingerprint: np.ndarray, domain: str, voices: dict[str, list[tuple[str, np.ndarray]]],
+          t: Thresholds = Thresholds()) -> Match:
+    """The registered voice this raw fingerprint sounds most like (ranked by `voice_scores` headroom)."""
+    if not voices:
+        return NO_MATCH
+    ranked = voice_scores(fingerprint, domain, voices, t)
     if not ranked:
         return NO_MATCH
-    ranked.sort(reverse=True)
-    headroom, score, cross, voice_id = ranked[0]
+    stranger = not any(near for *_, near in ranked)  # below every voice's `new` bar on every channel
+    headroom, score, cross, voice_id, _ = ranked[0]
     clear = len(ranked) == 1 or headroom - ranked[1][0] >= t.margin
     return Match(voice_id, score, ranked[1][1] if len(ranked) > 1 else None, cross, clear, stranger)
 

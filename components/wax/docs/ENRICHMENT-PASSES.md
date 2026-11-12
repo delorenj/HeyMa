@@ -718,8 +718,10 @@ Fingerprints every speaker with NeMo TitaNet-large on CUDA (in
 with enough clean speech is registered with an empty `name:` and a clip, and
 the operator is notified to name it. A call's channel A is the owner
 (`WAX_VOICE_OWNER`) and a contact-named far channel is that contact, by
-construction. It is the one pass that writes state of its own outside the
-runner: the three `voice*` tables and `~/d/Voices`. Calibration, thresholds and
+construction. A speaker the voice leaves uncertain (or would register) is
+named from the transcript when Jev's context and the voice's likelihood ratio
+agree (`voice_context`, verdict `context`; never registers or learns). It is
+the one pass that writes state of its own outside the runner: the three `voice*` tables and `~/d/Voices`. Calibration, thresholds and
 `wax voices`: `skills/heyma/references/passes/voice-id.md`.
 
 ## summarize and the untitled-standard pipeline
