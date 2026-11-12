@@ -101,6 +101,18 @@ a name, and of 70 known speakers given an uncertain voice (likelihood ratio 7)
 disputed. Most speakers stay unnamed because most transcripts do not say who is
 talking; context wins where they do.
 
+**First real run (2026-11-11, 183 recordings): 49 speakers named.** Four
+reviewer agents each tried to disprove the 43 named under a generic label: 30
+supported, 11 plausible, 2 wrong. Both errors were plumbing, not the bars: Jev
+was asked about a label this pass had already renamed (two speakers folded into
+`Jarad` before the wife's voice was known), and a mono Telnyx call was scored
+as room audio. After the unfold and the telephone domain (below) and a rerun of
+194 recordings: 44 context namings, both errors withdrawn, and 8 earlier
+`Jarad` namings that had been asked about under that name went back to
+`Speaker N`, because asked fairly the transcript did not point clearly enough.
+In home recordings the owner and Laura both score at the likelihood-ratio cap,
+so there the context alone decides, and it stays cautious.
+
 The evidence (`evidence.speakers.<label>.context`) shows each candidate's voice
 score, likelihood ratio and context probability, and `someone_else`;
 `evidence.context` has the Jev model and request id. A failed Jev call (no key,
