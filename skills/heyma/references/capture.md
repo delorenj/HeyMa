@@ -103,7 +103,10 @@ never inputs) and cuts there. It works on three kinds of target:
 | An item in processing (`pending`, `archived`, `transcribed`, `enrichment_pending`) | Detect first (read-only). A boundary: fence **this item only** (`item_fences`), stop its tracked child processes (the transcriber, a pass) as process trees, wait for the item's flock (the worker holds it for the whole item, so getting it proves in-flight work settled; `--halt-timeout-s` bounds the wait, and on timeout the fence is lifted and nothing is cut), then cut and mark the item `skipped` (cause `split`). A late worker result is refused at every commit point; a transcript the child already wrote is moved to `recovered/split-late/`, never into the vault. The queue and other items are untouched |
 | A queued, finished or archived item | Same cut. A `complete` item is not fenced and its transcript is untouched |
 
-`wax split --dry-run` reports the proposed boundary and changes nothing.
+`wax split --dry-run` reports the proposed boundary and changes nothing. **Run it
+before a live split.** On 80 real recordings the defaults found none of 15 likely
+overruns and made 1 false cut, and a false cut ends a live capture (limits in
+`components/wax/docs/WAX-SPLIT.md`).
 
 **Restart waxd after deploying the fence.** A waxd started before it (check: its
 `var/state.json` `daemon` block has no `capabilities`) cannot honour the fence, so

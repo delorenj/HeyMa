@@ -91,6 +91,16 @@ boundaries: parts can overlap or gap by up to about a second, inside the quiet
 run. Each part's real duration is recorded and the sum is checked against the
 source (tolerance 2 s per cut) before anything is published.
 
+**On real recordings it rarely fires.** The read-only sweep of 80 production recordings
+(`docs/evidence/heyma-18/validation-2026-11-13/README.md`, gap 5) gave the following with the defaults:
+- 79 returned no boundary and 1 was a false cut (`06b63f2a19c476d3`).
+- None of the 15 recordings that look like real overruns was found: talk after a meeting is not an empty room.
+- `--min-drop-db` was tuned on that same sweep, so these figures are in-sample.
+
+So run `wax split --dry-run` before a live split. A false cut on a capture that is still recording
+ends the meeting's capture. An operator-supplied cut time and a held-out re-tune are proposed
+follow-ups for heyma-pm, not part of this command yet.
+
 ## Policy
 
 - **Never destructive.** The complete original and every derived part are kept.
