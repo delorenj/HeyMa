@@ -1,0 +1,19 @@
+INFO wax.waxd: waxd 1413730 starting: root=/tmp/heyma-validate-hm18/root ledger=/tmp/heyma-validate-hm18/root/var/wax.db vault=/tmp/heyma-validate-hm18/vault passes=/tmp/heyma-validate-hm18/passes.d level=INFO
+INFO wax.waxd: transcriber: /tmp/heyma-validate-hm18/fake-transcribe (diarization disabled)
+WARNING wax.waxd: tray_unavailable: no display
+INFO wax.worker: item a8a7e80b4aec87c4 -> archived (s3_verified): 2026-11-13/a8a7e80b4aec-slow-meeting-overrun.ogg (7454754 B, size+md5)
+WARNING wax.worker: item a8a7e80b4aec87c4 halted by wax split: item a8a7e80b4aec87c4 was halted by split 20261113-204113-a8a7e80b; refusing a stale write
+INFO wax.worker: item 08d51662097b2265 -> archived (s3_verified): 2026-11-13/08d51662097b-unrelated-talk.ogg (7473131 B, size+md5)
+INFO wax.passes: fx-stamp completed for 08d51662097b2265 in 1.02s (attempt 1, 0 field(s) changed)
+INFO wax.worker: linked 20261113-154109-unrelated-talk.md to 1 archived object(s) (un-slugged; note stem used)
+INFO wax.worker: item f31db213ce2d726d -> archived (s3_verified): 2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg (2548909 B, size+md5)
+INFO wax.passes: fx-stamp completed for f31db213ce2d726d in 1.01s (attempt 1, 0 field(s) changed)
+INFO wax.worker: linked 20261113-151612-slow-meeting-overrun-part1of2.md to 1 archived object(s) (un-slugged; note stem used)
+INFO wax.worker: item 89bf4172582c09c6 -> archived (s3_verified): 2026-11-13/89bf4172582c-stubborn-meeting-overrun.ogg (7777439 B, size+md5)
+WARNING wax.transcribe_adapter: item 89bf4172582c09c6 was split while transcribing; late transcript parked at /tmp/heyma-validate-hm18/root/recovered/split-late/stubborn-meeting-overrun.md
+WARNING wax.worker: item 89bf4172582c09c6 halted by wax split: item 89bf4172582c09c6 was halted by split 20261113-204215-89bf4172; refusing a stale write
+INFO wax.worker: item 27318f143d0b625c -> archived (s3_verified): 2026-11-13/27318f143d0b-passslow-meeting-overrun.ogg (7420659 B, size+md5)
+WARNING wax.worker: enrichment pass fx-stamp cancelled for passslow-meeting-overrun.ogg (item 27318f143d0b625c): reason_code=item_split 
+INFO wax.worker: linked 20261113-154253-passslow-meeting-overrun.md to 1 archived object(s) (un-slugged; note stem used)
+WARNING wax.worker: item 27318f143d0b625c halted by wax split: item 27318f143d0b625c was halted by split 20261113-204304-27318f14; refusing a stale write
+INFO wax.waxd: waxd 1413730 exiting

@@ -1,0 +1,8 @@
+INFO wax.waxd: waxd 1547775 starting: root=/tmp/heyma-validate-hm18/root ledger=/tmp/heyma-validate-hm18/root/var/wax.db vault=/tmp/heyma-validate-hm18/vault passes=/tmp/heyma-validate-hm18/passes.d level=INFO
+INFO wax.waxd: transcriber: /tmp/heyma-validate-hm18/fake-transcribe (diarization disabled)
+WARNING wax.waxd: outbox_drain_error: OperationalError: database is locked
+WARNING wax.waxd: tray_unavailable: no display
+INFO wax.waxd: outbox_drain_error recovered
+WARNING wax.waxd: tray_unavailable: no display (still, 300s)
+WARNING wax.waxd: tray_unavailable: no display (still, 601s)
+INFO wax.waxd: waxd 1547775 exiting

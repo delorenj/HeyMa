@@ -1,0 +1,8 @@
+#!/bin/bash
+# STUB for systemd-run (capture.py wraps the encoder in a transient scope). There is no scope here: log the
+# call and exec whatever follows `--`, in the same process, so the sentinel pid is the encoder's pid.
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+echo "$(date -u +%FT%T.%NZ) systemd-run $*" >> "$V/logs/stubs.log"
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"

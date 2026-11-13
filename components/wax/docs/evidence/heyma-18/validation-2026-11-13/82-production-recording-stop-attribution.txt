@@ -1,0 +1,10 @@
+# journal evidence that the production recording was stopped by the operator's hotkey (not by this validation)
+Nov 13 15:29:26 big-chungus systemd[4333]: wax-20261113-143735-0cca00.scope: Consumed 32.367s CPU time, 26.5M memory peak.
+
+# encoder.log tail of the production capture
+[q] command received. Exiting.
+
+[out#0/segment @ 0x555d1a3ebec0] video:0KiB audio:11181KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+size=N/A time=00:51:49.93 bitrate=N/A speed=   1x    
+
+# my first isolated action touching a daemon/ffmpeg started at 20:36 UTC (15:36 EST); the stop was 20:29:26 UTC

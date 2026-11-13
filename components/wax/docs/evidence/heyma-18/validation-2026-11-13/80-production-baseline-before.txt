@@ -1,0 +1,51 @@
+2026-11-13T15:22:39-05:00
+waxd pids:
+5494 /usr/bin/python3 /home/delorenj/HeyMa/components/wax/bin/waxd
+    PID                  STARTED     ELAPSED CMD
+   5494 Thu Nov 12 12:46:06 2026  1-02:36:32 /usr/bin/python3 /home/delorenj/HeyMa/components/wax/bin/waxd
+
+$ wax status
+  stream       recording
+                 rec.json present, no .stop, encoder alive
+  inbox        error (failed_items)
+                 1 failed item(s) preserved in inbox
+  queue        1 in inbox · 0 actionable · 1 failed
+  items        599 live of 934 recorded  (complete 568 · enrichment_pending 14 · failed 1 · skipped 16)
+  passes       FAILING  11 item(s): call-metadata, clipboard-copy   -> wax ep sweep --dry-run
+  diarization  ok       0 recent transcript(s) undiarized
+  outbox       0 unpublished
+  transcripts  ok (queued 0, embed pending 0)
+  calls        ok       synced 2 min ago  (7d: answered 64 · declined 8 · failed 5 · missed 20 · no_answer 1 · voicemail 4)
+exit=2
+
+ledger row counts (ro):
+  backups 720
+  call_events 9901
+  call_legs 322
+  call_recordings 213
+  calls 249
+  completions 348
+  document_bindings 1
+  document_receipts 542
+  documents 542
+  failure_tickets 1
+  files_seen 1384
+  item_children 0
+  item_fences 0
+  items 934
+  meta 14
+  outbox 30910
+  pass_events 0
+  passes 4992
+  pipelines 5
+  processing_plans 362
+  split_segments 0
+  sqlite_sequence 3
+  transcript_snapshots 4836
+  transcripts 675
+  transitions 5364
+  voice_exemplars 358
+  voice_sightings 952
+  voices 64
+state.json daemon: {'pid': 5494} stream.rid: 20261113-143735-0cca00 stream.state: recording
+state.json top keys: ['daemon', 'diarization', 'generation', 'inbox', 'items', 'items_live', 'outbox_backlog', 'passes', 'queue', 'stream', 'telephony', 'transcriptions', 'tray', 'tray_items', 'updated_at']

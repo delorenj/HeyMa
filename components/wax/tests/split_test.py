@@ -71,6 +71,29 @@ class DetectionTest(unittest.TestCase):
                 self.assertTrue(det["found"], det)
                 self.assertAlmostEqual(det["boundary"]["quiet_start_s"], 900, delta=2)
 
+    def test_soft_speech_in_a_noisy_room_is_not_a_quiet_tail(self):
+        # Regression (HEYMA-18 validation on real recordings): 6 of 80 archived recordings got a boundary
+        # that cut through conversation, because the adaptive noise floor of a recording that is mostly talk
+        # is its own pauses. The fixture is that shape: a meeting, then soft talk in a noisy room.
+        name = "meeting_then_soft_speech_in_noisy_room"
+        det = analyze(name)
+        self.assertFalse(det["found"], det)
+        self.assertEqual(det["reason"], "quiet_not_quiet")
+        self.assertLess(det["stats"]["quiet_drop_db"], PARAMS.min_drop_db)
+        self.assertEqual(split.exit_code({"outcome": "no_boundary"}), 3)
+        # the fixture really reproduces the false positive once the guard is off
+        unguarded = analyze(name, split.Params(**{**sup.SCALED, "min_drop_db": 0.0}))
+        self.assertTrue(unguarded["found"], "without the guard this fixture is a false cut through the soft talk")
+        self.assertAlmostEqual(unguarded["boundary"]["quiet_start_s"], 63.5, delta=SLACK_S + 3)
+
+    def test_real_overruns_sit_far_under_the_meeting(self):
+        for name in ("meeting_overrun_quiet", "meeting_overrun_hvac", "meeting_overrun_with_click",
+                     "short_meeting_long_overrun_quiet", "short_meeting_long_overrun_hvac"):
+            with self.subTest(name):
+                det = analyze(name)
+                self.assertTrue(det["found"], det)
+                self.assertGreater(det["stats"]["quiet_drop_db"], PARAMS.min_drop_db + 3)
+
     def test_continuous_activity_is_no_boundary(self):
         det = analyze("continuous_activity")
         self.assertFalse(det["found"])

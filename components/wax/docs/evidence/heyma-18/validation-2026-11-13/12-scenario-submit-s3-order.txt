@@ -1,0 +1,67 @@
+$ wax split list
+20261113-204113-a8a7e80b  item  /tmp/heyma-validate-hm18/root/skipped/split/20261113-204113-a8a7e80b
+  part 1 (active) 0:00:00-0:10:40 slow-meeting-overrun-part1of2.ogg [held]
+  part 2 (quiet-tail) 0:10:40-0:35:35 slow-meeting-overrun-part2of2.ogg [held]
+$ wax split submit 20261113-204113-a8a7e80b 1
+split 20261113-204113-a8a7e80b
+  part 1: submitted /tmp/heyma-validate-hm18/root/inbox/slow-meeting-overrun-part1of2.ogg
+the worker archives each part to S3 and verifies it before transcription
+exit=0
+== part items
+f31db213ce2d726d | complete | /tmp/heyma-validate-hm18/root/archive/2026/11/slow-meeting-overrun-part1of2.ogg
+== part transitions
+2026-11-13T20:41:45.437Z | None | pending | discovered
+2026-11-13T20:41:47.755Z | pending | archived | s3_verified
+2026-11-13T20:41:50.960Z | archived | transcribed | gate_passed
+2026-11-13T20:41:52.073Z | transcribed | complete | finalized
+== backups row for the part
+f31db213ce2d726d | 2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg | recordings | 2548909 | 2026-11-13T20:41:47.720Z | verified-attempt-1/size+md5
+== transcriber log (part)
+2026-11-13T20:41:47.861258047Z START  pid=1436638 mode=fast audio=slow-meeting-overrun-part1of2.ogg
+2026-11-13T20:41:50.917660857Z FINISH pid=1436638 mode=fast audio=slow-meeting-overrun-part1of2.ogg note=/tmp/heyma-validate-hm18/vault/slow-meeting-overrun-part1of2.md
+== S3 trace, requests mentioning the part, in time order
+2026-11-13T20:41:47.688380939Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg 404 size=97
+2026-11-13T20:41:47.700476991Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg 404 size=97
+2026-11-13T20:41:47.701613893Z s3.PutObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg 200 size=2552639
+2026-11-13T20:41:47.716920234Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg 200 size=97
+2026-11-13T20:41:47.729742125Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 404 size=97
+2026-11-13T20:41:47.741713141Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 404 size=97
+2026-11-13T20:41:47.742796843Z s3.PutObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=660
+2026-11-13T20:41:51.989603008Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=97
+2026-11-13T20:41:51.990191848Z s3.GetObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=444
+2026-11-13T20:41:52.002280837Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=97
+2026-11-13T20:41:52.002927255Z s3.PutObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=1022
+2026-11-13T20:41:52.013961717Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=97
+2026-11-13T20:41:52.014465155Z s3.GetObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=806
+2026-11-13T20:41:52.05628705Z s3.PutObjectTagging /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg 200 size=458
+2026-11-13T20:41:52.070286458Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg 200 size=111
+2026-11-13T20:41:52.070885507Z s3.HeadObject /recordings/2026-11-13/f31db213ce2d-slow-meeting-overrun-part1of2.ogg.wax.json 200 size=97
+== split.json segment 1 afterwards
+{
+ "bytes": 2548909,
+ "duration_s": 640.02,
+ "end_s": 640.0,
+ "file": "slow-meeting-overrun-part1of2.ogg",
+ "index": 1,
+ "item_id": "f31db213ce2d726d",
+ "kind": "active",
+ "mtime": 1794600972.653847,
+ "sha256": "f31db213ce2d726d535a6252cdd1d3c10fe2d609c9a3bc749d3b650c8af0162b",
+ "start_s": 0.0,
+ "state": "submitted",
+ "submitted_as": "/tmp/heyma-validate-hm18/root/inbox/slow-meeting-overrun-part1of2.ogg",
+ "submitted_at": "2026-11-13T20:41:45.438Z"
+}
+== hold still has the part (copy, not move)?
+total 14580
+drwxrwxr-x 2 delorenj delorenj    4096 Nov 13 15:41 .
+drwxrwxr-x 3 delorenj delorenj    4096 Nov 13 15:41 ..
+-rw-rw-r-- 1 delorenj delorenj 2548909 Nov 13 15:16 slow-meeting-overrun-part1of2.ogg
+-rw-rw-r-- 1 delorenj delorenj 4906071 Nov 13 15:41 slow-meeting-overrun-part2of2.ogg
+-rw-rw-r-- 1 delorenj delorenj 7454754 Nov 13 15:41 slow-meeting-overrun.ogg
+-rw-rw-r-- 1 delorenj delorenj    2745 Nov 13 15:41 split.json
+== inbox/archive location of the submitted part
+/tmp/heyma-validate-hm18/root/archive/2026/11/slow-meeting-overrun-part1of2.ogg
+== vault
+20261113-151612-slow-meeting-overrun-part1of2.md
+20261113-154109-unrelated-talk.md

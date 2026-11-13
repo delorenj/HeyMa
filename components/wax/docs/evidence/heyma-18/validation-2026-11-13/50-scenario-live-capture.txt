@@ -1,0 +1,59 @@
+[20:46:10.698] $ wax status (before)
+  stream       ready
+                 no sentinels, no partials, preflight ok
+  inbox        ready-and-waiting
+[20:46:10.873] $ wax rec start --label livemeeting
+{
+  "pid": 1557113,
+  "source": "heyma-validate-stub-source",
+  "started": "20261113-154611-be6740",
+  "target": "20261113-154611-livemeeting.ogg"
+}
+exit=0
+rid=20261113-154611-be6740
+encoder pid 1557113: /usr/bin/ffmpeg -hide_banner -loglevel info -nostats -flush_packets 1 -readrate 20 -i /tmp/heyma-validate-hm18/fixtures/live-source.ogg -af silencedetect=noise=-50dB:d=5 -ac 1 -ar 48000 -c:a libopus -b:a 32k -f segment -segment_time 10 -segment_format ogg -res
+encoder exe: /usr/bin/ffmpeg
+[20:46:11.098] $ wax status (recording)
+  stream       recording
+                 rec.json present, no .stop, encoder alive
+  inbox        ready-and-waiting
+--- early split: nothing quiet yet -> must be no_boundary and the capture must keep recording
+wax split: NO_BOUNDARY  capture 20261113-154611-be6740
+  duration 0:04:00  noise floor -63.5 dBFS  loud -20.1 dBFS  activity threshold -53.5 dBFS
+  no usable boundary [too_short]: 240s is shorter than --min-quiet-s plus --min-active-s
+  capture: recording -> recording
+  changes: none; capture still recording
+exit=3
+still recording: yes, stream:   stream       recording                  rec.json present, no .stop, encoder alive 
+--- waiting for the encoder to have captured the meeting and a long quiet tail (fixture at 20x)
+[20:47:17.873] segments so far: 134 (10 s of media each); encoder alive: yes
+[20:47:17.878] $ wax split   (no target: the active capture)
+wax split: SPLIT  capture 20261113-154611-be6740
+  duration 0:26:51  noise floor -62.5 dBFS  loud -19.6 dBFS  activity threshold -52.5 dBFS
+  quiet from 0:10:35 to 0:26:52 (977s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40  20261113-154611-livemeeting-part1of2.ogg  [held]
+  part 2 (quiet-tail): 0:10:40 - 0:26:51  20261113-154611-livemeeting-part2of2.ogg  [held]
+  capture: recording -> ready
+  processing: not queued yet; capture stopped and finalized into the hold, not the inbox; original preserved; parts held until submitted; recording not restarted
+  held in /tmp/heyma-validate-hm18/root/skipped/split/20261113-154611-be6740 (submit with `wax split submit 20261113-154611-be6740 all`)
+[20:47:41.493] exit=0
+--- after
+encoder alive: no   stream:   stream       ready                  no sentinels, no partials, preflight ok 
+stream dir: 
+inbox (the unsplit recording must NOT be here): []
+-rw-rw-r-- 1 delorenj delorenj 2719083 Nov 13 15:31 /tmp/heyma-validate-hm18/root/skipped/split/20261113-154611-be6740/20261113-154611-livemeeting-part1of2.ogg
+-rw-rw-r-- 1 delorenj delorenj 3590074 Nov 13 15:47 /tmp/heyma-validate-hm18/root/skipped/split/20261113-154611-be6740/20261113-154611-livemeeting-part2of2.ogg
+-rw-rw-r-- 1 delorenj delorenj 6306780 Nov 13 15:47 /tmp/heyma-validate-hm18/root/skipped/split/20261113-154611-be6740/20261113-154611-livemeeting.ogg
+-rw-rw-r-- 1 delorenj delorenj    2653 Nov 13 15:47 /tmp/heyma-validate-hm18/root/skipped/split/20261113-154611-be6740/split.json
+--- split.json (summary)
+{'split_id': '20261113-154611-be6740', 'origin': 'live-capture', 'method': 'waveform-rms', 'original_settled': True}
+source: {'bytes': 6306780, 'device_source': 'heyma-validate-stub-source', 'duration_s': 1611.174, 'kind': 'capture', 'orig_name': '20261113-154611-livemeeting.ogg', 'path': '/tmp/heyma-validate-hm18/root/skipped/split/20261113-154611-be6740/20261113-154611-livemeeting.ogg', 'rid': '20261113-154611-be6740', 'sha256': '5a4cd4d750b6d44f7c04d5252398601a139dd88c316b87c99836b17ef6383720', 'started_at': '2026-11-13T20:46:11.031Z'}
+boundary: {'active_before_s': 465, 'cut_s': 640.0, 'quiet_end_s': 1612, 'quiet_length_s': 977, 'quiet_start_s': 635}
+{'index': 1, 'kind': 'active', 'start_s': 0.0, 'end_s': 640.0, 'duration_s': 640.01, 'bytes': 2719083, 'state': 'held'}
+{'index': 2, 'kind': 'quiet-tail', 'start_s': 640.0, 'end_s': 1611.174, 'duration_s': 972.226, 'bytes': 3590074, 'state': 'held'}
+--- ffprobe durations (real files)
+20261113-154611-livemeeting-part1of2.ogg 640.009500
+20261113-154611-livemeeting-part2of2.ogg 972.226500
+20261113-154611-livemeeting.ogg 1612.233000
+--- no second capture was started: rec.json files in stream: 0
+waxd alive: yes

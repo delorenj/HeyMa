@@ -57,6 +57,12 @@ halted, moved or written).
    The cut is `--pad-s` (default 5) after the quiet run starts, so a trailing
    word or its reverb stays with the first part.
 7. At least `--min-active-s` (default 30) of activity must precede the cut.
+8. **The quiet run must be far under the meeting.** The run's median level must sit at least
+   `--min-drop-db` (default 20) below `loud`. Soft speech in a noisy room is "quiet" to a level threshold,
+   because the adaptive floor of a recording that is mostly conversation is its own pauses. Measured on 80
+   real recordings (`docs/evidence/heyma-18/validation-2026-11-13/62-*.txt`), before this rule 6 boundaries cut
+   through 100+ words of conversation, and every one of them had its "quiet" within 17 dB of `loud`; the
+   synthetic overruns sit about 40 dB under it. A recording that fails the rule gets `quiet_not_quiet` (exit 3).
 
 Outcomes when there is no boundary (always exit 3, nothing touched):
 
@@ -68,6 +74,7 @@ Outcomes when there is no boundary (always exit 3, nothing touched):
 | `quiet_not_trailing` | a long quiet run exists but real activity follows it for more than the tail slack |
 | `too_little_activity` | a long trailing quiet run, but under `--min-active-s` of activity before it |
 | `too_short` | shorter than `--min-quiet-s` plus `--min-active-s` |
+| `quiet_not_quiet` | a long trailing quiet run, but its median is under `--min-drop-db` below the loud level: soft speech or a noisy room, not an empty one |
 
 Ordinary pauses inside a meeting (seconds to a couple of minutes) can never
 trigger a cut: only a quiet run reaching the end of the audio does.
@@ -196,6 +203,10 @@ subprocess still running when the fence goes up), `tests/split_daemon_guard_test
 ## Not covered
 
 Transcripts already published for a recording that was split after completion
-stay as they were. The unsplit original is not uploaded to S3 by `wax split`
+stay as they were. So does the note the transcriber had already written when the
+split reached an item in `transcribed` or `enrichment_pending` (a pass was still
+running): the pass is stopped and recorded `skipped` / `item_split`, its result is
+never applied, but the unsplit transcript is already in the vault (validation
+scenario D). A transcript that arrives *after* the fence is parked, never published. The unsplit original is not uploaded to S3 by `wax split`
 (archive it with `wax archive <path>` if it only exists locally); parts are
 backed up through the normal inbox path when submitted.

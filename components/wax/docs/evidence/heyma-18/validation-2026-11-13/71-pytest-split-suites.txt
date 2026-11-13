@@ -1,0 +1,4 @@
+# split suites (split_test, split_fence_test, split_daemon_guard_test, split_live_test) after adding quiet_not_quiet
+.....................................................................                                                                                                              [100%]
+69 passed, 13 subtests passed in 103.30s (0:01:43)
+exit=0

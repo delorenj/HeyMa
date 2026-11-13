@@ -1,0 +1,17 @@
+#!/bin/bash
+# STUB enrichment pass (the only pass in the isolated registry). Reads the note, changes nothing
+# itself and returns an empty result. For a note named passslow-* it stays in flight (interruptibly)
+# so a split can arrive while a PASS child is running.
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+md="$1"; name=$(basename "$md")
+ts() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
+echo "$(ts) PASS-START pid=$$ note=$name" >> "$V/logs/pass.log"
+case "$name" in
+  *passslow-*)
+    trap 'echo "$(ts) PASS-SIGTERM pid=$$ note=$name" >> "$V/logs/pass.log"; exit 143' TERM
+    sleep 120 &
+    wait $! ;;
+  *) sleep 1 ;;
+esac
+echo "$(ts) PASS-FINISH pid=$$ note=$name" >> "$V/logs/pass.log"
+echo '{"wax_ep_version": 1}'

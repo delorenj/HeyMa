@@ -1,0 +1,37 @@
+#!/bin/bash
+# Run a command inside the isolated HeyMa validation environment (env -i + explicit variables only).
+# Nothing here may reach production: every Wax path is under $V, S3 is a throwaway local MinIO on a
+# loopback port, NATS points at a closed port, there is no display, no pulse, no notify-send, no
+# canberra (stubs log to $V/logs/stubs.log), no Postgres DSN, and HOME is an empty directory.
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+exec env -i \
+  PATH="$V/stubbin" \
+  HOME="$V/home" \
+  LANG=C.UTF-8 \
+  TZ=America/New_York \
+  TMPDIR="$V/tmp" \
+  PYTHONDONTWRITEBYTECODE=1 \
+  HEYMA_VALIDATE="$V" \
+  WAX_ROOT="$V/root" \
+  WAX_VAULT="$V/vault" \
+  TRANSCRIPTS="$V/vault" \
+  WAX_VOICES_DIR="$V/voices" \
+  WAX_VOICE_NOTIFY=0 WAX_VOICE_CONTEXT=0 WAX_VOICE_NTFY_ALERT=/nonexistent/ntfy-alert \
+  WAX_NATS_HOST=127.0.0.1 WAX_NATS_PORT=1 \
+  WAX_S3_ENDPOINT="http://127.0.0.1:19123" \
+  MC_CONFIG_DIR="$V/mc" \
+  WAX_TRANSCRIPTS_UNIT_FILE=/nonexistent/waxd.service \
+  WAX_FRONTMATTERS="$V/stub-frontmatters" \
+  WAX_TRANSCRIBE="${WAX_TRANSCRIBE_OVERRIDE:-$V/fake-transcribe}" \
+  WAX_PASSES_DIR="$V/passes.d" \
+  WAX_PIPELINES_DIR="$V/pipelines.d" \
+  WAX_DICTIONARY="$V/root/Dictionary.yaml" \
+  WAX_DOC_HYGIENE_FOLDERS="$V/hygiene" \
+  WAX_DOCUMENT_PDF_INTAKE=0 \
+  WAX_DIARIZATION=0 \
+  WAX_SEGMENT_SECONDS="${WAX_SEGMENT_SECONDS:-10}" \
+  WAX_MIN_FREE_BYTES=1 \
+  WAX_LOG_LEVEL=INFO \
+  TELEPHONY_STATE_DIR="$V/telephony-state" TELEPHONY_CONFIG="$V/telephony.json" \
+  TRANSCRIBE_STASH_DIR="$V/stash" TRANSCRIBE_LOCK_FILE="$V/tmp/transcribe.lock" TRANSCRIBE_FAST_LOCK_FILE="$V/tmp/transcribe-fast.lock" \
+  "$@"

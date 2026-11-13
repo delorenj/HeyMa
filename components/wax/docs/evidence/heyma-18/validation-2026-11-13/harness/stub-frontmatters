@@ -1,0 +1,6 @@
+#!/bin/bash
+# STUB for the `frontmatters` editor (WAX_FRONTMATTERS). It does NOT edit the note; it only logs that it
+# was asked to, so a note write that should not happen shows up in $V/logs/frontmatters.log.
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+echo "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) frontmatters $*" >> "$V/logs/frontmatters.log"
+exit 0

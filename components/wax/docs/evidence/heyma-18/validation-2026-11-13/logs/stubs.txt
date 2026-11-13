@@ -1,0 +1,42 @@
+2026-11-13T20:40:54.232385943Z pactl get-default-source
+2026-11-13T20:40:54.234500667Z pactl list short sources
+2026-11-13T20:40:55.248834702Z pactl get-default-source
+2026-11-13T20:40:55.250817649Z pactl list short sources
+2026-11-13T20:40:56.255520116Z pactl get-default-source
+2026-11-13T20:40:56.257796275Z pactl list short sources
+2026-11-13T20:40:57.261827889Z pactl get-default-source
+2026-11-13T20:40:57.264188477Z pactl list short sources
+2026-11-13T20:40:58.268319920Z pactl get-default-source
+2026-11-13T20:40:58.270346629Z pactl list short sources
+2026-11-13T20:40:59.274652881Z pactl get-default-source
+2026-11-13T20:40:59.276974205Z pactl list short sources
+2026-11-13T20:41:00.281521713Z pactl get-default-source
+2026-11-13T20:41:00.284203016Z pactl list short sources
+2026-11-13T20:41:01.288543504Z pactl get-default-source
+2026-11-13T20:41:01.290517995Z pactl list short sources
+2026-11-13T20:41:02.294496953Z pactl get-default-source
+2026-11-13T20:41:02.296653156Z pactl list short sources
+2026-11-13T20:41:03.300768221Z pactl get-default-source
+2026-11-13T20:41:03.302755285Z pactl list short sources
+2026-11-13T20:41:04.307537718Z pactl get-default-source
+2026-11-13T20:41:04.309626674Z pactl list short sources
+2026-11-13T20:41:05.314275276Z pactl get-default-source
+2026-11-13T20:41:05.316172491Z pactl list short sources
+2026-11-13T20:41:06.320222195Z pactl get-default-source
+2026-11-13T20:41:06.322185805Z pactl list short sources
+2026-11-13T20:41:07.326485922Z pactl get-default-source
+2026-11-13T20:41:07.328573124Z pactl list short sources
+2026-11-13T20:41:08.333937497Z pactl get-default-source
+2026-11-13T20:41:08.337081020Z pactl list short sources
+...
+total lines: 1812
+2026-11-13T20:41:09.482540729Z canberra-gtk-play --id message --description Wax transcription start
+2026-11-13T20:41:13.454634384Z canberra-gtk-play --id message --description Wax transcription start
+2026-11-13T20:41:17.663141985Z canberra-gtk-play --id complete --description Wax transcription complete
+2026-11-13T20:41:47.858926294Z canberra-gtk-play --id message --description Wax transcription start
+2026-11-13T20:41:52.076160186Z canberra-gtk-play --id complete --description Wax transcription complete
+2026-11-13T20:42:12.284957490Z canberra-gtk-play --id message --description Wax transcription start
+2026-11-13T20:42:58.066146719Z canberra-gtk-play --id message --description Wax transcription start
+2026-11-13T20:44:10.139337752Z canberra-gtk-play --id message --description Wax transcription start
+2026-11-13T20:44:14.353887419Z canberra-gtk-play --id complete --description Wax transcription complete
+2026-11-13T20:44:24.506230847Z canberra-gtk-play --id message --description Wax transcription start

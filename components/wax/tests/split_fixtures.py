@@ -9,6 +9,7 @@ A timeline is a list of (kind, seconds) steps:
   ("pause", s)  a quiet gap inside a meeting (room noise only)
   ("quiet", s)  the overrun: room noise only
   ("click", s)  room noise with one short loud click in the middle (a door, a cough)
+  ("soft", s)   soft conversation: talk 12 dB under the meeting's level (a far-away or quiet speaker)
 """
 
 import json
@@ -70,6 +71,8 @@ def synth(timeline: list[tuple[str, float]], *, seed: int = 18, room_dbfs: float
         bed = _room(seconds, rng, room_dbfs)
         if kind == "talk":
             bed = bed + _talk(seconds, rng, speech_dbfs)
+        elif kind == "soft":
+            bed = bed + _talk(seconds, rng, speech_dbfs - 12.0)
         elif kind == "click":
             at = int(len(bed) / 2)
             bed[at:at + int(0.05 * RATE)] += 0.5 * rng.standard_normal(int(0.05 * RATE)).astype(np.float32)
@@ -116,6 +119,10 @@ def timelines(scale: float = 1.0) -> dict[str, dict]:
                                              "room_dbfs": -62.0, "overrun_at_s": s(300)},
         "short_meeting_long_overrun_hvac": {"timeline": [("talk", s(300)), ("quiet", s(12000))],
                                             "room_dbfs": -46.0, "overrun_at_s": s(300)},
+        # Measured on real recordings (HEYMA-18 validation): a noisy room, then conversation too soft for the
+        # level threshold. Looks like a long quiet tail to a threshold; it is the middle of a meeting.
+        "meeting_then_soft_speech_in_noisy_room": {"timeline": meeting + [("soft", s(1500))], "room_dbfs": -40.0,
+                                                   "overrun_at_s": None},
         "continuous_activity": {"timeline": [("talk", s(1800))], "room_dbfs": -62.0, "overrun_at_s": None},
         "all_quiet": {"timeline": [("quiet", s(1800))], "room_dbfs": -66.0, "overrun_at_s": None},
         "all_quiet_hvac": {"timeline": [("quiet", s(1800))], "room_dbfs": -46.0, "overrun_at_s": None},

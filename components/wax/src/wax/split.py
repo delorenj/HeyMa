@@ -58,6 +58,7 @@ class Params:
     tail_slack_s: float = 60.0     # the quiet run may end this far before the end of the audio
     pad_s: float = 5.0             # keep this much of the quiet run with the first part
     min_active_s: float = 30.0     # activity required before the cut
+    min_drop_db: float = 20.0      # the quiet run's median must sit this far under the loud reference
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -217,6 +218,20 @@ def detect(frame_db: Any, duration_s: float, params: Params) -> dict[str, Any]:
     if active_before < params.min_active_s:
         return _no_boundary("too_little_activity", f"only {active_before}s of activity before the quiet run "
                             f"(--min-active-s {params.min_active_s:g})", base)
+
+    # Soft speech in a noisy room is "quiet" to a level threshold: the adaptive noise floor of a recording
+    # that is mostly conversation is its own pauses, not an empty room. A real overrun sits far below the
+    # meeting (the fixtures: 40 dB). Measured on 80 real recordings (docs/evidence/heyma-18/validation-2026-11-13):
+    # every boundary that cut through 100+ words of conversation had its "quiet" within 17 dB of the loud
+    # reference. Refuse those; a tail that is really empty but noisy is reported, never cut (exit 3).
+    quiet_median = float(np.median(block_db[start:end]))
+    drop = loud - quiet_median
+    base["stats"]["quiet_median_db"] = round(quiet_median, 1)
+    base["stats"]["quiet_drop_db"] = round(drop, 1)
+    if drop < params.min_drop_db:
+        return _no_boundary("quiet_not_quiet", f"the trailing quiet run is only {drop:.1f} dB under the loud level "
+                            f"(median {quiet_median:.1f} dBFS vs loud {loud:.1f} dBFS; --min-drop-db "
+                            f"{params.min_drop_db:g}): soft speech or a noisy room, not an empty one", base)
 
     cut = min(start + params.pad_s, float(end))
     cut = round(float(cut), 3)

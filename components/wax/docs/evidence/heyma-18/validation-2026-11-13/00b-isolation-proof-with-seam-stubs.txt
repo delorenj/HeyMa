@@ -1,0 +1,35 @@
+# prove-isolation.py re-run after adding the systemd-run and ffmpeg (live-capture seam) stubs and WAX_FRONTMATTERS stub, 2026-11-13T15:45:51-05:00
+OK  WAX_ROOT (paths.HEYMA)           /tmp/heyma-validate-hm18/root
+OK  ledger (paths.DB)                /tmp/heyma-validate-hm18/root/var/wax.db
+OK  state.json                       /tmp/heyma-validate-hm18/root/var/state.json
+OK  status socket (paths.SOCK)       /tmp/heyma-validate-hm18/root/var/waxd.sock
+OK  singleton lock                   /tmp/heyma-validate-hm18/root/var/waxd.singleton.lock
+OK  CLI capture lock (paths.LOCK)    /tmp/heyma-validate-hm18/root/var/waxd.lock
+OK  inbox                            /tmp/heyma-validate-hm18/root/inbox
+OK  stream                           /tmp/heyma-validate-hm18/root/stream
+OK  archive                          /tmp/heyma-validate-hm18/root/archive
+OK  skipped                          /tmp/heyma-validate-hm18/root/skipped
+OK  recovered                        /tmp/heyma-validate-hm18/root/recovered
+OK  vault (paths.VAULT)              /tmp/heyma-validate-hm18/vault
+OK  voices dir                       /tmp/heyma-validate-hm18/voices
+OK  HOME                             /tmp/heyma-validate-hm18/home
+OK  WAX_TRANSCRIBE                   /tmp/heyma-validate-hm18/fake-transcribe
+OK  WAX_PASSES_DIR                   /tmp/heyma-validate-hm18/passes.d
+OK  mc config dir                    /tmp/heyma-validate-hm18/mc
+OK  NATS                             127.0.0.1:1  (port 1 = nothing listens)
+OK  transcripts DSN                    None  (unset = capture-only, Postgres never contacted; unit file /nonexistent/waxd.service)
+OK  S3 endpoint (WAX_S3_ENDPOINT)      http://127.0.0.1:19123  (throwaway MinIO container, tmpfs)
+OK  display/runtime dir               DISPLAY=None WAYLAND_DISPLAY=None XDG_RUNTIME_DIR=None
+OK  PATH lookup canberra-gtk-play  -> /tmp/heyma-validate-hm18/stubbin/canberra-gtk-play (logging STUB)
+OK  PATH lookup notify-send        -> /tmp/heyma-validate-hm18/stubbin/notify-send (logging STUB)
+OK  PATH lookup pactl              -> /tmp/heyma-validate-hm18/stubbin/pactl (logging STUB)
+OK  PATH lookup systemd-run        -> /tmp/heyma-validate-hm18/stubbin/systemd-run (logging STUB)
+OK  PATH lookup ffmpeg             -> /tmp/heyma-validate-hm18/stubbin/ffmpeg (logging STUB)
+OK  PATH lookup systemctl          -> None (absent)
+OK  PATH lookup op                 -> None (absent)
+OK  PATH lookup xdg-open           -> None (absent)
+OK  PATH lookup paplay             -> None (absent)
+OK  PATH lookup mc                 -> None (absent)
+OK  archive.MC                       /usr/local/bin/mc (real mc binary; alias 'delo' resolved from MC_CONFIG_DIR above, not from the real ~/.mc)
+env var names present: ['HEYMA_VALIDATE', 'HOME', 'LANG', 'MC_CONFIG_DIR', 'PATH', 'PYTHONDONTWRITEBYTECODE', 'TELEPHONY_CONFIG', 'TELEPHONY_STATE_DIR', 'TMPDIR', 'TRANSCRIBE_FAST_LOCK_FILE', 'TRANSCRIBE_LOCK_FILE', 'TRANSCRIBE_STASH_DIR', 'TRANSCRIPTS', 'TZ', 'WAX_COMPONENT_SRC', 'WAX_DIARIZATION', 'WAX_DICTIONARY', 'WAX_DOCUMENT_PDF_INTAKE', 'WAX_DOC_HYGIENE_FOLDERS', 'WAX_FRONTMATTERS', 'WAX_LOG_LEVEL', 'WAX_MIN_FREE_BYTES', 'WAX_NATS_HOST', 'WAX_NATS_PORT', 'WAX_PASSES_DIR', 'WAX_PIPELINES_DIR', 'WAX_ROOT', 'WAX_S3_ENDPOINT', 'WAX_SEGMENT_SECONDS', 'WAX_TRANSCRIBE', 'WAX_TRANSCRIPTS_UNIT_FILE', 'WAX_VAULT', 'WAX_VOICES_DIR', 'WAX_VOICE_CONTEXT', 'WAX_VOICE_NOTIFY', 'WAX_VOICE_NTFY_ALERT']
+exit=0

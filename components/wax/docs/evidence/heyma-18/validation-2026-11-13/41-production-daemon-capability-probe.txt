@@ -1,0 +1,15 @@
+# READ-ONLY probe of PRODUCTION waxd, 2026-11-13T15:44:40-05:00. Reads: the singleton lock file, /proc/<pid>/cmdline, state.json, and the status socket (what 'wax status' does). Writes nothing.
+prod singleton lock: 5494
+/usr/bin/python3 /home/delorenj/HeyMa/components/wax/bin/waxd 
+prod daemon started: Thu Nov 12 12:46:06 2026
+--- state.json daemon block:
+{'pid': 5494}
+--- socket snapshot daemon block:
+<absent>
+--- fence.daemon_probe() (worktree code) against the PRODUCTION root:
+{'running': True, 'pid': 5494, 'source': 'socket', 'capabilities': []}
+--- production checkout has fence.py / item_fences on disk? (code the running daemon could have loaded)
+/home/delorenj/HeyMa/components/wax/src/wax/fence.py
+0
+--- production ledger has item_fences table? (read-only)
+['item_fences', 'item_children', 'split_segments']

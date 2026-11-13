@@ -1,0 +1,9 @@
+slug: fx-stamp
+version: 1
+description: STUB pass for the HEYMA-18 validation. No model, no network, changes nothing.
+capabilities: [audio]
+enabled: true
+auto: true
+requires: []
+timeout_s: 300
+command: ["@V@/fx-stamp", "{md_path}"]

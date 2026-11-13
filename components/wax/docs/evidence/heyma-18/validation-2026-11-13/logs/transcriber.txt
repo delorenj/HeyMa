@@ -1,0 +1,15 @@
+2026-11-13T20:41:09.484795688Z START  pid=1419294 mode=slow audio=slow-meeting-overrun.ogg
+2026-11-13T20:41:13.162739298Z SIGTERM pid=1419294 mode=slow audio=slow-meeting-overrun.ogg: exiting 143
+2026-11-13T20:41:13.457230636Z START  pid=1421036 mode=fast audio=unrelated-talk.ogg
+2026-11-13T20:41:16.501523163Z FINISH pid=1421036 mode=fast audio=unrelated-talk.ogg note=/tmp/heyma-validate-hm18/vault/unrelated-talk.md
+2026-11-13T20:41:47.861258047Z START  pid=1436638 mode=fast audio=slow-meeting-overrun-part1of2.ogg
+2026-11-13T20:41:50.917660857Z FINISH pid=1436638 mode=fast audio=slow-meeting-overrun-part1of2.ogg note=/tmp/heyma-validate-hm18/vault/slow-meeting-overrun-part1of2.md
+2026-11-13T20:42:12.286724770Z START  pid=1447591 mode=stubborn audio=stubborn-meeting-overrun.ogg
+2026-11-13T20:42:15.789922116Z SIGTERM pid=1447591 mode=stubborn audio=stubborn-meeting-overrun.ogg: ignoring, finishing in 2 s
+2026-11-13T20:42:17.843230458Z FINISH pid=1447591 mode=stubborn audio=stubborn-meeting-overrun.ogg note=/tmp/heyma-validate-hm18/vault/stubborn-meeting-overrun.md
+2026-11-13T20:42:58.068192915Z START  pid=1469479 mode=fast audio=passslow-meeting-overrun.ogg
+2026-11-13T20:43:01.116244819Z FINISH pid=1469479 mode=fast audio=passslow-meeting-overrun.ogg note=/tmp/heyma-validate-hm18/vault/passslow-meeting-overrun.md
+2026-11-13T20:44:10.141749116Z START  pid=1501723 mode=fast audio=unrelated-talk.ogg
+2026-11-13T20:44:13.186185133Z FINISH pid=1501723 mode=fast audio=unrelated-talk.ogg note=/tmp/heyma-validate-hm18/vault/unrelated-talk.md
+2026-11-13T20:44:24.508734985Z START  pid=1507704 mode=slow audio=slow-meeting-overrun.ogg
+2026-11-13T20:44:50.181873917Z SIGTERM pid=1507704 mode=slow audio=slow-meeting-overrun.ogg: exiting 143

@@ -1,0 +1,4 @@
+#!/bin/bash
+# STUB for canberra-gtk-play: logs the call, does nothing else (no sound, no desktop, no pulse server is ever contacted).
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+echo "$(date -u +%FT%T.%NZ) canberra-gtk-play $*" >> "$V/logs/stubs.log"

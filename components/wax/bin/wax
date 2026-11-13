@@ -2689,7 +2689,8 @@ def main() -> int:
             ("--blip-s", "blip_s", "a burst this short inside quiet is not activity"),
             ("--tail-slack-s", "tail_slack_s", "the quiet run may end this long before the audio ends"),
             ("--pad-s", "pad_s", "keep this much of the quiet run with the first part"),
-            ("--min-active-s", "min_active_s", "activity required before the cut")):
+            ("--min-active-s", "min_active_s", "activity required before the cut"),
+            ("--min-drop-db", "min_drop_db", "the quiet run must sit this far under the loud level")):
         spr.add_argument(flag, type=float, default=getattr(defaults, field), help=f"{helptext} (default %(default)g)")
     sub_ = sps.add_parser("submit", parents=[common], help="send held parts to the inbox (normal S3-verified path)")
     sub_.add_argument("split_id"); sub_.add_argument("parts", nargs="+", help="1-based part numbers, or `all`")

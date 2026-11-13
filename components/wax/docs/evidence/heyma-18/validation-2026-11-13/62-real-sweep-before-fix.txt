@@ -1,0 +1,86 @@
+# sweep of real archived recordings (copies under /tmp/heyma-validate-hm18/real-sweep), default detection params, 2026-11-13T15:49:37-05:00
+255 candidate recordings in the window; examining the first 80 that have a transcript
+item                 dur verdict                        cut_s last_turn_s after_cut_s  note
+0255815826daf705     689 no (no_sustained_quiet)            -         688           -
+03dbfbb9f35210ce    5014 no (no_sustained_quiet)            -         460           -
+06b63f2a19c476d3    7632 BOUNDARY                        7016        7575         559  FALSE-POSITIVE (speech turns start after the cut)
+070521b113d8a961    1253 no (no_sustained_quiet)            -         333           -
+071d0bdfe8a58ab3     545 no (no_sustained_quiet)            -         535           -
+0745178283494c92    2761 no (no_sustained_quiet)            -        2405           -
+07d5d304106a5732     986 no (no_sustained_quiet)            -         665           -
+08cc08e39521885c     576 no (no_sustained_quiet)            -         567           -
+08e752d0872efd7e    1770 no (no_sustained_quiet)            -        1753           -
+09c27a57d40b7d63    3159 no (no_sustained_quiet)            -        3158           -
+0aa1e78eaf2c9317    2031 no (no_sustained_quiet)            -        1986           -
+0b4817f6e7ae71e4     895 no (no_sustained_quiet)            -         872           -
+0d533d13fd340d6f    2507 no (no_sustained_quiet)            -        2500           -
+0e786158d5f6a1c1   10312 no (no_sustained_quiet)            -        2371           -
+0f784df79c6e3caf    1878 BOUNDARY                         940        1867         927  FALSE-POSITIVE (speech turns start after the cut)
+126d791b0a40654e    3357 no (no_sustained_quiet)            -        3341           -
+18bec3a92d8ad31a    6854 no (no_sustained_quiet)            -        6154           -
+18bff63f7e567141     538 no (no_sustained_quiet)            -         509           -
+1a63a520506b27f0    1246 no (no_sustained_quiet)            -        1023           -
+1a9c4ed491a30c84    2636 no (no_sustained_quiet)            -        2621           -
+1cb627099a464f07    1117 no (no_sustained_quiet)            -        1092           -
+1d8ee91bb584b9c6    1373 no (no_sustained_quiet)            -        1365           -
+1ee40f819517d327    6725 no (no_sustained_quiet)            -        5658           -
+1f17c7c841366871    3307 no (no_sustained_quiet)            -         335           -
+25ba8f99eced6e7e    3026 no (quiet_not_trailing)            -        2579           -
+265db9ae0fb6a9d6    1639 no (no_sustained_quiet)            -        1361           -
+26bf8ae138799293    1203 BOUNDARY                         877        1172         295  FALSE-POSITIVE (speech turns start after the cut)
+275da7535a3fae46    3298 no (no_sustained_quiet)            -        2513           -
+2953bfd27c8c75be     704 no (no_sustained_quiet)            -           0           -
+2962c52169639eee    2465 BOUNDARY                        1347        1345          -2  ok (no speech after the cut)
+29a2296207523c44     800 no (no_sustained_quiet)            -         799           -
+2d5ec43714824751    1472 no (no_sustained_quiet)            -        1414           -
+2da835314e7f2334     401 no (too_little_activity)           -           0           -
+2df55db6a81e51ed     953 no (no_sustained_quiet)            -         700           -
+2eeb8d8c25f17468     273 no (too_short)                     -         105           -
+2f2ae02c16ed6872    7674 BOUNDARY                        7338        7657         319  FALSE-POSITIVE (speech turns start after the cut)
+2f2bb7069448e288     653 no (no_sustained_quiet)            -         638           -
+2f3a0f55bc986e93     700 no (no_sustained_quiet)            -         699           -
+30d75fb80a8b48e5    1675 no (no_sustained_quiet)            -        1591           -
+30ec7d6a1b15c66e    1291 no (no_sustained_quiet)            -        1282           -
+3262c08c4cd90648    3449 no (too_little_activity)           -        1684           -
+32c64fd3c01cb68c     269 no (no_contrast)                   -           0           -
+36fc00ccd38b94fa     893 no (no_sustained_quiet)            -         868           -
+38225e0707d2573e     342 no (no_sustained_quiet)            -           0           -
+3936d535a4e67699    1039 no (no_sustained_quiet)            -         487           -
+39aab6ca98591ea2    2342 no (no_sustained_quiet)            -        2338           -
+39dda4d4963c42ae     410 no (no_activity)                   -         263           -
+39e8cc31b2d7868f    7931 no (no_sustained_quiet)            -        4636           -
+3afbec064f76c03a    3080 no (no_sustained_quiet)            -        3071           -
+4160dc4bcdd72490    1470 BOUNDARY                        1047        1466         419  FALSE-POSITIVE (speech turns start after the cut)
+4191cd95069f939a    1853 BOUNDARY                         860         997         137  FALSE-POSITIVE (speech turns start after the cut)
+42f57a75d0073be4    1155 no (no_sustained_quiet)            -        1060           -
+445964a7ff6e4303     765 no (no_sustained_quiet)            -         759           -
+44db671907256771     371 no (no_sustained_quiet)            -         332           -
+452b6188e977a91a    2251 no (no_sustained_quiet)            -        2248           -
+45a85074d806a123    1373 no (no_sustained_quiet)            -         985           -
+4619143c4ecee6ab    3842 no (no_sustained_quiet)            -        3833           -
+461c2035e6ad2bc3     788 no (no_sustained_quiet)            -         765           -
+49dec7f84449090c    1296 no (no_sustained_quiet)            -         119           -
+4a1e45e3cbd30b76    5011 no (no_sustained_quiet)            -        5002           -
+4c7d0154acc39d7b     885 no (no_sustained_quiet)            -         881           -
+4c9f2d894fde1cc5    1433 no (no_sustained_quiet)            -        1398           -
+4d3fd480878a2672     682 no (no_sustained_quiet)            -         663           -
+4fde7b413cac2fb1     569 no (no_sustained_quiet)            -         367           -
+532456d0d4d45dfb    5578 no (no_sustained_quiet)            -        5518           -
+552e2e8338db8a97    1065 no (no_sustained_quiet)            -        1031           -
+554d26e75d4d6829    2229 no (no_sustained_quiet)            -        2228           -
+56770bd978a5a2b7     327 no (no_contrast)                   -           0           -
+57fbdb6813de7de2    1123 no (too_little_activity)           -        1119           -
+5af7dfaffb5ff9e1     806 no (no_sustained_quiet)            -           0           -
+5eb5435383eafa7f    3581 no (no_sustained_quiet)            -        3571           -
+611d138b405f5d10    6176 no (no_sustained_quiet)            -        6147           -
+65b15348b35f850d    5506 no (no_sustained_quiet)            -        4991           -
+6f34f7c4de880707    3229 no (no_sustained_quiet)            -        3082           -
+746ab0ebab991930     401 no (no_contrast)                   -           9           -
+74853e78bac48801    4980 no (no_sustained_quiet)            -        4977           -
+78102587247e08aa    3969 no (no_sustained_quiet)            -        3953           -
+798731fdd81e97a7    1287 BOUNDARY                         283         176        -107  ok (no speech after the cut)
+7b5c88f504b47960     889 no (no_sustained_quiet)            -         749           -
+7b8b18bbcc74e065    2126 no (no_sustained_quiet)            -        2112           -
+
+examined 80; boundaries proposed 8; false positives 6
+exit=0

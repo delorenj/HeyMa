@@ -1,0 +1,14 @@
+#!/bin/bash
+# STUB ffmpeg: the live-capture SEAM. There is no microphone and none is ever opened. capture.py's encoder
+# argv has `-f pulse -i <source>`; this replaces exactly that input with a prerecorded fixture fed at
+# ${LIVE_READRATE:-20}x real time, so the REAL ffmpeg really encodes opus segments through the REAL capture,
+# stop (`q` on the FIFO) and finalize code. Every other invocation (probe, cut, decode) passes straight through.
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+out=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-f" ] && [ "$2" = "pulse" ] && [ "$3" = "-i" ]; then
+    echo "$(date -u +%FT%T.%NZ) ffmpeg-seam: replaced '-f pulse -i $4' with '-readrate ${LIVE_READRATE:-20} -i $V/fixtures/live-source.ogg'" >> "$V/logs/stubs.log"
+    out+=(-readrate "${LIVE_READRATE:-20}" -i "$V/fixtures/live-source.ogg"); shift 4
+  else out+=("$1"); shift; fi
+done
+exec /usr/bin/ffmpeg "${out[@]}"

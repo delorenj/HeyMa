@@ -1,0 +1,40 @@
+$ wax split real-4160-soft-speech.ogg --dry-run   (isolated root, no daemon, copy of the production recording)
+wax split: NO_BOUNDARY  item (unregistered)  /tmp/heyma-validate-hm18/root/inbox/real-4160-soft-speech.ogg
+  duration 0:24:30  noise floor -39.6 dBFS  loud -24.4 dBFS  activity threshold -29.6 dBFS
+  no usable boundary [quiet_not_quiet]: the trailing quiet run is only 9.1 dB under the loud level (median -33.6 dBFS vs loud -24.4 dBFS; --min-drop-db 20): soft speech or a noisy room, not an empty one
+    quiet run 0:17:22-0:24:30 (428s)
+    quiet run 0:00:01-0:04:44 (283s)
+    quiet run 0:07:00-0:10:13 (193s)
+  changes: none
+exit=3
+
+$ wax split real-rec-1h.ogg --dry-run   (isolated root, no daemon, copy of the production recording)
+wax split: NO_BOUNDARY  item (unregistered)  /tmp/heyma-validate-hm18/root/inbox/real-rec-1h.ogg
+  duration 1:05:30  noise floor -57.8 dBFS  loud -32.3 dBFS  activity threshold -47.8 dBFS
+  no usable boundary [no_sustained_quiet]: no quiet run of 300s reaches the end (longest trailing quiet 27s): continuous activity or only ordinary pauses
+    quiet run 0:46:19-0:47:37 (78s)
+    quiet run 0:29:32-0:30:24 (52s)
+    quiet run 0:41:53-0:42:32 (39s)
+  changes: none
+exit=3
+
+$ wax split real-long-3h.mp3 --dry-run   (isolated root, no daemon, copy of the production recording)
+wax split: NO_BOUNDARY  item (unregistered)  /tmp/heyma-validate-hm18/root/inbox/real-long-3h.mp3
+  duration 3:00:00  noise floor -41.8 dBFS  loud -17.9 dBFS  activity threshold -31.8 dBFS
+  no usable boundary [quiet_not_trailing]: a quiet run of 300s or more exists but activity continues for more than 60s after it
+    quiet run 2:08:19-2:32:10 (1431s)
+    quiet run 2:32:14-2:55:14 (1380s)
+    quiet run 1:50:08-2:08:10 (1082s)
+  changes: none
+exit=3
+
+$ wax split real-06b6-sparse-speech.ogg --dry-run   (isolated root, no daemon, copy of the production recording)
+wax split: PROPOSED  item (unregistered)  /tmp/heyma-validate-hm18/root/inbox/real-06b6-sparse-speech.ogg
+  duration 2:07:12  noise floor -46.4 dBFS  loud -16.3 dBFS  activity threshold -36.4 dBFS
+  quiet from 1:56:51 to 2:07:12 (621s); cut at 1:56:56
+  part 1 (active): 0:00:00 - 1:56:56
+  part 2 (quiet-tail): 1:56:56 - 2:07:12
+  changes: none (--dry-run)
+exit=0
+
+isolated skipped/split: 20261113-154611-be6740 

@@ -1,0 +1,8 @@
+#!/bin/bash
+# STUB for pactl: answers the capture preflight with a fake source; no pulse server is ever contacted.
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+echo "$(date -u +%FT%T.%NZ) pactl $*" >> "$V/logs/stubs.log"
+case "$*" in
+  "get-default-source") echo "heyma-validate-stub-source" ;;
+  "list short sources") printf '0\theyma-validate-stub-source\tstub\ts16le 1ch 48000Hz\tRUNNING\n' ;;
+esac

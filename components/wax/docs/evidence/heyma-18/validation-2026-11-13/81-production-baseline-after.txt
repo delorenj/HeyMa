@@ -1,0 +1,50 @@
+2026-11-13T16:00:45-05:00
+waxd pids:
+5494 /usr/bin/python3 /home/delorenj/HeyMa/components/wax/bin/waxd
+    PID                  STARTED     ELAPSED CMD
+   5494 Thu Nov 12 12:46:06 2026  1-03:14:38 /usr/bin/python3 /home/delorenj/HeyMa/components/wax/bin/waxd
+
+$ wax status (production, read-only)
+  stream       not-ready (no_default_source)
+                 stream dir clean but preflight failed: ['no_default_source']
+  inbox        error (failed_items)
+                 1 failed item(s) preserved in inbox
+  queue        1 in inbox · 0 actionable · 1 failed
+  items        602 live of 937 recorded  (complete 571 · enrichment_pending 14 · failed 1 · skipped 16)
+  passes       FAILING  11 item(s): call-metadata, clipboard-copy   -> wax ep sweep --dry-run
+  diarization  ok       0 recent transcript(s) undiarized
+  outbox       0 unpublished
+  transcripts  ok (queued 0, embed pending 0)
+  calls        ok       synced 0 min ago  (7d: answered 65 · declined 8 · failed 5 · missed 19 · no_answer 1 · voicemail 5)
+exit=
+
+ledger row counts (ro):
+  backups 723
+  call_events 9911
+  call_legs 326
+  call_recordings 216
+  calls 251
+  completions 351
+  document_bindings 1
+  document_receipts 542
+  documents 542
+  failure_tickets 1
+  files_seen 1387
+  item_children 0
+  item_fences 0
+  items 937
+  meta 14
+  outbox 31037
+  pass_events 0
+  passes 5019
+  pipelines 5
+  processing_plans 365
+  split_segments 0
+  sqlite_sequence 3
+  transcript_snapshots 4866
+  transcripts 678
+  transitions 5382
+  voice_exemplars 359
+  voice_sightings 958
+  voices 64
+state.json daemon: {'pid': 5494} stream.rid: None stream.state: ready

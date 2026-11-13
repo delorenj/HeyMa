@@ -1,0 +1,41 @@
+old waxd: pid 1487180  argv: /usr/bin/python3 /tmp/heyma-validate-hm18/oldcode/components/wax/bin/waxd 
+pre-fence code has no fence module: no fence.py; item_fences mentions in its worker/ledger: /tmp/heyma-validate-hm18/oldcode/components/wax/src/wax/worker.py:0 /tmp/heyma-validate-hm18/oldcode/components/wax/src/wax/ledger.py:0 
+--- what the old daemon advertises (socket, then state.json)
+socket  daemon = <absent>
+state.json daemon = {'pid': 1487180}
+
+=== PART 1: the hazard the guard prevents. A fence raised under the old worker (inserted with the NEW code's raise_fence) is ignored.
+[20:44:10.446] target 08d51662097b2265 state=archived transcriber running; children tracked by the old worker: [sqlite3.OperationalError: no such table: item_children]
+raise_fence -> True
+[20:44:22.549] item_fences: 08d51662097b | hazard-demo
+transcriber log since start:
+2026-11-13T20:44:10.141749116Z START  pid=1501723 mode=fast audio=unrelated-talk.ogg
+2026-11-13T20:44:13.186185133Z FINISH pid=1501723 mode=fast audio=unrelated-talk.ogg note=/tmp/heyma-validate-hm18/vault/unrelated-talk.md
+item state: complete  (the fence was ignored: the old worker kept going)
+vault: 20261113-154408-unrelated-talk.md    <- a transcript was PUBLISHED for a fenced item
+transitions:
+2026-11-13T20:44:09.177Z | None | pending | discovered
+2026-11-13T20:44:10.035Z | pending | archived | s3_verified
+2026-11-13T20:44:13.243Z | archived | transcribed | gate_passed
+2026-11-13T20:44:14.351Z | transcribed | complete | finalized
+
+=== PART 2: the new CLI against the old daemon, item in processing -> refused
+target a8a7e80b4aec87c4 state=archived; transcriber pid (pgrep) 1501154 alive=yes; tracked in item_children: []  (old worker does not register children)
+[20:44:25.708] $ wax split a8a7e80b4a
+error: refusing: the running waxd (pid 1487180) predates the split fence (its status does not advertise item-fence/1), so it would not stop transcribing this item and could publish a transcript of the unsplit recording. Restart waxd first (`systemctl --user restart waxd`; a capture in progress is not touched, its encoder runs in its own scope), then run `wax split` again. Nothing was fenced, halted, cut or moved.
+[20:44:27.095] exit=2
+--- nothing changed:
+fences: []  state: archived  transcriber still alive: yes
+original still in inbox, sha256 unchanged: yes
+skipped/split exists: no
+
+=== PART 3: paths the guard must NOT block, same old daemon
+$ wax split a8a7e80b4a --dry-run
+wax split: PROPOSED  item a8a7e80b4aec87c4  /tmp/heyma-validate-hm18/root/inbox/slow-meeting-overrun.ogg
+  duration 0:35:35  noise floor -62.2 dBFS  loud -19.6 dBFS  activity threshold -52.2 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:35
+  changes: none (--dry-run)
+exit=0
+fences after dry-run: []

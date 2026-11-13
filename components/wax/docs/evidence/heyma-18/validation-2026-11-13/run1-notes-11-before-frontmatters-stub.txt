@@ -1,0 +1,169 @@
+== transcriber log
+2026-11-13T20:39:35.376843543Z START  pid=1344767 mode=slow audio=slow-meeting-overrun.ogg
+2026-11-13T20:39:39.759882015Z SIGTERM pid=1344767 mode=slow audio=slow-meeting-overrun.ogg: exiting 143
+2026-11-13T20:39:40.078137219Z START  pid=1346520 mode=fast audio=unrelated-talk.ogg
+2026-11-13T20:39:43.122927514Z FINISH pid=1346520 mode=fast audio=unrelated-talk.ogg note=/tmp/heyma-validate-hm18/vault/unrelated-talk.md
+== items
+a8a7e80b4aec | skipped | /tmp/heyma-validate-hm18/root/skipped/split/20261113-203939-a8a7e80b/slow-meeting-overrun.ogg
+08d51662097b | enrichment_pending | /tmp/heyma-validate-hm18/root/archive/2026/11/unrelated-talk.ogg
+== item_fences
+a8a7e80b4aec | 20261113-203939-a8a7e80b | split | 2026-11-13T20:39:39.721Z
+== item_children (must be empty)
+== transitions (target a8a7e80b4aec)
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    for r in c.execute(sys.argv[1]).fetchall(): print(' | '.join(str(x) for x in r))
+             ~~~~~~~~~^^^^^^^^^^^^^
+sqlite3.OperationalError: no such column: cause
+== transitions (unrelated 08d51662097b)
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    for r in c.execute(sys.argv[1]).fetchall(): print(' | '.join(str(x) for x in r))
+             ~~~~~~~~~^^^^^^^^^^^^^
+sqlite3.OperationalError: no such column: cause
+== passes rows
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    for r in c.execute(sys.argv[1]).fetchall(): print(' | '.join(str(x) for x in r))
+             ~~~~~~~~~^^^^^^^^^^^^^
+sqlite3.OperationalError: no such column: slug
+== original: where is it, sha256
+a8a7e80b4aec87c41d136a58e10547b04d9856de25348cd75f65f89febb217e0  /tmp/heyma-validate-hm18/root/skipped/split/20261113-203939-a8a7e80b/slow-meeting-overrun.ogg
+expected a8a7e80b4aec87c41d136a58e10547b04d9856de25348cd75f65f89febb217e0 (fixtures copy: a8a7e80b4aec87c41d136a58e10547b04d9856de25348cd75f65f89febb217e0)
+== hold
+-rw-rw-r-- 1 delorenj delorenj 2548909 Nov 13 15:14 /tmp/heyma-validate-hm18/root/skipped/split/20261113-203939-a8a7e80b/slow-meeting-overrun-part1of2.ogg
+-rw-rw-r-- 1 delorenj delorenj 4906071 Nov 13 15:39 /tmp/heyma-validate-hm18/root/skipped/split/20261113-203939-a8a7e80b/slow-meeting-overrun-part2of2.ogg
+-rw-rw-r-- 1 delorenj delorenj 7454754 Nov 13 15:39 /tmp/heyma-validate-hm18/root/skipped/split/20261113-203939-a8a7e80b/slow-meeting-overrun.ogg
+-rw-rw-r-- 1 delorenj delorenj    2653 Nov 13 15:39 /tmp/heyma-validate-hm18/root/skipped/split/20261113-203939-a8a7e80b/split.json
+== split.json
+{
+  "created_at": "2026-11-13T20:39:40.194Z",
+  "detection": {
+    "boundary": {
+      "active_before_s": 465,
+      "cut_s": 640.0,
+      "quiet_end_s": 2135,
+      "quiet_length_s": 1500,
+      "quiet_start_s": 635
+    },
+    "duration_s": 2135.0,
+    "params": {
+      "blip_s": 3.0,
+      "floor_dbfs": -60.0,
+      "margin_db": 10.0,
+      "min_active_s": 30.0,
+      "min_quiet_s": 300.0,
+      "min_range_db": 12.0,
+      "pad_s": 5.0,
+      "tail_slack_s": 60.0
+    },
+    "quiet_runs": [
+      {
+        "end_s": 2135,
+        "length_s": 1500,
+        "start_s": 635
+      },
+      {
+        "end_s": 405,
+        "length_s": 90,
+        "start_s": 315
+      },
+      {
+        "end_s": 165,
+        "length_s": 45,
+        "start_s": 120
+      },
+      {
+        "end_s": 575,
+        "length_s": 30,
+        "start_s": 545
+      }
+    ],
+    "stats": {
+      "active_s": 465,
+      "blocks": 2135,
+      "loud_db": -19.6,
+      "noise_floor_db": -62.2,
+      "threshold_db": -52.2
+    }
+  },
+  "halted": [
+    {
+      "argv0": "nice",
+      "pid": 1344767,
+      "signalled": [
+        1344771,
+        1344767
+      ]
+    }
+  ],
+  "method": "waveform-rms",
+  "origin": "item",
+  "original_path": "/tmp/heyma-validate-hm18/root/skipped/split/20261113-203939-a8a7e80b/slow-meeting-overrun.ogg",
+  "original_settled": true,
+  "schema": 1,
+  "segments": [
+    {
+      "bytes": 2548909,
+      "duration_s": 640.02,
+      "end_s": 640.0,
+      "file": "slow-meeting-overrun-part1of2.ogg",
+      "index": 1,
+      "item_id": "fa87d449be7bc4c3",
+      "kind": "active",
+      "mtime": 1794600878.1857827,
+      "sha256": "fa87d449be7bc4c3e61944507835f125cda992f7b6ac15a9597f3e84573990a1",
+      "start_s": 0.0,
+      "state": "held",
+      "submitted_as": null,
+      "submitted_at": null
+    },
+    {
+      "bytes": 4906071,
+      "duration_s": 1495.006,
+      "end_s": 2135.0,
+      "file": "slow-meeting-overrun-part2of2.ogg",
+      "index": 2,
+      "item_id": "8edbb1b510f6ee30",
+      "kind": "quiet-tail",
+      "mtime": 1794602373.1857827,
+      "sha256": "8edbb1b510f6ee307bfd8a9d75df5b5a904099e7c41b456fdb00f6e671775d8f",
+      "start_s": 640.0,
+      "state": "held",
+      "submitted_as": null,
+      "submitted_at": null
+    }
+  ],
+  "source": {
+    "bytes": 7454754,
+    "duration_s": 2135.0,
+    "item_id": "a8a7e80b4aec87c4",
+    "item_state_before": "archived",
+    "kind": "item",
+    "orig_name": "slow-meeting-overrun.ogg",
+    "path": "/tmp/heyma-validate-hm18/root/inbox/slow-meeting-overrun.ogg",
+    "sha256": "a8a7e80b4aec87c41d136a58e10547b04d9856de25348cd75f65f89febb217e0"
+  },
+  "split_id": "20261113-203939-a8a7e80b"
+}== vault (published transcripts)
+total 12
+drwxrwxr-x  2 delorenj delorenj 4096 Nov 13 15:39 .
+drwxrwxr-x 18 delorenj delorenj 4096 Nov 13 15:36 ..
+-rw-rw-r--  1 delorenj delorenj 1035 Nov 13 15:39 20261113-153936-unrelated-talk.md
+== daemon health
+  stream       ready
+                 no sentinels, no partials, preflight ok
+  inbox        ready-and-waiting
+                 inbox empty, scheduler enabled
+  queue        0 in inbox · 0 actionable · 0 failed
+  items        2 live of 2 recorded  (enrichment_pending 1 · skipped 1)
+  passes       FAILING  1 item(s): fx-stamp   -> wax ep sweep --dry-run
+  diarization  ok       0 recent transcript(s) undiarized
+  outbox       12 unpublished
+  transcripts  disabled (queued 2, embed pending ?)   WAX_TRANSCRIPTS_DSN is unset (capture only)
+  calls        off      never synced
+daemon snapshot updated_at x3, 1.2 s apart:
+2026-11-13T20:40:09.708Z {'capabilities': ['item-fence/1'], 'pid': 1331089} {'actionable': 0, 'failed': 0, 'total': 0}
+2026-11-13T20:40:10.714Z {'capabilities': ['item-fence/1'], 'pid': 1331089} {'actionable': 0, 'failed': 0, 'total': 0}
+2026-11-13T20:40:11.721Z {'capabilities': ['item-fence/1'], 'pid': 1331089} {'actionable': 0, 'failed': 0, 'total': 0}
+waxd alive: 1331089 -> yes

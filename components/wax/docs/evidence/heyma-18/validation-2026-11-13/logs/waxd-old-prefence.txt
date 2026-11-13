@@ -1,0 +1,8 @@
+INFO wax.waxd: waxd 1487180 starting: root=/tmp/heyma-validate-hm18/root ledger=/tmp/heyma-validate-hm18/root/var/wax.db vault=/tmp/heyma-validate-hm18/vault passes=/tmp/heyma-validate-hm18/passes.d level=INFO
+INFO wax.waxd: transcriber: /tmp/heyma-validate-hm18/fake-transcribe (diarization disabled)
+WARNING wax.waxd: tray_unavailable: no display
+INFO wax.worker: item 08d51662097b2265 -> archived (s3_verified): 2026-11-13/08d51662097b-unrelated-talk.ogg (7473131 B, size+md5)
+INFO wax.passes: fx-stamp completed for 08d51662097b2265 in 1.01s (attempt 1, 0 field(s) changed)
+INFO wax.worker: linked 20261113-154408-unrelated-talk.md to 1 archived object(s) (un-slugged; note stem used)
+INFO wax.worker: item a8a7e80b4aec87c4 -> archived (s3_verified): 2026-11-13/a8a7e80b4aec-slow-meeting-overrun.ogg (7454754 B, size+md5)
+INFO wax.waxd: waxd 1487180 exiting

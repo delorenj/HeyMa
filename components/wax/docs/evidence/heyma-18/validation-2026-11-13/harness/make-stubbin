@@ -1,0 +1,13 @@
+#!/bin/bash
+# Builds $V/stubbin: the ONLY directory on PATH inside the isolated environment. Real tools are
+# symlinked by name; everything that could make noise or reach the desktop is a logging stub.
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+H=$(cd "$(dirname "$0")" && pwd)
+mkdir -p "$V/stubbin"
+for t in ffprobe nice bash sh sleep cat date env mkdir mv cp kill grep sed awk sha256sum basename dirname tr head tail wc touch tee readlink seq ls id true false test python3 flock stat ln chmod uname hostname; do
+  p=$(type -P $t) || { echo "missing $t"; continue; }
+  ln -sf "$p" "$V/stubbin/$t"
+done
+ln -sf /usr/bin/python3 "$V/stubbin/python3"
+for t in canberra-gtk-play notify-send pactl systemd-run ffmpeg; do ln -sf "$H/stub-$t" "$V/stubbin/$t"; done
+ls "$V/stubbin" | tr '\n' ' '; echo

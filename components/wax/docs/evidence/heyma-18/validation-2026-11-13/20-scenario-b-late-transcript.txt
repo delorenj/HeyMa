@@ -1,0 +1,78 @@
+vault before: 20261113-151612-slow-meeting-overrun-part1of2.md 20261113-154109-unrelated-talk.md 
+frontmatters stub calls before: 2
+[20:42:08.196] drop stubborn-meeting-overrun.ogg
+source sha256 89bf4172582c09c6e51b475555a438cc7c9a01fe5de00903e8775f1a015d500e
+target=89bf4172582c09c6 state=archived
+89bf4172582c09c6 | 1447591 | nice
+[20:42:14.265] $ wax split 89bf417258
+wax split: SPLIT  item 89bf4172582c09c6  /tmp/heyma-validate-hm18/root/inbox/stubborn-meeting-overrun.ogg
+  duration 0:35:35  noise floor -46.1 dBFS  loud -19.6 dBFS  activity threshold -36.1 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40  stubborn-meeting-overrun-part1of2.ogg  [held]
+  part 2 (quiet-tail): 0:10:40 - 0:35:35  stubborn-meeting-overrun-part2of2.ogg  [held]
+  processing: archived -> skipped; in-flight work halted (nice); original preserved; parts held until submitted
+  halted: ['nice']
+  held in /tmp/heyma-validate-hm18/root/skipped/split/20261113-204215-89bf4172 (submit with `wax split submit 20261113-204215-89bf4172 all`)
+[20:42:18.299] wax split exit=0
+== transcriber log (stubborn)
+2026-11-13T20:42:12.286724770Z START  pid=1447591 mode=stubborn audio=stubborn-meeting-overrun.ogg
+2026-11-13T20:42:15.789922116Z SIGTERM pid=1447591 mode=stubborn audio=stubborn-meeting-overrun.ogg: ignoring, finishing in 2 s
+2026-11-13T20:42:17.843230458Z FINISH pid=1447591 mode=stubborn audio=stubborn-meeting-overrun.ogg note=/tmp/heyma-validate-hm18/vault/stubborn-meeting-overrun.md
+== waxd.log lines mentioning the target
+INFO wax.worker: item 08d51662097b2265 -> archived (s3_verified): 2026-11-13/08d51662097b-unrelated-talk.ogg (7473131 B, size+md5)
+INFO wax.worker: linked 20261113-154109-unrelated-talk.md to 1 archived object(s) (un-slugged; note stem used)
+INFO wax.worker: item 89bf4172582c09c6 -> archived (s3_verified): 2026-11-13/89bf4172582c-stubborn-meeting-overrun.ogg (7777439 B, size+md5)
+WARNING wax.transcribe_adapter: item 89bf4172582c09c6 was split while transcribing; late transcript parked at /tmp/heyma-validate-hm18/root/recovered/split-late/stubborn-meeting-overrun.md
+WARNING wax.worker: item 89bf4172582c09c6 halted by wax split: item 89bf4172582c09c6 was halted by split 20261113-204215-89bf4172; refusing a stale write
+== items
+89bf4172582c | skipped | /tmp/heyma-validate-hm18/root/skipped/split/20261113-204215-89bf4172/stubborn-meeting-overrun.ogg
+== transitions
+2026-11-13T20:42:08.797Z | None | pending | discovered
+2026-11-13T20:42:12.187Z | pending | archived | s3_verified
+2026-11-13T20:42:18.269Z | archived | skipped | split
+== passes rows for target (must be none or skipped/cancelled)
+== parked late transcript
+-rw-rw-r-- 1 delorenj delorenj 84 Nov 13 15:42 /tmp/heyma-validate-hm18/root/recovered/split-late/stubborn-meeting-overrun.md
+== vault after: 20261113-151612-slow-meeting-overrun-part1of2.md 20261113-154109-unrelated-talk.md   (no stubborn transcript)
+== frontmatters stub calls after: 2
+== outbox events naming the target
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    for r in c.execute(sys.argv[1]).fetchall(): print(' | '.join(str(x) for x in r))
+             ~~~~~~~~~^^^^^^^^^^^^^
+sqlite3.OperationalError: no such column: seq
+== item row for stuck state: fenced?
+a8a7e80b4aec | 20261113-204113-a8a7e80b
+89bf4172582c | 20261113-204215-89bf4172
+waxd alive: yes
+['id', 'subject', 'envelope', 'created_at', 'published_at', 'attempts', 'last_error', 'suppressed_reason']
+
+== outbox (all rows: subject, created_at, mentions target?)
+(1, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:40:54.243Z', 0)
+(2, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:40:54.243Z', 0)
+(3, 'bloodbank.evt.audio.file.recorded', '2026-11-13T20:41:08.342Z', 0)
+(4, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:41:08.342Z', 0)
+(5, 'bloodbank.evt.audio.file.sent', '2026-11-13T20:41:09.370Z', 0)
+(6, 'bloodbank.evt.audio.file.recorded', '2026-11-13T20:41:10.361Z', 0)
+(7, 'bloodbank.evt.audio.file.sent', '2026-11-13T20:41:13.331Z', 0)
+(8, 'bloodbank.cmd.audio.task.start', '2026-11-13T20:41:16.555Z', 0)
+(9, 'bloodbank.evt.audio.task.requested', '2026-11-13T20:41:16.555Z', 0)
+(10, 'bloodbank.evt.audio.task.started', '2026-11-13T20:41:16.555Z', 0)
+(11, 'bloodbank.evt.audio.task.completed', '2026-11-13T20:41:17.570Z', 0)
+(12, 'bloodbank.evt.audio.transcription.completed', '2026-11-13T20:41:17.660Z', 0)
+(13, 'bloodbank.evt.audio.file.closed', '2026-11-13T20:41:17.660Z', 0)
+(14, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:41:18.427Z', 0)
+(15, 'bloodbank.evt.audio.file.recorded', '2026-11-13T20:41:45.438Z', 0)
+(16, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:41:45.635Z', 0)
+(17, 'bloodbank.evt.audio.file.sent', '2026-11-13T20:41:47.755Z', 0)
+(18, 'bloodbank.cmd.audio.task.start', '2026-11-13T20:41:50.961Z', 0)
+(19, 'bloodbank.evt.audio.task.requested', '2026-11-13T20:41:50.961Z', 0)
+(20, 'bloodbank.evt.audio.task.started', '2026-11-13T20:41:50.962Z', 0)
+(21, 'bloodbank.evt.audio.task.completed', '2026-11-13T20:41:51.977Z', 0)
+(22, 'bloodbank.evt.audio.transcription.completed', '2026-11-13T20:41:52.073Z', 0)
+(23, 'bloodbank.evt.audio.file.closed', '2026-11-13T20:41:52.073Z', 0)
+(24, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:41:52.684Z', 0)
+(25, 'bloodbank.evt.audio.file.recorded', '2026-11-13T20:42:08.797Z', 1)
+(26, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:42:08.797Z', 0)
+(27, 'bloodbank.evt.audio.file.sent', '2026-11-13T20:42:12.187Z', 1)
+(28, 'bloodbank.evt.audio.status.updated', '2026-11-13T20:42:18.866Z', 0)

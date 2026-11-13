@@ -1,0 +1,46 @@
+#!/bin/bash
+# STUB for bin/transcribe (WAX_TRANSCRIBE). There is no whisper here; this only honours the contract
+# transcribe_adapter relies on: argv1 = audio, `--asr-output PATH`, stdout's last line = the note path,
+# stderr carries a `Transcription-Metadata: {...}` record. The mode comes from the audio's file name:
+#   slow-*      sleeps (interruptibly) until it is killed; logs when SIGTERM arrives
+#   stubborn-*  ignores SIGTERM's default death: on TERM it needs 2 more seconds, then finishes NORMALLY
+#               (a transcriber that completes inside the kill grace window: a genuinely late result)
+#   anything else, and every `-partNofM` file: finishes after 3 s
+audio="$1"; shift
+asr=""
+while [ $# -gt 0 ]; do case "$1" in --asr-output) asr="$2"; shift;; esac; shift; done
+V=${HEYMA_VALIDATE:-/tmp/heyma-validate-hm18}
+log=$V/logs/transcriber.log
+name=$(basename "$audio"); stem=${name%.*}
+ts() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
+note="${TRANSCRIPTS:?}/${stem}.md"
+mode=fast
+case "$name" in
+  *-part[0-9]of[0-9]*) mode=fast ;;
+  slow-*) mode=slow ;;
+  stubborn-*) mode=stubborn ;;
+esac
+echo "$(ts) START  pid=$$ mode=$mode audio=$name" >> "$log"
+finish() {
+  dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$audio")
+  printf -- '# Transcript of %s\n\nfake transcript (stub, mode=%s)\n' "$name" "$mode" > "$note"
+  [ -n "$asr" ] && printf '{"text":"fake","segments":[{"start":0.0,"end":1.0,"text":"fake"}]}\n' > "$asr"
+  echo "$(ts) FINISH pid=$$ mode=$mode audio=$name note=$note" >> "$log"
+  printf 'Transcription-Metadata: {"duration_seconds": %s, "word_count": 3, "diarized": false, "model": "fake-whisper-stub"}\n' "$dur" >&2
+  echo "$note"
+  exit 0
+}
+case $mode in
+  fast) sleep 3; finish ;;
+  slow)
+    trap 'echo "$(ts) SIGTERM pid=$$ mode=slow audio=$name: exiting 143" >> "$log"; exit 143' TERM
+    sleep 600 &
+    wait $!
+    finish ;;
+  stubborn)
+    got=""
+    trap 'got=1; echo "$(ts) SIGTERM pid=$$ mode=stubborn audio=$name: ignoring, finishing in 2 s" >> "$log"' TERM
+    for i in $(seq 600); do sleep 1; [ -n "$got" ] && break; done
+    sleep 2
+    finish ;;
+esac
