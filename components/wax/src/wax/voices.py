@@ -396,6 +396,25 @@ def merge_namesakes(conn) -> list[tuple[str, str]]:
     return merged
 
 
+def relabel_state(item_id: str) -> str:
+    """Rerun `voice-id` live on one transcript so it shows the names voices have now.
+
+    The one relabel step behind `wax voices name|merge|sync` and the `wax voices tui`; returns the
+    pass state ("completed", "skipped", ... or "refused: <why>"). Callers count anything that is
+    not `completed`/`skipped` as a failure.
+    """
+    from . import passes
+
+    try:
+        result = passes.run(item_id, "voice-id", live=True, operator_toggle=False)
+    except passes.PassError as exc:
+        return f"refused: {exc}"
+    return str(result.get("state") if isinstance(result, dict) else result)
+
+
+RELABEL_OK = ("completed", "skipped")
+
+
 def needs_relabel(conn) -> list[str]:
     """Items whose transcript still shows an old name for a voice: a `Speaker N` turn the voice
     was confidently named on, or a `voices:` link whose name is not the voice's name now."""
