@@ -157,7 +157,12 @@ def registry() -> dict[str, dict[str, Any]]:
 def serialized(function):
     @wraps(function)
     def call(item_id, *args, **kwargs):
-        with operations.item_lock(item_id):
+        with operations.item_work(item_id) as allowed:
+            if not allowed:
+                if function.__name__ == "run_auto":
+                    return []
+                return {"item_id": item_id, "held": True, "state": "skipped",
+                        "reason_code": "split_hold"}
             return function(item_id, *args, **kwargs)
     return call
 

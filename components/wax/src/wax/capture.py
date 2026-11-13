@@ -25,6 +25,7 @@ rather than published.
 """
 
 import errno
+import hashlib
 import json
 import os
 import shutil
@@ -34,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from . import paths, procutil, rename, sentinel, state
+from . import operations, paths, procutil, rename, sentinel, state
 
 QUIT_GRACE_S = 30.0      # 'q' normally returns in ~0.2s; generous for a long capture's trailer
 SIGTERM_GRACE_S = 10.0
@@ -252,20 +253,26 @@ def _await_exit(rec: dict[str, Any], timeout: float) -> Optional[int]:
     raise TimeoutError("encoder did not exit within grace period")
 
 
-def stop(rid: str) -> dict[str, Any]:
+def stop(rid: str, *, for_split: bool = False) -> dict[str, Any]:
     """Explicitly stop a capture and move the finished file into the inbox."""
     rec = sentinel.read_json(paths.rec_path(rid))
     if rec is None:
         raise CaptureError(f"no rec.json for {rid}")
+    if not for_split and _split_intent(rid).exists():
+        raise CaptureError(f"{rid} is held for split; repeat wax split {rid}, not rec stop")
 
     # Intent BEFORE signal. If we die between these two lines the state is
     # `not-ready` then `error-partial` on deadline — never a silent truncation.
     sentinel.write_stop(rid)
 
     if sentinel.encoder_alive(rec):
-        _shutdown(rid, rec)
+        disposition = _shutdown(rid, rec)
+        if for_split and disposition != "clean":
+            sentinel.write_fin(rid, ok=False, reason="split_unclean_stop",
+                               shutdown=disposition)
+            raise CaptureError(f"split refuses an unclean encoder stop: {disposition}; evidence retained")
 
-    return finalize(rid)
+    return finalize(rid, for_split=True) if for_split else finalize(rid)
 
 
 def _shutdown(rid: str, rec: dict[str, Any]) -> str:
@@ -297,7 +304,60 @@ def _shutdown(rid: str, rec: dict[str, Any]) -> str:
     return "unresponsive"
 
 
-def concat_segments(rid: str) -> tuple[Optional[Path], list[Path], list[Path]]:
+def _split_intent(rid: str) -> Path:
+    return paths.RECOVERED / "split-captures" / rid / "split-intent.json"
+
+
+def _split_assembly(rid: str, used: list[Path], staged: Path) -> Path:
+    """Join DECODED sample frames, not Ogg packet timestamps/pre-skip.
+
+    Independently decodable Opus segments each have their own pre-skip and
+    end trimming. Stream-copy concat cannot prove their exact decoded coverage.
+    Keep every original segment and a per-segment sample/byte hash receipt.
+    """
+    directory = _split_intent(rid).parent
+    operations.durable_directory(directory)
+    raw = directory / f"segments-{time.time_ns()}.f64le"
+    rec = sentinel.read_json(paths.rec_path(rid)) or {}
+    rate, channels = int(rec.get("sample_rate") or 48000), int(rec.get("channels") or 1)
+    provenance = []
+    with raw.open("xb") as output:
+        for segment in used:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(segment)],
+                capture_output=True, text=True, timeout=300, check=True)
+            streams = [s for s in json.loads(probe.stdout)["streams"] if s["codec_type"] == "audio"]
+            if (len(streams) != 1 or int(streams[0]["sample_rate"]) != rate
+                    or int(streams[0]["channels"]) != channels):
+                raise CaptureError("split capture segments have inconsistent audio formats; evidence retained")
+            before = output.tell()
+            result = subprocess.run(
+                ["ffmpeg", "-v", "error", "-nostdin", "-xerror", "-i", str(segment),
+                 "-map", "0:a:0", "-c:a", "pcm_f64le", "-f", "f64le", "-"],
+                stdout=output, stderr=subprocess.PIPE, timeout=300)
+            size = output.tell() - before
+            if result.returncode or not size or size % (8 * channels):
+                raise CaptureError(f"split cannot decode every sample of {segment}; evidence retained")
+            with segment.open("rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            provenance.append({"name": segment.name, "sha256": digest, "samples": size // (8 * channels),
+                               "start_sample": before // (8 * channels)})
+        output.flush()
+        os.fsync(output.fileno())
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-nostdin", "-f", "f64le", "-ar", str(rate), "-ac", str(channels),
+         "-i", str(raw), "-c:a", "pcm_f64le", "-rf64", "auto", "-f", "wav", str(staged)],
+        capture_output=True, text=True, timeout=300)
+    if result.returncode:
+        raise CaptureError(f"split capture assembly failed: {result.stderr[-400:]}")
+    operations.atomic_json(directory / "assembly.json",
+                           {"encoding": "pcm_f64le", "sample_rate": rate, "channels": channels,
+                            "decoded_path": str(raw), "segments": provenance,
+                            "total_samples": raw.stat().st_size // (8 * channels)})
+    return staged
+
+
+def concat_segments(rid: str, *, for_split: bool = False) -> tuple[Optional[Path], list[Path], list[Path]]:
     """Join every VALID segment into one staged file.
 
     Returns (staged_path, used, skipped). Invalid segments are skipped rather
@@ -315,9 +375,13 @@ def concat_segments(rid: str) -> tuple[Optional[Path], list[Path], list[Path]]:
         (used if (d is not None and d > 0) else skipped).append(s)
     if not used:
         return None, [], skipped
+    if for_split and skipped:
+        return None, used, skipped
 
     staged = paths.partial_path(rid)
     staged.unlink(missing_ok=True)
+    if for_split:
+        return _split_assembly(rid, used, staged), used, skipped
     listfile = paths.segdir(rid) / "concat.txt"
     listfile.write_text("".join(f"file '{p}'\n" for p in used))
 
@@ -334,16 +398,28 @@ def concat_segments(rid: str) -> tuple[Optional[Path], list[Path], list[Path]]:
     return staged, used, skipped
 
 
-def finalize(rid: str) -> dict[str, Any]:
+def finalize(rid: str, *, for_split: bool = False) -> dict[str, Any]:
     """Join the segments, validate, and atomically publish to the inbox."""
     rec = sentinel.read_json(paths.rec_path(rid))
     if rec is None:
         raise CaptureError(f"no rec.json for {rid}")
+    if not for_split and _split_intent(rid).exists():
+        raise CaptureError(f"{rid} is held for split; ordinary inbox publication refused")
 
     if sentinel.encoder_alive(rec):
         raise CaptureError(f"encoder for {rid} still alive; refusing to finalize")
 
-    partial, used, skipped = concat_segments(rid)
+    if for_split and paths.partial_path(rid).exists():
+        # Never discard even a failed prior assembly when retrying a split.
+        recovery = paths.RECOVERED / "split-captures" / rid
+        recovery.mkdir(parents=True, exist_ok=True)
+        rename.move_noclobber(paths.partial_path(rid), recovery / "assembly.ogg.partial")
+    partial, used, skipped = concat_segments(rid, for_split=True) if for_split else concat_segments(rid)
+    if for_split and skipped:
+        sentinel.write_fin(rid, ok=False, reason="split_invalid_segments",
+                           skipped=[str(p) for p in skipped])
+        raise CaptureError(f"split refuses incomplete capture: {len(skipped)} invalid segment(s); "
+                           f"all evidence retained in {paths.STREAM}")
     if partial is None:
         sentinel.write_fin(rid, ok=False, reason="no_valid_segments",
                            segments=len(sentinel.segments(rid)))
@@ -357,12 +433,36 @@ def finalize(rid: str) -> dict[str, Any]:
                            probe_duration_s=dur, bytes=partial.stat().st_size)
         raise CaptureError(f"refusing to publish {rid}: duration={dur}")
 
-    dest = paths.INBOX / str(rec.get("target_name") or f"{rid}.ogg")
+    if for_split:
+        dest_dir = paths.RECOVERED / "split-captures" / rid
+        operations.durable_directory(dest_dir)
+        dest = dest_dir / "source.wav"
+    else:
+        dest = paths.INBOX / str(rec.get("target_name") or f"{rid}.ogg")
     final = rename.move_noclobber(partial, dest)
+    if for_split:
+        with final.open("rb") as handle:
+            os.fsync(handle.fileno())
+        operations.fsync_dir(final.parent)
 
     size = final.stat().st_size
     sentinel.write_fin(rid, ok=True, duration_s=dur, bytes=size, inbox_path=str(final),
                        segments_used=len(used), segments_skipped=len(skipped))
+
+    if for_split:
+        result = {"rid": rid, "path": str(final), "duration_s": dur, "bytes": size,
+                  "segments_used": len(used), "segments_skipped": len(skipped),
+                  "capture_state": "stopped", "auto_restart": False,
+                  "assembly_path": str(dest_dir / "assembly.json"),
+                  "evidence_path": str(paths.RECOVERED / "orphans" / rid)}
+        # Receipt first: after a crash the finalized source is never finalized
+        # again or admitted to inbox by a repeat RID request.
+        operations.atomic_json(dest_dir / "capture.json", result)
+        evidence = _preserve_orphan_evidence(rid)
+        result["evidence_path"] = str(evidence)
+        operations.atomic_json(dest_dir / "capture.json", result)
+        _emit("session", "ended", {**result, "held_for_split": True}, ordering_key=rid)
+        return result
 
     # Sentinels retired only after the payload is safely in the inbox.
     for p in (paths.rec_path(rid), paths.stop_path(rid), paths.fin_path(rid), paths.ctl_path(rid)):
@@ -484,6 +584,8 @@ def salvage(rid: str) -> dict[str, Any]:
     published like any other item. The original segments and all sentinels are
     then retained under recovered/orphans/; salvage never deletes evidence.
     """
+    if _split_intent(rid).exists():
+        raise CaptureError(f"{rid} is held for split; review its evidence and repeat wax split, not salvage")
     rec = sentinel.read_json(paths.rec_path(rid)) or {}
     if sentinel.encoder_alive(rec):
         raise CaptureError(f"{rid} encoder still alive; not an error-partial")

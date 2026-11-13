@@ -194,7 +194,9 @@ def publish_pass_events(item_id):
     finalize()-time enqueue of the same event a no-op, and correlation anchors
     to the completion id once one exists, the pass's command id until then.
     """
-    with operations.item_lock(item_id):
+    with operations.item_work(item_id) as allowed:
+        if not allowed:
+            return {"pass_events": 0, "reason_code": "split_hold"}
         conn = ledger.connect()
         events._ensure()
         plan = conn.execute("SELECT * FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
@@ -272,7 +274,9 @@ def _backfill_pass_events(conn, item_id, plan, prior):
 
 
 def finalize(item_id):
-    with operations.item_lock(item_id):
+    with operations.item_work(item_id) as allowed:
+        if not allowed:
+            return {"finalized": False, "reason_code": "split_hold"}
         conn = ledger.connect()
         events._ensure()
         plan = conn.execute("SELECT * FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()

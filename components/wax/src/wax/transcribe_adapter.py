@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import archive, config, desktop, frontmatter, ledger, paths, sanity, sentinel
+from . import archive, config, desktop, frontmatter, ledger, operations, paths, sanity, sentinel
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
@@ -198,6 +198,16 @@ def vault_name(audio: Path, when: Optional[float] = None) -> str:
 
 def transcribe(audio: Path, *, item_id: Optional[str] = None,
                attempt: int = 1, extra: Optional[list[str]] = None) -> dict[str, Any]:
+    """Direct calls share the worker/pass/publication settlement boundary."""
+    item_id = item_id or ledger.identify(audio)
+    with operations.item_work(item_id) as allowed:
+        if not allowed:
+            raise TranscribeError(f"split_hold: {item_id}; source is held for operator review")
+        return _transcribe(audio, item_id=item_id, attempt=attempt, extra=extra)
+
+
+def _transcribe(audio: Path, *, item_id: Optional[str] = None,
+                attempt: int = 1, extra: Optional[list[str]] = None) -> dict[str, Any]:
     """Transcribe one item. Publishes only if the sanity gate passes."""
     if not audio.is_file():
         raise TranscribeError(f"not a file: {audio}")

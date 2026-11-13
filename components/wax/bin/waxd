@@ -32,6 +32,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 import signal
 
 from wax import capture, events as events_mod, ledger, paths, state, telephony as telephony_shadow, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
+from wax import split
 
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
@@ -120,6 +121,9 @@ class Daemon:
         self.tray = tray_process.TrayProcess()
         self.stopped = threading.Event()
         self._serve_socket()
+        # A distinct request socket preserves send-and-close status clients.
+        # Each split settles only its source on its own handler thread.
+        self.split_server = split.serve()
         # Drains the inbox in its own thread so a long transcription can never
         # stall the tray or make status unpollable.
         self.worker = worker_mod.Worker()
@@ -499,6 +503,12 @@ class Daemon:
         except Exception:  # noqa: BLE001
             pass
         paths.SOCK.unlink(missing_ok=True)
+        try:
+            self.split_server.shutdown()
+            self.split_server.server_close()
+            split.socket_path().unlink(missing_ok=True)
+        except (AttributeError, OSError):
+            pass
         self.stopped.set()
         self.tray.stop()
 

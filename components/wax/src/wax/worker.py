@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import (archive, config, desktop, documents, dropoff, finalize, ledger, passes, paths, procutil, rename,
-               sanity, sentinel, state, transcribe_adapter)
+               sanity, sentinel, state, transcribe_adapter, operations)
 
 # Contract B: name only, handler configured exactly once in bin/waxd. Before
 # this existed there was no `import logging` anywhere under src/wax, and 22 h of
@@ -259,6 +259,8 @@ def next_item() -> Optional[tuple[str, Path, str]]:
         item_id = ledger.identify(p)
         if not item_id:
             continue
+        if operations.is_held(item_id):
+            continue
         row = conn.execute("SELECT state FROM items WHERE item_id=?", (item_id,)).fetchone()
         st = row["state"] if row else "pending"
         if st in WORK_STATES:
@@ -273,6 +275,7 @@ def next_item() -> Optional[tuple[str, Path, str]]:
     return None
 
 
+@passes.serialized
 def park_duplicate(item_id: str, path: Path) -> dict[str, Any]:
     """Move an already-processed copy out of the inbox. Never deletes."""
     dest_dir = paths.ARCHIVE / "duplicates"

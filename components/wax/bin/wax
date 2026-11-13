@@ -58,7 +58,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 from wax import (archive, catalog, capture, component, config, documents, events, failures, finalize,
                  frontmatter, hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, prune,
                  reconcile, sanity, sentinel, state, transcribe_adapter, transcriptions, vault_sweep,
-                 worker)  # noqa: E402
+                 worker, split)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
 from wax import telephony as telephony_shadow  # noqa: E402
@@ -2665,6 +2665,10 @@ def main() -> int:
         parents=[common],
     )
     rec.add_parser("list", parents=[common])
+    sp = sub.add_parser("split", help="ask waxd to hold and waveform-split ONE source", parents=[common])
+    sp.add_argument("target", help="capture RID, item ID, or owned audio path")
+    sp.add_argument("--submit", action="store_true", help="admit derived copies to the ordinary inbox")
+    sp.add_argument("--wait-seconds", type=float, default=60, help="bounded source settlement wait (0..3600)")
     t = rec.add_parser("toggle", help="start if ready, stop if recording", parents=[common])
     t.add_argument("--label")
 
@@ -3005,6 +3009,11 @@ def main() -> int:
     # Python 3.14's argparse lets a subparser's `--json` default (False) overwrite a leading `wax --json …`;
     # the comment above promises any position, and Holocene spawns `wax --json transcripts browse`.
     J = bool(args.json) or "--json" in sys.argv[1:]
+
+    if args.cmd == "split":
+        out = split.request(args.target, submit=args.submit, wait_seconds=args.wait_seconds)
+        _emit(out, J)
+        return 0 if out.get("status") == "split" else 2
 
     if args.cmd == "rec":
         if args.sub == "toggle":
