@@ -264,10 +264,19 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
   be folded into itself or into an already merged voice (refused on the status
   line, nothing called). Merge direction is yours: pick the named voice as the
   target, since the target's name wins.
-- **Relabelling never blocks keys.** A name or merge asks one background worker
-  to rerun `voice-id` on the stale transcripts (requests coalesce); progress shows
-  on the play line. On quit it waits for the worker (Ctrl+C leaves the rest) and
-  prints a summary; failures are rerun by `wax voices sync`. `--no-sync` skips the
+- **Nothing blocks keys.** A name, merge or reload runs on a worker thread with its
+  own ledger connection, because `voices.merge` waits on the registry lock a
+  voice-id pass holds across its LLM call. While one is pending the screen keeps
+  drawing (`[merging ...]`), other keys are ignored with the reason on the status
+  line, and Ctrl+C still quits (the change then lands before the process exits).
+  A locked ledger or vanished file in any key handler becomes an `error:` status
+  line, not a crash.
+- **Relabelling is in the background.** A name or merge asks one worker to rerun
+  `voice-id` on the stale transcripts (requests coalesce); progress shows on the
+  play line. On quit it waits for the worker and prints a summary; failures are
+  rerun by `wax voices sync`. Ctrl+C while waiting stops after the transcript in
+  flight (it never kills a pass mid-write) and leaves the rest for `wax voices
+  sync`; a second Ctrl+C abandons the transcript in flight too. `--no-sync` skips
   relabelling, `--no-play` never plays audio.
 - **Tests and evidence.** `tests/voices_tui_test.py` (model, clip planning with
   real ffmpeg, the player loop with real subprocesses); a real-terminal run is

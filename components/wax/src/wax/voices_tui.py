@@ -326,6 +326,7 @@ class Relabeler:
         self.items = items or (lambda: voices.needs_relabel(voices.connect()))
         self._lock = threading.Lock()
         self._dirty = False
+        self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.total = self.done = 0
         self.current = ""
@@ -341,7 +342,7 @@ class Relabeler:
     def _run(self) -> None:
         while True:
             with self._lock:
-                if not self._dirty:
+                if not self._dirty or self._stop.is_set():
                     self._thread = None
                     self.current = ""
                     return
@@ -355,6 +356,8 @@ class Relabeler:
             with self._lock:
                 self.total += len(todo)
             for item_id in todo:
+                if self._stop.is_set():      # asked to stop: the transcript in flight finished, start no more
+                    break
                 with self._lock:
                     self.current = item_id
                 try:
@@ -364,6 +367,18 @@ class Relabeler:
                 with self._lock:
                     self.done += 1
                     self.results.append((item_id, state))
+
+    def stop(self) -> None:
+        """Finish the transcript in flight, start no more. Never kills a pass mid-write."""
+        self._stop.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def remaining(self) -> int:
+        with self._lock:
+            return max(0, self.total - self.done)
 
     @property
     def running(self) -> bool:
@@ -395,9 +410,83 @@ class Relabeler:
         bad = [r for r in results if r[1] not in voices.RELABEL_OK]
         lines = [f"relabelled {len(results) - len(bad)} of {len(results)} transcript(s)"]
         lines += [f"  {item_id}  {state}" for item_id, state in bad]
-        if bad:
-            lines.append("  rerun the failures with: wax voices sync")
+        if self.stopped and self.remaining():
+            lines.append(f"  stopped early: {self.remaining()} transcript(s) not started")
+        if bad or (self.stopped and self.remaining()):
+            lines.append("  rerun the failures with: wax voices sync" if not self.stopped
+                         else "  rerun the failures and the rest with: wax voices sync")
         return lines
+
+
+# ---- registry changes, off the UI thread ------------------------------------------------------------
+
+class InlineWorker:
+    """Runs a change on the spot, on the model's own connection. Tests, and nothing else."""
+    busy = False
+    label = ""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def submit(self, label: str, fn: Callable, then: Callable) -> None:
+        try:
+            result, error = fn(self.conn), None
+        except Exception as exc:
+            result, error = None, exc
+        then(result, error)
+
+    def poll(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return True
+
+
+class ThreadWorker:
+    """Runs one registry change (name, merge, reload) at a time on its own thread and connection.
+
+    `voices.merge` waits on the registry flock, which a voice-id pass holds across its LLM call (tens
+    of seconds), and the ledger waits up to 10 s for a writer. On the UI thread either would freeze
+    the screen and Ctrl+C. Here the screen keeps drawing and reading keys; `poll()`, called from the
+    UI loop, delivers the result to `then(result, error)` on the UI thread, where the model may touch
+    its own state and connection.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._done: tuple | None = None
+        self.label = ""
+
+    @property
+    def busy(self) -> bool:
+        return self._thread is not None
+
+    def submit(self, label: str, fn: Callable, then: Callable) -> None:
+        def run():
+            try:
+                outcome = (fn(voices.connect()), None)     # this thread's own ledger connection
+            except Exception as exc:
+                outcome = (None, exc)
+            with self._lock:
+                self._done = (then, *outcome)
+
+        self.label = label
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def poll(self) -> None:
+        with self._lock:
+            done, self._done = self._done, None
+        if done is not None:
+            self._thread = None
+            then, result, error = done
+            then(result, error)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+        return not (thread is not None and thread.is_alive())
 
 
 # ---- the model: state, keys, actions ----------------------------------------------------------
@@ -428,8 +517,10 @@ class Model:
     (the NAME field of the highlighted row; the default on an unnamed voice) or "list".
     """
 
-    def __init__(self, conn, player, relabeler: Relabeler | None, *, planner=plan_clips, rows: list[dict] | None = None):
+    def __init__(self, conn, player, relabeler: Relabeler | None, *, planner=plan_clips, rows: list[dict] | None = None,
+                 worker=None):
         self.conn, self.player, self.relabeler, self.planner = conn, player, relabeler, planner
+        self.worker = worker or InlineWorker(conn)
         self.rows = sort_rows(rows if rows is not None else voices.listing(conn))
         self.cursor = 0
         self.merge_cursor = 0
@@ -451,6 +542,23 @@ class Model:
     @property
     def pick(self) -> dict | None:
         return self.rows[self.merge_cursor] if self.rows else None
+
+    @property
+    def busy(self) -> bool:
+        return self.worker.busy
+
+    def tick(self) -> None:
+        """Called by the screen loop: hand a finished registry change back to the model."""
+        try:
+            self.worker.poll()
+        except Exception as exc:
+            self.status = f"error: {exc}"
+
+    def drain(self) -> None:
+        """After the screen is gone: wait for a registry change in flight, then apply it (it may queue a relabel)."""
+        while not self.worker.wait(0.5):
+            pass
+        self.tick()
 
     def unnamed_count(self) -> int:
         return sum(1 for r in self.rows if _unnamed(r))
@@ -516,8 +624,17 @@ class Model:
         return {"UP": -1, "DOWN": 1, "PGUP": -page, "PGDN": page}[key]
 
     def refresh(self) -> None:
-        """Re-read every row's numbers and names, keeping their order; new voices join at the end."""
-        fresh = {r["voice_id"]: r for r in voices.listing(self.conn)}
+        """Re-read every row's numbers and names (off the UI thread); order is kept, new voices join at the end."""
+        def done(rows, error):
+            if error:
+                self.status = f"reload failed: {error}"
+            else:
+                self._apply(rows)
+
+        self.worker.submit("reloading", lambda conn: voices.listing(conn), done)
+
+    def _apply(self, listing: list[dict]) -> None:
+        fresh = {r["voice_id"]: r for r in listing}
         known = [fresh.pop(r["voice_id"]) for r in self.rows if r["voice_id"] in fresh]
         self.rows = known + sort_rows(list(fresh.values()))
         self.cursor = min(self.cursor, max(0, len(self.rows) - 1))
@@ -550,6 +667,15 @@ class Model:
         if key in ("CTRL_C", "CTRL_Q"):
             self.quit = True
             return
+        if self.busy:
+            self.status = f"{self.worker.label}: waiting on the voice registry (a relabel may hold it); Ctrl+C quits"
+            return
+        try:
+            self._dispatch(key)
+        except Exception as exc:     # a locked ledger or a vanished file must not end the session
+            self.status = f"error: {exc}"
+
+    def _dispatch(self, key: str) -> None:
         if self.mode == MERGE_CONFIRM:
             return self._key_confirm(key)
         if self.mode == MERGE_PICK:
@@ -585,8 +711,8 @@ class Model:
         elif key == "m":
             self.start_merge()
         elif key == "r":
+            self.status = "reloading"
             self.refresh()
-            self.status = "reloaded"
         elif key in ("ENTER", "TAB", "e", "i"):
             self.begin_name()
 
@@ -654,18 +780,27 @@ class Model:
             self.status = f"{row['voice_id']} is already {name}"
             return
         vid = row["voice_id"]
-        try:
-            voices.set_name(self.conn, vid, name)
-            folded = voices.merge_namesakes(self.conn)
-        except Exception as exc:
-            self.status = f"could not name {vid}: {exc}"
-            return
-        self.drafts.pop(vid, None)
-        note = "".join(f"; {drop} merged into {keep}, already named {name}" for keep, drop in folded)
-        message = f"{vid} is {name}{note}" + self._relabel()
-        self.refresh()
-        self.advance()
-        self.status = message     # after advance: arriving on the next voice must not hide the confirmation
+
+        def job(conn):
+            voices.set_name(conn, vid, name)
+            return voices.merge_namesakes(conn), voices.listing(conn)
+
+        def done(result, error):
+            if error:
+                self.status = f"could not name {vid}: {error} (r reloads)"
+                return
+            folded, rows = result
+            self.drafts.pop(vid, None)
+            note = "".join(f"; {drop} merged into {keep}, already named {name}" for keep, drop in folded)
+            message = f"{vid} is {name}{note}" + self._relabel()
+            if self.quit:                  # quit while the registry was busy: the change landed, the screen is gone
+                return
+            self._apply(rows)
+            self.advance()
+            self.status = message          # after advance: arriving on the next voice must not hide the confirmation
+
+        self.status = f"naming {vid}..."
+        self.worker.submit(f"naming {vid}", job, done)
 
     # -- merge
     def start_merge(self) -> None:
@@ -724,18 +859,28 @@ class Model:
         keep, drop = self.pick, self.row
         if keep["voice_id"] == drop["voice_id"] or not _live(keep) or not _live(drop):
             return self.cancel_merge("nothing merged: both voices must be live and different")
-        try:
-            moved = voices.merge(self.conn, keep["voice_id"], drop["voice_id"])
-        except Exception as exc:
-            self.mode = MERGE_PICK
-            self.status = f"merge failed: {exc}"
-            return
-        self.mode = BROWSE
-        self.drafts.pop(drop["voice_id"], None)
-        message = f"{drop['voice_id']} folded into {keep['voice_id']} ({moved} sightings moved)" + self._relabel()
-        self.refresh()
-        self.advance()
-        self.status = message
+        keep_id, drop_id = keep["voice_id"], drop["voice_id"]
+
+        def job(conn):
+            return voices.merge(conn, keep_id, drop_id), voices.listing(conn)
+
+        def done(result, error):
+            if error:
+                self.mode = MERGE_PICK
+                self.status = f"merge failed: {error}"
+                return
+            moved, rows = result
+            self.drafts.pop(drop_id, None)
+            message = f"{drop_id} folded into {keep_id} ({moved} sightings moved)" + self._relabel()
+            self.mode = BROWSE
+            if self.quit:
+                return
+            self._apply(rows)
+            self.advance()
+            self.status = message
+
+        self.status = f"merging {drop_id} into {keep_id}..."
+        self.worker.submit(f"merging {drop_id}", job, done)
 
     def shutdown(self) -> None:
         self.player.stop()
@@ -840,7 +985,8 @@ def _play_line(model: Model) -> str:
     else:
         now = ""
     relabel = model.relabeler.progress() if model.relabeler else ""
-    return "  ".join(part for part in (head, now, relabel) if part)
+    working = f"[{model.worker.label}...]" if model.busy else ""
+    return "  ".join(part for part in (head, working, now, relabel) if part)
 
 
 # ---- keys: curses codes to tokens (pure, so Alt+M is testable) ---------------------------------------
@@ -864,6 +1010,16 @@ def decode_key(first, read_more: Callable[[], object]) -> str | None:
         more = read_more()
         if more is None:
             return "ESC"
+        if more in ("[", "O"):
+            # The start of an arrow/function key whose tail was slow (laggy ssh/mosh): ncurses gave us a
+            # bare ESC. Swallow the rest, or its final letter would be typed into the name.
+            for _ in range(8):
+                tail = read_more()
+                if not isinstance(tail, str) or not tail:      # nothing more pending, or a curses key code
+                    break
+                if more == "O" or ("@" <= tail <= "~" and tail != "["):   # SS3 is one byte; CSI ends at its final byte
+                    break
+            return None
         return "ALT_M" if more in ("m", "M") else None
     if first in CHAR_KEYS:
         return CHAR_KEYS[first]
@@ -875,7 +1031,7 @@ def decode_key(first, read_more: Callable[[], object]) -> str | None:
 def run_curses(model: Model) -> None:
     import curses
 
-    os.environ["ESCDELAY"] = "25"    # ncurses waits this long (ms) after ESC to see whether it starts a key sequence
+    os.environ["ESCDELAY"] = "50"    # ncurses waits this long (ms) after ESC to see whether it starts a key sequence
 
     def main(stdscr):
         curses.raw()                 # Ctrl+C, Ctrl+Q arrive as keys: we stop the player and restore the terminal ourselves
@@ -886,16 +1042,17 @@ def run_curses(model: Model) -> None:
                  "dim": curses.A_DIM, "play": curses.A_BOLD, "status": 0, "help": curses.A_DIM}
 
         def more():
-            stdscr.timeout(40)
+            stdscr.timeout(80)       # Alt+M and slow escape tails: the rest of a chord is at most this late
             try:
                 return stdscr.get_wch()
             except curses.error:
                 return None
             finally:
-                stdscr.timeout(250)
+                stdscr.timeout(100)
 
-        stdscr.timeout(250)          # wakes the screen a few times a second so the clip counter and relabel progress move
+        stdscr.timeout(100)          # wakes the screen ten times a second: clip counter, relabel progress, finished registry changes
         while not model.quit:
+            model.tick()
             height, width = stdscr.getmaxyx()
             stdscr.erase()
             for y, (text, style) in enumerate(layout(model, width, height)):
@@ -922,9 +1079,20 @@ def run_curses(model: Model) -> None:
         model.shutdown()
 
 
-def finish(relabeler: Relabeler | None, out=print) -> int:
-    """After the screen is gone: let a running relabel finish (Ctrl+C leaves the rest to `wax voices sync`),
-    then print its summary. 1 when any transcript failed."""
+def finish(relabeler: Relabeler | None, out=print, model: Model | None = None) -> int:
+    """After the screen is gone: let a registry change in flight land, let a running relabel finish, print
+    its summary. Ctrl+C asks the relabel to stop after the transcript in flight (a second one abandons that
+    transcript too); whatever was not done is left for `wax voices sync`. 1 when anything failed or was left."""
+    if model is not None:
+        try:
+            if model.busy:
+                out(f"{model.worker.label} is waiting on the voice registry; letting it land (Ctrl+C abandons it)")
+            model.drain()
+        except KeyboardInterrupt:
+            out("a name or merge was still in flight and is abandoned; check `wax voices list`, then `wax voices sync`")
+            if relabeler is not None:
+                relabeler.stop()
+            return 1
     if relabeler is None:
         return 0
     try:
@@ -932,14 +1100,20 @@ def finish(relabeler: Relabeler | None, out=print) -> int:
         while not relabeler.wait(0.5):
             now = relabeler.progress()
             if now != shown:
-                out(f"  {now}   (Ctrl+C leaves the rest for `wax voices sync`)")
+                out(f"  {now}   (Ctrl+C stops after the current transcript)")
                 shown = now
     except KeyboardInterrupt:
-        out("left the remaining transcripts for `wax voices sync`")
-        return 1
+        relabeler.stop()
+        out("stopping after the transcript in flight (Ctrl+C again abandons it)")
+        try:
+            while not relabeler.wait(0.5):
+                pass
+        except KeyboardInterrupt:
+            out("abandoned the transcript in flight; rerun it with `wax voices sync`")
+            return 1
     for text in relabeler.summary():
         out(text)
-    return 1 if relabeler.failed() else 0
+    return 1 if relabeler.failed() or (relabeler.stopped and relabeler.remaining()) else 0
 
 
 def main(*, no_sync: bool = False, no_play: bool = False) -> int:
@@ -950,6 +1124,11 @@ def main(*, no_sync: bool = False, no_play: bool = False) -> int:
         return 2
     conn = voices.connect()
     relabeler = None if no_sync else Relabeler()
-    model = Model(conn, make_player(no_play=no_play), relabeler)
-    run_curses(model)
-    return finish(relabeler)
+    model = Model(conn, make_player(no_play=no_play), relabeler, worker=ThreadWorker())
+    crashed = 0
+    try:
+        run_curses(model)
+    except Exception as exc:         # the terminal is already restored by curses.wrapper; still land what is in flight
+        print(f"wax voices tui: the screen failed: {exc!r}", file=sys.stderr)
+        crashed = 1
+    return finish(relabeler, model=model) or crashed

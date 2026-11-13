@@ -410,6 +410,94 @@ class ModelTest(_Fixture):
         self.assertTrue(tui.layout(model, 40, 10))
 
 
+class OffTheUiThreadTest(_Fixture):
+    """Registry changes run on a worker, so a held registry lock never freezes keys or Ctrl+C."""
+
+    def threaded(self):
+        worker = tui.ThreadWorker()
+        model, player, relabeler = self.model()
+        model.worker = worker
+        return model, worker, relabeler
+
+    def settle(self, model, worker):
+        self.assertTrue(worker.wait(10))
+        model.tick()
+
+    def test_a_merge_blocked_on_the_registry_lock_leaves_the_ui_alive_and_ctrl_c_working(self):
+        model, worker, relabeler = self.threaded()
+        model.handle_key("ALT_M")
+        model.handle_key("ENTER")
+        with voices.locked():                       # a voice-id pass holding the registry across its LLM call
+            started = time.monotonic()
+            model.handle_key("y")
+            self.assertLess(time.monotonic() - started, 1.0)
+            self.assertTrue(model.busy)
+            model.handle_key("DOWN")               # ignored while the change is pending, and says why
+            self.assertIn("waiting on the voice registry", model.status)
+            self.assertEqual(model.row["voice_id"], "voice-a00001")
+            lines = [text for text, _ in tui.layout(model, 100, 20)]
+            self.assertTrue(any("merging voice-a00001" in text for text in lines))
+            model.handle_key("CTRL_C")
+            self.assertTrue(model.quit)
+        self.settle(model, worker)                  # lock released: the merge lands, even though the screen is gone
+        merged = self.conn.execute("SELECT merged_into FROM voices WHERE voice_id='voice-a00001'").fetchone()[0]
+        self.assertEqual(merged, "voice-c00003")
+        self.assertEqual(relabeler.requests, 1)    # a change that landed after quit still queues its relabel
+
+    def test_a_change_that_lands_normally_updates_the_screen(self):
+        model, worker, relabeler = self.threaded()
+        self.type(model, "Ava")
+        model.handle_key("ENTER")
+        self.settle(model, worker)
+        self.assertFalse(model.busy)
+        self.assertEqual((model.rows[0]["name"], model.rows[0]["status"]), ("Ava", "named"))
+        self.assertEqual(model.row["voice_id"], "voice-b00002")
+        self.assertIn("voice-a00001 is Ava", model.status)
+        self.assertEqual(relabeler.requests, 1)
+
+    def test_drain_waits_for_a_change_in_flight_and_applies_it(self):
+        model, worker, relabeler = self.threaded()
+        self.type(model, "Ava")
+        with voices.locked():
+            model.handle_key("ENTER")                # naming needs no lock; a merge would
+        model.quit = True
+        model.drain()
+        self.assertEqual(relabeler.requests, 1)
+        self.assertEqual(voices.note_identity(voices.VOICES_DIR / "voice-a00001.md"), ("Ava", "named"))
+
+    def test_a_failing_change_is_a_status_line_not_a_crash(self):
+        model, worker, relabeler = self.threaded()
+        self.type(model, "Ava")
+        with patch.object(voices, "set_name", side_effect=RuntimeError("database is locked")):
+            model.handle_key("ENTER")
+            self.settle(model, worker)
+        self.assertIn("could not name voice-a00001: database is locked", model.status)
+        self.assertEqual(relabeler.requests, 0)
+        self.assertFalse(model.busy)
+
+    def test_a_registry_read_that_raises_in_a_key_handler_is_a_status_line_not_a_crash(self):
+        model, player, relabeler = self.model()
+        with patch.object(model, "planner", side_effect=sqlite_locked):
+            model.handle_key("DOWN")                 # arriving on a row plans its clips
+        self.assertIn("error: database is locked", model.status)
+        model.handle_key("UP")                       # and the session carries on
+        self.assertEqual(model.row["voice_id"], "voice-a00001")
+        self.assertFalse(model.quit)
+
+    def test_reload_runs_through_the_worker_and_a_failure_is_reported(self):
+        model, worker, relabeler = self.threaded()
+        model.handle_key("TAB")
+        with patch.object(voices, "listing", side_effect=RuntimeError("database is locked")):
+            model.handle_key("r")
+            self.settle(model, worker)
+        self.assertIn("reload failed: database is locked", model.status)
+
+
+def sqlite_locked(*args, **kwargs):
+    import sqlite3
+    raise sqlite3.OperationalError("database is locked")
+
+
 class LayoutAndKeysTest(_Fixture):
     def test_layout_is_safe_and_bounded_at_every_size(self):
         model, _, _ = self.model()
@@ -452,6 +540,14 @@ class LayoutAndKeysTest(_Fixture):
         self.assertEqual(feed("\x1b", "m"), "ALT_M")
         self.assertEqual(feed("\x1b", "M"), "ALT_M")
         self.assertIsNone(feed("\x1b", "x"))
+        # an arrow key split by a slow link: ESC, then "[" and "A" late. Nothing may leak into the name.
+        self.assertIsNone(feed("\x1b", "[", "A"))
+        self.assertIsNone(feed("\x1b", "[", "1", ";", "5", "C"))
+        self.assertIsNone(feed("\x1b", "O", "P"))
+        pending = ["\x1b", "[", "A", "x"]          # the key after the sequence is still there to read
+        read = lambda: pending.pop(0) if pending else None
+        self.assertIsNone(tui.decode_key(pending.pop(0), read))
+        self.assertEqual(pending, ["x"])
         self.assertEqual(feed("\n"), "ENTER")
         self.assertEqual(feed("\x7f"), "BACKSPACE")
         self.assertEqual(feed("\x15"), "CTRL_U")
@@ -600,6 +696,59 @@ class RelabelerTest(unittest.TestCase):
         self.assertEqual(tui.finish(relabeler, printed.append), 1)
         self.assertIn("relabelled 0 of 1 transcript(s)", printed)
         self.assertEqual(tui.finish(None), 0)
+
+    def test_stop_finishes_the_transcript_in_flight_and_starts_no_more(self):
+        gate, entered, ran = threading.Event(), threading.Event(), []
+
+        def run_one(item):
+            entered.set()
+            gate.wait(5)
+            ran.append(item)
+            return "completed"
+
+        relabeler = tui.Relabeler(run_one=run_one, items=lambda: ["a", "b", "c"])
+        relabeler.request()
+        self.assertTrue(entered.wait(5))
+        relabeler.stop()
+        gate.set()
+        self.assertTrue(relabeler.wait(5))
+        self.assertEqual(ran, ["a"])                       # the one in flight ran to its end; b and c never started
+        self.assertEqual(relabeler.remaining(), 2)
+        self.assertIn("  stopped early: 2 transcript(s) not started", relabeler.summary())
+
+    def test_ctrl_c_in_finish_stops_after_the_current_transcript_instead_of_killing_it(self):
+        class Slow(tui.Relabeler):
+            def __init__(self):
+                super().__init__(run_one=lambda item: "completed", items=lambda: ["a", "b"])
+                self.interrupts = 1
+                self.total, self.done = 2, 1
+                self.results = [("a", "completed")]
+
+            def wait(self, timeout=None):
+                if self.interrupts:
+                    self.interrupts -= 1
+                    raise KeyboardInterrupt
+                return True
+
+            @property
+            def running(self):
+                return False
+
+        relabeler, printed = Slow(), []
+        self.assertEqual(tui.finish(relabeler, printed.append), 1)
+        self.assertTrue(relabeler.stopped)
+        self.assertTrue(any("stopping after the transcript in flight" in line for line in printed))
+        self.assertTrue(any("1 transcript(s) not started" in line for line in printed))
+        self.assertFalse(any("abandoned" in line for line in printed))
+
+    def test_a_second_ctrl_c_abandons_the_transcript_in_flight_and_says_so(self):
+        class Stuck(tui.Relabeler):
+            def wait(self, timeout=None):
+                raise KeyboardInterrupt
+
+        printed = []
+        self.assertEqual(tui.finish(Stuck(items=lambda: []), printed.append), 1)
+        self.assertTrue(any("abandoned the transcript in flight" in line for line in printed))
 
     def test_relabel_state_reports_a_refused_pass(self):
         from wax import passes

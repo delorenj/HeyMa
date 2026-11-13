@@ -29,3 +29,11 @@ Reading smoke-output.txt
   14 Ctrl+C: exit code 0, zero player processes left, terminal restored.
   Relabelling is off (--no-sync) in this run because the voice-id pass needs the GPU and real audio;
   the background Relabeler is covered by tests/voices_tui_test.py (RelabelerTest) with a fake pass.
+
+Fix stage (review follow-up)
+  smoke-output.txt was re-captured after registry changes moved to a worker thread: the screens and the
+  clip loop are unchanged. smoke-locked.sh / smoke-locked-output.txt hold the new case: another process
+  holds the registry flock (as a voice-id pass does across its LLM call) while a merge is confirmed.
+  The screen keeps drawing ("[merging ...]"), further keys are ignored with the reason on the status
+  line, Ctrl+C closes the screen, the process waits for the merge ("letting it land"), and once the
+  lock is released the merge lands and the exit code is 0.

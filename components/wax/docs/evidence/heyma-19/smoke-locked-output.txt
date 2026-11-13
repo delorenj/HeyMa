@@ -1,0 +1,35 @@
+
+===== 1. merge confirmed while the registry lock is held: screen is alive and says it is waiting =====
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+-  voice-a00001   -                                                       unnamed        1     70.0
+   voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
++  voice-c00003   Chase                                                   named          1     30.0
+[merging voice-a00001...]
+merging voice-a00001 into voice-c00003...
+y fold it in  n/Esc back
+
+===== 2. a key while waiting: ignored with the reason on the status line (screen still redraws) =====
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+-  voice-a00001   -                                                       unnamed        1     70.0
+   voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
++  voice-c00003   Chase                                                   named          1     30.0
+[merging voice-a00001...]
+merging voice-a00001: waiting on the voice registry (a relabel may hold it); Ctrl+C quits
+y fold it in  n/Esc back
+
+===== 3. Ctrl+C while the lock is still held: the screen closes, the process says it is letting the merge land =====
+merging voice-a00001 is waiting on the voice registry; letting it land (Ctrl+C abandons it)
+
+===== 4. lock released after 8 s: the merge landed and the process exited =====
+EXIT=0
+  VOICE         NAME                  STATUS     ITEMS  MINUTES  NOTE
+  voice-c00003  Chase                 named          1    100.0  /tmp/heyma-19-scratch-locked/voices/voice-c00003.md
+  voice-b00002  —                     unnamed        1     15.0  /tmp/heyma-19-scratch-locked/voices/voice-b00002.md
+  voice-d00004  —                     unnamed        1      5.0  /tmp/heyma-19-scratch-locked/voices/voice-d00004.md
+  voice-a00001  —                     merged         0      0.0  /tmp/heyma-19-scratch-locked/voices/voice-a00001.md
+
+4 voices, 2 waiting for a name
