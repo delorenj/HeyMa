@@ -85,7 +85,7 @@ with its outcome. Full chain semantics are in
 | `diarization` | `diarization_failed`, `human_edits` (skipped: a human changed the body after labelling), `channel_separated` (skipped: dual-channel `telnyx-*`) | The old "CUDA out of memory at Sortformer load" failure shows as `diarization_failed`. |
 | `voice-id` | `audio_missing`, `voice_id_failed`, `no_speech` (skipped) | `voice_id_failed` carries the GPU child's stderr tail; see [passes/voice-id](../../../references/passes/voice-id.md). |
 | `call-metadata` | `not_a_call` (skipped), `call_not_found`, `telnyx_auth_failed`, `telnyx_http_error`, `telnyx_unreachable` | Telnyx key is an `op://` reference by item UUID. |
-| `clipboard-copy` | `clipboard_unavailable`, plus runner codes | No current display or all clipboard backends failed/timed out. Read the backend summary in detail; restore the desktop context before a targeted retry. This is a desk effect, so preserve clipboard context. |
+| `clipboard-copy` | `clipboard_unavailable`, plus runner codes | No current display or all clipboard backends failed/timed out. A successful user-manager query authoritatively replaces display/auth keys; absent X11 means no inherited X11 fallback. Failed queries retain explicit inherited context and per-user Wayland discovery, never guessed X11. Read the backend summary in detail; restore the desktop context before a targeted retry. This is a desk effect, so preserve clipboard context. |
 | `frontmatter-stamp` | runner codes only | |
 
 ## Item, capture and archive causes (not pass codes)

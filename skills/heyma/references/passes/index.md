@@ -152,8 +152,13 @@ pass's own `requires` subgraph completes, with id
 ## Gotchas
 
 - **`clipboard-copy` is a desk effect.** It refreshes display/auth values from
-  the user manager, gives `wl-copy` five seconds, then tries `xclip` on the
-  session's declared `DISPLAY`. It records the backend/fallbacks in result
+  the user manager: a successful query replaces `DISPLAY`, `WAYLAND_DISPLAY`
+  and `XAUTHORITY`, including removing absent/empty keys. A Wayland-only or
+  empty current session never falls back to inherited X11 credentials. Only
+  when the query fails does it retain explicit inherited context and discover
+  Wayland in the user's runtime directory; it never guesses an X11 display.
+  It gives `wl-copy` five seconds, then tries `xclip` on the
+  resolved session's declared `DISPLAY`. It records the backend/fallbacks in result
   evidence; no working backend fails as `clipboard_unavailable`. The chime is
   best effort with a three-second bound. Exhausted historical items still need
   targeted `wax ep run clipboard-copy <item>`, which really overwrites the

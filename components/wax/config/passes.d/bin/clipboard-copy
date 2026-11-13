@@ -10,7 +10,7 @@ COMPONENT_ROOT = next(parent for parent in Path(__file__).resolve().parents
                       if (parent / "pyproject.toml").is_file())
 sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
-from wax.tray_process import session_env
+from wax.tray_process import SESSION_KEYS
 
 COPY_TIMEOUT_S = 5
 SOUND_TIMEOUT_S = 3
@@ -22,9 +22,29 @@ class ClipboardUnavailable(Exception):
 
 def desktop_env() -> dict:
     # waxd may have started before the desktop imported its display/auth values.
-    # Resolve the current session, rather than guessing a display or a user id.
-    os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return {**os.environ, **session_env()}
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    try:
+        out = subprocess.run(["systemctl", "--user", "show-environment"], env=env,
+                             capture_output=True, text=True, timeout=2, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        # No authoritative answer: retain explicit context and the existing
+        # per-user Wayland discovery fallback, never guess an X11 display.
+        if not env.get("WAYLAND_DISPLAY"):
+            sockets = sorted(p.name for p in Path(env["XDG_RUNTIME_DIR"]).glob("wayland-*")
+                             if not p.name.endswith(".lock"))
+            if sockets:
+                env["WAYLAND_DISPLAY"] = sockets[0]
+        return env
+    # A successful query is authoritative even when keys are absent/empty.
+    # Never send a transcript to an inherited display from an obsolete session.
+    for key in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
+        env.pop(key, None)
+    for line in out.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and value and key in SESSION_KEYS:
+            env[key] = value
+    return env
 
 
 def copy_body(body: str, env: dict) -> dict:
