@@ -598,6 +598,24 @@ class LayoutAndKeysTest(_Fixture):
         self.assertLessEqual(tui.EscapeReader.FIRST_MS + 50, 250)   # + ncurses ESCDELAY (50 ms)
 
 
+    def test_stderr_written_while_the_screen_is_up_is_held_back_and_shown_after(self):
+        """A failing pass in the relabel thread logs a warning to stderr; on a live curses screen that scribbled over
+        the table (seen in a real terminal). StderrCapture holds fd 2 back, including logging's last-resort handler."""
+        src = str(Path(tui.__file__).resolve().parents[1])
+        code = (f"import sys, os, logging; sys.path.insert(0, {src!r})\n"
+                "from wax import voices_tui as t\n"
+                "with t.StderrCapture() as c:\n"
+                "    os.write(2, b'raw write\\n')\n"
+                "    logging.warning('pass failed: frontmatters editor not found')\n"
+                "print('LINES', c.lines())\n"
+                "os.write(2, b'after the screen\\n')\n")
+        run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "after the screen\n")            # nothing leaked while captured; fd 2 restored
+        self.assertIn("raw write", run.stdout)
+        self.assertIn("pass failed: frontmatters editor not found", run.stdout)
+
+
 class ClipLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
