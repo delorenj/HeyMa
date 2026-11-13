@@ -90,7 +90,7 @@ terms:
   # -- AutomaticAI and client work ---------------------------------------------
   AutomaticAI: {heard: [automatic ai, automatic a i, auto matic ai, automatic.ai], about: "the speaker's consulting company"}
   automaticai.io: {heard: [automatic ai.io, automatic aiio], about: "AutomaticAI's domain (the LLM gateway is api.automaticai.io)"}
-  IntelliForia: {heard: [telephoria, teleforia, telefora, intelaforia, intellivoria, intelliforya, intelliphoria, intelphoria, intelafory, intelephoria, inteliforia, telphoria, telifornia, infliforia, impelaforia, palaforia, intelithoria, telephthoria, intelli-phoria, intel foria, intel floria, intel fora], about: "the EMR compliance company and app"}
+  IntelliForia: {heard: [telephoria, teleforia, telefora, intelaforia, intellivoria, intelliforya, intelliphoria, intelphoria, intelafory, intelephoria, inteliforia, telphoria, telifornia, infliforia, impelaforia, palaforia, intelithoria, telephthoria, intelli-phoria, intel foria, intel floria, intel fora, intellivory], about: "the EMR compliance company and app"}
   CentralReach: {heard: [central reach, center reach], about: "the ABA-therapy EMR IntelliForia integrates with"}
   Skycare: {heard: [sky care, skycaret, sky cares], about: "the partner system integrated with IntelliForia"}
   Brellium: {heard: [brelium, brillium, braillium, brilliam, bralium, brailleum], about: "the compliance product IntelliForia is compared with"}
