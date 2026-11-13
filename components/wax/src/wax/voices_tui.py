@@ -604,7 +604,6 @@ class Model:
         self.status = "type a name, Enter locks it in"
 
     def _key_name(self, key: str) -> None:
-        row = self.row
         if key == "ENTER":
             return self.commit_name()
         if key == "BACKSPACE":
