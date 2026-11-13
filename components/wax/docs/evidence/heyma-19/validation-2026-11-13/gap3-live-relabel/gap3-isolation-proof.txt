@@ -1,0 +1,9 @@
+WAX_ROOT/HEYMA : /tmp/heyma-validate-heyma-19/real3/root
+ledger DB      : /tmp/heyma-validate-heyma-19/real3/root/var/wax.db
+waxd socket    : /tmp/heyma-validate-heyma-19/real3/root/var/waxd.sock | singleton lock: /tmp/heyma-validate-heyma-19/real3/root/var/waxd.lock | state.json: /tmp/heyma-validate-heyma-19/real3/root/var/state.json
+vault          : /tmp/heyma-validate-heyma-19/real3/vault
+voices dir     : /tmp/heyma-validate-heyma-19/real3/voices
+transcripts store enabled: False | DSN: None | unit file read: /nonexistent/waxd.service (exists: False )
+NATS target    : 127.0.0.1 9 (port 9 = discard, nothing listens)
+notify         : WAX_VOICE_NOTIFY = 0
+S3             : no S3 code runs in voice-id / relabel / TUI (no endpoint configured)

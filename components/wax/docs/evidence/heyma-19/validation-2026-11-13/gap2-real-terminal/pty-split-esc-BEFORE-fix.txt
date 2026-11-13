@@ -1,0 +1,15 @@
+CSI Down split ESC | [ | B         gap=  20ms  name='Zed'
+SS3 Down split ESC | O | B         gap=  20ms  name='Zed'
+CSI PgDn split ESC [ 6 ~           gap=  20ms  name='Zed'
+Alt+M split ESC | m, then Esc      gap=  20ms  name='Zed'
+lone ESC then Zed                  gap=  20ms  name='Zed'
+CSI Down split ESC | [ | B         gap= 100ms  name='BZed'
+SS3 Down split ESC | O | B         gap= 100ms  name='BZed'
+CSI PgDn split ESC [ 6 ~           gap= 100ms  name='6~Zed'
+Alt+M split ESC | m, then Esc      gap= 100ms  name='Zed'
+lone ESC then Zed                  gap= 100ms  name='Zed'
+CSI Down split ESC | [ | B         gap= 300ms  name="'[BZed'"
+SS3 Down split ESC | O | B         gap= 300ms  name='OBZed'
+CSI PgDn split ESC [ 6 ~           gap= 300ms  name="'[6~Zed'"
+Alt+M split ESC | m, then Esc      gap= 300ms  name='Zed'
+lone ESC then Zed                  gap= 300ms  name='Zed'

@@ -1,0 +1,12 @@
+-- ffplay-loop.raw as s16le mono 16k:
+  Duration: 00:00:05.12, bitrate: 256 kb/s
+  silence_start: 0
+  silence_end: 0.0640625 | silence_duration: 0.0640625
+  silence_start: 5.064
+  silence_end: 5.12 | silence_duration: 0.056
+[Parsed_volumedetect_0 @ 0x73ec1c004740] mean_volume: -21.2 dB
+[Parsed_volumedetect_0 @ 0x73ec1c004740] max_volume: -18.1 dB
+-- aplay-file.raw as s16le mono 16k:
+  Duration: 00:00:05.00, bitrate: 256 kb/s
+[Parsed_volumedetect_0 @ 0x741910004740] mean_volume: -21.1 dB
+[Parsed_volumedetect_0 @ 0x741910004740] max_volume: -18.1 dB

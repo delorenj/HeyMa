@@ -559,6 +559,63 @@ class LayoutAndKeysTest(_Fixture):
         self.assertEqual(feed(curses.KEY_RESIZE), "RESIZE")
 
 
+    def test_escape_reader_waits_longer_for_the_tail_of_an_arrow_key_than_for_its_first_byte(self):
+        """Through a pty, a 100 ms gap between the bytes of ESC [ B typed the B into the name: the old fixed 80 ms
+        wait gave up before the tail. The first wait (the price of a lone Esc) and the later waits are now separate."""
+        class Err(Exception):
+            pass
+
+        class Screen:
+            def __init__(self, bytes_):
+                self.pending, self.ms, self.waits = list(bytes_), None, []
+
+            def timeout(self, ms):
+                self.ms = ms
+
+            def get_wch(self):
+                self.waits.append(self.ms)
+                if not self.pending:
+                    raise Err()
+                return self.pending.pop(0)
+
+        screen = Screen(["[", "B"])
+        reader = tui.EscapeReader(screen, Err)
+        self.assertIsNone(tui.decode_key("\x1b", reader))      # ESC [ B: swallowed whole
+        self.assertEqual(screen.waits[0], tui.EscapeReader.FIRST_MS)
+        self.assertTrue(all(w == tui.EscapeReader.TAIL_MS for w in screen.waits[1:]))
+        self.assertGreater(tui.EscapeReader.TAIL_MS, tui.EscapeReader.FIRST_MS)
+        self.assertGreaterEqual(tui.EscapeReader.TAIL_MS, 200)
+        self.assertEqual(screen.ms, tui.EscapeReader.IDLE_MS)   # the screen loop's own wait is restored
+        # the next key starts over at the first wait
+        reader.reset()
+        screen.pending, screen.waits = [], []
+        self.assertEqual(tui.decode_key("\x1b", reader), "ESC")  # lone Esc: one wait, then cancel
+        self.assertEqual(screen.waits, [tui.EscapeReader.FIRST_MS])
+        # Alt+M is still ESC then m, and a lone Esc stays quick enough to feel instant
+        reader.reset()
+        screen.pending, screen.waits = ["m"], []
+        self.assertEqual(tui.decode_key("\x1b", reader), "ALT_M")
+        self.assertLessEqual(tui.EscapeReader.FIRST_MS + 50, 250)   # + ncurses ESCDELAY (50 ms)
+
+
+    def test_stderr_written_while_the_screen_is_up_is_held_back_and_shown_after(self):
+        """A failing pass in the relabel thread logs a warning to stderr; on a live curses screen that scribbled over
+        the table (seen in a real terminal). StderrCapture holds fd 2 back, including logging's last-resort handler."""
+        src = str(Path(tui.__file__).resolve().parents[1])
+        code = (f"import sys, os, logging; sys.path.insert(0, {src!r})\n"
+                "from wax import voices_tui as t\n"
+                "with t.StderrCapture() as c:\n"
+                "    os.write(2, b'raw write\\n')\n"
+                "    logging.warning('pass failed: frontmatters editor not found')\n"
+                "print('LINES', c.lines())\n"
+                "os.write(2, b'after the screen\\n')\n")
+        run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr, "after the screen\n")            # nothing leaked while captured; fd 2 restored
+        self.assertIn("raw write", run.stdout)
+        self.assertIn("pass failed: frontmatters editor not found", run.stdout)
+
+
 class ClipLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -1,0 +1,32 @@
+2026-11-13T15:22:40-05:00
+waxd pid: 5494
+    PID                  STARTED     ELAPSED CMD
+   5494 Thu Nov 12 12:46:06 2026  1-02:36:33 /usr/bin/python3 /home/delorenj/HeyMa/components/wax/bin/waxd
+
+total 16
+drwxrwxr-x  3 delorenj delorenj 4096 Nov 13 14:37 .
+drwxrwxr-x 45 delorenj delorenj 4096 Nov 13 14:48 ..
+prw-------  1 delorenj delorenj    0 Nov 13 14:37 20261113-143735-0cca00.ctl
+-rw-r--r--  1 delorenj delorenj  585 Nov 13 14:37 20261113-143735-0cca00.rec.json
+drwxrwxr-x  2 delorenj delorenj 4096 Nov 13 15:22 20261113-143735-0cca00.segs
+{
+  "bitrate": "32k",
+  "boot_id": "f780abf1-079f-4c65-88da-d675a4dc015f",
+  "channels": 1,
+  "codec": "libopus",
+  "ctl_path": "/home/delorenj/HeyMa/stream/20261113-143735-0cca00.ctl",
+  "device_source": "alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo",
+  "label": null,
+  "pid": 3433974,
+  "rid": "20261113-143735-0cca00",
+  "sample_rate": 48000,
+  "segdir": "/home/delorenj/HeyMa/stream/20261113-143735-0cca00.segs",
+  "started_at": "2026-11-13T19:37:35.903Z",
+  "starttime": 9321830,
+  "target_name": "20261113-143735-rec.ogg",
+  "trigger": "hotkey"
+}
+-rw-rw-r-- 1 delorenj delorenj 232617 Nov 13 15:21 seg-00043.ogg
+-rw-rw-r-- 1 delorenj delorenj 231254 Nov 13 15:22 seg-00044.ogg
+-rw-rw-r-- 1 delorenj delorenj      0 Nov 13 15:22 seg-00045.ogg
+580717fba6c2f3c4

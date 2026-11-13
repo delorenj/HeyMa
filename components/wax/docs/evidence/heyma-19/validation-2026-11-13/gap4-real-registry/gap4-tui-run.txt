@@ -1,0 +1,201 @@
+--- before
+ledger digest voices+sightings+exemplars: 7b21abb216118e88 voices rows: 64
+voices dir copy digest: acfcdcf1e6cf113c files: 128
+
+===== 1. open (real copy, --no-play --no-sync) =====
+wax voices   64 voices, 54 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+>  voice-49b23e   _                                                                 unnamed        8     35.0
+   voice-cbdad6   -                                                                 unnamed        3     24.4
+   voice-c06e81   -                                                                 unnamed        3     24.1
+   voice-cddaa9   -                                                                 unnamed        3     18.3
+   voice-d81b06   -                                                                 unnamed        3     18.2
+   voice-2fde76   -                                                                 unnamed        2     14.7
+   voice-a5e49b   -                                                                 unnamed        2     13.2
+   voice-ed18a7   -                                                                 unnamed        2     12.1
+   voice-7bc7f9   -                                                                 unnamed        1      9.8
+   voice-1e418a   -                                                                 unnamed        1      9.8
+   voice-1fa48e   -                                                                 unnamed        1      9.8
+   voice-4d374f   -                                                                 unnamed        2      9.6
+   voice-23fef8   -                                                                 unnamed        1      9.2
+   voice-5cfb34   -                                                                 unnamed        1      9.1
+   voice-9efdc7   -                                                                 unnamed        1      9.0
+   voice-6e760e   -                                                                 unnamed       18      8.8
+   voice-71e6f0   -                                                                 unnamed        1      8.5
+   voice-30fd92   -                                                                 unnamed        1      8.3
+   voice-103b7e   -                                                                 unnamed        1      8.1
+   voice-e648f1   -                                                                 unnamed        2      7.9
+   voice-3b550b   -                                                                 unnamed        1      7.6
+   voice-32c2bc   -                                                                 unnamed        1      6.8
+   voice-eb8f1f   -                                                                 unnamed        1      6.3
+   voice-2eb323   -                                                                 unnamed        1      6.3
+   voice-72a22c   -                                                                 unnamed        2      6.2
+NAME> _
+audio is off (--no-play)
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 2. after 3x Down =====
+wax voices   64 voices, 54 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-49b23e   -                                                                 unnamed        8     35.0
+   voice-cbdad6   -                                                                 unnamed        3     24.4
+   voice-c06e81   -                                                                 unnamed        3     24.1
+>  voice-cddaa9   _                                                                 unnamed        3     18.3
+   voice-d81b06   -                                                                 unnamed        3     18.2
+   voice-2fde76   -                                                                 unnamed        2     14.7
+   voice-a5e49b   -                                                                 unnamed        2     13.2
+   voice-ed18a7   -                                                                 unnamed        2     12.1
+   voice-7bc7f9   -                                                                 unnamed        1      9.8
+   voice-1e418a   -                                                                 unnamed        1      9.8
+   voice-1fa48e   -                                                                 unnamed        1      9.8
+   voice-4d374f   -                                                                 unnamed        2      9.6
+   voice-23fef8   -                                                                 unnamed        1      9.2
+   voice-5cfb34   -                                                                 unnamed        1      9.1
+   voice-9efdc7   -                                                                 unnamed        1      9.0
+   voice-6e760e   -                                                                 unnamed       18      8.8
+   voice-71e6f0   -                                                                 unnamed        1      8.5
+   voice-30fd92   -                                                                 unnamed        1      8.3
+   voice-103b7e   -                                                                 unnamed        1      8.1
+   voice-e648f1   -                                                                 unnamed        2      7.9
+   voice-3b550b   -                                                                 unnamed        1      7.6
+   voice-32c2bc   -                                                                 unnamed        1      6.8
+   voice-eb8f1f   -                                                                 unnamed        1      6.3
+   voice-2eb323   -                                                                 unnamed        1      6.3
+   voice-72a22c   -                                                                 unnamed        2      6.2
+NAME> _
+audio is off (--no-play)
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 3. Alt+M selector (tmux M-m) =====
+wax voices   64 voices, 54 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-66e678   -                                                                 unnamed        1      4.1
+   voice-8f11d2   -                                                                 unnamed        2      3.5
+   voice-3a2977   -                                                                 unnamed        1      3.2
+   voice-a4a3ae   -                                                                 unnamed        2      3.2
+   voice-ed39f5   -                                                                 unnamed        1      2.5
+   voice-61b5b4   -                                                                 unnamed        1      2.0
+   voice-fd1e38   -                                                                 unnamed        2      1.5
+   voice-165785   -                                                                 unnamed        1      1.3
+   voice-b59cf6   -                                                                 unnamed        1      1.2
+   voice-7ffdfb   -                                                                 unnamed        1      1.2
+   voice-61aaa5   -                                                                 unnamed        1      1.1
+   voice-0b290a   -                                                                 unnamed        1      1.1
+   voice-7ef2e8   -                                                                 unnamed        1      0.9
+   voice-397aed   -                                                                 unnamed        1      0.8
+   voice-2adebc   -                                                                 unnamed        1      0.8
+   voice-0a0d4d   -                                                                 unnamed        1      0.7
+   voice-4a9c6c   -                                                                 unnamed        1      0.7
+   voice-543bba   -                                                                 unnamed        1      0.6
+   voice-baf19a   -                                                                 unnamed        1      0.6
+   voice-78c67d   -                                                                 unnamed        1      0.5
+   voice-968dd0   -                                                                 unnamed        1      0.5
+   voice-864a99   -                                                                 unnamed        1      0.5
+   voice-551442   -                                                                 unnamed        1      0.4
+   voice-8b6ebc   -                                                                 unnamed        1      0.4
++  voice-ac3355   Jarad                                                             named        307   1625.8
+fold voice-cddaa9 into voice-ac3355?
+MERGE: fold voice-cddaa9 into the voice you pick; up/down choose, Enter confirms, Esc cancels, Space plays it
+MERGE  Up/Down pick target  Enter confirm  Space play  Esc cancel
+
+===== 4. Esc cancels =====
+wax voices   64 voices, 54 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+>  voice-cddaa9   _                                                                 unnamed        3     18.3
+   voice-d81b06   -                                                                 unnamed        3     18.2
+   voice-2fde76   -                                                                 unnamed        2     14.7
+   voice-a5e49b   -                                                                 unnamed        2     13.2
+   voice-ed18a7   -                                                                 unnamed        2     12.1
+   voice-7bc7f9   -                                                                 unnamed        1      9.8
+   voice-1e418a   -                                                                 unnamed        1      9.8
+   voice-1fa48e   -                                                                 unnamed        1      9.8
+   voice-4d374f   -                                                                 unnamed        2      9.6
+   voice-23fef8   -                                                                 unnamed        1      9.2
+   voice-5cfb34   -                                                                 unnamed        1      9.1
+   voice-9efdc7   -                                                                 unnamed        1      9.0
+   voice-6e760e   -                                                                 unnamed       18      8.8
+   voice-71e6f0   -                                                                 unnamed        1      8.5
+   voice-30fd92   -                                                                 unnamed        1      8.3
+   voice-103b7e   -                                                                 unnamed        1      8.1
+   voice-e648f1   -                                                                 unnamed        2      7.9
+   voice-3b550b   -                                                                 unnamed        1      7.6
+   voice-32c2bc   -                                                                 unnamed        1      6.8
+   voice-eb8f1f   -                                                                 unnamed        1      6.3
+   voice-2eb323   -                                                                 unnamed        1      6.3
+   voice-72a22c   -                                                                 unnamed        2      6.2
+   voice-f29b5c   -                                                                 unnamed        1      6.2
+   voice-b634df   -                                                                 unnamed        1      5.9
+   voice-698101   -                                                                 unnamed        1      5.6
+NAME> _
+merge cancelled
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 5. End (last row) =====
+wax voices   64 voices, 54 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+>  voice-cddaa9   _                                                                 unnamed        3     18.3
+   voice-d81b06   -                                                                 unnamed        3     18.2
+   voice-2fde76   -                                                                 unnamed        2     14.7
+   voice-a5e49b   -                                                                 unnamed        2     13.2
+   voice-ed18a7   -                                                                 unnamed        2     12.1
+   voice-7bc7f9   -                                                                 unnamed        1      9.8
+   voice-1e418a   -                                                                 unnamed        1      9.8
+   voice-1fa48e   -                                                                 unnamed        1      9.8
+   voice-4d374f   -                                                                 unnamed        2      9.6
+   voice-23fef8   -                                                                 unnamed        1      9.2
+   voice-5cfb34   -                                                                 unnamed        1      9.1
+   voice-9efdc7   -                                                                 unnamed        1      9.0
+   voice-6e760e   -                                                                 unnamed       18      8.8
+   voice-71e6f0   -                                                                 unnamed        1      8.5
+   voice-30fd92   -                                                                 unnamed        1      8.3
+   voice-103b7e   -                                                                 unnamed        1      8.1
+   voice-e648f1   -                                                                 unnamed        2      7.9
+   voice-3b550b   -                                                                 unnamed        1      7.6
+   voice-32c2bc   -                                                                 unnamed        1      6.8
+   voice-eb8f1f   -                                                                 unnamed        1      6.3
+   voice-2eb323   -                                                                 unnamed        1      6.3
+   voice-72a22c   -                                                                 unnamed        2      6.2
+   voice-f29b5c   -                                                                 unnamed        1      6.2
+   voice-b634df   -                                                                 unnamed        1      5.9
+   voice-698101   -                                                                 unnamed        1      5.6
+NAME> _
+merge cancelled
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 6. PageUp =====
+wax voices   64 voices, 54 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+>  voice-49b23e   _                                                                 unnamed        8     35.0
+   voice-cbdad6   -                                                                 unnamed        3     24.4
+   voice-c06e81   -                                                                 unnamed        3     24.1
+   voice-cddaa9   -                                                                 unnamed        3     18.3
+   voice-d81b06   -                                                                 unnamed        3     18.2
+   voice-2fde76   -                                                                 unnamed        2     14.7
+   voice-a5e49b   -                                                                 unnamed        2     13.2
+   voice-ed18a7   -                                                                 unnamed        2     12.1
+   voice-7bc7f9   -                                                                 unnamed        1      9.8
+   voice-1e418a   -                                                                 unnamed        1      9.8
+   voice-1fa48e   -                                                                 unnamed        1      9.8
+   voice-4d374f   -                                                                 unnamed        2      9.6
+   voice-23fef8   -                                                                 unnamed        1      9.2
+   voice-5cfb34   -                                                                 unnamed        1      9.1
+   voice-9efdc7   -                                                                 unnamed        1      9.0
+   voice-6e760e   -                                                                 unnamed       18      8.8
+   voice-71e6f0   -                                                                 unnamed        1      8.5
+   voice-30fd92   -                                                                 unnamed        1      8.3
+   voice-103b7e   -                                                                 unnamed        1      8.1
+   voice-e648f1   -                                                                 unnamed        2      7.9
+   voice-3b550b   -                                                                 unnamed        1      7.6
+   voice-32c2bc   -                                                                 unnamed        1      6.8
+   voice-eb8f1f   -                                                                 unnamed        1      6.3
+   voice-2eb323   -                                                                 unnamed        1      6.3
+   voice-72a22c   -                                                                 unnamed        2      6.2
+NAME> _
+audio is off (--no-play)
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== exit
+EXIT=0
+--- after
+ledger digest voices+sightings+exemplars: 7b21abb216118e88 voices rows: 64
+voices dir copy digest: acfcdcf1e6cf113c files: 128

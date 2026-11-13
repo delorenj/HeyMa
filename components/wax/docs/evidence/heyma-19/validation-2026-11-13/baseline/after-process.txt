@@ -1,0 +1,8 @@
+2026-11-13T15:49:32-05:00
+waxd pid: 5494
+    PID                  STARTED     ELAPSED
+   5494 Thu Nov 12 12:46:06 2026  1-03:03:25
+total 8
+drwxrwxr-x  2 delorenj delorenj 4096 Nov 13 15:29 .
+drwxrwxr-x 45 delorenj delorenj 4096 Nov 13 14:48 ..
+(eval):1: no matches found: /home/delorenj/HeyMa/stream/*.segs

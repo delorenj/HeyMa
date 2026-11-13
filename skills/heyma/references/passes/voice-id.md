@@ -256,7 +256,7 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
 - **Keys, list focus** (named rows, or after Tab): `j`/`k` move, Enter/`e` rename
   (named) or return to NAME (unnamed), Space/`p` start or stop playback of any
   row, `m` or Alt+M merge, `r` reload, `q` quits.
-- **Merge (Alt+M, an ESC then `m`; a lone Esc is cancel).** The highlighted row
+- **Merge (Alt+M, an ESC then `m`; a lone Esc is cancel; ESC and the next byte more than ~150 ms apart read as two keys).** The highlighted row
   (`-`) is folded in; a second cursor (`+`, opens on the most heard named voice)
   picks the voice kept. Up/Down/`j`/`k` move it, Space plays the candidate. Enter
   asks `fold <drop> into <keep> (<name>)? [y/n]`; `y` calls
@@ -278,9 +278,17 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
   flight (it never kills a pass mid-write) and leaves the rest for `wax voices
   sync`; a second Ctrl+C abandons the transcript in flight too. `--no-sync` skips
   relabelling, `--no-play` never plays audio.
+- **Stray output.** The relabel runs real passes in this process, so a failing pass logs to stderr. While the
+  screen is up fd 2 goes to a temp file (`StderrCapture`); after the terminal is restored the lines print under
+  "messages written while the screen was up" (otherwise they scribble over the table and stay there).
+- **Slow links.** The bytes of one arrow key (`ESC [ B`) may arrive split: the first wait after ESC is 150 ms
+  (what a lone Esc costs, plus 50 ms ncurses ESCDELAY), each later byte of an `ESC [`/`ESC O` key gets 250 ms
+  (`EscapeReader`). Gaps beyond that are indistinguishable from typing `[` or `B` and land in the NAME field.
 - **Tests and evidence.** `tests/voices_tui_test.py` (model, clip planning with
   real ffmpeg, the player loop with real subprocesses); a real-terminal run is
-  recorded in `components/wax/docs/evidence/heyma-19/`.
+  recorded in `components/wax/docs/evidence/heyma-19/`; the 2026-11-13 validation (real pw-play/paplay/ffplay/aplay,
+  kitty and alacritty under Xvfb, a live GPU relabel, a dry run on a copy of the real registry) in
+  `components/wax/docs/evidence/heyma-19/validation-2026-11-13/README.md`.
 
 ## Failures
 

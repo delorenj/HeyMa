@@ -37,3 +37,5 @@ Fix stage (review follow-up)
   The screen keeps drawing ("[merging ...]"), further keys are ignored with the reason on the status
   line, Ctrl+C closes the screen, the process waits for the merge ("letting it land"), and once the
   lock is released the merge lands and the exit code is 0.
+
+Validation run 2026-11-13 (real players, real terminals, live relabel, real-registry dry run): validation-2026-11-13/README.md

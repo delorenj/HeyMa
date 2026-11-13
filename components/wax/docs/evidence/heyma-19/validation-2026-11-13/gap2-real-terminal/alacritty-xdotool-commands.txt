@@ -1,0 +1,26 @@
+window 2097155: Alacritty
+focused window now: 2097155
+xdotool key Down
+  screenshot shot-alacritty-02-down.png
+xdotool key alt+m
+  screenshot shot-alacritty-03-altm-selector.png
+xdotool key Down
+  screenshot shot-alacritty-04-selector-down.png
+xdotool key Escape
+  screenshot shot-alacritty-05-esc-cancel.png
+xdotool key alt+m
+xdotool key Return
+  screenshot shot-alacritty-06-confirm-prompt.png
+xdotool key n
+  screenshot shot-alacritty-07-n-back-to-selector.png
+xdotool key Escape
+typing Real Kitty Name
+  screenshot shot-alacritty-08-typed.png
+xdotool key Return
+  screenshot shot-alacritty-09-named.png
+xdotool key End
+  screenshot shot-alacritty-10-end.png
+xdotool key Home
+  screenshot shot-alacritty-11-home.png
+xdotool key Next
+  screenshot shot-alacritty-12-pagedown.png

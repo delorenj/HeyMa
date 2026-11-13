@@ -27,6 +27,8 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -1028,6 +1030,78 @@ def decode_key(first, read_more: Callable[[], object]) -> str | None:
 
 # ---- the curses view -------------------------------------------------------------------------------
 
+class StderrCapture:
+    """While the screen is up, file descriptor 2 goes to an anonymous temp file; `text` has what was written.
+
+    The relabel runs the real passes in this process, and a pass that fails logs a warning to stderr. Printed
+    onto a curses screen it scribbles over the table and stays there (curses only repaints what it thinks changed).
+    Redirecting fd 2, not `sys.stderr`, also catches `logging.lastResort` and anything a child inherits."""
+
+    def __init__(self):
+        self.text = ""
+        self._saved = None
+        self._file = None
+
+    def __enter__(self):
+        try:
+            self._file = tempfile.TemporaryFile(mode="w+b")
+            sys.stderr.flush()
+            self._saved = os.dup(2)
+            os.dup2(self._file.fileno(), 2)
+        except OSError:
+            self._saved = None            # no capture: the screen may get scribbled on, but the tool still works
+        return self
+
+    def __exit__(self, *exc):
+        if self._saved is not None:
+            try:
+                sys.stderr.flush()
+            except (OSError, ValueError):
+                pass
+            os.dup2(self._saved, 2)
+            os.close(self._saved)
+            self._saved = None
+            self._file.seek(0)
+            self.text = self._file.read().decode("utf-8", errors="replace")
+        if self._file is not None:
+            self._file.close()
+        return False
+
+    def lines(self, limit: int = 40) -> list[str]:
+        lines = [line for line in self.text.splitlines() if line.strip()]
+        return lines[-limit:]
+
+
+class EscapeReader:
+    """`read_more` for `decode_key`: how long to wait for the byte after an ESC, and for each byte after that.
+
+    ESC alone is cancel, so the first wait is the price of a lone Esc (this plus ncurses' ESCDELAY). Once
+    ESC is followed by `[` or `O` the key is known to be an arrow/function key whose tail is merely late, so
+    the waits for its remaining bytes can be longer. Measured through a pty (docs/evidence/heyma-19/
+    validation-2026-11-13): with 80 ms for both, a gap of 100 ms between the bytes of ESC [ B typed the B into
+    the NAME field."""
+    FIRST_MS = 150      # after ESC: Alt+M's `m`, or the `[`/`O` of a late arrow key
+    TAIL_MS = 250       # after that: each later byte of a late arrow/function key
+    IDLE_MS = 100       # the screen loop's own wake-up
+
+    def __init__(self, stdscr, error):
+        self.stdscr, self.error, self.calls = stdscr, error, 0
+
+    def reset(self) -> None:
+        """A new key starts: the next wait is the first one again."""
+        self.calls = 0
+
+    def __call__(self):
+        self.stdscr.timeout(self.FIRST_MS if self.calls == 0 else self.TAIL_MS)
+        self.calls += 1
+        try:
+            return self.stdscr.get_wch()
+        except self.error:
+            return None
+        finally:
+            self.stdscr.timeout(self.IDLE_MS)
+
+
 def run_curses(model: Model) -> None:
     import curses
 
@@ -1041,14 +1115,7 @@ def run_curses(model: Model) -> None:
                  "edit": curses.A_REVERSE | curses.A_BOLD, "pick": curses.A_REVERSE | curses.A_BOLD,
                  "dim": curses.A_DIM, "play": curses.A_BOLD, "status": 0, "help": curses.A_DIM}
 
-        def more():
-            stdscr.timeout(80)       # Alt+M and slow escape tails: the rest of a chord is at most this late
-            try:
-                return stdscr.get_wch()
-            except curses.error:
-                return None
-            finally:
-                stdscr.timeout(100)
+        more = EscapeReader(stdscr, curses.error)
 
         stdscr.timeout(100)          # wakes the screen ten times a second: clip counter, relabel progress, finished registry changes
         while not model.quit:
@@ -1068,15 +1135,23 @@ def run_curses(model: Model) -> None:
             except KeyboardInterrupt:
                 model.quit = True
                 break
+            more.reset()
             key = decode_key(first, more)
             if key == "RESIZE":
                 continue             # the next pass reads the new size
             model.handle_key(key)
 
+    capture = StderrCapture()
     try:
-        curses.wrapper(main)
+        with capture:
+            curses.wrapper(main)
     finally:
         model.shutdown()
+        shown = capture.lines()
+        if shown:       # the terminal is restored: say what the passes printed while the screen was up
+            print("messages written while the screen was up:", file=sys.stderr)
+            for line in shown:
+                print(f"  {line}", file=sys.stderr)
 
 
 def finish(relabeler: Relabeler | None, out=print, model: Model | None = None) -> int:

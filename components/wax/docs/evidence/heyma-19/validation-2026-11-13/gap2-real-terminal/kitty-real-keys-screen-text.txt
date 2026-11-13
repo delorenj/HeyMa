@@ -1,0 +1,143 @@
+
+----- screen text (kitty @ get-text): open
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+>  voice-a00001   _                                                                 unnamed        1     70.0
+   voice-b00002   -                                                                 unnamed        1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
+   voice-c00003   Chase                                                             named          1     30.0
+NAME> _  [clip 2/3 of voice-a00001: item-meeting 00:40]
+playing 3 clip(s) of voice-a00001
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+$ xdotool key Down   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): after Down
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+>  voice-b00002   _                                                                 unnamed        1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
+   voice-c00003   Chase                                                             named          1     30.0
+NAME> _  [clip 1/3 of voice-b00002: listening clip 0s]
+playing 3 clip(s) of voice-b00002
+
+$ xdotool key alt+m   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): after alt+m (real Alt chord -> ESC m)
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+-  voice-b00002   -                                                                 unnamed        1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
++  voice-c00003   Chase                                                             named          1     30.0
+fold voice-b00002 into voice-c00003?  [clip 1/3 of voice-b00002: listening clip 0s]
+MERGE: fold voice-b00002 into the voice you pick; up/down choose, Enter confirms, Esc cancels, Space plays it
+MERGE  Up/Down pick target  Enter confirm  Space play  Esc cancel
+
+$ xdotool key Escape   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): after Escape
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+>  voice-b00002   _                                                                 unnamed        1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
+   voice-c00003   Chase                                                             named          1     30.0
+NAME> _  [clip 1/3 of voice-b00002: listening clip 0s]
+merge cancelled
+
+$ xdotool key alt+m   (private display :119, window 2097164 = kitty)
+
+$ xdotool key Return   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): alt+m, Return: confirm prompt
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+-  voice-b00002   -                                                                 unnamed        1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
++  voice-c00003   Chase                                                             named          1     30.0
+fold voice-b00002 into voice-c00003 (Chase)? [y/n]
+y fold it in  n/Esc back
+
+$ xdotool key n   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): n
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+-  voice-b00002   -                                                                 unnamed        1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
++  voice-c00003   Chase                                                             named          1     30.0
+fold voice-b00002 into voice-c00003?
+not merged; pick again or Esc to cancel
+
+$ xdotool key Escape   (private display :119, window 2097164 = kitty)
+
+$ xdotool type 'Real Kitty'
+
+----- screen text (kitty @ get-text): typed
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+>  voice-b00002   Real Kitty_                                                       unnamed        1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
+   voice-c00003   Chase                                                             named          1     30.0
+NAME> Real Kitty_  [clip 1/3 of voice-b00002: listening clip 0s]
+merge cancelled
+
+$ xdotool key Return   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): after Return (named)
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+   voice-b00002   Real Kitty                                                        named          1     15.0
+>  voice-d00004   _                                                                 unnamed        1      5.0
+   voice-c00003   Chase                                                             named          1     30.0
+NAME> _
+voice-b00002 is Real Kitty (not relabelled: --no-sync; run wax voices sync)
+
+$ xdotool key End   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): after End
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+   voice-b00002   Real Kitty                                                        named          1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
+>  voice-c00003   Chase                                                             named          1     30.0
+voice-b00002 is Real Kitty (not relabelled: --no-sync; run wax voices sync)
+j/k move  Enter/e name  Space play  Alt+M/m merge  r reload  q quit
+
+$ xdotool key Home   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): after Home
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+>  voice-a00001   _                                                                 unnamed        1     70.0
+   voice-b00002   Real Kitty                                                        named          1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
+   voice-c00003   Chase                                                             named          1     30.0
+NAME> _  [clip 1/3 of voice-a00001: item-meeting 00:03]
+playing 3 clip(s) of voice-a00001
+
+$ xdotool key Next   (private display :119, window 2097164 = kitty)
+
+----- screen text (kitty @ get-text): after PageDown (Next)
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                                 unnamed        1     70.0
+   voice-b00002   Real Kitty                                                        named          1     15.0
+   voice-d00004   -                                                                 unnamed        1      5.0
+>  voice-c00003   Chase                                                             named          1     30.0
+playing 3 clip(s) of voice-a00001
+j/k move  Enter/e name  Space play  Alt+M/m merge  r reload  q quit
+
+voice-b00002 note on disk:
+name: Real Kitty
+status: named
+
+$ xdotool key ctrl+c   (private display :119, window 2097164 = kitty)
+EXIT=0

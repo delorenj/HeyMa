@@ -1,0 +1,52 @@
+--- production files that must stay untouched (sha256 prefix, mtime)
+37a03cd381dcf82a  2026-11-12 12:47:32.597456308 -0500  /home/delorenj/d/Transcripts/20260713-143714-2026-07-13 17.37.15.md
+c2d06ca6aed2efd6  2026-11-12 12:47:32.463456364 -0500  /home/delorenj/d/Voices/voice-6e760e.md
+--- extra env for this scenario: WAX_FRONTMATTERS=/home/delorenj/.local/bin/frontmatters
+
+===== 1. open: cursor row 0 should be voice-6e760e =====
+wax voices   64 voices, 54 waiting for a name
+>  voice-6e760e   _                                                                 unnamed        3      0.5
+NAME> _
+
+===== 2. Enter: name locked in; relabel runs in the background =====
+   voice-6e760e   Validation Voice                                                  named          3      0.5
+NAME> _
+voice-6e760e is Validation Voice
+t+2s: <no relabel progress on screen>
+
+===== 3. the whole screen after the relabel finished, still inside the TUI =====
+wax voices   64 voices, 53 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+   voice-6e760e   Validation Voice                                                  named          3      0.5
+>  voice-0a0d4d   _                                                                 unnamed        0      0.0
+   voice-0b290a   -                                                                 unnamed        0      0.0
+   voice-103b7e   -                                                                 unnamed        0      0.0
+   voice-165785   -                                                                 unnamed        0      0.0
+   voice-1e418a   -                                                                 unnamed        0      0.0
+   voice-1fa48e   -                                                                 unnamed        0      0.0
+   voice-23fef8   -                                                                 unnamed        0      0.0
+   voice-2adebc   -                                                                 unnamed        0      0.0
+   voice-2eb323   -                                                                 unnamed        0      0.0
+   voice-2fde76   -                                                                 unnamed        0      0.0
+   voice-30fd92   -                                                                 unnamed        0      0.0
+   voice-32c2bc   -                                                                 unnamed        0      0.0
+   voice-397aed   -                                                                 unnamed        0      0.0
+   voice-3a2977   -                                                                 unnamed        0      0.0
+   voice-3b550b   -                                                                 unnamed        0      0.0
+   voice-49b23e   -                                                                 unnamed        0      0.0
+   voice-4a9c6c   -                                                                 unnamed        0      0.0
+   voice-4c01dc   -                                                                 unnamed        0      0.0
+   voice-4d374f   -                                                                 unnamed        0      0.0
+   voice-543bba   -                                                                 unnamed        0      0.0
+   voice-551442   -                                                                 unnamed        0      0.0
+   voice-5cfb34   -                                                                 unnamed        0      0.0
+   voice-60be69   -                                                                 unnamed        0      0.0
+   voice-61aaa5   -                                                                 unnamed        0      0.0
+NAME> _
+voice-6e760e is Validation Voice
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 4. after Ctrl+C: what the terminal shows (summary, held-back messages) =====
+relabelled 3 of 3 transcript(s)
+
+EXIT=0
