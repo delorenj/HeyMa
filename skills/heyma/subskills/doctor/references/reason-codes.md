@@ -85,7 +85,8 @@ with its outcome. Full chain semantics are in
 | `diarization` | `diarization_failed`, `human_edits` (skipped: a human changed the body after labelling), `channel_separated` (skipped: dual-channel `telnyx-*`) | The old "CUDA out of memory at Sortformer load" failure shows as `diarization_failed`. |
 | `voice-id` | `audio_missing`, `voice_id_failed`, `no_speech` (skipped) | `voice_id_failed` carries the GPU child's stderr tail; see [passes/voice-id](../../../references/passes/voice-id.md). |
 | `call-metadata` | `not_a_call` (skipped), `call_not_found`, `telnyx_auth_failed`, `telnyx_http_error`, `telnyx_unreachable` | Telnyx key is an `op://` reference by item UUID. |
-| `frontmatter-stamp`, `clipboard-copy` | runner codes only | `clipboard-copy` is a desk effect. |
+| `clipboard-copy` | `clipboard_unavailable`, plus runner codes | No current display or all clipboard backends failed/timed out. Read the backend summary in detail; restore the desktop context before a targeted retry. This is a desk effect, so preserve clipboard context. |
+| `frontmatter-stamp` | runner codes only | |
 
 ## Item, capture and archive causes (not pass codes)
 

@@ -151,6 +151,16 @@ pass's own `requires` subgraph completes, with id
 
 ## Gotchas
 
+- **`clipboard-copy` is a desk effect.** It refreshes display/auth values from
+  the user manager, gives `wl-copy` five seconds, then tries `xclip` on the
+  session's declared `DISPLAY`. It records the backend/fallbacks in result
+  evidence; no working backend fails as `clipboard_unavailable`. The chime is
+  best effort with a three-second bound. Exhausted historical items still need
+  targeted `wax ep run clipboard-copy <item>`, which really overwrites the
+  clipboard: preserve the operator's clipboard in memory and restore it only
+  if it still contains the text this recovery copied. Never broad-sweep desk
+  effects or call a dry run recovery evidence. Executable changes apply to
+  frozen plans too; they do not require a replan or a daemon restart.
 - **Registry versus plan.** Editing `passes.d` changes nothing for an item
   governed by a compiled pipeline. Use `wax pipeline import` for new items and
   `wax ep replan --apply` for unfinished ones.
