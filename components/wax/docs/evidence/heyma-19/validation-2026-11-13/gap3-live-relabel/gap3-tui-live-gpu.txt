@@ -1,0 +1,36 @@
+--- production files that must stay untouched (sha256 prefix, mtime)
+37a03cd381dcf82a  2026-11-12 12:47:32.597456308 -0500  /home/delorenj/d/Transcripts/20260713-143714-2026-07-13 17.37.15.md
+c2d06ca6aed2efd6  2026-11-12 12:47:32.463456364 -0500  /home/delorenj/d/Voices/voice-6e760e.md
+--- extra env for this scenario: WAX_FRONTMATTERS=/home/delorenj/.local/bin/frontmatters WAX_VOICE_REFINGERPRINT=1 DIARIZATION_PYTHON=/home/delorenj/HeyMa/.venv-diarization/bin/python
+
+===== 1. open: cursor row 0 should be voice-6e760e =====
+wax voices   64 voices, 54 waiting for a name
+NAME> _
+
+===== 2. Enter: name locked in; relabel runs in the background =====
+NAME> _  relabelling 0/3 (0912865dbefa1d62)
+voice-6e760e is Validation Voice
+t+2s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+4s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+6s: NAME> _  relabelling 1/3 (32e3d0bcde6e3f89)
+t+8s: NAME> _  relabelling 1/3 (32e3d0bcde6e3f89)
+t+10s: NAME> _  relabelling 1/3 (32e3d0bcde6e3f89)
+t+12s: NAME> _  relabelling 1/3 (32e3d0bcde6e3f89)
+t+14s: NAME> _  relabelling 2/3 (d0c46b5dee6d9632)
+t+16s: NAME> _  relabelling 2/3 (d0c46b5dee6d9632)
+t+18s: NAME> _  relabelling 2/3 (d0c46b5dee6d9632)
+t+20s: NAME> _  relabelling 2/3 (d0c46b5dee6d9632)
+t+22s: <no relabel progress on screen>
+
+===== 3. the whole screen after the relabel finished, still inside the TUI =====
+wax voices   64 voices, 53 waiting for a name
+   VOICE          NAME                                                              STATUS     ITEMS  MINUTES
+NAME> _
+voice-6e760e is Validation Voice
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 4. after Ctrl+C: what the terminal shows (summary, held-back messages) =====
+relabelled 3 of 3 transcript(s)
+
+EXIT=0
+scripts/live_relabel.sh gpu  WAX_VOICE_REFINGERPRINT=1   0.06s user 0.08s system 0% cpu 30.940 total

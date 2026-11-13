@@ -1,0 +1,27 @@
+Direct probes of the four players on the 5.000 s WAV the TUI generates (cut_clip: pcm_s16le, 16 kHz, mono, container wav).
+Copied verbatim from the session; scripts/play_probe.sh is the harness (pw-play, paplay), the others are the commands shown.
+
+## pw-play and paplay: private PipeWire (null sink only), recorder on the sink monitor, rc and wall time of the player
+== pw-play: argv=[pw-play] rc=0 wall=5.108544481s
+monitor capture bytes: 320158
+  silence_start: 0
+  silence_end: 1.600125 | silence_duration: 1.600125
+  silence_start: 6.600125
+  silence_end: 10.003563 | silence_duration: 3.403437
+== paplay: argv=[paplay] rc=0 wall=5.209094531s
+monitor capture bytes: 320158
+  silence_start: 0
+  silence_end: 1.557438 | silence_duration: 1.557438
+  silence_start: 6.557437
+  silence_end: 10.003563 | silence_duration: 3.446125
+(audio between silence_end and the next silence_start: 6.600125-1.600125 = 5.000 s for pw-play, 6.557437-1.557438 = 5.000 s for paplay)
+
+## ffplay -nodisp -autoexit -loglevel quiet, SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILE=<file> (no audio device is opened)
+CRITICAL: You are using the SDL disk i/o audio driver!   (SDL's own banner)
+ffplay rc=0 wall=5.412288228s
+-rw-rw-r-- 1 delorenj delorenj 163840 ffplay-disk.raw      -> 163840 B / 32000 B/s = 5.12 s (s16 mono 16 kHz, 5.000 s of tone + SDL buffer padding; see gap1-sinkfile-analysis.txt)
+
+## aplay -q, ALSA_CONFIG_PATH=scripts/asound.conf (default PCM = plug -> file plugin -> null: no sound card is opened)
+(first attempt failed: "Unknown PCM null" because ALSA_CONFIG_PATH replaces the whole config; fixed by defining pcm.nullsink)
+aplay rc=0 wall=.104456712s
+-rw------- 1 delorenj delorenj 160000 aplay-file.raw        -> 160000 B / 32000 B/s = 5.000 s

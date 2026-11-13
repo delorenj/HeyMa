@@ -1,0 +1,15 @@
+### only pw-play on PATH
+player_command() -> ['pw-play']
+make_player -> ClipLoop ['pw-play'] 
+### only paplay on PATH
+player_command() -> ['paplay']
+make_player -> ClipLoop ['paplay'] 
+### only ffplay on PATH
+player_command() -> ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet']
+make_player -> ClipLoop ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet'] 
+### only aplay on PATH
+player_command() -> ['aplay', '-q']
+make_player -> ClipLoop ['aplay', '-q'] 
+### only none on PATH
+player_command() -> None
+make_player -> NullPlayer None no audio player found (pw-play, paplay, ffplay, aplay; or set WAX_VOICES_PLAYER)

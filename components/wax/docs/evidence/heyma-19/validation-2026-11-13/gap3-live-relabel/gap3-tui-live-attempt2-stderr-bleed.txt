@@ -1,0 +1,35 @@
+--- production files that must stay untouched (sha256 prefix, mtime)
+37a03cd381dcf82a  2026-11-12 12:47:32.597456308 -0500  /home/delorenj/d/Transcripts/20260713-143714-2026-07-13 17.37.15.md
+c2d06ca6aed2efd6  2026-11-12 12:47:32.463456364 -0500  /home/delorenj/d/Voices/voice-6e760e.md
+
+===== 1. open: cursor row 0 should be voice-6e760e =====
+wax voices   64 voices, 54 waiting for a name
+>  voice-6e760e   _                                                                 unnamed        3      0.5
+NAME> _
+
+===== 2. typed the name =====
+>  voice-6e760e   Validation Voice_                                                 unnamed        3      0.5
+NAME> Validation Voice_
+
+===== 3. Enter: locked in, relabel running in the background =====
+NAME> _  relabelling 0/3 (0912865dbefa1d62)
+voice-6e760e is Validation Voice
+t+2s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+4s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+6s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+8s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+10s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+12s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+14s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+16s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+18s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+20s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+22s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+24s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+26s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+28s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+t+30s: NAME> _  relabelling 0/3 (0912865dbefa1d62)
+
+===== 4. later =====
+NAME> _  relabelling 0/3 (0912865dbefa1d62)
+voice-6e760e is Validation Voice

@@ -1,0 +1,3 @@
+#!/bin/bash
+# run a command against the PRIVATE display :119 only
+exec env -i DISPLAY=:119 PATH=/usr/bin:/bin HOME=/home/delorenj "$@"

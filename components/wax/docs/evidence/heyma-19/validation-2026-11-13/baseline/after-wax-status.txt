@@ -1,0 +1,12 @@
+  stream       ready
+                 no sentinels, no partials, preflight ok
+  inbox        error (failed_items)
+                 1 failed item(s) preserved in inbox
+  queue        1 in inbox · 0 actionable · 1 failed
+  items        601 live of 936 recorded  (complete 570 · enrichment_pending 14 · failed 1 · skipped 16)
+  passes       FAILING  11 item(s): call-metadata, clipboard-copy   -> wax ep sweep --dry-run
+  diarization  ok       0 recent transcript(s) undiarized
+  outbox       0 unpublished
+  transcripts  ok (queued 0, embed pending 0)
+  calls        ok       synced 9 min ago  (7d: answered 65 · declined 8 · failed 5 · missed 20 · no_answer 1 · voicemail 4)
+exit=2

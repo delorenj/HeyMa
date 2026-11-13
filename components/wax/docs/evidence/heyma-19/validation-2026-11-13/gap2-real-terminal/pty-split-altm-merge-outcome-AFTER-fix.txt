@@ -1,0 +1,3 @@
+Alt+M split, Enter, y => merged?   gap=  20ms  name="null/merged/'[[voice-c00003]]'"
+Alt+M split, Enter, y => merged?   gap= 100ms  name="null/merged/'[[voice-c00003]]'"
+Alt+M split, Enter, y => merged?   gap= 200ms  name='m/named'

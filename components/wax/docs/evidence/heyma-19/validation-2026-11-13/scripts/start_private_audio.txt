@@ -1,0 +1,11 @@
+How the private audio graph for gap 1 was started (stopped again afterwards; only my own pids were signalled):
+
+  mkdir -p pw/xdg pw/state pw/cfg pw/cache; chmod 700 pw/xdg
+  env -i HOME=/home/delorenj PATH=/usr/bin:/bin XDG_RUNTIME_DIR=$PWD/pw/xdg setsid pipewire -c $PWD/pw/pipewire.conf
+  env -i HOME=/home/delorenj PATH=/usr/bin:/bin XDG_RUNTIME_DIR=$PWD/pw/xdg XDG_STATE_HOME=$PWD/pw/state \
+      XDG_CONFIG_HOME=$PWD/pw/cfg XDG_CACHE_HOME=$PWD/pw/cache setsid wireplumber -p policy
+  scripts/pwenv.sh pactl set-default-sink heyma19-silent-sink      # the PRIVATE server's default
+
+Lessons: `pipewire` ignores PIPEWIRE_CONFIG_FILE for this purpose (use -c); without a session manager no stream gets ports or links
+(pw-play sat "suspended" forever); WirePlumber's built-in `policy` profile (no hardware.* features) supplies linking without
+enumerating a single real device.

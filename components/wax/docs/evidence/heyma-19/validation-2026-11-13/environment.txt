@@ -1,0 +1,44 @@
+Environment used for every isolated run (no secrets). Every command was started with `env -i` and only these variables.
+
+Common
+  HOME=/home/delorenj  PATH=/usr/bin:/bin   (PATH dirs under /tmp/heyma-validate-heyma-19/pathdirs/ for the selection test)
+  PYTHONPATH, PYTHONHOME, VIRTUAL_ENV unset (env -i); wax run with /usr/bin/python3 like waxd
+  Tests: mise python 3.14 with PYTHONPATH/PYTHONHOME/VIRTUAL_ENV unset, `nice -n 10 python3 -m pytest tests/voices_tui_test.py`
+
+Gap 1 (real players)
+  fixture: docs/evidence/heyma-19/make_fixture.py -> /tmp/heyma-validate-heyma-19/fix1 (WAX_ROOT, WAX_VAULT, WAX_VOICES_DIR under it)
+  pw-play/paplay: PRIVATE PipeWire 1.4.7 + policy-only WirePlumber (`wireplumber -p policy`: no ALSA/bluez/v4l2 monitors),
+    XDG_RUNTIME_DIR=/tmp/heyma-validate-heyma-19/pw/xdg PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native PIPEWIRE_RUNTIME_DIR=$XDG_RUNTIME_DIR
+    config scripts/pipewire.conf: one null sink (heyma19-silent-sink), nothing else; the operator's default sink
+    (alsa_output.usb-Generic_USB_Audio-00.HiFi__Speaker__sink) was checked before and after and never touched.
+  ffplay: SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILE=/tmp/heyma-validate-heyma-19/ffplay-*.raw (DISPLAY unset, -nodisp)
+  aplay: ALSA_CONFIG_PATH=scripts/asound.conf (default PCM = file plugin over a null slave)
+  The loops call the TUI's own plan_clips -> cut_clip -> player_command() -> make_player() -> ClipLoop.
+
+Gap 2 (real terminal)
+  Xvfb :119 (-screen 0 1280x800x24 -nolisten tcp). Display :99 belongs to someone else and was not touched; :0/:1 never used.
+  kitty 0.41.1 (linux_display_server=x11, term=xterm-256color, allow_remote_control=socket-only on a /tmp socket) and
+  alacritty 0.18.0-dev; env DISPLAY=:119 XDG_RUNTIME_DIR=/tmp/heyma-validate-heyma-19/x/xdg-<term>. xdotool ran with
+  `env -i DISPLAY=:119` only (scripts/X). Inside the terminal:
+  env -i HOME TERM=xterm-256color WAX_ROOT=<fix>/root WAX_VAULT=<fix>/vault TRANSCRIPTS=<fix>/vault WAX_VOICES_DIR=<fix>/voices
+    WAX_VOICE_NOTIFY=0 WAX_VOICES_PLAYER=<fix>/fake-player.sh   wax voices tui --no-sync
+  pty tests: python pty.fork + select, TERM=xterm-256color, 30x110, --no-play --no-sync.
+
+Gap 3 (live relabel)   see gap3-live-relabel/gap3-isolation-proof.txt for the printed paths
+  WAX_ROOT=/tmp/heyma-validate-heyma-19/real3/root   (ledger, socket, singleton lock, state.json all under it)
+  WAX_VAULT=TRANSCRIPTS=/tmp/.../real3/vault   WAX_VOICES_DIR=/tmp/.../real3/voices
+  WAX_VOICE_NOTIFY=0 (no desktop notify, no ntfy)   WAX_TRANSCRIPTS=0 and WAX_TRANSCRIPTS_UNIT_FILE=/nonexistent/waxd.service
+    (transcripts store capture off, installed unit's DSN never read: no Postgres)
+  WAX_NATS_HOST=127.0.0.1 WAX_NATS_PORT=9 (nothing listens; events.emit only writes the isolated ledger outbox, nothing drains it)
+  No S3 code runs in voice-id / relabel / the TUI.
+  WAX_FRONTMATTERS=/home/delorenj/.local/bin/frontmatters (the editor on the operator's PATH; absent under env -i PATH=/usr/bin:/bin)
+  GPU run only: WAX_VOICE_REFINGERPRINT=1 DIARIZATION_PYTHON=/home/delorenj/HeyMa/.venv-diarization/bin/python
+  voice-id's own YAML env stays in force: WAX_VOICE_OWNER=Jarad, WAX_VOICE_CONTEXT=1 (Jev is asked only for an uncertain/new
+    speaker; every speaker here was a confident match, so no gateway call was made and no model of any kind was called)
+
+Gap 4 (real registry copy, read-only)
+  copy of production var/wax.db made with sqlite3 Connection.backup() from a file:...?mode=ro URI, ~/d/Voices copied with cp -a;
+  WAX_ROOT=/tmp/heyma-validate-heyma-19/real4/root, WAX_VOICES_DIR=/tmp/.../real4/voices, --no-play --no-sync, tmux -L hm19real4.
+  Caveat: the copied ledger's items.path / transcripts.md_path / voices.note_path still name production files; this run only
+  READS them (ffmpeg cuts, the transcript note's turn list) and never names or merges. The relabel fixture (real3) rewrites
+  every such path into /tmp and asserts none is left outside it.

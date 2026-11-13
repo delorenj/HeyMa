@@ -1,0 +1,8 @@
+picked items: ['32e3d0bcde6e3f89', '0912865dbefa1d62', 'd0c46b5dee6d9632']
+voices 64
+voice_exemplars 359
+items 3
+transcripts 3
+voice_sightings 3
+passes 12
+paths outside the isolated root: []

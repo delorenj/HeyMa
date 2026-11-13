@@ -1,0 +1,18 @@
+######## ClipLoop with real ffplay, SDL_AUDIODRIVER=disk (no audio device opened)
+PATH = /tmp/heyma-validate-heyma-19/pathdirs/ffplay
+WAX_VOICES_PLAYER = None
+player_command() -> ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet']
+make_player -> ClipLoop ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet'] 
+one clip: player pid=1000580 rc=0 wall=5.38s state=None
+after stop: state = None
+disk sink bytes: 163840
+ffplay SDL disk file is s16 mono 16 kHz? seconds = bytes/32000 = 5.120
+######## ClipLoop with real aplay, ALSA default PCM = file plugin
+PATH = /tmp/heyma-validate-heyma-19/pathdirs/aplay
+WAX_VOICES_PLAYER = None
+player_command() -> ['aplay', '-q']
+make_player -> ClipLoop ['aplay', '-q'] 
+one clip: player pid=1003765 rc=0 wall=0.00s state=None
+after stop: state = None
+file-PCM bytes: 160000
+seconds (s16 mono 16k) = 5.000

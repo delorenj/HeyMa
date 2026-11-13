@@ -1,0 +1,8 @@
+needs_relabel: []
+voice-6e760e: {'voice_id': 'voice-6e760e', 'name': None, 'status': 'unnamed', 'merged_into': None, 'note_path': '/tmp/heyma-validate-heyma-19/real3/voices/voice-6e760e.md'}
+0912865dbefa1d62 sighting label='Speaker 1' rendered='Speaker 1' verdict=matched | note turn heads=[('Speaker 1', '00:00')] | voices:=['[[voice-6e760e]]']
+32e3d0bcde6e3f89 sighting label='Speaker 1' rendered='Speaker 1' verdict=matched | note turn heads=[('Speaker 1', '00:00')] | voices:=['[[voice-6e760e]]']
+d0c46b5dee6d9632 sighting label='Speaker 1' rendered='Speaker 1' verdict=matched | note turn heads=[('Speaker 1', '00:00')] | voices:=['[[voice-6e760e]]']
+pass row: {'item_id': '0912865dbefa1d62', 'ep_slug': 'voice-id', 'state': 'completed', 'attempt': 1, 'version': 1}
+pass row: {'item_id': '32e3d0bcde6e3f89', 'ep_slug': 'voice-id', 'state': 'completed', 'attempt': 1, 'version': 1}
+pass row: {'item_id': 'd0c46b5dee6d9632', 'ep_slug': 'voice-id', 'state': 'completed', 'attempt': 1, 'version': 1}

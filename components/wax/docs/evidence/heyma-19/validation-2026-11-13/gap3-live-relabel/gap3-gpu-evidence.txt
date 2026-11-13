@@ -1,0 +1,4 @@
+['item_id', 'ep_slug', 'state', 'attempt', 'command_id', 'updated_at', 'detail', 'version', 'reason_code', 'result', 'definition_id', 'exhausted_at']
+0912865dbefa1d62 completed attempt 2 {'Speaker 1': {'verdict': 'matched', 'voice': 'voice-6e760e', 'score': 0.93, 'cached': False, 'consistency': 1.0}}
+32e3d0bcde6e3f89 completed attempt 2 {'Speaker 1': {'verdict': 'matched', 'voice': 'voice-6e760e', 'score': 0.944, 'cached': False, 'consistency': 1.0}}
+d0c46b5dee6d9632 completed attempt 2 {'Speaker 1': {'verdict': 'matched', 'voice': 'voice-6e760e', 'score': 0.94, 'cached': False, 'consistency': 0.936}}

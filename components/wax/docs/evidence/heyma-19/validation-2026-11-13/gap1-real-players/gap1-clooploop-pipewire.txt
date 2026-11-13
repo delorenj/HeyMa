@@ -1,0 +1,32 @@
+######## ClipLoop with real pw-play (private PipeWire null sink)
+PATH = /tmp/heyma-validate-heyma-19/pathdirs/pw-play
+WAX_VOICES_PLAYER = None
+player_command() -> ['pw-play']
+make_player -> ClipLoop ['pw-play'] 
+loop state transitions (index, t, what, error):
+   (0, 0.0, 'item-meeting 00:03', '')
+   (1, 5.11, 'item-meeting 00:40', '')
+   (2, 10.27, 'item-meeting 00:24', '')
+final state: {'voice_id': 'voice-a00001', 'index': 2, 'total': 3, 'what': 'item-meeting 00:24', 'error': ''}
+after stop: state = None
+monitor capture of the null sink (non-silent spans):
+  silence_start: 0
+  silence_end: 1.706813 | silence_duration: 1.706813
+  silence_start: 13.162813
+  silence_end: 16.019562 | silence_duration: 2.85675
+######## ClipLoop with real paplay (private PipeWire null sink)
+PATH = /tmp/heyma-validate-heyma-19/pathdirs/paplay
+WAX_VOICES_PLAYER = None
+player_command() -> ['paplay']
+make_player -> ClipLoop ['paplay'] 
+loop state transitions (index, t, what, error):
+   (0, 0.0, 'item-meeting 00:03', '')
+   (1, 5.12, 'item-meeting 00:40', '')
+   (2, 10.23, 'item-meeting 00:24', '')
+final state: {'voice_id': 'voice-a00001', 'index': 2, 'total': 3, 'what': 'item-meeting 00:24', 'error': ''}
+after stop: state = None
+monitor capture of the null sink (non-silent spans):
+  silence_start: 0
+  silence_end: 1.664125 | silence_duration: 1.664125
+  silence_start: 13.162875
+  silence_end: 15.976875 | silence_duration: 2.814
