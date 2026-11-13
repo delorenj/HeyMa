@@ -62,10 +62,10 @@ echo "Written: $out" >&2
         self.fake = fake
 
     def waxd_command(self, audio: Path):
-        """The (cmd, env) `transcribe_adapter.transcribe` hands to subprocess.run for `audio`."""
+        """The (cmd, env) `transcribe_adapter.transcribe` hands to fence.run_tracked (the tracked subprocess.run) for `audio`."""
         calls = []
 
-        def capture(cmd, **kwargs):
+        def capture(item_id, cmd, **kwargs):          # fence.run_tracked(item_id, argv, env=..., timeout=...)
             calls.append((list(cmd), dict(kwargs["env"])))
             return subprocess.CompletedProcess(cmd, 1, "", "stopped after capture")
 
@@ -76,7 +76,7 @@ echo "Written: $out" >&2
             stack.enter_context(patch.dict(os.environ, {"WAX_TRANSCRIBE": str(WRAPPER), "WAX_ROOT": str(self.wax_root)}))
             stack.enter_context(patch.object(transcribe_adapter.desktop, "ding"))
             stack.enter_context(patch.object(transcribe_adapter.sanity, "probe_duration", return_value=None))
-            stack.enter_context(patch.object(transcribe_adapter.subprocess, "run", side_effect=capture))
+            stack.enter_context(patch.object(transcribe_adapter.fence, "run_tracked", side_effect=capture))
             with self.assertRaises(transcribe_adapter.TranscribeError):
                 transcribe_adapter.transcribe(audio, item_id=ITEM)
         self.assertEqual(len(calls), 1)

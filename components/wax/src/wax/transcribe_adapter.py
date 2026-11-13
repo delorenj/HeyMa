@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import archive, config, desktop, frontmatter, ledger, paths, sanity, sentinel
+from . import archive, config, desktop, fence, frontmatter, ledger, paths, sanity, sentinel
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
@@ -196,6 +196,25 @@ def vault_name(audio: Path, when: Optional[float] = None) -> str:
     return f"{time.strftime('%Y%m%d-%H%M%S', t)}-{slug}.md"
 
 
+def _park_late_output(result: "subprocess.CompletedProcess[str]", item_id: Optional[str]) -> None:
+    """Move a transcript that finished after the item was fenced out of the vault.
+
+    bin/transcribe writes into the vault itself, so a child that beat the halt has
+    already published a note for a recording that is being split. Park it under
+    recovered/split-late/ (preserved, out of the vault, out of the store).
+    """
+    if result.returncode != 0 or not (result.stdout or "").strip():
+        return
+    late = Path(result.stdout.strip().splitlines()[-1])
+    if not late.is_file():
+        return
+    from . import rename as rn
+    dest = paths.RECOVERED / "split-late"
+    dest.mkdir(parents=True, exist_ok=True)
+    moved = rn.move_noclobber(late, dest / late.name)
+    log.warning("item %s was split while transcribing; late transcript parked at %s", item_id, moved)
+
+
 def transcribe(audio: Path, *, item_id: Optional[str] = None,
                attempt: int = 1, extra: Optional[list[str]] = None) -> dict[str, Any]:
     """Transcribe one item. Publishes only if the sanity gate passes."""
@@ -214,6 +233,8 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
             f"audio is {duration_s:.3f}s; MAX_AUDIO_DURATION_FOR_TRANSCRIPTION={limit_s:.3f}s"
         )
     item_id = item_id or ledger.identify(audio)
+    # `wax split` fenced this item: do not even start (docs/WAX-SPLIT.md).
+    ledger.guard_fence(item_id)
 
     logdir = paths.LOGS / (item_id or audio.stem)
     logdir.mkdir(parents=True, exist_ok=True)
@@ -232,9 +253,17 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
     desktop.ding("start")
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=86400)
+        # Tracked so `wax split` can stop exactly this item's transcriber.
+        r = fence.run_tracked(item_id, cmd, env=env, timeout=86400)
     except subprocess.TimeoutExpired as e:
         raise TranscribeError(f"timeout after 24h; log: {logfile}") from e
+
+    # The late-result fence. If `wax split` halted this item while the child ran,
+    # whatever it produced is stale: it must not be published, gated, renamed or
+    # recorded. A transcript the child managed to finish is parked, never deleted.
+    if ledger.fence_of(item_id) is not None:
+        _park_late_output(r, item_id)
+        ledger.guard_fence(item_id)
 
     if r.returncode != 0:
         raise TranscribeError(

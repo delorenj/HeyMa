@@ -2,7 +2,7 @@
 
 `wax` is the one operator surface. Every command accepts `--json` at any position (`wax --json catalog` and `wax catalog --json` are equal). Resolve it as `~/HeyMa/bin/wax` (`~/.local/bin/wax` points there and is first on PATH). `/usr/bin/wax` is a stale 2026-09-03 copy: never trust it. The tree below was read from the argparse definition in `components/wax/bin/wax` on 2026-11-05; `components/wax/tests/skill_hub_test.py` fails if a subcommand is missing here.
 
-Exit codes: 0 clean, 2 failure or unhealthy where noted, 130 interrupted (Ctrl-C, one line `interrupted`, no traceback, from the first millisecond when launched through the repo-root `bin/wax`: it holds Ctrl-C blocked across Python's own start-up, and wax releases it once its handler is in. The cost: if Python's start-up itself hangs, Ctrl-C waits; Ctrl-\ still quits. A caller that ignores or blocks SIGINT keeps it that way; a Ctrl-C after the command finished, during interpreter shutdown, can still traceback). A launcher that cannot run wax exits 127 (missing) or 126 (not runnable), like the shell. There is no exit 3 (WAX-DESIGN mentions one; it is not implemented). `wax reset` and `wax pipeline start|stop` do not exist.
+Exit codes: 0 clean, 2 failure or unhealthy where noted, 130 interrupted (Ctrl-C, one line `interrupted`, no traceback, from the first millisecond when launched through the repo-root `bin/wax`: it holds Ctrl-C blocked across Python's own start-up, and wax releases it once its handler is in. The cost: if Python's start-up itself hangs, Ctrl-C waits; Ctrl-\ still quits. A caller that ignores or blocks SIGINT keeps it that way; a Ctrl-C after the command finished, during interpreter shutdown, can still traceback). A launcher that cannot run wax exits 127 (missing) or 126 (not runnable), like the shell. Exit 3 exists in one place: `wax split` uses it for "no usable boundary" (nothing was cut; see [capture](capture.md#splitting-a-recording-left-running-wax-split)). WAX-DESIGN's exit 3 is otherwise not implemented. `wax reset` and `wax pipeline start|stop` do not exist.
 
 ## Capture
 
@@ -15,6 +15,17 @@ Exit codes: 0 clean, 2 failure or unhealthy where noted, 130 interrupted (Ctrl-C
 | `wax rec toggle [--label L]` | Start if idle, stop if recording. The hotkey entry; exit 2 when refused |
 | `wax rec quiesce` | Idempotent session-shutdown hook; idle is success |
 | `wax rec list` | List captures |
+
+### Split (recover a recording left running)
+
+| Command | What it does |
+|---|---|
+| `wax split [run] [TARGET] [--dry-run] [--submit SEG]... [--force] [--halt-timeout-s 180] [--min-quiet-s 300] [--margin-db 10] [--floor-dbfs -60] [--min-range-db 12] [--blip-s 3] [--tail-slack-s 60] [--pad-s 5] [--min-active-s 30]` | Find the end of the meeting from the waveform alone and cut there. `TARGET` is a capture id, an item id prefix (6+ hex digits) or an audio file name or path; with none, the active capture or the item in processing. `run` is implied. Derived parts are held under `skipped/split/<split_id>/` until submitted. Exit 0 split, proposed (`--dry-run`) or already split; 2 refused or failed; **3 no usable boundary** (nothing changed) |
+| `wax split run TARGET` | The explicit spelling of the line above |
+| `wax split submit SPLIT_ID SEG...` | Copy held parts (1-based index or `all`) into `inbox/` through a hidden temp name and an atomic rename, so the worker backs each one up to S3 before transcription. Submitting twice is a no-op |
+| `wax split list [SPLIT_ID]` | Held splits, their parts and whether each was submitted |
+
+Detail, thresholds and limits: [capture](capture.md#splitting-a-recording-left-running-wax-split).
 
 The hotkey must call `~/.local/bin/wax-toggle` (symlink to `components/wax/bin/wax-toggle`), never a PATH lookup of `wax rec toggle`.
 

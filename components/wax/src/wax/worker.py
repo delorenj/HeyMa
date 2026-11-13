@@ -35,8 +35,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from . import (archive, config, desktop, documents, dropoff, finalize, ledger, passes, paths, procutil, rename,
-               sanity, sentinel, state, transcribe_adapter)
+from . import (archive, config, desktop, documents, dropoff, fence, finalize, ledger, passes, paths, procutil,
+               rename, sanity, sentinel, state, transcribe_adapter)
 
 # Contract B: name only, handler configured exactly once in bin/waxd. Before
 # this existed there was no `import logging` anywhere under src/wax, and 22 h of
@@ -261,6 +261,9 @@ def next_item() -> Optional[tuple[str, Path, str]]:
             continue
         row = conn.execute("SELECT state FROM items WHERE item_id=?", (item_id,)).fetchone()
         st = row["state"] if row else "pending"
+        if ledger.fence_of(item_id) is not None:
+            # `wax split` has this one; it must not be picked up (or starve the queue).
+            continue
         if st in WORK_STATES:
             return item_id, p, "process"
         if st == "complete":
@@ -307,8 +310,22 @@ def park_duplicate(item_id: str, path: Path) -> dict[str, Any]:
 
 @passes.serialized
 def process(item_id: str, path: Path) -> dict[str, Any]:
-    """Archive, then transcribe, then park the audio. Never deletes anything."""
+    """Archive, then transcribe, then park the audio. Never deletes anything.
+
+    A `wax split` fence (docs/WAX-SPLIT.md) can halt the item between any two
+    steps: every step re-checks it, and the ledger refuses state changes for a
+    fenced item, so a late result is dropped here instead of being published.
+    """
+    try:
+        return _process_item(item_id, path)
+    except fence.Fenced as exc:
+        log.warning("item %s halted by wax split: %s", item_id, exc)
+        return {"item_id": item_id, "path": str(path), "fenced": str(exc)}
+
+
+def _process_item(item_id: str, path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {"item_id": item_id, "path": str(path)}
+    ledger.guard_fence(item_id)
 
     conn = ledger.connect()
     row = conn.execute("SELECT state FROM items WHERE item_id=?", (item_id,)).fetchone()
@@ -397,6 +414,8 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
         }
         return result
 
+    ledger.guard_fence(item_id)
+
     # ---- 2. transcription (skipped if this item already has one) -------
     if start_state == "transcribed":
         result["transcribe"] = {"skipped": "already transcribed"}
@@ -420,6 +439,8 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
             return result
 
     _report_diarization(item_id, path.name, result["transcribe"] or {})
+
+    ledger.guard_fence(item_id)
 
     # ---- 3. independent enrichment passes -----------------------------
     # The audio remains in the inbox until every enabled auto pass has had an
@@ -446,6 +467,8 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
     link = _link_archive(item_id)
     if link is not None:
         result["archive_link"] = link
+
+    ledger.guard_fence(item_id)
 
     # ---- 5. park the audio, but only against a LIVE re-verify ----------
     key = result["archive"]["s3_key"]

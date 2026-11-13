@@ -1,0 +1,10 @@
+# HEYMA-18 evidence: live capture, --dry-run. A boundary is proposed; the capture keeps recording and nothing is written.
+[before] stream state=recording rid=20261113-120000-abc123 segments=217 encoder pid=3889413 alive=True
+wax split: PROPOSED  capture 20261113-120000-abc123
+  duration 0:35:36  noise floor -62.1 dBFS  loud -20.6 dBFS  activity threshold -52.1 dBFS
+  quiet from 0:10:35 to 0:35:36 (1501s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:36
+  capture: recording -> recording
+  changes: none (--dry-run); capture still recording
+[after] exit code=0 stream state=recording encoder alive=True hold exists=False inbox=[]

@@ -197,6 +197,8 @@ def publish_pass_events(item_id):
     with operations.item_lock(item_id):
         conn = ledger.connect()
         events._ensure()
+        if ledger.fence_of(item_id) is not None:
+            return {"pass_events": 0, "pass_events_reason": "item_split"}
         plan = conn.execute("SELECT * FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
         if plan:
             definitions = json.loads(plan["definitions"])
@@ -275,6 +277,10 @@ def finalize(item_id):
     with operations.item_lock(item_id):
         conn = ledger.connect()
         events._ensure()
+        if ledger.fence_of(item_id) is not None:
+            # `wax split` halted this item; a completion would announce a transcript of a recording
+            # that was cut in two (docs/WAX-SPLIT.md).
+            return {"finalized": False, "reason_code": "item_split"}
         plan = conn.execute("SELECT * FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
         if not plan:
             return {"finalized": False, "reason_code": "missing_plan"}

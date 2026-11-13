@@ -1,0 +1,242 @@
+# HEYMA-18 evidence: the real bin/wax on real-scale fixtures with default parameters, in an isolated WAX_ROOT/WAX_VAULT/WAX_VOICES_DIR (never production). Exit codes in [brackets]. Generated 2026-11-13 by a throwaway driver.
+== 1. boundary detection, every fixture, --dry-run (default parameters)
+
+$ wax split meeting_overrun_quiet.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/meeting_overrun_quiet.ogg
+  duration 0:35:35  noise floor -62.2 dBFS  loud -20.6 dBFS  activity threshold -52.2 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:35
+  changes: none (--dry-run)
+[exit 0]
+
+$ wax split meeting_overrun_hvac.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/meeting_overrun_hvac.ogg
+  duration 0:35:35  noise floor -46.0 dBFS  loud -20.6 dBFS  activity threshold -36.0 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:35
+  changes: none (--dry-run)
+[exit 0]
+
+$ wax split meeting_overrun_with_click.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/meeting_overrun_with_click.ogg
+  duration 0:35:35  noise floor -62.2 dBFS  loud -20.6 dBFS  activity threshold -52.2 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:35
+  changes: none (--dry-run)
+[exit 0]
+
+$ wax split continuous_activity.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/continuous_activity.ogg
+  duration 0:30:00  noise floor -24.6 dBFS  loud -19.4 dBFS  activity threshold -14.6 dBFS
+  no usable boundary [no_contrast]: quiet and loud differ by only 5.2 dB (floor -24.6 dBFS, loud -19.4 dBFS; --min-range-db 12): continuous activity or a flat hum, so there is no quiet to cut at
+  changes: none
+[exit 3]
+
+$ wax split all_quiet.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/all_quiet.ogg
+  duration 0:30:00  noise floor -66.4 dBFS  loud -64.4 dBFS  activity threshold -56.4 dBFS
+  no usable boundary [no_activity]: the loudest 5% of the audio is -64.4 dBFS, under the -60 dBFS floor: silent or all-quiet input
+  changes: none
+[exit 3]
+
+$ wax split all_quiet_hvac.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/all_quiet_hvac.ogg
+  duration 0:30:00  noise floor -46.2 dBFS  loud -44.2 dBFS  activity threshold -36.2 dBFS
+  no usable boundary [no_contrast]: quiet and loud differ by only 1.9 dB (floor -46.2 dBFS, loud -44.2 dBFS; --min-range-db 12): continuous activity or a flat hum, so there is no quiet to cut at
+  changes: none
+[exit 3]
+
+$ wax split meeting_with_pauses.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/meeting_with_pauses.ogg
+  duration 0:11:15  noise floor -62.6 dBFS  loud -19.4 dBFS  activity threshold -52.6 dBFS
+  no usable boundary [no_sustained_quiet]: no quiet run of 300s reaches the end (longest trailing quiet 40s): continuous activity or only ordinary pauses
+    quiet run 0:05:15-0:06:45 (90s)
+    quiet run 0:02:00-0:02:45 (45s)
+    quiet run 0:10:35-0:11:15 (40s)
+  changes: none
+[exit 3]
+
+$ wax split meeting_break_then_more.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/meeting_break_then_more.ogg
+  duration 0:22:40  noise floor -62.2 dBFS  loud -19.7 dBFS  activity threshold -52.2 dBFS
+  no usable boundary [quiet_not_trailing]: a quiet run of 300s or more exists but activity continues for more than 60s after it
+    quiet run 0:10:35-0:17:35 (420s)
+    quiet run 0:05:15-0:06:45 (90s)
+    quiet run 0:02:00-0:02:45 (45s)
+  changes: none
+[exit 3]
+
+== 2. no-boundary fixtures run for real: nothing is cut, moved or registered
+
+$ wax split continuous_activity.ogg
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/continuous_activity.ogg
+  duration 0:30:00  noise floor -24.6 dBFS  loud -19.4 dBFS  activity threshold -14.6 dBFS
+  no usable boundary [no_contrast]: quiet and loud differ by only 5.2 dB (floor -24.6 dBFS, loud -19.4 dBFS; --min-range-db 12): continuous activity or a flat hum, so there is no quiet to cut at
+  changes: none
+[exit 3]
+sha256 before=9a2d07dfbf887726 after=9a2d07dfbf887726  hold dir exists: no
+
+$ wax split all_quiet.ogg
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/all_quiet.ogg
+  duration 0:30:00  noise floor -66.4 dBFS  loud -64.4 dBFS  activity threshold -56.4 dBFS
+  no usable boundary [no_activity]: the loudest 5% of the audio is -64.4 dBFS, under the -60 dBFS floor: silent or all-quiet input
+  changes: none
+[exit 3]
+sha256 before=99439d63b2f5a77a after=99439d63b2f5a77a  hold dir exists: no
+
+$ wax split all_quiet_hvac.ogg
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/all_quiet_hvac.ogg
+  duration 0:30:00  noise floor -46.2 dBFS  loud -44.2 dBFS  activity threshold -36.2 dBFS
+  no usable boundary [no_contrast]: quiet and loud differ by only 1.9 dB (floor -46.2 dBFS, loud -44.2 dBFS; --min-range-db 12): continuous activity or a flat hum, so there is no quiet to cut at
+  changes: none
+[exit 3]
+sha256 before=8ac0614521cf779c after=8ac0614521cf779c  hold dir exists: no
+
+$ wax split meeting_with_pauses.ogg
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/meeting_with_pauses.ogg
+  duration 0:11:15  noise floor -62.6 dBFS  loud -19.4 dBFS  activity threshold -52.6 dBFS
+  no usable boundary [no_sustained_quiet]: no quiet run of 300s reaches the end (longest trailing quiet 40s): continuous activity or only ordinary pauses
+    quiet run 0:05:15-0:06:45 (90s)
+    quiet run 0:02:00-0:02:45 (45s)
+    quiet run 0:10:35-0:11:15 (40s)
+  changes: none
+[exit 3]
+sha256 before=5270cbda70d65552 after=5270cbda70d65552  hold dir exists: no
+
+$ wax split meeting_break_then_more.ogg
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/meeting_break_then_more.ogg
+  duration 0:22:40  noise floor -62.2 dBFS  loud -19.7 dBFS  activity threshold -52.2 dBFS
+  no usable boundary [quiet_not_trailing]: a quiet run of 300s or more exists but activity continues for more than 60s after it
+    quiet run 0:10:35-0:17:35 (420s)
+    quiet run 0:05:15-0:06:45 (90s)
+    quiet run 0:02:00-0:02:45 (45s)
+  changes: none
+[exit 3]
+sha256 before=998528527161a0b5 after=998528527161a0b5  hold dir exists: no
+
+== 3. a real split of the overrun, with an overrun that has an HVAC bed
+
+$ wax split meeting_overrun_hvac.ogg
+wax split: SPLIT  item (unregistered)  <root>/inbox/meeting_overrun_hvac.ogg
+  duration 0:35:35  noise floor -46.0 dBFS  loud -20.6 dBFS  activity threshold -36.0 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40  meeting_overrun_hvac-part1of2.ogg  [held]
+  part 2 (quiet-tail): 0:10:40 - 0:35:35  meeting_overrun_hvac-part2of2.ogg  [held]
+  processing: pending -> skipped; in-flight work halted; original preserved; parts held until submitted
+  held in <root>/skipped/split/20261113-194833-4daf6c9f (submit with `wax split submit 20261113-194833-4daf6c9f all`)
+[exit 0]
+
+original sha before split: 4daf6c9f84e56219 ; after: 4daf6c9f84e56219
+meeting_overrun_hvac-part1of2.ogg duration=640.020000s bytes=2621186 sha256=baa1f14194a67579
+meeting_overrun_hvac-part2of2.ogg duration=1495.006500s bytes=5156515 sha256=320a5c1f600b94d4
+meeting_overrun_hvac.ogg duration=2135.006500s bytes=7777471 sha256=4daf6c9f84e56219
+inbox now: 0 copies of the original (held parts are not in the inbox)
+
+-- split.json provenance (trimmed)
+{
+ "schema": 1,
+ "method": "waveform-rms",
+ "origin": "item",
+ "source": {
+  "kind": "item",
+  "item_id": "4daf6c9f84e56219",
+  "orig_name": "meeting_overrun_hvac.ogg",
+  "sha256": "4daf6c9f84e56219876aa2e5dc4738ba7afec9ce0db78b8c63e507ee69aa7dd9",
+  "bytes": 7777471,
+  "duration_s": 2135.0
+ },
+ "boundary": {
+  "active_before_s": 464,
+  "cut_s": 640.0,
+  "quiet_end_s": 2135,
+  "quiet_length_s": 1500,
+  "quiet_start_s": 635
+ },
+ "params": {
+  "blip_s": 3.0,
+  "floor_dbfs": -60.0,
+  "margin_db": 10.0,
+  "min_active_s": 30.0,
+  "min_quiet_s": 300.0,
+  "min_range_db": 12.0,
+  "pad_s": 5.0,
+  "tail_slack_s": 60.0
+ },
+ "original_settled": true,
+ "original_path": "<root>/skipped/split/20261113-194833-4daf6c9f/meeting_overrun_hvac.ogg",
+ "segments": [
+  {
+   "index": 1,
+   "kind": "active",
+   "start_s": 0.0,
+   "end_s": 640.0,
+   "duration_s": 640.02,
+   "bytes": 2621186,
+   "sha256": "baa1f14194a6757999893438cba98afc0a2fc6c0000a94dadebcd6b5c7a73d74",
+   "state": "held"
+  },
+  {
+   "index": 2,
+   "kind": "quiet-tail",
+   "start_s": 640.0,
+   "end_s": 2135.0,
+   "duration_s": 1495.006,
+   "bytes": 5156515,
+   "sha256": "320a5c1f600b94d47dc24557903f307dd8da9efc6055ccd33ba05680231e3ebd",
+   "state": "held"
+  }
+ ]
+}
+
+$ wax split list
+20261113-194833-4daf6c9f  item  <root>/skipped/split/20261113-194833-4daf6c9f
+  part 1 (active) 0:00:00-0:10:40 meeting_overrun_hvac-part1of2.ogg [held]
+  part 2 (quiet-tail) 0:10:40-0:35:35 meeting_overrun_hvac-part2of2.ogg [held]
+[exit 0]
+
+== 4. repeat the split of the same audio (idempotent)
+
+$ wax split meeting_overrun_hvac.ogg
+wax split: ALREADY_SPLIT  item 4daf6c9f84e56219  <root>/skipped/split/20261113-194833-4daf6c9f/meeting_overrun_hvac.ogg
+  duration 0:35:35  noise floor -46.0 dBFS  loud -20.6 dBFS  activity threshold -36.0 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40  meeting_overrun_hvac-part1of2.ogg  [held]
+  part 2 (quiet-tail): 0:10:40 - 0:35:35  meeting_overrun_hvac-part2of2.ogg  [held]
+  changes: none
+[exit 0]
+split dirs: 1
+
+== 5. submit: held parts reach the inbox only on request; twice is a no-op
+
+$ wax split submit 20261113-194833-4daf6c9f 1
+split 20261113-194833-4daf6c9f
+  part 1: submitted <root>/inbox/meeting_overrun_hvac-part1of2.ogg
+the worker archives each part to S3 and verifies it before transcription
+[exit 0]
+
+$ wax split submit 20261113-194833-4daf6c9f 1 2
+split 20261113-194833-4daf6c9f
+  part 1: already_submitted <root>/inbox/meeting_overrun_hvac-part1of2.ogg
+  part 2: submitted <root>/inbox/meeting_overrun_hvac-part2of2.ogg
+the worker archives each part to S3 and verifies it before transcription
+[exit 0]
+
+$ wax split submit 20261113-194833-4daf6c9f 9
+error: split 20261113-194833-4daf6c9f has no part '9'; parts are [1, 2] or `all`
+[exit 2]
+inbox: meeting_overrun_hvac-part1of2.ogg meeting_overrun_hvac-part2of2.ogg 
+ledger: 1:submitted:baa1f14194a6 2:submitted:320a5c1f600b 
+items: meeting_overrun_hvac.ogg=skipped/split meeting_overrun_hvac-part1of2.ogg=pending/split meeting_overrun_hvac-part2of2.ogg=pending/split 
+
+== 6. refusals
+
+$ wax split nothing-by-this-name.ogg
+error: no capture or item matches 'nothing-by-this-name.ogg'
+[exit 2]
+
+$ wax split
+error: nothing to split: no capture is recording and no item is in processing; name a capture id, an item id or an audio file
+[exit 2]

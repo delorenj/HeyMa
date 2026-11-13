@@ -33,6 +33,7 @@ class WorkerEnrichmentTest(unittest.TestCase):
                     patch.object(worker.passes, "run_auto", return_value=enrichment) as run_auto, \
                     patch.object(worker.rename, "move_noclobber", return_value=parked), \
                     patch.object(worker.ledger, "connect", return_value=connection), \
+                    patch.object(worker.ledger, "fence_of", return_value=None), \
                     patch.object(worker.finalize, "finalize", return_value={"finalized": False}), \
                     patch.object(worker, "desktop") as desktop, \
                     patch.object(worker.ledger, "set_item_state") as set_state:

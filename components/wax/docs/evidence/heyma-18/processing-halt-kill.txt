@@ -1,0 +1,24 @@
+# HEYMA-18 evidence: wax split on an item in processing; the transcriber is killed by the halt.
+# A real worker.process thread runs a slow fake transcriber (a 120 s sleep); split.run is called from the main thread. Real-scale fixture, default parameters, isolated root, archive/desktop/enrichment stubbed. Generated 2026-11-13 by a throwaway driver (not committed); the same flow is asserted in tests/split_fence_test.py.
+[before] item 040a96f1dc4f5133 state=archived transcriber pid=3781270 alive=True sleeper=3781271 alive=True
+[before] item_children=[{'item_id': '040a96f1dc4f5133', 'pid': 3781270, 'argv0': 'nice'}]
+[before] bystander 9a2d07dfbf887726 state=pending sha=9a2d07dfbf88
+item 040a96f1dc4f5133 halted by wax split: item 040a96f1dc4f5133 was halted by split 20261113-194729-040a96f1; refusing a stale write
+[split] 2.4s
+wax split: SPLIT  item 040a96f1dc4f5133  <tmp>/proc/inbox/meeting.ogg
+  duration 0:35:35  noise floor -62.2 dBFS  loud -20.6 dBFS  activity threshold -52.2 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40  meeting-part1of2.ogg  [held]
+  part 2 (quiet-tail): 0:10:40 - 0:35:35  meeting-part2of2.ogg  [held]
+  processing: archived -> skipped; in-flight work halted; original preserved; parts held until submitted
+  halted: ['nice']
+  held in <tmp>/proc/skipped/split/20261113-194729-040a96f1 (submit with `wax split submit 20261113-194729-040a96f1 all`)
+[after] worker result keys=['fenced', 'item_id', 'path'] fenced='item 040a96f1dc4f5133 was halted by split 20261113-194729-040a96f1; refusing a stale write'
+[after] transcriber alive=False sleeper alive=False
+[after] item state=skipped; transcripts row=False; vault notes=[]
+[after] parked late note=[]
+[after] fences=[{'item_id': '040a96f1dc4f5133', 'split_id': '20261113-194729-040a96f1', 'reason': 'split'}]
+[after] transitions(item)=[(None, 'pending', 'discovered'), ('pending', 'archived', 's3_verified'), ('archived', 'skipped', 'split')]
+[after] bystander state=pending file_present=True sha_same=True fence=None
+[after] next worker pick=True (bystander)
+[after] hold dir: ['meeting-part1of2.ogg', 'meeting-part2of2.ogg', 'meeting.ogg', 'split.json']; original sha preserved=True
