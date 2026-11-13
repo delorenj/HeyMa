@@ -142,6 +142,7 @@ Detail: [transcriptions-store](transcriptions-store.md).
 | `wax voices show <voice>` | One voice (id, id prefix or name) and every sighting |
 | `wax voices name <voice> <name> [--no-sync]` | Name a voice (its note and the cache), merge namesakes, relabel its transcripts |
 | `wax voices merge <keep> <drop>` | Fold a voice registered twice into the other; nothing is deleted |
+| `wax voices tui [--no-sync] [--no-play]` | Full-screen naming: highlight an unnamed voice and its 5 s clips loop while the NAME field waits; Enter names it, Alt+M picks a merge target. Keys: [passes/voice-id](passes/voice-id.md#naming-in-the-tui) |
 | `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id` on transcripts still showing an old label |
 
 Detail: [failures](failures.md), [events](events.md), [calls](calls.md), [passes/dictionary](passes/dictionary.md), [passes/voice-id](passes/voice-id.md).

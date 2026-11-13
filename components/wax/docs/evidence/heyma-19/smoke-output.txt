@@ -1,0 +1,323 @@
+
+===== 1. open: unnamed voice-a00001 highlighted, NAME field focused, clips cycling =====
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+>  voice-a00001   _                                                       unnamed        1     70.0
+   voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+NAME> _  [clip 1/3 of voice-a00001: item-meeting 00:03]
+playing 3 clip(s) of voice-a00001
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+--- player.log (clip files the fake player was given, in order)
+14:34:11.222124939 pid=3325007 e8c8ef0c58fc2aa7b05f.wav
+14:34:15.076466744 pid=3326273 ce7abe38cfa0c45bd48a.wav
+14:34:18.932210698 pid=3327185 8304b441f846372f0e3e.wav
+
+=====    (player processes alive now: 1) =====
+
+===== 2. Down: row 2 (voice-b00002, listening-clip fallback); old player killed, new clips start =====
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+   voice-a00001   -                                                       unnamed        1     70.0
+>  voice-b00002   _                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+NAME> _  [clip 1/3 of voice-b00002: listening clip 0s]
+playing 3 clip(s) of voice-b00002
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+14:34:15.076466744 pid=3326273 ce7abe38cfa0c45bd48a.wav
+14:34:18.932210698 pid=3327185 8304b441f846372f0e3e.wav
+14:34:20.714135263 pid=3327823 b18fee56843c805d3491.wav
+(player processes alive: 1 -- the previous voice's was killed, not left to finish)
+
+===== 3. typed 'Damian Miller' into NAME (j/k/q are letters here) =====
+wax voices   4 voices, 3 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+>  voice-a00001   Damian Miller_                                          unnamed        1     70.0
+   voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+NAME> Damian Miller_  [clip 1/3 of voice-a00001: item-meeting 00:03]
+playing 3 clip(s) of voice-a00001
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 4. Enter: locked in; row updated; highlight moved to next unnamed voice =====
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+   voice-a00001   Damian Miller                                           named          1     70.0
+>  voice-b00002   _                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+NAME> _  [clip 1/3 of voice-b00002: listening clip 0s]
+voice-a00001 is Damian Miller (not relabelled: --no-sync; run wax voices sync)
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+=====    note frontmatter + heading for voice-a00001 =====
+name: Damian Miller
+status: named
+# Damian Miller (`voice-a00001`)
+
+=====    (cursor now on the named row voice-c00003; Space toggles, j/k move) =====
+
+===== 5. back on an unnamed row (voice-b00002) =====
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+   voice-a00001   Damian Miller                                           named          1     70.0
+>  voice-b00002   _                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+NAME> _  [clip 1/3 of voice-b00002: listening clip 0s]
+playing 3 clip(s) of voice-b00002
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 6. Alt+M (ESC m): second selector '+' opens on the most heard named voice; '-' marks the voice being folded in =====
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
++  voice-a00001   Damian Miller                                           named          1     70.0
+-  voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+fold voice-b00002 into voice-a00001?  [clip 1/3 of voice-b00002: listening clip 0s]
+MERGE: fold voice-b00002 into the voice you pick; up/down choose, Enter confirms, Esc cancels, Spa…
+MERGE  Up/Down pick target  Enter confirm  Space play  Esc cancel
+
+===== 7. lone Esc cancels the selector =====
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+   voice-a00001   Damian Miller                                           named          1     70.0
+>  voice-b00002   _                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+NAME> _  [clip 1/3 of voice-b00002: listening clip 0s]
+merge cancelled
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+===== 8. Alt+M, Enter on the picked row: confirmation prompt =====
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
++  voice-a00001   Damian Miller                                           named          1     70.0
+-  voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+fold voice-b00002 into voice-a00001 (Damian Miller)? [y/n]
+y fold it in  n/Esc back
+
+===== 9. n: back to the selector (nothing merged) =====
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
++  voice-a00001   Damian Miller                                           named          1     70.0
+-  voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+fold voice-b00002 into voice-a00001?
+not merged; pick again or Esc to cancel
+MERGE  Up/Down pick target  Enter confirm  Space play  Esc cancel
+
+===== 10. cursor moved onto the original row itself: merge into itself refused =====
+wax voices   4 voices, 2 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+   voice-a00001   Damian Miller                                           named          1     70.0
++  voice-b00002   -                                                       unnamed        1     15.0
+   voice-d00004   -                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+fold voice-b00002 into voice-b00002?
+a voice cannot be merged into itself; pick another
+MERGE  Up/Down pick target  Enter confirm  Space play  Esc cancel
+
+===== 11. Alt+M, Enter, y: voice-b00002 folded into the picked voice (dimmed 'merged' row) =====
+wax voices   4 voices, 1 waiting for a name
+   VOICE          NAME                                                    STATUS     ITEMS  MINUTES
+   voice-a00001   Damian Miller                                           named          2     85.0
+   voice-b00002   -                                                       merged         0      0.0
+>  voice-d00004   _                                                       unnamed        1      5.0
+   voice-c00003   Chase                                                   named          1     30.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+NAME> _
+voice-b00002 folded into voice-a00001 (1 sightings moved) (not relabelled: --no-sync; run wax voic…
+type name  Enter lock in  Up/Down move  Alt+M merge  Tab list  ^R replay  ^N next clip  ^C quit
+
+=====    voice-b00002 note after merge =====
+status: merged
+merged-into: '[[voice-a00001]]'
+
+===== 12. resized to 40x9 =====
+wax voices   4 voices, 1 waiting for a…
+   VOICE          NAME
+   voice-a00001   Damian Miller
+   voice-b00002   -
+>  voice-d00004   _
+   voice-c00003   Chase
+NAME> _
+voice-b00002 folded into voice-a00001 …
+type name  Enter lock in  Up/Down move…
+
+===== 13. resized to 14x4 (no crash) =====
+wax voices  …
+   VOICE NAME
+>  voic… _
+voice-b00002…
+
+===== 14. Ctrl+C: quit =====
+EXIT=0
+(player processes left after quit: 0)
+
+===== ledger after the run =====
+  VOICE         NAME                  STATUS     ITEMS  MINUTES  NOTE
+  voice-a00001  Damian Miller         named          2     85.0  /tmp/heyma-19-scratch/voices/voice-a00001.md
+  voice-c00003  Chase                 named          1     30.0  /tmp/heyma-19-scratch/voices/voice-c00003.md
+  voice-d00004  —                     unnamed        1      5.0  /tmp/heyma-19-scratch/voices/voice-d00004.md
+  voice-b00002  —                     merged         0      0.0  /tmp/heyma-19-scratch/voices/voice-b00002.md
+
+4 voices, 1 waiting for a name
+
+===== clip cache (var/voice-clips) and the vault dir hold no clips =====
+4
+voice-a00001.md
+voice-b00002.md
+voice-b00002.ogg
+voice-c00003.md
+voice-d00004.md

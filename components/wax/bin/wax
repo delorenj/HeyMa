@@ -2407,14 +2407,10 @@ def voices_command(args, J: bool) -> int:
     def relabel(items: list[str]) -> int:
         failed = 0
         for item_id in items:
-            try:
-                result = passes.run(item_id, "voice-id", live=True, operator_toggle=False)
-            except passes.PassError as exc:
-                result = {"state": f"refused: {exc}"}
-            state = result.get("state") if isinstance(result, dict) else result
+            state = voices.relabel_state(item_id)
             if not J:
                 print(f"  {item_id}  {state}")
-            failed += state not in ("completed", "skipped")
+            failed += state not in voices.RELABEL_OK
         return failed
 
     if args.sub == "list":
@@ -2464,6 +2460,10 @@ def voices_command(args, J: bool) -> int:
         moved = voices.merge(conn, keep["voice_id"], drop["voice_id"])
         print(f"{drop['voice_id']} merged into {keep['voice_id']} ({moved} sightings moved)")
         return 1 if relabel(voices.needs_relabel(conn)) else 0
+    if args.sub == "tui":
+        from wax import voices_tui
+
+        return voices_tui.main(no_sync=args.no_sync, no_play=args.no_play)
     if args.sub == "sync":
         if not args.dry_run:
             for keep, drop in voices.merge_namesakes(conn):
@@ -2975,6 +2975,10 @@ def main() -> int:
     vom = vo_.add_parser("merge", parents=[common], help="the same person registered twice: fold one voice into another")
     vom.add_argument("keep", help="the voice to keep")
     vom.add_argument("drop", help="the voice folded into it (its note is marked merged, never deleted)")
+    vot = vo_.add_parser("tui", parents=[common],
+                         help="full-screen voice naming: hear each unnamed voice's clips, name it, merge duplicates")
+    vot.add_argument("--no-sync", action="store_true", help="do not relabel transcripts after a name or merge")
+    vot.add_argument("--no-play", action="store_true", help="never play audio (naming and merging only)")
     vosy = vo_.add_parser("sync", parents=[common],
                           help="relabel transcripts whose voices were named or renamed since they were processed")
     vosy.add_argument("--dry-run", action="store_true", help="list the transcripts; change nothing")

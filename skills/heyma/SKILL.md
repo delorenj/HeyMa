@@ -54,7 +54,7 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 | Looking up a pass, its slug, state or requirements | [passes/catalog](references/passes/catalog.md) |
 | Changing or debugging the model chain and gateway | [passes/model-chain](references/passes/model-chain.md) |
 | Fixing a mis-heard word, `wax dict` | [passes/dictionary](references/passes/dictionary.md) |
-| Who is speaking, naming a voice, `wax voices`, `~/d/Voices` | [passes/voice-id](references/passes/voice-id.md) |
+| Who is speaking, naming a voice, `wax voices` (`wax voices tui` to name by ear), `~/d/Voices` | [passes/voice-id](references/passes/voice-id.md) |
 | Compiling, importing, replanning pipelines | [pipelines](references/pipelines.md) |
 | Document bindings, hygiene, PDF intake | [documents](references/documents.md) |
 | Vault-wide tidy: temp/scratch/empty files, Untitled chains, copies, empty dirs | [vault-sweep](references/vault-sweep.md) |

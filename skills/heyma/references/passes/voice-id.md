@@ -202,8 +202,8 @@ the ledger": it writes only the three `voice*` tables, under `var/voices.lock`
 and one SQLite transaction, and never the `items`/`passes` rows the runner owns.
 `~/d/Voices` is not a document binding, so the document sweep never enriches it.
 
-**Name a voice** by filling `name:` in its note (Obsidian) or with `wax voices
-name`. Set `status: ignore` for a TV, a hold message or a recording: it stays
+**Name a voice** by filling `name:` in its note (Obsidian), with `wax voices
+name`, or by ear in `wax voices tui` ([below](#naming-in-the-tui)). Set `status: ignore` for a TV, a hold message or a recording: it stays
 matched, so it is never registered again, but is never named or linked. Naming
 a voice after one that already has that name merges the two (the older keeps
 its id).
@@ -221,7 +221,57 @@ the test suites pin it off.
 | `wax voices show <voice>` | One voice (id, id prefix or name) and every sighting |
 | `wax voices name <voice> <name> [--no-sync]` | Name it (note and cache), merge namesakes, then relabel its transcripts |
 | `wax voices merge <keep> <drop>` | The same person registered twice: sightings and exemplars move to `keep`; `drop`'s note is marked `merged` (nothing deleted) |
+| `wax voices tui [--no-sync] [--no-play]` | Full-screen naming and merging with audio (below); the same `set_name`, `merge_namesakes` and `merge` as `name` and `merge` |
 | `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id --live` on every transcript still showing an old label |
+
+### Naming in the TUI
+
+`wax voices tui` is the fast way through a pile of unnamed voices (it needs a
+terminal; scripts keep using `name`, `merge`, `sync`). It is a front end: it calls
+`voices.set_name` + `merge_namesakes`, `voices.merge` and the same relabel step
+(`voices.relabel_state`) as the CLI, so the note, the cache and the transcripts end
+up identical. Code: `components/wax/src/wax/voices_tui.py`.
+
+- **Table.** `wax voices list`'s columns, unnamed voices first (most heard first),
+  then named, `ignore`, and merged voices dimmed at the bottom. The order is fixed
+  when it opens (`r` reloads); naming does not reshuffle rows under the cursor.
+- **Unnamed row highlighted = listening.** Focus goes to the NAME field of that
+  row and its clips loop 1, 2, ... N, 1 until you act. Moving the highlight kills
+  the player at once and starts the next row's clips. A half-typed name is kept per
+  row while you look at another.
+- **Clips.** Up to 8 distinct ~5 s clips, cut from the item audio (`items.path`)
+  at the turn heads the voice's `confident` sightings recorded (longest turns first,
+  one recording at a time in rotation, centred inside the turn). A voice with no
+  usable turn (channel-separated calls, audio gone) falls back to 5 s slices of its
+  `<voice-id>.ogg`. Clips are cached as WAV under `var/voice-clips/` (safe to
+  delete; never in the vault or `~/d/Voices`). Player: `$WAX_VOICES_PLAYER` (a
+  command that takes the file path), else `pw-play`, `paplay`, `ffplay -nodisp`,
+  `aplay`. No player: the status line says so and naming still works.
+- **Keys, name focus** (default on an unnamed row; every printable key types, so
+  `j`, `k`, `q` and Space are letters): type, Backspace, Ctrl+U clear, Ctrl+W word,
+  **Enter** locks the name in (a confirmation lands on the status line, the row
+  updates, the highlight moves to the next unnamed voice), Esc clears the text,
+  Up/Down/PgUp/PgDn/Home/End move, Tab hands focus to the list, Ctrl+R replays,
+  Ctrl+N skips to the next clip, Ctrl+C or Ctrl+Q quits.
+- **Keys, list focus** (named rows, or after Tab): `j`/`k` move, Enter/`e` rename
+  (named) or return to NAME (unnamed), Space/`p` start or stop playback of any
+  row, `m` or Alt+M merge, `r` reload, `q` quits.
+- **Merge (Alt+M, an ESC then `m`; a lone Esc is cancel).** The highlighted row
+  (`-`) is folded in; a second cursor (`+`, opens on the most heard named voice)
+  picks the voice kept. Up/Down/`j`/`k` move it, Space plays the candidate. Enter
+  asks `fold <drop> into <keep> (<name>)? [y/n]`; `y` calls
+  `voices.merge(keep, drop)`, `n` goes back to picking, Esc cancels. A voice cannot
+  be folded into itself or into an already merged voice (refused on the status
+  line, nothing called). Merge direction is yours: pick the named voice as the
+  target, since the target's name wins.
+- **Relabelling never blocks keys.** A name or merge asks one background worker
+  to rerun `voice-id` on the stale transcripts (requests coalesce); progress shows
+  on the play line. On quit it waits for the worker (Ctrl+C leaves the rest) and
+  prints a summary; failures are rerun by `wax voices sync`. `--no-sync` skips the
+  relabelling, `--no-play` never plays audio.
+- **Tests and evidence.** `tests/voices_tui_test.py` (model, clip planning with
+  real ffmpeg, the player loop with real subprocesses); a real-terminal run is
+  recorded in `components/wax/docs/evidence/heyma-19/`.
 
 ## Failures
 
