@@ -151,13 +151,46 @@ Resume policy: there is none. A split item is not retried automatically;
 `wax retry` refuses it (it is `skipped`), and the sweep ignores fenced items.
 The operator decides which held parts to submit.
 
+### Old daemon: refused, never half-done
+
+A waxd that was started before the fence existed keeps running the pre-fence worker until it is
+restarted. That worker never reads `item_fences`, does not register its transcriber or pass children
+(`halt_children` finds nothing to stop) and publishes whatever returns. Run the new `wax split` on an
+item such a daemon is processing and the fence is raised for nothing: the CLI waits `--halt-timeout-s`
+(default 180 s) on the item flock while the old worker keeps transcribing, then either times out (nothing
+cut, exit 2) or, if the item finishes inside the window, cuts a recording whose unsplit transcript has
+already been published. A queued item is no safer: the old worker polls the inbox every 5 s and can claim it
+between the CLI's checks.
+
+So the halting path checks the daemon first (`fence.require_fence_support`, called from `split._run_item`
+before anything is written). A new waxd puts `daemon: {pid, capabilities: ["item-fence/1"]}` in every
+snapshot it serves on `var/waxd.sock` and mirrors into `var/state.json`. The CLI finds the running waxd
+from `var/waxd.singleton.lock` (the pid is verified against `/proc/<pid>/cmdline`), asks the socket, and
+falls back to the mirror only when the socket does not answer and the mirror names that same pid. A running
+daemon that does not advertise the capability gets exit 2 and:
+
+```
+refusing: the running waxd (pid N) predates the split fence (its status does not advertise item-fence/1), ...
+Restart waxd first (`systemctl --user restart waxd` ...), then run `wax split` again.
+Nothing was fenced, halted, cut or moved.
+```
+
+What the check applies to: an item that needs a halt (any state except `complete` and `skipped`, so
+`pending`, `archived`, `transcribed`, `enrichment_pending`, `failed`, `suspect` too, and an unregistered
+inbox file). What it never applies to: `--dry-run` and the no-boundary outcome (read-only analysis comes
+first), a live capture (nothing is halted; the stop is the same one `wax rec stop` makes), a `complete` or
+`skipped` item, a split that is already settled, and a host with no waxd running (there is no worker to
+race). There is no override flag.
+
 ## Evidence
 
-`docs/evidence/heyma-18/` holds the real command output for every case
+`docs/evidence/heyma-18/validation-2026-11-13/` is the recording-safe validation under a real waxd (README.md
+has the gap matrix). `docs/evidence/heyma-18/` holds the real command output for every case
 (`cli-cases.txt`), the live-capture and in-processing runs, the fixture
 characteristics, and the pytest results. Tests: `tests/split_test.py`
 (detection, cutting, provenance, submit, CLI exit codes), `tests/split_fence_test.py`
-(fence, halt, late result, queue isolation, concurrency with a real worker thread),
+(fence, halt, late result, queue isolation, concurrency with a real worker thread, and a pass
+subprocess still running when the fence goes up), `tests/split_daemon_guard_test.py` (an old waxd is refused),
 `tests/split_live_test.py` (a real ffmpeg encoder as the live capture).
 
 ## Not covered

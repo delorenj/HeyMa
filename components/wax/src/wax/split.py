@@ -486,6 +486,12 @@ def _run_item(source: Source, params: Params, dry_run: bool, halt_timeout_s: flo
     split_id = existing[1]["split_id"] if existing else _new_split_id(sha)
     hold = split_root() / split_id
     needs_halt = before not in ("complete", "skipped")
+    if needs_halt:
+        # Before anything is written: an old waxd cannot honour the fence (docs/WAX-SPLIT.md, "Old daemon").
+        try:
+            fence.require_fence_support()
+        except fence.DaemonTooOld as exc:
+            raise SplitError(str(exc)) from None
     raised = fence.raise_fence(item_id, split_id) if needs_halt else False
     try:
         with _settled(item_id, halt_timeout_s) as halted:

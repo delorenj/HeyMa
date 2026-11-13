@@ -15,14 +15,29 @@ carry on:
 Nothing here schedules anything; `wax split` calls these once, inside one command.
 """
 
+import json
 import os
+import socket
 import subprocess
+from pathlib import Path
 from typing import Any, Optional, Sequence
 
-from . import ledger, procutil, sentinel
+from . import ledger, paths, procutil, sentinel
 from .ledger import Fenced  # noqa: F401  (re-exported: callers catch fence.Fenced)
 
 KILL_GRACE_S = 5.0
+
+# What a waxd that honours the fence puts in its status snapshot (socket and state.json,
+# `daemon.capabilities`). A waxd started before the fence existed never wrote the field, so its
+# absence is the proof that its worker ignores `item_fences` and does not track its children:
+# `wax split` refuses to halt an item under such a daemon (see `require_fence_support`).
+CAPABILITY = "item-fence/1"
+PROBE_TIMEOUT_S = 3.0
+
+
+def daemon_advert(pid: Optional[int] = None) -> dict[str, Any]:
+    """The `daemon` block waxd publishes in every snapshot it serves or mirrors."""
+    return {"pid": os.getpid() if pid is None else pid, "capabilities": [CAPABILITY]}
 
 
 def raise_fence(item_id: str, split_id: str, reason: str = "split") -> bool:
@@ -102,3 +117,82 @@ def halt_children(item_id: str) -> list[dict[str, Any]]:
             halted.append({"pid": row["pid"], "argv0": row["argv0"], "signalled": signalled})
         conn.execute("DELETE FROM item_children WHERE item_id=? AND pid=?", (item_id, row["pid"]))
     return halted
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Is the daemon that owns the worker new enough to honour the fence?
+
+
+def _daemon_pid() -> Optional[int]:
+    """Pid of the running waxd, from its singleton lock file, verified against /proc."""
+    try:
+        pid = int((paths.VAR / "waxd.singleton.lock").read_text().split()[0])
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (OSError, ValueError, IndexError):
+        return None
+    return pid if b"waxd" in cmdline else None
+
+
+def _read_socket() -> Optional[dict[str, Any]]:
+    """The live snapshot over waxd's status socket (a read, exactly what `wax status` does)."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(PROBE_TIMEOUT_S)
+            sock.connect(str(paths.SOCK))
+            chunks = []
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        doc = json.loads(b"".join(chunks))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def daemon_probe() -> dict[str, Any]:
+    """Is a waxd running, and which capabilities does it advertise? Read-only.
+
+    The socket is the live answer; state.json is the fallback when it does not answer. A snapshot
+    that names a different pid than the running daemon is stale (an earlier daemon wrote it) and
+    counts as no answer.
+    """
+    pid = _daemon_pid()
+    if pid is None:
+        return {"running": False, "pid": None, "capabilities": [], "source": None}
+    for source, snapshot in (("socket", _read_socket()), ("state.json", sentinel.read_json(paths.STATE_JSON))):
+        daemon = (snapshot or {}).get("daemon")
+        if isinstance(daemon, dict) and daemon.get("pid") == pid:
+            caps = daemon.get("capabilities")
+            return {"running": True, "pid": pid, "source": source,
+                    "capabilities": [str(c) for c in caps] if isinstance(caps, list) else []}
+        if snapshot and source == "socket":
+            # The live daemon answered and did not advertise: it is the old code. Do not fall back to a mirror.
+            return {"running": True, "pid": pid, "source": source, "capabilities": []}
+    return {"running": True, "pid": pid, "source": None, "capabilities": []}
+
+
+def require_fence_support() -> dict[str, Any]:
+    """Refuse to halt an item under a waxd that cannot honour the fence. Returns the probe on success.
+
+    Why: a waxd from before the fence runs a worker that never reads `item_fences`, does not track its
+    transcriber or pass children (so `halt_children` finds nothing to stop) and publishes whatever
+    returns. Under it a split would raise a fence nothing obeys, wait out `--halt-timeout-s` while the
+    item keeps transcribing, and either time out (nothing cut) or, if the item finishes in the window,
+    cut a recording whose unsplit transcript has already been published. No daemon at all is fine: no
+    worker exists to race. Live captures and items that need no halt never call this.
+    """
+    probe = daemon_probe()
+    if probe["running"] and CAPABILITY not in probe["capabilities"]:
+        raise DaemonTooOld(
+            f"refusing: the running waxd (pid {probe['pid']}) predates the split fence (its status does not "
+            f"advertise {CAPABILITY}), so it would not stop transcribing this item and could publish a "
+            "transcript of the unsplit recording. Restart waxd first (`systemctl --user restart waxd`; a capture "
+            "in progress is not touched, its encoder runs in its own scope), then run `wax split` again. "
+            "Nothing was fenced, halted, cut or moved.")
+    return probe
+
+
+class DaemonTooOld(RuntimeError):
+    """The running waxd does not advertise fence support; `split.SplitError` wraps it for the CLI."""

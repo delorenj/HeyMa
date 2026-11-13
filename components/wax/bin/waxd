@@ -31,7 +31,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 import signal
 
-from wax import capture, events as events_mod, ledger, paths, state, telephony as telephony_shadow, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
+from wax import capture, events as events_mod, fence, ledger, paths, state, telephony as telephony_shadow, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
 
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
@@ -333,6 +333,9 @@ class Daemon:
         # One coalesced local observer, never a second audio worker. Optional
         # CLI/SQLite timeouts must not block the one-second capture/tray tick.
         snap["telephony"] = self._schedule_telephony()
+        # What this daemon can honour. `wax split` refuses to halt an item under a waxd that does not
+        # advertise the fence (docs/WAX-SPLIT.md); the socket serves this dict, so it rides in the snapshot.
+        snap["daemon"] = fence.daemon_advert()
         self.snapshot = snap
         active = (snap.get("inbox") or {}).get("active_item")
         stage = (snap.get("inbox") or {}).get("active_stage")
@@ -385,7 +388,7 @@ class Daemon:
     def _mirror(self, snap: dict, colour: str) -> None:
         """Degraded-mode mirror: readable even if the socket is wedged."""
         payload = dict(snap)
-        payload["daemon"] = {"pid": os.getpid()}
+        payload["daemon"] = fence.daemon_advert()
         payload["tray"] = {"colour": colour, "available": self.tray.available, "reason": self.tray.reason}
         try:
             payload["outbox_backlog"] = events_mod.backlog()

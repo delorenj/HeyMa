@@ -286,6 +286,138 @@ class FenceGuardTest(FenceBase):
             transcribe_adapter.transcribe(self.audio, item_id=self.item_id)
 
 
+class PassInFlightWhenFencedTest(FenceBase):
+    """The seam the start-of-pass test never covered (HEYMA-18 validation, gap 3).
+
+    A real enrichment pass subprocess is already running when the fence goes up and returns afterwards,
+    either normally (it printed a result that would retitle the note) or by timing out. Nothing it did may
+    reach the note, the transcripts row, the transcripts-store queue or the event outbox.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.registry = self.tmp / "passes.d"
+        self.registry.mkdir()
+        self.item_id, self.audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        self.md = paths.VAULT / "20261113-120000-meeting.md"
+        self.md.write_text("---\ntranscribed-at: 2026-11-13T12:00:00-05:00\n---\n# Transcript\nBody\n")
+        ledger.connect().execute("INSERT INTO transcripts(item_id,md_path,created_at) VALUES(?,?,?)",
+                                 (self.item_id, str(self.md), "2026-11-13T17:00:00Z"))
+        ledger.set_item_state(self.item_id, "transcribed", cause="test")
+        for target, kwargs in (
+                (passes, dict(name="REGISTRY_DIR", new=self.registry)),
+                (passes, dict(name="_run_frontmatters", side_effect=self._merge)),
+        ):
+            name = kwargs.pop("name")
+            p = patch.object(target, name, **kwargs)
+            p.start()
+            self.addCleanup(p.stop)
+
+    @staticmethod
+    def _merge(args):
+        from wax import frontmatter
+        if args[0] != "set":
+            return
+        import json
+        frontmatter.merge(Path(args[1]), {k: json.loads(v) for k, v in (a.split("=", 1) for a in args[2:])})
+
+    def slow_pass(self, seconds: float, timeout_s: int = 60) -> None:
+        import json
+        script = self.registry / "slow-pass"
+        result = json.dumps({"wax_ep_version": 1, "frontmatter": {"title": "Late Title From Stale Pass"}})
+        script.write_text(f"#!/bin/bash\necho $$ > {self.marks}/pass-pid\nsleep {seconds}\n"
+                          f"date +%s.%N > {self.marks}/pass-finished\necho '{result}'\n")
+        script.chmod(0o755)
+        (self.registry / "slow-pass.yaml").write_text(
+            f"slug: slow-pass\nversion: 1\nenabled: true\nauto: true\ntimeout_s: {timeout_s}\n"
+            f"command: [{script}, \"{{md_path}}\"]\n")
+
+    def counts(self) -> dict:
+        conn = ledger.connect()
+        return {"outbox": conn.execute("SELECT COUNT(*) c FROM outbox").fetchone()["c"],
+                "snapshots": (conn.execute("SELECT COUNT(*) c FROM transcript_snapshots").fetchone()["c"]
+                              if conn.execute("SELECT 1 FROM sqlite_master WHERE name='transcript_snapshots'").fetchone()
+                              else 0),
+                "transcripts": conn.execute("SELECT md_path,body_sha256 FROM transcripts WHERE item_id=?",
+                                            (self.item_id,)).fetchall()[0]["md_path"],
+                "note_sha": ledger.sha256_file(self.md), "note_mtime": self.md.stat().st_mtime_ns}
+
+    def run_pass(self) -> dict:
+        out: dict = {}
+
+        def target():
+            try:
+                out["result"] = passes.run(self.item_id, "slow-pass")
+            except BaseException as exc:  # noqa: BLE001
+                out["error"] = exc
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 30)
+        out["thread"] = thread
+        return out
+
+    def assert_nothing_written(self, before: dict, result: dict) -> None:
+        self.assertEqual(result["state"], "cancelled")
+        self.assertEqual(result["reason_code"], "item_split")
+        after = self.counts()
+        self.assertEqual(after, before, "no note write, no transcripts row change, no snapshot, no outbox event")
+        self.assertNotIn("Late Title", self.md.read_text())
+        row = ledger.connect().execute("SELECT state,reason_code FROM passes WHERE item_id=? AND ep_slug='slow-pass'",
+                                       (self.item_id,)).fetchone()
+        self.assertEqual((row["state"], row["reason_code"]), ("skipped", "item_split"),
+                         "recorded as skipped (not failed), so the sweep and `wax failures` see no fault")
+        self.assertEqual(ledger.connect().execute("SELECT COUNT(*) c FROM passes WHERE state='failed'").fetchone()["c"], 0)
+
+    def test_a_pass_that_returns_normally_after_the_fence_is_dropped(self):
+        self.slow_pass(2.0)
+        run = self.run_pass()
+        self.wait_for("pass-pid")
+        before = self.counts()                       # taken with the child in flight: "started" events are already out
+        self.assertTrue(fence.raise_fence(self.item_id, "split-test"))
+        run["thread"].join(20)
+        self.assertNotIn("error", run, run.get("error"))
+        finished = float((self.marks / "pass-finished").read_text())
+        fenced_at = __import__("datetime").datetime.fromisoformat(
+            ledger.fence_of(self.item_id)["created_at"].replace("Z", "+00:00")).timestamp()
+        self.assertGreater(finished, fenced_at, "the child really did finish after the fence was raised")
+        self.assert_nothing_written(before, run["result"])
+
+    def test_a_pass_that_times_out_after_the_fence_is_dropped(self):
+        self.slow_pass(5.0, timeout_s=2)
+        run = self.run_pass()
+        self.wait_for("pass-pid")
+        before = self.counts()
+        fence.raise_fence(self.item_id, "split-test")
+        run["thread"].join(20)
+        self.assertNotIn("error", run, run.get("error"))
+        self.assertFalse((self.marks / "pass-finished").exists(), "the runner killed it on timeout")
+        self.assert_nothing_written(before, run["result"])
+
+    def test_a_pass_halted_by_the_split_is_dropped(self):
+        self.slow_pass(30.0)
+        run = self.run_pass()
+        pid = int(self.wait_for("pass-pid"))
+        before = self.counts()
+        fence.raise_fence(self.item_id, "split-test")
+        halted = fence.halt_children(self.item_id)
+        run["thread"].join(20)
+        self.assertEqual([h["pid"] for h in halted], [pid])
+        self.assertFalse(_alive(pid))
+        self.assert_nothing_written(before, run["result"])
+
+    def test_without_a_fence_the_same_pass_publishes(self):
+        # control: proves the assertions above can fail, i.e. this harness does observe the writes
+        self.slow_pass(0.5)
+        before = self.counts()
+        result = passes.run(self.item_id, "slow-pass")
+        self.assertEqual(result["state"], "completed")
+        after = self.counts()
+        self.assertNotEqual(after["note_sha"], before["note_sha"])
+        self.assertGreater(after["outbox"], before["outbox"])
+        self.assertIn("Late Title", self.md.read_text())
+
+
 class ProcessTrackingTest(FenceBase):
     def test_run_tracked_registers_and_unregisters_and_kills_the_tree_on_halt(self):
         item_id, _ = self.stage_item("meeting_overrun_quiet", "meeting.ogg")

@@ -1042,6 +1042,17 @@ def _split_cancelled(item_id: str, slug: str) -> dict[str, Any]:
             "detail": "item was halted by wax split"}
 
 
+def _drop_late_result(item_id: str, slug: str, version: int, attempt: int, ep: dict[str, Any]) -> dict[str, Any]:
+    """The pass child returned (or timed out) after `wax split` fenced the item: write nothing for it.
+
+    The pass row records why (skipped, not failed, so the sweep and `wax failures` never see a fault).
+    No note write, no transcripts-store capture, no task event, no pass-declared event.
+    """
+    _record(item_id, slug, "skipped", version=version, attempt=attempt,
+            reason_code="item_split", detail="item halted by wax split while the pass ran", definition=ep)
+    return _split_cancelled(item_id, slug)
+
+
 @serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
          definition=None, dependency_versions: Optional[dict[str, int]] = None,
@@ -1227,10 +1238,7 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
         # Late-result fence: halted while the child ran, so its output is stale. Drop it
         # BEFORE it can touch the note; the pass row records why (skipped, not failed).
         if ledger.fence_of(item_id) is not None:
-            _record(item_id, slug, "skipped", version=version, attempt=attempt,
-                    reason_code="item_split", detail="item halted by wax split while the pass ran",
-                    definition=ep)
-            return _split_cancelled(item_id, slug)
+            return _drop_late_result(item_id, slug, version, attempt, ep)
         # Read the reason off the FULL stderr: truncating first would cut away
         # the very end the header is on. Which end to KEEP then depends on who
         # wrote the stderr — a pass that emits the header authored the lines
@@ -1264,9 +1272,15 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
                 err = str(exc)[-800:]
                 current_md = md_for(item_id) or md
     except subprocess.TimeoutExpired:
+        # A pass that timed out after the fence went up is the same late result: do not record a failure
+        # row, emit a task event or write the note for an item that is being split.
+        if ledger.fence_of(item_id) is not None:
+            return _drop_late_result(item_id, slug, version, attempt, ep)
         ok, rc, reason_code = False, None, "timeout"
         err = f"timeout after {ep.get('timeout_s')}s"
     except OSError as e:
+        if ledger.fence_of(item_id) is not None:
+            return _drop_late_result(item_id, slug, version, attempt, ep)
         ok, rc, reason_code, err = False, None, "run_error", str(e)
 
     took = round(time.time() - started, 2)

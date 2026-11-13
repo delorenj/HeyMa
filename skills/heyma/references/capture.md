@@ -105,6 +105,13 @@ never inputs) and cuts there. It works on three kinds of target:
 
 `wax split --dry-run` reports the proposed boundary and changes nothing.
 
+**Restart waxd after deploying the fence.** A waxd started before it (check: its
+`var/state.json` `daemon` block has no `capabilities`) cannot honour the fence, so
+`wax split` refuses to halt an item under it (exit 2, "restart waxd first",
+nothing fenced or moved). Live captures, `--dry-run`, `complete` or `skipped`
+items and a host with no daemon are unaffected. A new waxd advertises
+`daemon.capabilities: ["item-fence/1"]` on its socket and in `state.json`.
+
 What you get back: the selected recording, the parts with their time ranges, the
 capture state before and after (live), and the processing disposition (item
 state before and after, whether it was fenced, what was halted, where the
