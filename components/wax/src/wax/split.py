@@ -11,7 +11,6 @@ the three targets (live capture, an item in processing, a finished/queued item),
 submit and list.
 """
 
-import hashlib
 import json
 import os
 import re
@@ -158,24 +157,29 @@ def detect(frame_db: Any, duration_s: float, params: Params) -> dict[str, Any]:
     padded = np.concatenate((frame_db, np.full(pad, DB_FLOOR, dtype=frame_db.dtype))) if pad else frame_db
     block_db = padded.reshape(-1, BLOCK_FRAMES).max(axis=1)        # 1 s blocks, loudest frame wins
     noise = float(np.percentile(block_db, 10))
-    peak = float(np.percentile(block_db, 95))
     threshold = max(noise + params.margin_db, params.floor_dbfs)
     active = block_db > threshold
+    # The loud reference is taken over the active blocks only. A percentile of the whole file would
+    # call a 4-minute meeting inside a 2-hour overrun "silence" (under 5% of the blocks are loud).
+    loud = float(np.percentile(block_db[active], 90)) if active.any() else float(block_db.max())
     base = {
         "duration_s": round(duration_s, 3),
         "params": asdict(params),
-        "stats": {"noise_floor_db": round(noise, 1), "loud_db": round(peak, 1),
+        "stats": {"noise_floor_db": round(noise, 1), "loud_db": round(loud, 1),
                   "threshold_db": round(threshold, 1), "active_s": int(active.sum()),
                   "blocks": int(len(block_db))},
         "quiet_runs": [],
     }
 
-    if peak <= params.floor_dbfs:
-        return _no_boundary("no_activity", f"the loudest 5% of the audio is {peak:.1f} dBFS, under the "
-                            f"{params.floor_dbfs:g} dBFS floor: silent or all-quiet input", base)
-    if peak - noise < params.min_range_db or peak <= threshold or not active.any():
-        return _no_boundary("no_contrast", f"quiet and loud differ by only {peak - noise:.1f} dB "
-                            f"(floor {noise:.1f} dBFS, loud {peak:.1f} dBFS; --min-range-db {params.min_range_db:g}): "
+    if not active.any():
+        if float(block_db.max()) <= params.floor_dbfs:
+            return _no_boundary("no_activity", f"the loudest second is {float(block_db.max()):.1f} dBFS, under the "
+                                f"{params.floor_dbfs:g} dBFS floor: silent or all-quiet input", base)
+        return _no_boundary("no_contrast", f"nothing rises {params.margin_db:g} dB above the noise floor "
+                            f"({noise:.1f} dBFS): continuous activity or a flat hum, so there is no quiet to cut at", base)
+    if loud - noise < params.min_range_db:
+        return _no_boundary("no_contrast", f"quiet and loud differ by only {loud - noise:.1f} dB "
+                            f"(floor {noise:.1f} dBFS, loud {loud:.1f} dBFS; --min-range-db {params.min_range_db:g}): "
                             "continuous activity or a flat hum, so there is no quiet to cut at", base)
     if duration_s < params.min_quiet_s + params.min_active_s:
         return _no_boundary("too_short", f"{duration_s:.0f}s is shorter than --min-quiet-s plus --min-active-s", base)
@@ -488,6 +492,10 @@ def _run_item(source: Source, params: Params, dry_run: bool, halt_timeout_s: flo
             # Settled: re-read, the item may have moved on or been parked while we waited.
             row = ledger.connect().execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
             current = Path(row["path"])
+            # The worker may have finished the item while we waited for its lock: judge by the state
+            # now, not the one read before the fence, so a published transcript's item is never
+            # flipped from complete to skipped.
+            before = row["state"]
             if not current.is_file() or ledger.sha256_file(current) != sha:
                 raise SplitError(f"audio of {item_id} changed or vanished while halting ({current}); nothing was cut")
             src_doc = {"kind": "item", "item_id": item_id, "path": str(current), "orig_name": row["orig_name"],
@@ -501,6 +509,9 @@ def _run_item(source: Source, params: Params, dry_run: bool, halt_timeout_s: flo
                 manifest = write_manifest(hold, split_id, source=src_doc, detection=detection, parts=parts,
                                           origin="item", extra={"halted": halted})
             settled = _settle_item_original(item_id, current, hold, manifest, before, halted)
+            if raised and before == "complete":
+                fence.lift_fence(item_id, split_id)       # it finished before the fence bit: nothing to protect
+                raised = False
     except BaseException:
         if raised:
             fence.lift_fence(item_id, split_id)      # nothing was cut: the item resumes as it was
@@ -571,23 +582,40 @@ def _run_live(source: Source, params: Params, dry_run: bool, halt_timeout_s: flo
     capture_info.update(state_after=state.stream_state(run_preflight=False)["state"],
                         finalized_duration_s=stopped["duration_s"], segments_used=stopped["segments_used"],
                         segments_skipped=stopped["segments_skipped"])
-    detection = analyze_file(final, params)                 # authoritative: the finalized file
-    if not detection["found"]:
-        released = rename.move_noclobber(final, paths.INBOX / final.name)
-        return _report("no_boundary", source, detection, capture=capture_info,
-                       changes=f"capture stopped; unsplit recording released to inbox as {released}")
-    sha = ledger.sha256_file(final)
-    parts = cut_parts(final, detection, hold, rid)
-    src_doc = {"kind": "capture", "rid": rid, "path": str(final), "orig_name": final.name, "sha256": sha,
-               "bytes": final.stat().st_size, "duration_s": detection["duration_s"],
-               "device_source": rec.get("device_source"), "started_at": rec.get("started_at")}
-    manifest = write_manifest(hold, rid, source=src_doc, detection=detection, parts=parts, origin="live-capture")
-    _update_manifest(manifest, original_settled=True, original_path=str(final))
+    # The capture is stopped and finalized into the hold by now. If anything below fails, the recording
+    # must not be left orphaned there (no manifest, nothing queued): release it to the inbox, unsplit.
+    try:
+        detection = analyze_file(final, params)             # authoritative: the finalized file
+        if not detection["found"]:
+            released = rename.move_noclobber(final, paths.INBOX / final.name)
+            return _report("no_boundary", source, detection, capture=capture_info,
+                           changes=f"capture stopped; unsplit recording released to inbox as {released}")
+        sha = ledger.sha256_file(final)
+        parts = cut_parts(final, detection, hold, rid)
+        src_doc = {"kind": "capture", "rid": rid, "path": str(final), "orig_name": final.name, "sha256": sha,
+                   "bytes": final.stat().st_size, "duration_s": detection["duration_s"],
+                   "device_source": rec.get("device_source"), "started_at": rec.get("started_at")}
+        manifest = write_manifest(hold, rid, source=src_doc, detection=detection, parts=parts, origin="live-capture")
+        _update_manifest(manifest, original_settled=True, original_path=str(final))
+    except Exception as exc:
+        where = _release_unsplit(final)
+        raise SplitError(f"capture {rid} was stopped and finalized but splitting it failed ({exc}); "
+                         f"the unsplit recording is at {where}") from exc
     return _report("split", source, detection, split_id=rid, manifest=str(manifest), held_dir=str(hold),
                    source_sha256=sha, segments=parts, capture=capture_info,
                    processing={"state_before": None, "state_after": None, "fenced": False, "original": str(final),
                                "disposition": "capture stopped and finalized into the hold, not the inbox; "
                                               "original preserved; parts held until submitted; recording not restarted"})
+
+
+def _release_unsplit(final: Path) -> Path:
+    """Move a finalized, unsplittable recording into the inbox; if even that fails, say where it is."""
+    if not final.is_file():
+        return final
+    try:
+        return rename.move_noclobber(final, paths.INBOX / final.name)
+    except OSError:
+        return final
 
 
 @contextmanager

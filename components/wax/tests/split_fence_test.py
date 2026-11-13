@@ -105,6 +105,25 @@ echo {note}"""
 
 
 class SplitWhileProcessingTest(FenceBase):
+    def test_an_item_that_completes_while_the_split_waits_is_not_flipped_to_skipped(self):
+        # Review of HEYMA-18: `before` was read ahead of the fence and halt wait. The item here reads
+        # 'archived' when the split starts and 'complete' by the time its lock is free.
+        item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        ledger.set_item_state(item_id, "archived", cause="test")
+        real_settled = split._settled
+
+        def finish_during_wait(item, timeout_s):
+            ledger.connect().execute("UPDATE items SET state='complete' WHERE item_id=?", (item,))
+            return real_settled(item, timeout_s)
+
+        with patch.object(split, "_settled", finish_during_wait):
+            report = split.run(item_id, PARAMS, halt_timeout_s=10)
+        self.assertEqual(report["outcome"], "split")
+        self.assertEqual(self.state_of(item_id), "complete", "a finished item stays finished")
+        self.assertEqual(report["processing"]["state_before"], "complete")
+        self.assertEqual(report["processing"]["state_after"], "complete")
+        self.assertIsNone(ledger.fence_of(item_id), "nothing left to protect, so the fence is lifted")
+
     def test_halts_the_item_cuts_it_and_leaves_the_queue_alone(self):
         note = self.slow_transcriber(60)
         item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")

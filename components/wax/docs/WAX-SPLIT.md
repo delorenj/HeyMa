@@ -36,14 +36,19 @@ halted, moved or written).
 1. ffmpeg decodes to mono 8 kHz PCM, streamed (a 16 hour file is never held in
    memory). Frames are 100 ms; frame level is RMS in dBFS (floor -120).
 2. Frames are grouped into 1 s blocks; a block's level is the loudest frame in it.
-3. **Adaptive noise floor**: `noise` = 10th percentile of block levels,
-   `peak` = 95th percentile. A block is *active* when its level exceeds
-   `threshold = max(noise + margin, floor)`. `--margin-db` (default 10) and
-   `--floor-dbfs` (default -60) are the flags. The room's own hum or HVAC
-   sets `noise`, so an overrun of low-level room noise is "quiet", not activity.
-4. If `peak <= --floor-dbfs` the audio is silent or all-quiet: `no_activity`.
-   Else if `peak - noise < --min-range-db` (default 12) there is no contrast
-   between quiet and loud (continuous activity, or a flat hum): `no_contrast`.
+3. **Adaptive noise floor**: `noise` = 10th percentile of block levels. A block
+   is *active* when its level exceeds `threshold = max(noise + margin, floor)`.
+   `--margin-db` (default 10) and `--floor-dbfs` (default -60) are the flags.
+   The room's own hum or HVAC sets `noise`, so an overrun of low-level room
+   noise is "quiet", not activity. The loud reference (`loud`) is the 90th
+   percentile of the *active blocks only*, never of the whole file: a short
+   meeting inside a very long overrun (a stand-up left running overnight) is a
+   tiny fraction of the blocks and must still read as activity.
+4. If no block is active and the loudest second is at or under `--floor-dbfs`
+   the audio is silent or all-quiet: `no_activity`. If no block is active
+   otherwise, or `loud - noise < --min-range-db` (default 12), there is no
+   contrast between quiet and loud (continuous activity, or a flat hum):
+   `no_contrast`.
 5. Active runs no longer than `--blip-s` (default 3) with quiet on both sides
    are closed (a click or cough is not activity).
 6. The boundary is the **last** quiet run that is at least `--min-quiet-s`
@@ -57,8 +62,8 @@ Outcomes when there is no boundary (always exit 3, nothing touched):
 
 | outcome reason | meaning |
 |---|---|
-| `no_activity` | silent or all-quiet input: the loud end of the audio is under the absolute floor |
-| `no_contrast` | continuous activity or a flat hum: quiet and loud differ by less than `--min-range-db` |
+| `no_activity` | silent or all-quiet input: nothing in the audio is above the absolute floor |
+| `no_contrast` | continuous activity or a flat hum: nothing rises `--margin-db` above the noise floor, or quiet and loud differ by less than `--min-range-db` |
 | `no_sustained_quiet` | continuous activity, or only ordinary pauses/short trailing quiet (the longest trailing quiet is reported) |
 | `quiet_not_trailing` | a long quiet run exists but real activity follows it for more than the tail slack |
 | `too_little_activity` | a long trailing quiet run, but under `--min-active-s` of activity before it |

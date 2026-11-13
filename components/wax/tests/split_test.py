@@ -47,6 +47,30 @@ class DetectionTest(unittest.TestCase):
         # the click sat inside the quiet run, so the run is one run and it is closed over the blip
         self.assertGreaterEqual(det["boundary"]["quiet_length_s"], PARAMS.min_quiet_s)
 
+    def test_a_short_meeting_in_a_very_long_overrun_is_found(self):
+        # Regression (review of HEYMA-18): talk is under 3% of the audio, which a whole-file 95th
+        # percentile read as silence. Real ogg/opus, room noise and an HVAC bed.
+        for name in ("short_meeting_long_overrun_quiet", "short_meeting_long_overrun_hvac"):
+            with self.subTest(name):
+                det = analyze(name)
+                truth = sup.fixture_info(name)["overrun_at_s"]
+                self.assertLess(det["stats"]["active_s"] / det["stats"]["blocks"], 0.05)
+                self.assertTrue(det["found"], det)
+                self.assertAlmostEqual(det["boundary"]["quiet_start_s"], truth, delta=SLACK_S)
+
+    def test_detect_does_not_depend_on_the_meeting_fraction(self):
+        # Levels only: 15 min of talk, then 8 h of quiet, at room-noise and HVAC levels, default params.
+        import numpy as np
+        for room in (-62.0, -46.0):
+            with self.subTest(room=room):
+                rng = np.random.default_rng(1)
+                talk = rng.uniform(-30, -20, 9000)                       # 900 s of 100 ms frames
+                quiet = room + rng.uniform(-1.5, 1.5, 288000)            # 8 h
+                frames = np.concatenate((talk, quiet)).astype(np.float32)
+                det = split.detect(frames, len(frames) / 10, split.Params())
+                self.assertTrue(det["found"], det)
+                self.assertAlmostEqual(det["boundary"]["quiet_start_s"], 900, delta=2)
+
     def test_continuous_activity_is_no_boundary(self):
         det = analyze("continuous_activity")
         self.assertFalse(det["found"])

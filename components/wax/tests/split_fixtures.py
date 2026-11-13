@@ -110,6 +110,12 @@ def timelines(scale: float = 1.0) -> dict[str, dict]:
                                  "overrun_at_s": meeting_s},
         "meeting_overrun_with_click": {"timeline": meeting + [("click", s(700)), ("quiet", s(800))],
                                        "room_dbfs": -62.0, "overrun_at_s": meeting_s},
+        # A stand-up left running: the talk is under 3% of the audio (HEYMA-18 review: a whole-file
+        # percentile used to call this "no activity").
+        "short_meeting_long_overrun_quiet": {"timeline": [("talk", s(300)), ("quiet", s(12000))],
+                                             "room_dbfs": -62.0, "overrun_at_s": s(300)},
+        "short_meeting_long_overrun_hvac": {"timeline": [("talk", s(300)), ("quiet", s(12000))],
+                                            "room_dbfs": -46.0, "overrun_at_s": s(300)},
         "continuous_activity": {"timeline": [("talk", s(1800))], "room_dbfs": -62.0, "overrun_at_s": None},
         "all_quiet": {"timeline": [("quiet", s(1800))], "room_dbfs": -66.0, "overrun_at_s": None},
         "all_quiet_hvac": {"timeline": [("quiet", s(1800))], "room_dbfs": -46.0, "overrun_at_s": None},

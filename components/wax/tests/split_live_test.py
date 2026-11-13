@@ -8,11 +8,11 @@ a meeting followed by a growing overrun. Capture state is read before and after 
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import split_support as sup
@@ -136,6 +136,20 @@ class LiveCaptureTest(unittest.TestCase):
         self.assertEqual(self.stream()["state"], "recording")
         self.assertFalse(split.split_root().exists())
         self.assertEqual(list(paths.INBOX.iterdir()), [])
+
+    def test_a_failure_after_the_stop_releases_the_recording_to_the_inbox(self):
+        # capture.stop has already finalized the file into the hold; a cut failure must not orphan it there.
+        self.start_capture("meeting_overrun_quiet")
+        with unittest.mock.patch.object(split, "cut_parts", side_effect=split.SplitError("injected cut failure")):
+            with self.assertRaises(split.SplitError) as ctx:
+                split.run(RID, PARAMS, halt_timeout_s=30)
+        self.assertIn("injected cut failure", str(ctx.exception))
+        self.assertNotEqual(self.stream()["state"], "recording")
+        released = list(paths.INBOX.iterdir())
+        self.assertEqual([p.name for p in released], ["meeting-live.ogg"], "the unsplit recording is queued, not stranded")
+        self.assertIn(str(released[0]), str(ctx.exception), "the error names where the audio is")
+        self.assertFalse((split.split_root() / RID / "meeting-live.ogg").exists())
+        self.assertGreater(split._probe(released[0]), sup.fixture_info("meeting_overrun_quiet")["seconds"])
 
     def test_no_target_means_the_active_capture(self):
         self.start_capture("meeting_overrun_quiet")

@@ -6,7 +6,9 @@ the sandbox root the suite pins or the real ~/HeyMa. `fixture_ogg` renders (and 
 of tests/split_fixtures.py's recordings.
 """
 
+import atexit
 import contextlib
+import shutil
 import os
 import stat
 import subprocess
@@ -24,6 +26,7 @@ SCALED = dict(min_quiet_s=30.0, tail_slack_s=10.0, min_active_s=20.0, pad_s=2.0)
 
 _cache: dict[str, Path] = {}
 _cache_dir = Path(tempfile.mkdtemp(prefix="heyma-split-fx-"))
+atexit.register(shutil.rmtree, _cache_dir, ignore_errors=True)   # ogg fixtures are per-run scratch
 
 
 def fixture_ogg(name: str) -> Path:

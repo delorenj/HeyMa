@@ -1,4 +1,5 @@
 # HEYMA-18 evidence: the real bin/wax on real-scale fixtures with default parameters, in an isolated WAX_ROOT/WAX_VAULT/WAX_VOICES_DIR (never production). Exit codes in [brackets]. Generated 2026-11-13 by a throwaway driver.
+# NOTE (review fix): the detection summary lines (loud dBFS, no_contrast wording) in this file predate the loud-reference fix; cli-detection-after-review.txt has current output for every fixture, including a 5 min meeting inside a 3.4 h overrun.
 == 1. boundary detection, every fixture, --dry-run (default parameters)
 
 $ wax split meeting_overrun_quiet.ogg --dry-run
