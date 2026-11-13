@@ -1,7 +1,10 @@
-full suite (cd components/wax && python3 -m pytest tests -q), 2026-11-13:
-tests/chat_pass_routing_test.py:269: AssertionError
-======================================================================================= short test summary info =======================================================================================
-FAILED tests/chat_pass_routing_test.py::NoAnthropicModelsTest::test_compiled_frozen_definitions_name_no_anthropic_model - AssertionError: Lists differ: ['claude'] != []
-1 failed, 1173 passed in 132.44s (0:02:12)
-
-baseline on main 7a542e0 before this change: 5 failed (the same chat_pass_routing_test subtests), 1110 passed, 22 skipped
+# HEYMA-18 full suite after the review fixes (commit e4fc46e), cd components/wax && python3 -m pytest tests -q, exit 1
+5 failed, 1156 passed, 22 skipped, 605 subtests passed in 144.03s (0:02:24)
+# The only failures are 5 subtests of chat_pass_routing_test::NoAnthropicModelsTest::test_compiled_frozen_definitions_name_no_anthropic_model
+# (frozen pipeline definitions name 'claude'); the same subtests fail on 7a542e0 (checked from a git-archive copy of that commit).
+# pytest counts each failed subtest as a failure, so the earlier "1 failed" tally was this same single test.
+SUBFAILED(pipeline='dictionary-only') tests/chat_pass_routing_test.py::NoAnthropicModelsTest::test_compiled_frozen_definitions_name_no_anthropic_model
+SUBFAILED(pipeline='doc-standard') tests/chat_pass_routing_test.py::NoAnthropicModelsTest::test_compiled_frozen_definitions_name_no_anthropic_model
+SUBFAILED(pipeline='title-only') tests/chat_pass_routing_test.py::NoAnthropicModelsTest::test_compiled_frozen_definitions_name_no_anthropic_model
+SUBFAILED(pipeline='transcript-standard') tests/chat_pass_routing_test.py::NoAnthropicModelsTest::test_compiled_frozen_definitions_name_no_anthropic_model
+SUBFAILED(pipeline='untitled-standard') tests/chat_pass_routing_test.py::NoAnthropicModelsTest::test_compiled_frozen_definitions_name_no_anthropic_model
