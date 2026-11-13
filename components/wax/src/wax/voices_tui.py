@@ -1028,6 +1028,36 @@ def decode_key(first, read_more: Callable[[], object]) -> str | None:
 
 # ---- the curses view -------------------------------------------------------------------------------
 
+class EscapeReader:
+    """`read_more` for `decode_key`: how long to wait for the byte after an ESC, and for each byte after that.
+
+    ESC alone is cancel, so the first wait is the price of a lone Esc (this plus ncurses' ESCDELAY). Once
+    ESC is followed by `[` or `O` the key is known to be an arrow/function key whose tail is merely late, so
+    the waits for its remaining bytes can be longer. Measured through a pty (docs/evidence/heyma-19/
+    validation-2026-11-13): with 80 ms for both, a gap of 100 ms between the bytes of ESC [ B typed the B into
+    the NAME field."""
+    FIRST_MS = 150      # after ESC: Alt+M's `m`, or the `[`/`O` of a late arrow key
+    TAIL_MS = 250       # after that: each later byte of a late arrow/function key
+    IDLE_MS = 100       # the screen loop's own wake-up
+
+    def __init__(self, stdscr, error):
+        self.stdscr, self.error, self.calls = stdscr, error, 0
+
+    def reset(self) -> None:
+        """A new key starts: the next wait is the first one again."""
+        self.calls = 0
+
+    def __call__(self):
+        self.stdscr.timeout(self.FIRST_MS if self.calls == 0 else self.TAIL_MS)
+        self.calls += 1
+        try:
+            return self.stdscr.get_wch()
+        except self.error:
+            return None
+        finally:
+            self.stdscr.timeout(self.IDLE_MS)
+
+
 def run_curses(model: Model) -> None:
     import curses
 
@@ -1041,14 +1071,7 @@ def run_curses(model: Model) -> None:
                  "edit": curses.A_REVERSE | curses.A_BOLD, "pick": curses.A_REVERSE | curses.A_BOLD,
                  "dim": curses.A_DIM, "play": curses.A_BOLD, "status": 0, "help": curses.A_DIM}
 
-        def more():
-            stdscr.timeout(80)       # Alt+M and slow escape tails: the rest of a chord is at most this late
-            try:
-                return stdscr.get_wch()
-            except curses.error:
-                return None
-            finally:
-                stdscr.timeout(100)
+        more = EscapeReader(stdscr, curses.error)
 
         stdscr.timeout(100)          # wakes the screen ten times a second: clip counter, relabel progress, finished registry changes
         while not model.quit:
@@ -1068,6 +1091,7 @@ def run_curses(model: Model) -> None:
             except KeyboardInterrupt:
                 model.quit = True
                 break
+            more.reset()
             key = decode_key(first, more)
             if key == "RESIZE":
                 continue             # the next pass reads the new size
