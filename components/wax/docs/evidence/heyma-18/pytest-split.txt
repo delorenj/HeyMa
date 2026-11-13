@@ -53,4 +53,4 @@ tests/skill_hub_test.py::HubDriftTest::test_cli_reference_names_every_wax_subcom
 tests/skill_hub_test.py::HubDriftTest::test_code_that_names_the_hub_names_a_real_file PASSED                                                                                                   
 tests/skill_hub_test.py::HubDriftTest::test_pass_catalog_lists_every_pass_with_its_enabled_state PASSED                                                                                        
 ========================================================================== 54 passed, 8 subtests passed in 72.56s (0:01:12) ===========================================================================
-exit 
+exit 0 (pytest reported 54 passed)
