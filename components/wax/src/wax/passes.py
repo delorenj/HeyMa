@@ -67,7 +67,7 @@ import yaml
 import tempfile
 from functools import wraps
 
-from . import archive, component, events, frontmatter, ledger, operations, paths, provider, rename, sentinel
+from . import archive, component, events, fence, frontmatter, ledger, operations, paths, provider, rename, sentinel
 from . import settings as operator_settings
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
@@ -1037,6 +1037,11 @@ def _frozen_plan_entry(item_id: str, slug: str) -> tuple[Optional[dict[str, Any]
     return plan[slug], versions
 
 
+def _split_cancelled(item_id: str, slug: str) -> dict[str, Any]:
+    return {"item_id": item_id, "ep_slug": slug, "state": "cancelled", "reason_code": "item_split",
+            "detail": "item was halted by wax split"}
+
+
 @serialized
 def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
          definition=None, dependency_versions: Optional[dict[str, int]] = None,
@@ -1061,6 +1066,10 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     `operator_toggle=False` is the explicit `wax ep run`: naming one pass for
     one item is a stronger instruction than a standing switch.
     """
+    # `wax split` halted this item: nothing may run or publish for it any more. Not
+    # recorded and not an error, so the sweep and `wax failures` never see a fault.
+    if ledger.fence_of(item_id) is not None:
+        return _split_cancelled(item_id, slug)
     reg = registry()
     if live and definition is None:
         if ledger.connect().execute(
@@ -1213,7 +1222,15 @@ def run(item_id: str, slug: str, *, attempt: Optional[int] = None,
     reason_code: Optional[str] = None
     pass_result = {}
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, env=pass_env, timeout=timeout_s)
+        # Tracked so `wax split` can stop exactly this item's pass child.
+        r = fence.run_tracked(item_id, argv, env=pass_env, timeout=timeout_s)
+        # Late-result fence: halted while the child ran, so its output is stale. Drop it
+        # BEFORE it can touch the note; the pass row records why (skipped, not failed).
+        if ledger.fence_of(item_id) is not None:
+            _record(item_id, slug, "skipped", version=version, attempt=attempt,
+                    reason_code="item_split", detail="item halted by wax split while the pass ran",
+                    definition=ep)
+            return _split_cancelled(item_id, slug)
         # Read the reason off the FULL stderr: truncating first would cut away
         # the very end the header is on. Which end to KEEP then depends on who
         # wrote the stderr — a pass that emits the header authored the lines
@@ -1420,6 +1437,8 @@ def run_auto(item_id: str, *, hold: frozenset[str] = frozenset()) -> list[dict[s
             result = {"item_id": item_id, "ep_slug": slug, "version": version,
                       "state": "failed", "error": str(exc), "reason_code": "run_error"}
         out.append(result)
+        if result.get("reason_code") == "item_split":
+            break  # the item was fenced mid-walk; issue nothing more for it
         if (provenance.get("failure_policy") == "halt"
                 and result.get("state") == "failed"):
             # The plan's compiled policy is halt: stop issuing NEW passes. The

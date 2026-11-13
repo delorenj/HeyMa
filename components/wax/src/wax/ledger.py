@@ -259,6 +259,23 @@ def connect() -> sqlite3.Connection:
                      "enabled INTEGER NOT NULL DEFAULT 1, seeded_at TEXT, last_scan_at TEXT, "
                      "documents_seen INTEGER NOT NULL DEFAULT 0, documents_processed INTEGER NOT NULL DEFAULT 0, "
                      "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        # `wax split` (HEYMA-18, docs/WAX-SPLIT.md). A fence marks ONE item whose
+        # in-flight work was halted for a split: nothing may publish for it any more.
+        # item_children tracks the subprocesses a worker spawned for an item (so the
+        # split can stop exactly those). split_segments is the ledger half of the
+        # provenance every derived part also carries in its split.json sidecar.
+        conn.execute("CREATE TABLE IF NOT EXISTS item_fences ("
+                     "item_id TEXT PRIMARY KEY, split_id TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS item_children ("
+                     "item_id TEXT NOT NULL, pid INTEGER NOT NULL, starttime INTEGER, boot_id TEXT, "
+                     "argv0 TEXT, started_at TEXT NOT NULL, PRIMARY KEY (item_id, pid))")
+        conn.execute("CREATE TABLE IF NOT EXISTS split_segments ("
+                     "split_id TEXT NOT NULL, idx INTEGER NOT NULL, item_id TEXT NOT NULL, "
+                     "source_item_id TEXT, source_sha256 TEXT NOT NULL, source_path TEXT, "
+                     "start_s REAL NOT NULL, end_s REAL NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL, "
+                     "state TEXT NOT NULL DEFAULT 'held', submitted_as TEXT, created_at TEXT NOT NULL, "
+                     "PRIMARY KEY (split_id, idx))")
+        conn.execute("CREATE INDEX IF NOT EXISTS split_segments_item ON split_segments(item_id)")
         _local.conn = conn
     return conn
 
@@ -374,7 +391,29 @@ def _full_sha(path: Path, item_id: str) -> str:
     return row["sha256"] if row else sha256_file(path)
 
 
+class Fenced(RuntimeError):
+    """The item was fenced by `wax split`; whatever was about to be published is stale."""
+
+
+def fence_of(item_id: Optional[str]) -> Optional[sqlite3.Row]:
+    """The fence on this item, or None. Cheap enough for every commit point."""
+    if not item_id:
+        return None
+    return connect().execute("SELECT * FROM item_fences WHERE item_id=?", (item_id,)).fetchone()
+
+
+def guard_fence(item_id: Optional[str]) -> None:
+    """Raise Fenced when `wax split` has halted this item. Called right before a publish."""
+    row = fence_of(item_id)
+    if row is not None:
+        raise Fenced(f"item {item_id} was halted by split {row['split_id']}; refusing a stale write")
+
+
 def set_item_state(item_id: str, to_state: str, *, cause: str = "", evidence: str = "") -> None:
+    # The backstop of the split fence: a late worker (or any caller) cannot move a
+    # fenced item. `wax split` itself writes causes that start with "split".
+    if not cause.startswith("split"):
+        guard_fence(item_id)
     conn = connect()
     row = conn.execute("SELECT state FROM items WHERE item_id=?", (item_id,)).fetchone()
     frm = row["state"] if row else None
@@ -721,6 +760,7 @@ def failed_passes_for_sweep(max_attempts: int, min_age_s: float = 0.0) -> list[t
         f"WHERE p.state='failed' AND p.ep_slug IN ({placeholders}) "
         "AND (p.attempt < ? OR p.reason_code='dependency_failed') "
         "AND p.updated_at <= ? AND t.pruned_at IS NULL "
+        "AND p.item_id NOT IN (SELECT item_id FROM item_fences) "
         "ORDER BY p.updated_at",
         (*slugs, max_attempts, _age_cutoff(min_age_s)),
     ).fetchall()

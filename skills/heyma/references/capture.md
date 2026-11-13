@@ -18,6 +18,9 @@ wax rec salvage [rid]                       # rescue an error-partial capture in
 wax rec quiesce                             # idempotent session-shutdown hook; idle is success
 wax rec list                                # rid, segment count and bytes for each capture still on disk
 wax state [stream|inbox|both] [--cold]      # derive the state machines from disk (cold is the default)
+wax split [run] [TARGET] [--dry-run]        # cut a recording left running at the end of the meeting (below)
+wax split submit SPLIT_ID SEG...            # release held parts into inbox/
+wax split list [SPLIT_ID]                   # held splits
 ```
 
 There is **no `wax reset` command**; older notes that mention one are wrong.
@@ -78,6 +81,7 @@ the stream becomes `error-partial`. Transitions come from `Popen.wait()` and
 | `error-partial` and the audio does not matter | `wax rec cancel <rid>` | Segments move to `recovered/canceled/<rid>`; nothing reaches the inbox. |
 | Stream `error`, `orphan_partial` | Read the artifacts named in `evidence`, then salvage or move them by hand | Wax refuses to guess; this needs a human. |
 | `not-ready` clause b | Fix the named preflight problem (a PipeWire source, free space, permissions) | Clears on the next state read. |
+| A recording ran for hours after the meeting | `wax split --dry-run`, then `wax split` | Cut at the end of the meeting from the waveform; parts are held until `wax split submit`. Exit 3 means no safe boundary |
 | Item stuck after salvage | `wax drain`, then [passes/index](passes/index.md) | Salvaged audio is an ordinary inbox item. |
 
 The 2026-08-22 incident (a GDM restart stranded a 23-hour capture; all 1,381
@@ -85,6 +89,46 @@ segments were valid) is in
 [the incident log](../subskills/doctor/references/incident-log.md). The salvaged
 recording was then parked under `skipped/overduration/` by the duration cap; see
 [transcription](transcription.md).
+
+## Splitting a recording left running (`wax split`)
+
+You forgot to stop, and the capture ran for hours after the meeting. `wax split`
+finds the end of the meeting **from the waveform alone** (ffmpeg to mono PCM,
+RMS in dBFS, an adaptive noise floor; ASR, transcripts, diarization and LLMs are
+never inputs) and cuts there. It works on three kinds of target:
+
+| Target | What happens |
+|---|---|
+| The capture still recording | Detect on the completed segments first. No boundary: exit 3 and **the capture keeps recording**. A boundary: under the CLI capture lock (`var/waxd.lock`) it orderly-stops the encoder (`q`, as `wax rec stop`) and finalizes into `skipped/split/<rid>/` instead of `inbox/`, re-detects on the finalized file, then cuts. It never restarts a capture |
+| An item in processing (`pending`, `archived`, `transcribed`, `enrichment_pending`) | Detect first (read-only). A boundary: fence **this item only** (`item_fences`), stop its tracked child processes (the transcriber, a pass) as process trees, wait for the item's flock (the worker holds it for the whole item, so getting it proves in-flight work settled; `--halt-timeout-s` bounds the wait, and on timeout the fence is lifted and nothing is cut), then cut and mark the item `skipped` (cause `split`). A late worker result is refused at every commit point; a transcript the child already wrote is moved to `recovered/split-late/`, never into the vault. The queue and other items are untouched |
+| A queued, finished or archived item | Same cut. A `complete` item is not fenced and its transcript is untouched |
+
+`wax split --dry-run` reports the proposed boundary and changes nothing.
+
+What you get back: the selected recording, the parts with their time ranges, the
+capture state before and after (live), and the processing disposition (item
+state before and after, whether it was fenced, what was halted, where the
+original is). Derived parts are **held**: they enter processing only through
+`wax split submit` (or `--submit`), which copies them into `inbox/` so the usual
+path applies (archive and verify in S3, then transcribe). The complete original
+and every part are kept; nothing is deleted and no transcript is overwritten.
+Each split has `split.json` (source item or capture, source sha256, detection
+parameters, each part's start and end seconds, sha256, and where it went) and
+`split_segments` ledger rows.
+
+**No boundary is a result, not a failure of nothing**: continuous activity or a
+flat hum (`no_contrast`), silent or all-quiet input (`no_activity`), only
+ordinary pauses (`no_sustained_quiet`), a long quiet followed by more meeting
+(`quiet_not_trailing`), too little before it (`too_little_activity`) or a short
+file (`too_short`) all exit 3 and touch nothing. Limits: a loud overrun (TV,
+music, a noisy fan) reads as activity and gets exit 3; one cut only; cut edges
+are lossless stream copies, so they land on codec pages (up to about a second of
+overlap or gap inside the quiet run). The `session ended` event of a held
+finalization still names `inbox_path` although the file is in the hold.
+Full design, thresholds and policy: `components/wax/docs/WAX-SPLIT.md`;
+evidence: `components/wax/docs/evidence/heyma-18/`. Not covered: the unsplit
+original is not uploaded to S3 by `wax split` (`wax archive <path>` if it exists
+only locally).
 
 ## The capture guard
 

@@ -1,0 +1,8 @@
+# HEYMA-18 evidence: live capture, no boundary (continuous activity). Exit 3; the capture keeps recording; nothing in the hold or inbox.
+[before] stream state=recording rid=20261113-120000-abc123 segments=184 encoder pid=3867472 alive=True
+wax split: NO_BOUNDARY  capture 20261113-120000-abc123
+  duration 0:30:01  noise floor -24.7 dBFS  loud -19.4 dBFS  activity threshold -14.7 dBFS
+  no usable boundary [no_contrast]: quiet and loud differ by only 5.2 dB (floor -24.7 dBFS, loud -19.4 dBFS; --min-range-db 12): continuous activity or a flat hum, so there is no quiet to cut at
+  capture: recording -> recording
+  changes: none; capture still recording
+[after] exit code=3 stream state=recording encoder alive=True hold exists=False inbox=[]

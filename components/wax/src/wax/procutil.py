@@ -72,3 +72,64 @@ def fsync_path(path: Path) -> None:
         os.fsync(dfd)
     finally:
         os.close(dfd)
+
+
+def descendants(pid: int) -> list[int]:
+    """Every live descendant of `pid` (children first), read from /proc.
+
+    `nice -n 15 transcribe` is a shim that spawns python (which spawns more), so
+    stopping "the transcriber" means stopping a tree, not one pid.
+    """
+    children: dict[int, list[int]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "stat").read_text()
+            ppid = int(raw[raw.rindex(")") + 2 :].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(ppid, []).append(int(entry.name))
+    out: list[int] = []
+    stack = [pid]
+    while stack:
+        for child in children.get(stack.pop(), []):
+            out.append(child)
+            stack.append(child)
+    return list(reversed(out))
+
+
+def kill_tree(pid: int, *, grace_s: float = 5.0) -> list[int]:
+    """TERM `pid` and its descendants, KILL whatever outlives `grace_s`. Returns the pids signalled.
+
+    The caller has already proved `pid` is the process it started (starttime check);
+    this only walks the tree below it.
+    """
+    import signal
+    import time
+
+    targets = [*descendants(pid), pid]
+    for target in targets:
+        try:
+            os.kill(target, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline and any(Path(f"/proc/{t}").exists() and not _is_zombie(t)
+                                              for t in targets):
+        time.sleep(0.05)
+    for target in targets:
+        if Path(f"/proc/{target}").exists() and not _is_zombie(target):
+            try:
+                os.kill(target, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    return targets
+
+
+def _is_zombie(pid: int) -> bool:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+        return raw[raw.rindex(")") + 2 :].split()[0] == "Z"
+    except (OSError, ValueError, IndexError):
+        return True

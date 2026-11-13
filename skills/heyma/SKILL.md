@@ -45,7 +45,7 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 |---|---|
 | Orienting: layout, units, processes, state machines | [system-map](references/system-map.md) |
 | Looking up a `wax` command, flag or `mise run wax:*` task | [cli](references/cli.md) |
-| Recording, hotkey, tray, HeyMa window, stream states | [capture](references/capture.md) |
+| Recording, hotkey, tray, HeyMa window, stream states, `wax split` (a recording left running) | [capture](references/capture.md) |
 | Tracing how a file reaches `inbox/` (Syncthing, Telnyx S3, drops) | [intake](references/intake.md) |
 | Checking S3 backup, verification, recovery | [archive](references/archive.md) |
 | Debugging whisper, diarization, channel split, item states | [transcription](references/transcription.md) |

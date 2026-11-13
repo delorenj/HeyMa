@@ -69,6 +69,7 @@ class TranscriptionSizeLimitTest(unittest.TestCase):
                     patch.object(worker.paths, "VAR", root / "var"), \
                     patch.object(worker.rename, "move_noclobber", return_value=moved), \
                     patch.object(worker.ledger, "connect", return_value=connection), \
+                    patch.object(worker.ledger, "fence_of", return_value=None), \
                     patch.object(worker.ledger, "set_item_state") as set_state, \
                     patch.object(worker.transcribe_adapter, "transcribe") as transcribe:
                 result = worker.process("item", audio)

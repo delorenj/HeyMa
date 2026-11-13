@@ -1,0 +1,11 @@
+# HEYMA-18 evidence: wax split on a live capture. A real ffmpeg encoder holds the FIFO and keeps writing segments (217 segments, the real-scale meeting then a growing overrun); stopped orderly with q.
+[before] stream state=recording rid=20261113-120000-abc123 segments=217 encoder pid=3739145 alive=True
+wax split: SPLIT  capture 20261113-120000-abc123
+  duration 0:36:00  noise floor -62.2 dBFS  loud -20.6 dBFS  activity threshold -52.2 dBFS
+  quiet from 0:10:35 to 0:36:00 (1525s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40  meeting-live-part1of2.ogg  [held]
+  part 2 (quiet-tail): 0:10:40 - 0:36:00  meeting-live-part2of2.ogg  [held]
+  capture: recording -> ready
+  processing: not queued yet; capture stopped and finalized into the hold, not the inbox; original preserved; parts held until submitted; recording not restarted
+  held in <tmp>/live/skipped/split/20261113-120000-abc123 (submit with `wax split submit 20261113-120000-abc123 all`)
+[after] stream state=ready encoder exit=0 inbox=[] hold=['meeting-live-part1of2.ogg', 'meeting-live-part2of2.ogg', 'meeting-live.ogg', 'split.json']

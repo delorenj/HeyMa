@@ -57,7 +57,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 from wax import (archive, catalog, capture, component, config, documents, events, failures, finalize,
                  frontmatter, hygiene, ledger, migrate, natsclient, passes, paths, pipelines, provider, prune,
-                 reconcile, sanity, sentinel, state, transcribe_adapter, transcriptions, vault_sweep,
+                 reconcile, sanity, sentinel, split, state, transcribe_adapter, transcriptions, vault_sweep,
                  worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
@@ -2668,6 +2668,34 @@ def main() -> int:
     t = rec.add_parser("toggle", help="start if ready, stop if recording", parents=[common])
     t.add_argument("--label")
 
+    sp = sub.add_parser("split", parents=[common],
+                        help="cut a recording left running at the long quiet it ran into (waveform only)")
+    sps = sp.add_subparsers(dest="sub", required=True)
+    spr = sps.add_parser("run", parents=[common], help="(default) detect the boundary, halt the item, cut and hold the parts")
+    spr.add_argument("target", nargs="?", help="capture id, item id (>= 6 hex), or audio file name/path; "
+                     "default: the recording capture, else the item in processing")
+    spr.add_argument("--dry-run", action="store_true", help="only report the proposed boundary; change nothing")
+    spr.add_argument("--submit", action="append", default=[], metavar="PART",
+                     help="after the split, send this part (1-based, or `all`) to the inbox; repeatable")
+    spr.add_argument("--force", action="store_true", help="split again although this audio already has a settled split")
+    spr.add_argument("--halt-timeout-s", type=float, default=180.0,
+                     help="how long to wait for the item's in-flight work to settle (default 180)")
+    defaults = split.Params()
+    for flag, field, helptext in (
+            ("--min-quiet-s", "min_quiet_s", "a trailing quiet run must last this long (seconds)"),
+            ("--margin-db", "margin_db", "activity is this far above the adaptive noise floor"),
+            ("--floor-dbfs", "floor_dbfs", "activity is never below this absolute level"),
+            ("--min-range-db", "min_range_db", "noise-to-loud spread needed to see any activity"),
+            ("--blip-s", "blip_s", "a burst this short inside quiet is not activity"),
+            ("--tail-slack-s", "tail_slack_s", "the quiet run may end this long before the audio ends"),
+            ("--pad-s", "pad_s", "keep this much of the quiet run with the first part"),
+            ("--min-active-s", "min_active_s", "activity required before the cut")):
+        spr.add_argument(flag, type=float, default=getattr(defaults, field), help=f"{helptext} (default %(default)g)")
+    sub_ = sps.add_parser("submit", parents=[common], help="send held parts to the inbox (normal S3-verified path)")
+    sub_.add_argument("split_id"); sub_.add_argument("parts", nargs="+", help="1-based part numbers, or `all`")
+    sli = sps.add_parser("list", parents=[common], help="held splits and their parts")
+    sli.add_argument("split_id", nargs="?")
+
     st = sub.add_parser("state", help="derive a machine's state from disk", parents=[common])
     st.add_argument("machine", choices=["stream", "inbox", "both"], default="both", nargs="?")
     st.add_argument("--cold", action="store_true", help="(default) pure filesystem derivation")
@@ -3005,7 +3033,16 @@ def main() -> int:
         help="resolved config + probe every dependency (exit 2 fail, 1 warn, 0 clean)")
     doc.add_argument("--quiet", action="store_true", help="print nothing; exit code only")
 
-    args = ap.parse_args()
+    argv = sys.argv[1:]
+    for at, token in enumerate(argv):
+        if token == "split":
+            # `wax split [TARGET]` means `wax split run [TARGET]`; submit and list are explicit.
+            if at + 1 >= len(argv) or argv[at + 1] not in ("run", "submit", "list", "-h", "--help"):
+                argv.insert(at + 1, "run")
+            break
+        if not token.startswith("-"):
+            break
+    args = ap.parse_args(argv)
     # Python 3.14's argparse lets a subparser's `--json` default (False) overwrite a leading `wax --json …`;
     # the comment above promises any position, and Holocene spawns `wax --json transcripts browse`.
     J = bool(args.json) or "--json" in sys.argv[1:]
@@ -3055,6 +3092,32 @@ def main() -> int:
             elif args.sub == "salvage":
                 _emit(capture.salvage(rid), J)
         return 0
+
+    if args.cmd == "split":
+        if args.sub == "list":
+            rows = split.list_splits(args.split_id)
+            if J:
+                _emit(rows, True)
+            else:
+                for row in rows:
+                    print(f"{row['split_id']}  {row['origin']}  {row['held_dir']}")
+                    for seg in row["segments"]:
+                        print(f"  part {seg['index']} ({seg['kind']}) {split._t(seg['start_s'])}-{split._t(seg['end_s'])} "
+                              f"{seg['file']} [{seg['state']}]")
+                if not rows:
+                    print("no splits")
+            return 0
+        if args.sub == "submit":
+            out = split.submit(args.split_id, tuple(args.parts))
+            _emit(out, True) if J else print("\n".join(
+                [f"split {out['split_id']}"] + [f"  part {p['index']}: {p['action']} {p.get('submitted_as') or ''}"
+                                                 for p in out["parts"]] + [out["note"]]))
+            return 0
+        params = split.Params(**{field: getattr(args, field) for field in split.Params.__dataclass_fields__})
+        report = split.run(args.target, params, dry_run=args.dry_run, submit_parts=tuple(args.submit),
+                           halt_timeout_s=args.halt_timeout_s, force=args.force, capture_lock=_Lock)
+        _emit(report, True) if J else print(split.render(report))
+        return split.exit_code(report)
 
     if args.cmd == "state":
         if args.machine == "stream":

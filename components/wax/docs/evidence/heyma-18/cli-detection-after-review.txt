@@ -1,0 +1,107 @@
+# HEYMA-18 review-fix evidence: real bin/wax --dry-run, default parameters, real-scale fixtures, isolated WAX_ROOT (never production). Exit codes in [brackets].
+
+# fixture meeting_overrun_quiet: 2135.0s, room -62.0 dBFS, true overrun start 635.0, sha256 f260d6e5fe245f34
+$ wax split meeting_overrun_quiet.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/meeting_overrun_quiet.ogg
+  duration 0:35:35  noise floor -62.2 dBFS  loud -19.6 dBFS  activity threshold -52.2 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:35
+  changes: none (--dry-run)
+
+[exit 0]
+
+# fixture meeting_overrun_hvac: 2135.0s, room -46.0 dBFS, true overrun start 635.0, sha256 4557b63f68d0f0a1
+$ wax split meeting_overrun_hvac.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/meeting_overrun_hvac.ogg
+  duration 0:35:35  noise floor -46.0 dBFS  loud -19.6 dBFS  activity threshold -36.0 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:35
+  changes: none (--dry-run)
+
+[exit 0]
+
+# fixture meeting_overrun_with_click: 2135.0s, room -62.0 dBFS, true overrun start 635.0, sha256 dd81536cc94b0e50
+$ wax split meeting_overrun_with_click.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/meeting_overrun_with_click.ogg
+  duration 0:35:35  noise floor -62.2 dBFS  loud -19.6 dBFS  activity threshold -52.2 dBFS
+  quiet from 0:10:35 to 0:35:35 (1500s); cut at 0:10:40
+  part 1 (active): 0:00:00 - 0:10:40
+  part 2 (quiet-tail): 0:10:40 - 0:35:35
+  changes: none (--dry-run)
+
+[exit 0]
+
+# fixture short_meeting_long_overrun_quiet: 12300.0s, room -62.0 dBFS, true overrun start 300.0, sha256 0ce8ca9c3eb18508
+$ wax split short_meeting_long_overrun_quiet.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/short_meeting_long_overrun_quiet.ogg
+  duration 3:25:00  noise floor -62.1 dBFS  loud -20.0 dBFS  activity threshold -52.1 dBFS
+  quiet from 0:05:00 to 3:25:00 (12000s); cut at 0:05:05
+  part 1 (active): 0:00:00 - 0:05:05
+  part 2 (quiet-tail): 0:05:05 - 3:25:00
+  changes: none (--dry-run)
+
+[exit 0]
+
+# fixture short_meeting_long_overrun_hvac: 12300.0s, room -46.0 dBFS, true overrun start 300.0, sha256 0762feef2b7cbfff
+$ wax split short_meeting_long_overrun_hvac.ogg --dry-run
+wax split: PROPOSED  item (unregistered)  <root>/inbox/short_meeting_long_overrun_hvac.ogg
+  duration 3:25:00  noise floor -46.0 dBFS  loud -20.0 dBFS  activity threshold -36.0 dBFS
+  quiet from 0:05:00 to 3:25:00 (12000s); cut at 0:05:05
+  part 1 (active): 0:00:00 - 0:05:05
+  part 2 (quiet-tail): 0:05:05 - 3:25:00
+  changes: none (--dry-run)
+
+[exit 0]
+
+# fixture continuous_activity: 1800.0s, room -62.0 dBFS, true overrun start None, sha256 30062f79b633f19d
+$ wax split continuous_activity.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/continuous_activity.ogg
+  duration 0:30:00  noise floor -24.6 dBFS  loud -18.6 dBFS  activity threshold -14.6 dBFS
+  no usable boundary [no_contrast]: nothing rises 10 dB above the noise floor (-24.6 dBFS): continuous activity or a flat hum, so there is no quiet to cut at
+  changes: none
+
+[exit 3]
+
+# fixture all_quiet: 1800.0s, room -66.0 dBFS, true overrun start None, sha256 2a3c07c23009efbb
+$ wax split all_quiet.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/all_quiet.ogg
+  duration 0:30:00  noise floor -66.4 dBFS  loud -63.5 dBFS  activity threshold -56.4 dBFS
+  no usable boundary [no_activity]: the loudest second is -63.5 dBFS, under the -60 dBFS floor: silent or all-quiet input
+  changes: none
+
+[exit 3]
+
+# fixture all_quiet_hvac: 1800.0s, room -46.0 dBFS, true overrun start None, sha256 16c5cd7fabd2296f
+$ wax split all_quiet_hvac.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/all_quiet_hvac.ogg
+  duration 0:30:00  noise floor -46.2 dBFS  loud -43.4 dBFS  activity threshold -36.2 dBFS
+  no usable boundary [no_contrast]: nothing rises 10 dB above the noise floor (-46.2 dBFS): continuous activity or a flat hum, so there is no quiet to cut at
+  changes: none
+
+[exit 3]
+
+# fixture meeting_with_pauses: 675.0s, room -62.0 dBFS, true overrun start None, sha256 bfce54d0937600e1
+$ wax split meeting_with_pauses.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/meeting_with_pauses.ogg
+  duration 0:11:15  noise floor -62.6 dBFS  loud -19.6 dBFS  activity threshold -52.6 dBFS
+  no usable boundary [no_sustained_quiet]: no quiet run of 300s reaches the end (longest trailing quiet 40s): continuous activity or only ordinary pauses
+    quiet run 0:05:15-0:06:45 (90s)
+    quiet run 0:02:00-0:02:45 (45s)
+    quiet run 0:10:35-0:11:15 (40s)
+  changes: none
+
+[exit 3]
+
+# fixture meeting_break_then_more: 1360.0s, room -62.0 dBFS, true overrun start None, sha256 946e383b64bfe2fd
+$ wax split meeting_break_then_more.ogg --dry-run
+wax split: NO_BOUNDARY  item (unregistered)  <root>/inbox/meeting_break_then_more.ogg
+  duration 0:22:40  noise floor -62.2 dBFS  loud -19.8 dBFS  activity threshold -52.2 dBFS
+  no usable boundary [quiet_not_trailing]: a quiet run of 300s or more exists but activity continues for more than 60s after it
+    quiet run 0:10:35-0:17:35 (420s)
+    quiet run 0:05:15-0:06:45 (90s)
+    quiet run 0:02:00-0:02:45 (45s)
+  changes: none
+
+[exit 3]

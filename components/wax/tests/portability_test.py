@@ -99,7 +99,7 @@ class PortabilityTest(unittest.TestCase):
             verdict = {"ok": True, "reason_code": None, "audio_duration_s": 1.0,
                        "asr_duration_s": 1.0, "duration_ratio": 1.0}
             with patch.object(transcribe_adapter, "transcribe_command", return_value=Path("/bin/true")), \
-                    patch.object(transcribe_adapter.subprocess, "run", return_value=SimpleNamespace(
+                    patch.object(transcribe_adapter.fence, "run_tracked", return_value=SimpleNamespace(
                         returncode=0, stdout=str(md) + "\n", stderr=metadata)), \
                     patch.object(transcribe_adapter.sanity, "check", return_value=verdict), \
                     patch.object(transcribe_adapter.sanity, "source_unchanged", return_value=True), \
@@ -107,6 +107,7 @@ class PortabilityTest(unittest.TestCase):
                     patch.object(transcribe_adapter.paths, "VAULT", root), \
                     patch.object(transcribe_adapter.paths, "LOGS", root / "logs"), \
                     patch.object(transcribe_adapter.ledger, "connect", return_value=connection), \
+                    patch.object(transcribe_adapter.ledger, "fence_of", return_value=None), \
                     patch.object(transcribe_adapter.ledger, "set_item_state"), \
                     patch.object(transcribe_adapter.desktop, "ding") as ding:
                 transcribe_adapter.transcribe(audio, item_id="item")

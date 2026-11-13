@@ -252,8 +252,12 @@ def _await_exit(rec: dict[str, Any], timeout: float) -> Optional[int]:
     raise TimeoutError("encoder did not exit within grace period")
 
 
-def stop(rid: str) -> dict[str, Any]:
-    """Explicitly stop a capture and move the finished file into the inbox."""
+def stop(rid: str, *, dest_dir: Optional[Path] = None) -> dict[str, Any]:
+    """Explicitly stop a capture and move the finished file into the inbox.
+
+    `dest_dir` (used by `wax split`) publishes the finished file there instead, so
+    the worker never sees a recording that is about to be cut in two.
+    """
     rec = sentinel.read_json(paths.rec_path(rid))
     if rec is None:
         raise CaptureError(f"no rec.json for {rid}")
@@ -265,7 +269,7 @@ def stop(rid: str) -> dict[str, Any]:
     if sentinel.encoder_alive(rec):
         _shutdown(rid, rec)
 
-    return finalize(rid)
+    return finalize(rid, dest_dir=dest_dir)
 
 
 def _shutdown(rid: str, rec: dict[str, Any]) -> str:
@@ -334,8 +338,8 @@ def concat_segments(rid: str) -> tuple[Optional[Path], list[Path], list[Path]]:
     return staged, used, skipped
 
 
-def finalize(rid: str) -> dict[str, Any]:
-    """Join the segments, validate, and atomically publish to the inbox."""
+def finalize(rid: str, *, dest_dir: Optional[Path] = None) -> dict[str, Any]:
+    """Join the segments, validate, and atomically publish to the inbox (or `dest_dir`)."""
     rec = sentinel.read_json(paths.rec_path(rid))
     if rec is None:
         raise CaptureError(f"no rec.json for {rid}")
@@ -357,7 +361,9 @@ def finalize(rid: str) -> dict[str, Any]:
                            probe_duration_s=dur, bytes=partial.stat().st_size)
         raise CaptureError(f"refusing to publish {rid}: duration={dur}")
 
-    dest = paths.INBOX / str(rec.get("target_name") or f"{rid}.ogg")
+    target_dir = dest_dir if dest_dir is not None else paths.INBOX
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / str(rec.get("target_name") or f"{rid}.ogg")
     final = rename.move_noclobber(partial, dest)
 
     size = final.stat().st_size
