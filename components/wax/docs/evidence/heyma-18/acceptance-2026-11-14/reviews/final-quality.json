@@ -1,0 +1,115 @@
+{
+  "ticket": "HEYMA-18",
+  "gate": "final-independent-quality",
+  "verdict": "PASS",
+  "status": "complete",
+  "merge_approval": false,
+  "reviewed_at": "2026-11-14T08:18:00-05:00",
+  "worktree": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance",
+  "head": "c47f22686f4f9d66616fe3b5328e9f22ca3eb7d5",
+  "scope": "Absent-vault publication correction plus five bounded loadbearing stale-note/collision/fence checks; uncommitted worktree",
+  "findings": [],
+  "prior_hold": {
+    "QRR-1": "RESOLVED: parent creates configured vault including missing parents inside publication after sanity and fence check",
+    "source": "components/wax/src/wax/transcribe_adapter.py:341-350",
+    "regression": "components/wax/tests/split_fence_test.py:330-351",
+    "stale_note": "Remains resolved in fresh kill-after-write-before-stdout regression"
+  },
+  "execution": {
+    "python": "/home/delorenj/.local/share/mise/installs/python/3.12/bin/python3",
+    "python_version": "3.12.11",
+    "pytest_version": "7.4.4",
+    "scratch": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz",
+    "environment_invocation": "/usr/bin/env -i",
+    "environment": {
+      "PATH": "/home/delorenj/.local/share/mise/installs/python/3.12/bin:/usr/bin:/bin",
+      "HOME": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/h",
+      "TMPDIR": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/t",
+      "WAX_ROOT": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/r",
+      "WAX_VAULT": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/v",
+      "TRANSCRIPTS": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/v",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "WAX_TRANSCRIPTS_UNIT_FILE": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/no-service",
+      "WAX_BLOODBANK_SCHEMAS": "/home/delorenj/code/33GOD/bloodbank/schemas"
+    }
+  },
+  "tests": [
+    {
+      "cwd": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax",
+      "args": "-m pytest -p no:cacheprovider tests/split_fence_test.py -vv -k 'publication_creates_an_absent_configured_vault or real_cli_kill_after_write or fence_during_sanity or publication_and_fence' --junitxml=/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/tests.xml",
+      "exit": 0,
+      "result": "4 passed, 20 deselected in 5.97s",
+      "cases": [
+        {"name": "tests/split_fence_test.py::SplitWhileProcessingTest::test_fence_during_sanity_parks_private_note_before_publication", "result": "PASSED", "seconds": 2.020},
+        {"name": "tests/split_fence_test.py::SplitWhileProcessingTest::test_publication_and_fence_insert_are_serialized", "result": "PASSED", "seconds": 0.150},
+        {"name": "tests/split_fence_test.py::SplitWhileProcessingTest::test_publication_creates_an_absent_configured_vault", "result": "PASSED", "seconds": 0.275},
+        {"name": "tests/split_fence_test.py::SplitWhileProcessingTest::test_real_cli_kill_after_write_before_stdout_preserves_only_owned_output", "result": "PASSED", "seconds": 3.339}
+      ],
+      "junit": {"tests": 4, "errors": 0, "failures": 0, "skipped": 0, "seconds": 5.978, "hostname": "big-chungus", "timestamp": "2026-11-14T08:16:12.608100"},
+      "log": "tests.log",
+      "interfaces": "Real CLI implementation, scripts/transcribe.py writer, ledger, filesystem, tracked process halt; ASR/archive/desktop/enrichment seams"
+    },
+    {
+      "cwd": "/home/delorenj/HeyMa",
+      "args": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/collision-probe.py",
+      "exit": 0,
+      "result": "PASS",
+      "name": "actual-bin-transcribe-collision",
+      "log": "collision.log",
+      "result_json": {
+        "verdict": "PASS",
+        "test": "actual-bin-transcribe-collision",
+        "root": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/c",
+        "interfaces": "real bin/transcribe shim and real scripts/transcribe.py output writer; ASR-only seam",
+        "item_id": "e76d465168750fdc",
+        "final": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/ftVGz/c/vault/20261114-081720-meeting-1.md",
+        "preexisting_and_unrelated_notes_preserved": true,
+        "vault_note_count": 3,
+        "transcript_rows": 1,
+        "private_note_count": 0,
+        "original_sha256_unchanged": true,
+        "original_sha256": "e76d465168750fdc00f318ea7bfac347e442bf0c2a9193fca0beedbe715c719a",
+        "store_hook_calls": 1
+      }
+    }
+  ],
+  "static_checks": [
+    {"command": "git diff --check", "exit": 0, "result": "No whitespace errors"},
+    {"command": "git diff --exit-code -- components/wax/src/wax/worker.py components/wax/src/wax/split.py components/wax/src/wax/archive.py", "exit": 0, "result": "Unchanged archive, worker ordering and split source"},
+    {"check": "Adapter and split-fence test hashes match implementation followup and remain stable before/after tests", "result": "PASS"}
+  ],
+  "acceptance_nonregression": {
+    "AC3": "PASS within bounded paths: child killed after real writer writes before stdout; worker fenced; owned note recovered identically; no stale live-vault note or transcript row; existing notes and unrelated pending item's state/audio/fence unchanged; fence-during-sanity and publication serialization pass",
+    "AC4": "PASS within bounded paths: original sha256 unchanged and two split segments asserted by kill regression; collision probe preserves original hash; archive-before-transcribe order unchanged at worker.py:334-356,419-425; no real S3 run claimed"
+  },
+  "sha256": {
+    "components/wax/src/wax/transcribe_adapter.py": "505cb3c7bd435eb82e89d54fe565074af2e276dd9b42407a690b1ef4bec58109",
+    "components/wax/tests/split_fence_test.py": "84e098935f5da67b95dc77e15146d0a861a946e9129443e327e973011b5cdc19",
+    "bin/transcribe": "c0e787ef956e82e61858ddbc596e252ccad64c1b0baa393e3b1a3d0aa7f76b60",
+    "scripts/transcribe.py": "2454f2653cc40e469abc2cfc8838c470c0fbbe5808527588d39e829d24fae889"
+  },
+  "scratch_evidence_sha256": {
+    "tests.log": "3205cb83de620370c0ef4780af4b0c9dc9b4dbcb3e8ec76eef8be1c25d031672",
+    "tests.xml": "e3f5710b760d5714bfa4bfe6357150d67cc624e45093f8e715266bffb0cf78d3",
+    "collision-probe.py": "0475c166a308725338e87d2191aaa2a6649db53853f0676a1f5e0b027610c987",
+    "collision.json": "aa48d971afcb20368c9825be5040516cd1af92e7c7f34959dd30afd75a4715c3",
+    "collision.log": "aa48d971afcb20368c9825be5040516cd1af92e7c7f34959dd30afd75a4715c3"
+  },
+  "limitations": [
+    "Bounded quality correction verification, not a duplicate full-suite or feature-spec audit; parent owns broader gates.",
+    "No production ASR/model/S3/desktop/store/service changes; real IO/ledger/child paths exercised using explicit seams.",
+    "Remote SSH transcription and crash-level filesystem/SQLite atomicity not exercised.",
+    "Historical detector recall limitations remain unchanged; no new recall claim.",
+    "Hub skill loader was quarantined; repository hub/router and capture route read directly without trust changes.",
+    "Scratch raw artifacts are temporary; exact test outcomes, collision results and hashes are embedded in these durable spool reports."
+  ],
+  "writes": {
+    "report_files": ["final-quality.md", "final-quality.json"],
+    "other": "Isolated scratch collision probe, seam, logs, JUnit, ledger and generated audio/notes only",
+    "source": false,
+    "production": false,
+    "board": false,
+    "git_metadata": false
+  },
+  "next_gate": "Parent acceptance and any carrier/merge decision; no merge approval from this report."
+}

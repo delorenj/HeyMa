@@ -1,0 +1,112 @@
+{
+  "encoder_after": {
+    "pid": 2062,
+    "exited": true
+  },
+  "manifest": {
+    "created_at": "2026-11-14T12:53:23.839Z",
+    "detection": {
+      "boundary": {
+        "active_before_s": 465,
+        "cut_s": 640.0,
+        "quiet_end_s": 1683,
+        "quiet_length_s": 1048,
+        "quiet_start_s": 635
+      },
+      "duration_s": 1682.353,
+      "params": {
+        "blip_s": 3.0,
+        "floor_dbfs": -60.0,
+        "margin_db": 10.0,
+        "min_active_s": 30.0,
+        "min_drop_db": 20.0,
+        "min_quiet_s": 300.0,
+        "min_range_db": 12.0,
+        "pad_s": 5.0,
+        "tail_slack_s": 60.0
+      },
+      "quiet_runs": [
+        {
+          "end_s": 1683,
+          "length_s": 1048,
+          "start_s": 635
+        },
+        {
+          "end_s": 405,
+          "length_s": 90,
+          "start_s": 315
+        },
+        {
+          "end_s": 165,
+          "length_s": 45,
+          "start_s": 120
+        },
+        {
+          "end_s": 575,
+          "length_s": 30,
+          "start_s": 545
+        }
+      ],
+      "stats": {
+        "active_s": 465,
+        "blocks": 1683,
+        "loud_db": -19.6,
+        "noise_floor_db": -62.5,
+        "quiet_drop_db": 41.6,
+        "quiet_median_db": -61.3,
+        "threshold_db": -52.5
+      }
+    },
+    "method": "waveform-rms",
+    "origin": "live-capture",
+    "original_path": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/skipped/split/20261114-075146-e2efc9/20261114-075146-acceptance-live.ogg",
+    "original_settled": true,
+    "schema": 1,
+    "segments": [
+      {
+        "bytes": 2719083,
+        "duration_s": 640.01,
+        "end_s": 640.0,
+        "file": "20261114-075146-acceptance-live-part1of2.ogg",
+        "index": 1,
+        "item_id": "46fc4b28b684feb0",
+        "kind": "active",
+        "mtime": 1794659759.6695998,
+        "sha256": "46fc4b28b684feb0ec14013b7a8cc8c4fcd98d32724b614bea567132bf3967f1",
+        "start_s": 0.0,
+        "state": "held",
+        "submitted_as": null,
+        "submitted_at": null
+      },
+      {
+        "bytes": 3853858,
+        "duration_s": 1043.452,
+        "end_s": 1682.353,
+        "file": "20261114-075146-acceptance-live-part2of2.ogg",
+        "index": 2,
+        "item_id": "50129f43c000a878",
+        "kind": "quiet-tail",
+        "mtime": 1794660802.0225997,
+        "sha256": "50129f43c000a8789d7c183f9ae6ada9f0e55dee681c038e63a5beb2704f71a9",
+        "start_s": 640.0,
+        "state": "held",
+        "submitted_as": null,
+        "submitted_at": null
+      }
+    ],
+    "source": {
+      "bytes": 6570564,
+      "device_source": "heyma-validate-stub-source",
+      "duration_s": 1682.353,
+      "kind": "capture",
+      "orig_name": "20261114-075146-acceptance-live.ogg",
+      "path": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/skipped/split/20261114-075146-e2efc9/20261114-075146-acceptance-live.ogg",
+      "rid": "20261114-075146-e2efc9",
+      "sha256": "a5d74ae998e137ec0cb642b17fff792cf32681d1f04d8daad36ce8aa7db5a26d",
+      "started_at": "2026-11-14T12:51:46.601Z"
+    },
+    "split_id": "20261114-075146-e2efc9"
+  },
+  "capture_not_restarted": true,
+  "all_assertions": "passed"
+}

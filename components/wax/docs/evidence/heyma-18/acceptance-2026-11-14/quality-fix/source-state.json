@@ -1,0 +1,47 @@
+{
+  "status": "BLOCKED",
+  "quality": "race fix implemented, baseline red/fixed green; parent independently re-reviews",
+  "base": "c47f22686f4f9d66616fe3b5328e9f22ca3eb7d5",
+  "head": "c47f22686f4f9d66616fe3b5328e9f22ca3eb7d5",
+  "branch": "fix/heyma-18-acceptance",
+  "commit_sha": null,
+  "commit_blocker": "git add exit128: read-only .git metadata mount",
+  "changed_source_test_docs": [
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/WAX-SPLIT.md",
+      "sha256": "eecd74ecfcf87ee88e8db0873d4dc06c8bdb1e017acd5e67abb55496b734717a"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/src/wax/transcribe_adapter.py",
+      "sha256": "c7cff3fce81bac6f7c3d8b6c1b5571c90359a000bc05d6afa8d3af49e07e74ae"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/tests/portability_test.py",
+      "sha256": "d4b39341ac84d891a835b123eae2657f03802e0e62be03c8ca61a0a70df52366"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/tests/split_fence_test.py",
+      "sha256": "325e4b763b0bce7896cc77c90774bcbb6049c3aa2174e9632b4780a95efaa1ca"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/tests/transcribe_scratch_guard_test.py",
+      "sha256": "d70551226e14a12c2e983730bfcecb7ea7d17d64f9f82de299e4fe3d2c496acd"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/tests/transcriptions_capture_test.py",
+      "sha256": "c90e66dcdb7cdf2dc68ed4c3b3ea778d547eb31d8819bbe1efdb5aa869c7a1c4"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/skills/heyma/references/capture.md",
+      "sha256": "a47d5dfdbf417ba14b7495851f79093ec62dc734014bb80717ca8ce5e07c1397"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/skills/heyma/references/cli.md",
+      "sha256": "fec057cb5a1b10cbc8c0a4b4a0ae690483fc907d06ea3cfb16297543e5a29023"
+    },
+    {
+      "path": "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/skills/heyma/references/transcription.md",
+      "sha256": "7dd84e9da9c0b43f8b4ecd1831b274117eb074cc7911522facc838ce4103d41d"
+    }
+  ]
+}

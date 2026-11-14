@@ -90,17 +90,19 @@ class PortabilityTest(unittest.TestCase):
             audio = root / "audio.ogg"
             md = root / "derived.md"
             audio.write_bytes(b"audio")
-            md.write_text("# transcript\n")
             metadata = (
                 'Transcription-Metadata: {"duration_seconds": 1, "word_count": 1, '
                 '"diarized": true, "model": "large-v3"}\n'
             )
+            def finish(_item, _cmd, **kwargs):
+                staged = Path(kwargs["env"]["TRANSCRIPTS"]) / "transcript.md"
+                staged.write_text("# transcript\n")
+                return SimpleNamespace(returncode=0, stdout=str(staged) + "\n", stderr=metadata)
             connection = SimpleNamespace(execute=lambda *_args, **_kwargs: None)
             verdict = {"ok": True, "reason_code": None, "audio_duration_s": 1.0,
                        "asr_duration_s": 1.0, "duration_ratio": 1.0}
             with patch.object(transcribe_adapter, "transcribe_command", return_value=Path("/bin/true")), \
-                    patch.object(transcribe_adapter.fence, "run_tracked", return_value=SimpleNamespace(
-                        returncode=0, stdout=str(md) + "\n", stderr=metadata)), \
+                    patch.object(transcribe_adapter.fence, "run_tracked", side_effect=finish), \
                     patch.object(transcribe_adapter.sanity, "check", return_value=verdict), \
                     patch.object(transcribe_adapter.sanity, "source_unchanged", return_value=True), \
                     patch.object(transcribe_adapter, "vault_name", return_value=md.name), \

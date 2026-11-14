@@ -1,0 +1,1 @@
+/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/py/bin/python3 3.13.7 (main, Mar  3 2026, 12:19:54) [GCC 15.2.0] 9.0.3 2.2.4

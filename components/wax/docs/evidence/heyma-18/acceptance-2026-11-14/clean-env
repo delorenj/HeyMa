@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+RUN=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+exec env -i PATH=/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/py/bin:/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+ HOME="$RUN/home" TMPDIR="$RUN/tmp" XDG_CACHE_HOME="$RUN/home/.cache" \
+ WAX_ROOT="$RUN/root" WAX_VAULT="$RUN/vault" TRANSCRIPTS="$RUN/vault" \
+ WAX_VOICES_DIR="$RUN/voices" WAX_DICTIONARY="$RUN/root/Dictionary.yaml" \
+ WAX_TRANSCRIPTS_UNIT_FILE="$RUN/no-unit" WAX_HARVEST_DIR=off \
+ WAX_VOICE_NOTIFY=0 WAX_VOICE_CONTEXT=0 WAX_VOICE_NTFY_ALERT="$RUN/no-notify" \
+ TRANSCRIBE_STASH_DIR="$RUN/stash" TRANSCRIBE_LOCK_FILE="$RUN/transcribe.lock" \
+ TRANSCRIBE_FAST_LOCK_FILE="$RUN/fast.lock" WAX_DOC_HYGIENE_FOLDERS="$RUN/hygiene" \
+ PYTEST_ADDOPTS="-o cache_dir=$RUN/pytest-cache" "$@"

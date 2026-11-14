@@ -1,0 +1,16 @@
+02-quiet-dry-run exit 0
+03-quiet-split exit 0
+04-continuous_activity exit 3
+04-all_quiet exit 3
+04-meeting_with_pauses exit 3
+10-pipeline-enable exit 0
+11-slow-split exit 0
+11-stubborn-split exit 0
+11-passslow-split exit 0
+20-live-start exit 0
+22-live-no-boundary exit 3
+23-live-dry-run exit 0
+24-live-split exit 0
+ACCEPTANCE_ASSERTIONS_PASSED
+
+EXIT_CODE=0

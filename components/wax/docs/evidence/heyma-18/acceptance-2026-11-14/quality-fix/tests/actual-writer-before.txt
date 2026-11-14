@@ -1,0 +1,74 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ SplitWhileProcessingTest.test_real_cli_kill_after_write_before_stdout_preserves_only_owned_output _
+
+self = <split_fence_test.SplitWhileProcessingTest testMethod=test_real_cli_kill_after_write_before_stdout_preserves_only_owned_output>
+
+        def test_real_cli_kill_after_write_before_stdout_preserves_only_owned_output(self):
+            item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+            original_sha = ledger.sha256_file(audio)
+            other_id, other = self.stage_item("continuous_activity", "bystander.ogg")
+            other_sha = ledger.sha256_file(other)
+            # Both the normal final name and an unrelated note already exist.
+            existing = paths.VAULT / transcribe_adapter.vault_name(audio)
+            unrelated = paths.VAULT / "unrelated.md"
+            existing.write_text("preexisting transcript\n")
+            unrelated.write_text("unrelated note\n")
+            # Actual scripts/transcribe.py output-writing code; only ASR is a seam.
+            # Block at its first metadata log AFTER write_text but BEFORE the shim
+            # would print the output path. No Whisper/models/network are used.
+            script = self.tmp / "early-write-transcribe"
+            actual = Path(__file__).resolve().parents[3] / "scripts/transcribe.py"
+            script.write_text(f"""#!{sys.executable}
+    import importlib.util, pathlib, sys, time
+    spec = importlib.util.spec_from_file_location("real_transcriber", {str(actual)!r})
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.transcribe_local = lambda *_args: {{
+        "text": "preserve this transcript", "segments": [{{"start": 0, "end": 1, "text": "preserve this transcript"}}],
+        "language": "en", "language_probability": 1.0, "duration": 213.5,
+        "model": "ASR-STUB", "backend": "ASR-STUB"
+    }}
+    real_log = module.log
+    def log(message):
+        if message.startswith("Transcription-Metadata: "):
+            import json
+            output = json.loads(message.split(": ", 1)[1])["mdPath"]
+            pathlib.Path({str(self.marks / 'written')!r}).write_text(output)
+            time.sleep(120)
+        real_log(message)
+    module.log = log
+    module.main()
+    print(sys.argv[sys.argv.index("--output") + 1])
+    """)
+            script.chmod(0o755)
+            with patch.dict(os.environ, {"WAX_TRANSCRIBE": str(script),
+                                         "TRANSCRIPTS": str(paths.VAULT),
+                                         "WAX_VAULT": str(paths.VAULT)}):
+                run = self.run_worker(item_id, audio)
+                written = Path(self.wait_for("written"))
+                self.assertTrue(written.is_file(), "the child wrote before being killed, with no stdout yet")
+                written_text = written.read_text()
+                result = sup.cli(self.root, "--json", "split", item_id,
+                                 "--min-quiet-s", "30", "--tail-slack-s", "10",
+                                 "--min-active-s", "20", "--pad-s", "2")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["outcome"], "split")
+            run["thread"].join(15)
+            self.assertFalse(run["thread"].is_alive())
+            self.assertNotIn("error", run)
+            self.assertIn("fenced", run["result"])
+>           self.assertEqual(set(paths.VAULT.iterdir()), {existing, unrelated},
+                             "no stale or duplicate unsplit note may remain in the vault")
+E                            AssertionError: Items in the first set but not the second:
+E                            PosixPath('/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/q18D6GS/tmp/tmp6bj4r33g/root/vault/meeting.md') : no stale or duplicate unsplit note may remain in the vault
+
+tests/split_fence_test.py:258: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  wax.worker:worker.py:322 item 1951667ff430944e halted by wax split: item 1951667ff430944e was halted by split 20261114-124818-1951667f; refusing a stale write
+=========================== short test summary info ============================
+FAILED tests/split_fence_test.py::SplitWhileProcessingTest::test_real_cli_kill_after_write_before_stdout_preserves_only_owned_output
+1 failed, 22 deselected in 5.29s
+
+EXIT_CODE=1

@@ -1,0 +1,41 @@
+{"time_ns": 1794659146600877836, "argv": ["stat", "--json", "delo/recordings/2026-11-14/133f633df69a-slow-meeting.ogg"]}
+{"time_ns": 1794659146626804482, "argv": ["ls", "--json", "delo/recordings/2026-11-14/133f633df69a-slow-meeting.ogg"]}
+{"time_ns": 1794659146656112812, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/inbox/slow-meeting.ogg", "delo/recordings/2026-11-14/133f633df69a-slow-meeting.ogg"]}
+{"time_ns": 1794659146686295469, "argv": ["stat", "--json", "delo/recordings/2026-11-14/133f633df69a-slow-meeting.ogg"]}
+{"time_ns": 1794659146732222201, "argv": ["cat", "delo/recordings/2026-11-14/133f633df69a-slow-meeting.ogg.wax.json"]}
+{"time_ns": 1794659146762893920, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-uz5ltk4k.json", "delo/recordings/2026-11-14/133f633df69a-slow-meeting.ogg.wax.json"]}
+{"time_ns": 1794659146793382384, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-uz5ltk4k.json", "delo/recordings/.by-content/133f633df69ab5c379a57edcc289784901fd42b902d5cac893cf575833551682.json"]}
+{"time_ns": 1794659149334887592, "argv": ["stat", "--json", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg"]}
+{"time_ns": 1794659149360636562, "argv": ["ls", "--json", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg"]}
+{"time_ns": 1794659149391498079, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/inbox/unrelated-talk.ogg", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg"]}
+{"time_ns": 1794659149423824677, "argv": ["stat", "--json", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg"]}
+{"time_ns": 1794659149486190633, "argv": ["cat", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg.wax.json"]}
+{"time_ns": 1794659149517094611, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-4ec3yi7k.json", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg.wax.json"]}
+{"time_ns": 1794659149555626504, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-4ec3yi7k.json", "delo/recordings/.by-content/13e77ed346e44dc3f26f21a9479e3659274a6326bcbe0262e2763d015519175a.json"]}
+{"time_ns": 1794659154060275501, "argv": ["cat", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg.wax.json"]}
+{"time_ns": 1794659154085637292, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-qwwdm323.json", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg.wax.json"]}
+{"time_ns": 1794659154110642581, "argv": ["cat", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg.wax.json"]}
+{"time_ns": 1794659154134942240, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-qwwdm323.json", "delo/recordings/.by-content/13e77ed346e44dc3f26f21a9479e3659274a6326bcbe0262e2763d015519175a.json"]}
+{"time_ns": 1794659154159293627, "argv": ["cat", "delo/recordings/.by-content/13e77ed346e44dc3f26f21a9479e3659274a6326bcbe0262e2763d015519175a.json"]}
+{"time_ns": 1794659154184530433, "argv": ["tag", "set", "--json", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg", "Transcription=Complete&ItemId=13e77ed346e44dc3&Transcript=20261114-072547-unrelated-talk.md&TitleSlug=20261114-072547-unrelated-talk"]}
+{"time_ns": 1794659154211233572, "argv": ["stat", "--json", "delo/recordings/2026-11-14/13e77ed346e4-unrelated-talk.ogg"]}
+{"time_ns": 1794659159262066149, "argv": ["stat", "--json", "delo/recordings/2026-11-14/8d9e5e1b19d5-stubborn-meeting.ogg"]}
+{"time_ns": 1794659159281665339, "argv": ["ls", "--json", "delo/recordings/2026-11-14/8d9e5e1b19d5-stubborn-meeting.ogg"]}
+{"time_ns": 1794659159300789934, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/inbox/stubborn-meeting.ogg", "delo/recordings/2026-11-14/8d9e5e1b19d5-stubborn-meeting.ogg"]}
+{"time_ns": 1794659159323995632, "argv": ["stat", "--json", "delo/recordings/2026-11-14/8d9e5e1b19d5-stubborn-meeting.ogg"]}
+{"time_ns": 1794659159363343093, "argv": ["cat", "delo/recordings/2026-11-14/8d9e5e1b19d5-stubborn-meeting.ogg.wax.json"]}
+{"time_ns": 1794659159385337698, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-gcllh7gp.json", "delo/recordings/2026-11-14/8d9e5e1b19d5-stubborn-meeting.ogg.wax.json"]}
+{"time_ns": 1794659159406819817, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-gcllh7gp.json", "delo/recordings/.by-content/8d9e5e1b19d5d3ad75e4f39a7fcfbf338eaf31d7bb819820a86d183c1ccf13be.json"]}
+{"time_ns": 1794659168428674460, "argv": ["stat", "--json", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg"]}
+{"time_ns": 1794659168452873590, "argv": ["ls", "--json", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg"]}
+{"time_ns": 1794659168475366123, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/inbox/passslow-meeting.ogg", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg"]}
+{"time_ns": 1794659168503840351, "argv": ["stat", "--json", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg"]}
+{"time_ns": 1794659168546501948, "argv": ["cat", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg.wax.json"]}
+{"time_ns": 1794659168566652577, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-7klwncvb.json", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg.wax.json"]}
+{"time_ns": 1794659168586780884, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-7klwncvb.json", "delo/recordings/.by-content/d5622cb5c2dd71a359de70892525e8471de646c1f03730159ce84d0f04528586.json"]}
+{"time_ns": 1794659173423021090, "argv": ["cat", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg.wax.json"]}
+{"time_ns": 1794659173449760227, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-9og8lxd5.json", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg.wax.json"]}
+{"time_ns": 1794659173471760422, "argv": ["cat", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg.wax.json"]}
+{"time_ns": 1794659173493469399, "argv": ["cp", "--quiet", "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/var/.wax-sidecar-9og8lxd5.json", "delo/recordings/.by-content/d5622cb5c2dd71a359de70892525e8471de646c1f03730159ce84d0f04528586.json"]}
+{"time_ns": 1794659173515622623, "argv": ["cat", "delo/recordings/.by-content/d5622cb5c2dd71a359de70892525e8471de646c1f03730159ce84d0f04528586.json"]}
+{"time_ns": 1794659173535779694, "argv": ["tag", "set", "--json", "delo/recordings/2026-11-14/d5622cb5c2dd-passslow-meeting.ogg", "Transcription=Complete&ItemId=d5622cb5c2dd71a3&Transcript=20261114-072604-passslow-meeting.md&TitleSlug=20261114-072604-passslow-meeting"]}

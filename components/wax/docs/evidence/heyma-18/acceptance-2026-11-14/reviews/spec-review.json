@@ -1,0 +1,21 @@
+{
+  "ticket": "HEYMA-18",
+  "gate": "independent-spec",
+  "verdict": "PASS",
+  "merge_approval": false,
+  "reviewed_head": "c47f22686f4f9d66616fe3b5328e9f22ca3eb7d5",
+  "acceptance": [
+    {"ac": 1, "verdict": "PASS", "proof": ["components/wax/docs/evidence/heyma-18/fixtures.json:119-150", "components/wax/docs/evidence/heyma-18/cli-detection-after-review.txt:14-23", "components/wax/docs/evidence/heyma-18/cli-cases.txt:121-136", "components/wax/src/wax/split.py:100-114,153-165,291-335"]},
+    {"ac": 2, "verdict": "PASS", "proof": ["components/wax/docs/evidence/heyma-18/validation-2026-11-13/50-scenario-live-capture.txt:20-59", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/10-scenario-a-split-while-transcribing.txt:3-22", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/11-scenario-a-verify.txt:1-30"]},
+    {"ac": 3, "verdict": "PASS", "proof": ["components/wax/src/wax/split.py:432-449,499-539", "components/wax/src/wax/fence.py:43-119,154-194", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/20-scenario-b-late-transcript.txt:17-37", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/30-scenario-d-pass-in-flight.txt:19-45", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/11-scenario-a-verify.txt:1-25"]},
+    {"ac": 4, "verdict": "PASS", "proof": ["components/wax/src/wax/split.py:338-353,547-564,659-699", "components/wax/src/wax/worker.py:334-344,417-425", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/12-scenario-submit-s3-order.txt:5-26,39-64"]},
+    {"ac": 5, "verdict": "PASS_WITH_MATERIAL_RISK", "proof": ["components/wax/src/wax/split.py:175-243,488-492", "components/wax/docs/evidence/heyma-18/cli-detection-after-review.txt:3-23,58-107", "components/wax/docs/WAX-SPLIT.md:34-102", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/63-real-sweep-after-fix.txt:1-6,85-101"], "risk": "No boundary on 15/15 ASR-inferred noisy overruns and one ASR-inferred false cut in an 80-recording in-sample sweep. No promised recall threshold or human-labeled corpus in AC5; clear deterministic quiet/HVAC overrun works and no-boundary is explicit. A false cut would stop a live capture."},
+    {"ac": 6, "verdict": "PASS", "proof": ["skills/heyma/references/cli.md:21-26", "skills/heyma/references/capture.md:93-141", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/71-pytest-split-suites.txt:1-4", "components/wax/docs/evidence/heyma-18/validation-2026-11-13/70-pytest-full-suite.txt:1-13"]}
+  ],
+  "fresh_verification": {"command": "/usr/bin/python3 -m pytest tests/split_test.py -q -k 'test_clear_overrun_in_a_quiet_room or test_soft_speech_in_a_noisy_room_is_not_a_quiet_tail or test_ordinary_pauses_never_trigger_a_cut or test_all_quiet_is_no_boundary'", "exit_code": 0, "result": "4 passed, 22 deselected in 6.77s", "isolation": "PYTHONPATH/PYTHONHOME/VIRTUAL_ENV removed; TMPDIR, WAX_ROOT, WAX_VAULT, WAX_VOICES_DIR under profile scratch"},
+  "historical_full_suite": "1230 passed, 22 skipped; exit 0, validation-2026-11-13/70-pytest-full-suite.txt:1-13; not rerun here",
+  "report": "/home/delorenj/HeyMa/agents/hermes/pm/runtime/workers/HEYMA-18/krebs-20261114/spec-review.md",
+  "issues": ["Historical validation uses stub transcriber and microphone/audio-source seams with real isolated waxd; not production execution.", "Historical ASR-derived sweep is an imperfect proxy, and the min-drop rule was tuned in-sample.", "Existing earlier-published unsplit transcript persists when splitting during a pass, documented in WAX-SPLIT.md:213-222.", "Default profile python lacked pytest; system python succeeded."],
+  "repository_writes": false,
+  "board_writes": false
+}

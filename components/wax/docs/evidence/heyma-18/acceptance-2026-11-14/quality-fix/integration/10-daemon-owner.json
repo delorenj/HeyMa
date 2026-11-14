@@ -1,0 +1,15 @@
+{
+  "daemon": {
+    "pid": 605,
+    "ppid": 10,
+    "state": "S",
+    "starttick": "15523540",
+    "argv": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/py/bin/python3 /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/launch-waxd.py "
+  },
+  "advertisement": {
+    "capabilities": [
+      "item-fence/1"
+    ],
+    "pid": 605
+  }
+}

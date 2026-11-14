@@ -1,0 +1,87 @@
+{
+  "before": [
+    {
+      "item_id": "146b99553791e958",
+      "sha256": "146b99553791e9580654d390a4a629182a0507f369c3948bdb0eb3e53c801703",
+      "path": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/inbox/slow-meeting.ogg",
+      "orig_name": "slow-meeting.ogg",
+      "bytes": 7454774,
+      "duration_s": 2135.0065,
+      "origin": "inbox",
+      "state": "archived",
+      "first_seen": "2026-11-14T12:51:14.199Z",
+      "updated_at": "2026-11-14T12:51:18.384Z"
+    }
+  ],
+  "child_owner": {
+    "pid": 748,
+    "ppid": 605,
+    "state": "S",
+    "starttick": "15524082",
+    "argv": "/bin/bash /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/fake-transcribe /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/inbox/slow-meeting.ogg --no-diarization --asr-output /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/var/logs/146b99553791e958/asr.json --output /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/var/logs/146b99553791e958/output-56iam8ah/transcript.md "
+  },
+  "child_after": {
+    "pid": 748,
+    "exited": true
+  },
+  "after": [
+    {
+      "item_id": "146b99553791e958",
+      "sha256": "146b99553791e9580654d390a4a629182a0507f369c3948bdb0eb3e53c801703",
+      "path": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/skipped/split/20261114-125120-146b9955/slow-meeting.ogg",
+      "orig_name": "slow-meeting.ogg",
+      "bytes": 7454774,
+      "duration_s": 2135.0065,
+      "origin": "inbox",
+      "state": "skipped",
+      "first_seen": "2026-11-14T12:51:14.199Z",
+      "updated_at": "2026-11-14T12:51:21.811Z"
+    }
+  ],
+  "fence": [
+    {
+      "item_id": "146b99553791e958",
+      "split_id": "20261114-125120-146b9955",
+      "reason": "split",
+      "created_at": "2026-11-14T12:51:20.955Z"
+    }
+  ],
+  "passes": [],
+  "transitions": [
+    {
+      "seq": 11,
+      "machine": "item",
+      "subject": "146b99553791e958",
+      "from_state": null,
+      "to_state": "pending",
+      "cause_code": "discovered",
+      "evidence": "origin=inbox path=/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/inbox/slow-meeting.ogg",
+      "at": "2026-11-14T12:51:14.199Z",
+      "generation": 2
+    },
+    {
+      "seq": 13,
+      "machine": "item",
+      "subject": "146b99553791e958",
+      "from_state": "pending",
+      "to_state": "archived",
+      "cause_code": "s3_verified",
+      "evidence": "2026-11-14/146b99553791-slow-meeting.ogg (7454774 B, size+md5)",
+      "at": "2026-11-14T12:51:18.327Z",
+      "generation": 3
+    },
+    {
+      "seq": 16,
+      "machine": "item",
+      "subject": "146b99553791e958",
+      "from_state": "archived",
+      "to_state": "skipped",
+      "cause_code": "split",
+      "evidence": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/f18nDtY/integration/root/skipped/split/20261114-125120-146b9955/split.json",
+      "at": "2026-11-14T12:51:21.811Z",
+      "generation": 3
+    }
+  ],
+  "original_sha256": "146b99553791e9580654d390a4a629182a0507f369c3948bdb0eb3e53c801703",
+  "all_assertions": "passed"
+}

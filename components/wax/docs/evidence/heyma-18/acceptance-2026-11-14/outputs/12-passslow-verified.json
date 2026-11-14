@@ -1,0 +1,113 @@
+{
+  "before": [
+    {
+      "item_id": "d5622cb5c2dd71a3",
+      "sha256": "d5622cb5c2dd71a359de70892525e8471de646c1f03730159ce84d0f04528586",
+      "path": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/inbox/passslow-meeting.ogg",
+      "orig_name": "passslow-meeting.ogg",
+      "bytes": 7454778,
+      "duration_s": 2135.0065,
+      "origin": "inbox",
+      "state": "transcribed",
+      "first_seen": "2026-11-14T12:26:04.914Z",
+      "updated_at": "2026-11-14T12:26:11.822Z"
+    }
+  ],
+  "child_owner": {
+    "pid": 1810,
+    "ppid": 603,
+    "state": "S",
+    "starttick": "15373422",
+    "argv": "/bin/bash /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/fx-stamp /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/vault/20261114-072604-passslow-meeting.md "
+  },
+  "child_after": {
+    "pid": 1810,
+    "exited": true
+  },
+  "after": [
+    {
+      "item_id": "d5622cb5c2dd71a3",
+      "sha256": "d5622cb5c2dd71a359de70892525e8471de646c1f03730159ce84d0f04528586",
+      "path": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-122613-d5622cb5/passslow-meeting.ogg",
+      "orig_name": "passslow-meeting.ogg",
+      "bytes": 7454778,
+      "duration_s": 2135.0065,
+      "origin": "inbox",
+      "state": "skipped",
+      "first_seen": "2026-11-14T12:26:04.914Z",
+      "updated_at": "2026-11-14T12:26:14.141Z"
+    }
+  ],
+  "fence": [
+    {
+      "item_id": "d5622cb5c2dd71a3",
+      "split_id": "20261114-122613-d5622cb5",
+      "reason": "split",
+      "created_at": "2026-11-14T12:26:13.400Z"
+    }
+  ],
+  "passes": [
+    {
+      "item_id": "d5622cb5c2dd71a3",
+      "ep_slug": "fx-stamp",
+      "version": 1,
+      "state": "skipped",
+      "attempt": 1,
+      "command_id": null,
+      "updated_at": "2026-11-14T12:26:13.404Z",
+      "detail": "item halted by wax split while the pass ran",
+      "reason_code": "item_split",
+      "result": "{}",
+      "definition_id": "54b40426d10d3efa159294359512553dcf4994b69e1f06396a3d75ba37eeddee",
+      "exhausted_at": null
+    }
+  ],
+  "transitions": [
+    {
+      "seq": 23,
+      "machine": "item",
+      "subject": "d5622cb5c2dd71a3",
+      "from_state": null,
+      "to_state": "pending",
+      "cause_code": "discovered",
+      "evidence": "origin=inbox path=/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/inbox/passslow-meeting.ogg",
+      "at": "2026-11-14T12:26:04.914Z",
+      "generation": 4
+    },
+    {
+      "seq": 25,
+      "machine": "item",
+      "subject": "d5622cb5c2dd71a3",
+      "from_state": "pending",
+      "to_state": "archived",
+      "cause_code": "s3_verified",
+      "evidence": "2026-11-14/d5622cb5c2dd-passslow-meeting.ogg (7454778 B, size+md5)",
+      "at": "2026-11-14T12:26:08.590Z",
+      "generation": 5
+    },
+    {
+      "seq": 26,
+      "machine": "item",
+      "subject": "d5622cb5c2dd71a3",
+      "from_state": "archived",
+      "to_state": "transcribed",
+      "cause_code": "gate_passed",
+      "evidence": "ratio=1.0 -> 20261114-072604-passslow-meeting.md",
+      "at": "2026-11-14T12:26:11.822Z",
+      "generation": 5
+    },
+    {
+      "seq": 27,
+      "machine": "item",
+      "subject": "d5622cb5c2dd71a3",
+      "from_state": "transcribed",
+      "to_state": "skipped",
+      "cause_code": "split",
+      "evidence": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-122613-d5622cb5/split.json",
+      "at": "2026-11-14T12:26:14.141Z",
+      "generation": 5
+    }
+  ],
+  "original_sha256": "d5622cb5c2dd71a359de70892525e8471de646c1f03730159ce84d0f04528586",
+  "all_assertions": "passed"
+}

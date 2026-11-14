@@ -1,0 +1,34 @@
+{
+  "exit": 0,
+  "retained_splits_verified": [
+    {
+      "manifest": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-072614-7a4546/split.json",
+      "original_exists": true,
+      "original_and_part_hashes_match": true
+    },
+    {
+      "manifest": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-122613-d5622cb5/split.json",
+      "original_exists": true,
+      "original_and_part_hashes_match": true
+    },
+    {
+      "manifest": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-122549-133f633d/split.json",
+      "original_exists": true,
+      "original_and_part_hashes_match": true
+    },
+    {
+      "manifest": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-122601-8d9e5e1b/split.json",
+      "original_exists": true,
+      "original_and_part_hashes_match": true
+    },
+    {
+      "manifest": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-122535-c13fff42/split.json",
+      "original_exists": true,
+      "original_and_part_hashes_match": true
+    }
+  ],
+  "matrix_absolute_files_verified": 14,
+  "all_json_parsed": true,
+  "cleanup": [],
+  "production_contacted": false
+}

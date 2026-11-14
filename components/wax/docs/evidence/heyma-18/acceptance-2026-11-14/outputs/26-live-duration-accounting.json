@@ -1,0 +1,18 @@
+{
+  "command": "ffprobe -v error -show_entries format=duration -of csv=p=0 FILE (each file)",
+  "exit": 0,
+  "files": [
+    "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-072614-7a4546/20261114-072614-acceptance-live.ogg",
+    "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-072614-7a4546/20261114-072614-acceptance-live-part1of2.ogg",
+    "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/skipped/split/20261114-072614-7a4546/20261114-072614-acceptance-live-part2of2.ogg"
+  ],
+  "durations_s": [
+    1612.313,
+    640.0095,
+    972.3065
+  ],
+  "derived_sum_s": 1612.316,
+  "derived_minus_original_s": 0.0029999999999290594,
+  "source_sha256": "1de6e2c180984b754e8bf6cbb5aec74773810e8c819aea4f62ac12c63fe12a76",
+  "notes": "All recorded audio retained in full original; segment edges are codec-page approximate, not sample-accurate."
+}

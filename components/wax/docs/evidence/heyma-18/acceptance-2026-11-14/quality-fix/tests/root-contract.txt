@@ -1,0 +1,4 @@
+.............................                      [100%]
+29 passed, 22 subtests passed in 15.86s
+
+EXIT_CODE=0

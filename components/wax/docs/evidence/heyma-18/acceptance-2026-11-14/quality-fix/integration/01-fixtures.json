@@ -1,0 +1,134 @@
+{
+  "meeting_overrun_quiet": {
+    "name": "meeting_overrun_quiet",
+    "file": "meeting_overrun_quiet.ogg",
+    "scale": 1.0,
+    "seconds": 2135.0,
+    "timeline": [
+      [
+        "talk",
+        120.0
+      ],
+      [
+        "pause",
+        45.0
+      ],
+      [
+        "talk",
+        150.0
+      ],
+      [
+        "pause",
+        90.0
+      ],
+      [
+        "talk",
+        140.0
+      ],
+      [
+        "pause",
+        30.0
+      ],
+      [
+        "talk",
+        60.0
+      ],
+      [
+        "quiet",
+        1500.0
+      ]
+    ],
+    "room_dbfs": -62.0,
+    "speech_dbfs": -24.0,
+    "overrun_at_s": 635.0,
+    "bytes": 7454754,
+    "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+    "seed": 18,
+    "sha256": "c13fff428cf94cafda82098952c7d53515cc40a2ffb34b145e87f802fd515005"
+  },
+  "continuous_activity": {
+    "name": "continuous_activity",
+    "file": "continuous_activity.ogg",
+    "scale": 1.0,
+    "seconds": 1800.0,
+    "timeline": [
+      [
+        "talk",
+        1800.0
+      ]
+    ],
+    "room_dbfs": -62.0,
+    "speech_dbfs": -24.0,
+    "overrun_at_s": null,
+    "bytes": 7473131,
+    "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+    "seed": 18,
+    "sha256": "c8cbdbae79e11e1ad80b5eb6ebcd1e1472a6ef0a8c15b3d0d01aa75a0faade1c"
+  },
+  "all_quiet": {
+    "name": "all_quiet",
+    "file": "all_quiet.ogg",
+    "scale": 1.0,
+    "seconds": 1800.0,
+    "timeline": [
+      [
+        "quiet",
+        1800.0
+      ]
+    ],
+    "room_dbfs": -66.0,
+    "speech_dbfs": -24.0,
+    "overrun_at_s": null,
+    "bytes": 6319575,
+    "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+    "seed": 18,
+    "sha256": "1419d7f096abdca857074d209776124bfe6db5f220cb1b92ab3962dbc9ac9524"
+  },
+  "meeting_with_pauses": {
+    "name": "meeting_with_pauses",
+    "file": "meeting_with_pauses.ogg",
+    "scale": 1.0,
+    "seconds": 675.0,
+    "timeline": [
+      [
+        "talk",
+        120.0
+      ],
+      [
+        "pause",
+        45.0
+      ],
+      [
+        "talk",
+        150.0
+      ],
+      [
+        "pause",
+        90.0
+      ],
+      [
+        "talk",
+        140.0
+      ],
+      [
+        "pause",
+        30.0
+      ],
+      [
+        "talk",
+        60.0
+      ],
+      [
+        "quiet",
+        40.0
+      ]
+    ],
+    "room_dbfs": -62.0,
+    "speech_dbfs": -24.0,
+    "overrun_at_s": null,
+    "bytes": 2661358,
+    "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+    "seed": 18,
+    "sha256": "8f2de1bafde717c89f52a5b0bd994708d670ee432116dfa4524f8bdc06d0c130"
+  }
+}

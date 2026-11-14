@@ -1,0 +1,6 @@
+{
+  "command": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/py/bin/python3 /home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/bin/wax --json pipeline enable",
+  "exit": 0,
+  "stdout": "{\n  \"enabled\": true\n}\n",
+  "stderr": ""
+}

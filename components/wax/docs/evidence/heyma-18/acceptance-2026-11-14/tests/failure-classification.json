@@ -1,0 +1,170 @@
+[
+  {
+    "test": "ERROR at setup of TruncatedResponseTest.test_a_chain_of_short_bodies_fails_with_reason_code_first",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of TruncatedResponseTest.test_the_shared_provider_maps_a_short_body_too",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of TruncatedResponseTest.test_title_slug_falls_through_a_short_body_and_the_glm_route_serves",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of TruncatedResponseTest.test_title_slug_maps_a_garbled_status_line_to_a_reason_code",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of TruncatedResponseTest.test_title_slug_maps_a_short_body_to_a_reason_code",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of DeadlineTest.test_a_trickle_is_cut_off_by_the_deadline_and_the_next_member_serves",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of DeadlineTest.test_an_exhausted_budget_skips_members_and_still_reports_every_one",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of DeadlineTest.test_request_timeouts_shrink_to_what_is_left",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of DeadlineTest.test_the_runner_timeout_sets_the_budget",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of AnthropicServedTest.test_an_anthropic_served_by_fails_closed_without_falling_through",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of AnthropicServedTest.test_provenance_reads_the_gateway_headers",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of AnthropicServedTest.test_run_chain_refuses_an_anthropic_answer_and_an_anthropic_member",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of AnthropicServedTest.test_the_shared_chat_json_refuses_it",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "ERROR at setup of TicketableProvenanceTest.test_ticketable_records_served_by_and_falls_through_a_short_body",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "FetchRegistryTest.test_bad_json_and_bad_shape_are_invalid",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "FetchRegistryTest.test_client_errors_fail_fast",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "FetchRegistryTest.test_never_routes_loopback_through_an_environment_proxy",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "FetchRegistryTest.test_reads_the_snapshot_endpoint",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "FetchRegistryTest.test_refused_connection_is_unavailable",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "FetchRegistryTest.test_server_errors_are_retried_then_unavailable",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "FetchRegistryTest.test_slow_registry_times_out_as_unavailable",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "PortabilityTest.test_systemd_render_handles_spaces_and_special_characters",
+    "category": "systemd user manager unavailable"
+  },
+  {
+    "test": "ProjectExtractionTest.test_executable_runs_under_the_pass_interpreter",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "PostJsonTest.test_a_redirect_is_a_failure_and_the_key_never_follows_it",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "OldDaemonRefusalTest.test_a_live_old_socket_beats_a_mirror_that_claims_the_capability",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "OldDaemonRefusalTest.test_refuses_a_queued_item_too_because_the_old_worker_would_pick_it_up",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "OldDaemonRefusalTest.test_refuses_an_item_in_processing_and_changes_nothing",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "OldDaemonRefusalTest.test_the_cli_exits_2_with_the_message",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "UnaffectedPathsTest.test_a_finished_item_is_split_under_an_old_daemon",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "UnaffectedPathsTest.test_dry_run_still_works_under_an_old_daemon",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "UnaffectedPathsTest.test_no_boundary_is_reported_under_an_old_daemon",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "NewDaemonTest.test_a_daemon_that_advertises_the_fence_may_halt_an_item",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "LiveCaptureUnderAnOldDaemon.test_live_no_boundary_leaves_the_capture_recording",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "LiveCaptureUnderAnOldDaemon.test_live_split_stops_finalizes_and_holds_without_restarting",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "TicketableTest.test_executable_runs_under_the_pass_interpreter",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "EmbedTest.test_digest_mismatch_refuses_the_sweep",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "EmbedTest.test_non_unit_vector_is_renormalised_and_wrong_length_raises",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "EmbedTest.test_query_digest_mismatch_refuses_and_caches_nothing",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "EmbedTest.test_query_gets_the_instruction_prefix",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "EmbedTest.test_request_shape_and_batching",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "EmbedTest.test_sweep_stops_before_any_batch_when_the_gpu_is_busy",
+    "category": "socket EPERM"
+  },
+  {
+    "test": "EmbedTest.test_unload_asks_ollama_to_drop_the_model",
+    "category": "socket EPERM"
+  }
+]

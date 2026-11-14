@@ -1,0 +1,6 @@
+{
+  "command": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/py/bin/python3 /home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/bin/wax --json rec start --label acceptance-live",
+  "exit": 0,
+  "stdout": "{\n  \"pid\": 2062,\n  \"source\": \"heyma-validate-stub-source\",\n  \"started\": \"20261114-075146-e2efc9\",\n  \"target\": \"20261114-075146-acceptance-live.ogg\"\n}\n",
+  "stderr": ""
+}

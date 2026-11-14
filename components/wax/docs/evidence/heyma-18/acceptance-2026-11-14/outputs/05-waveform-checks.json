@@ -1,0 +1,6 @@
+{
+  "checks": "all assertions passed",
+  "detector_inputs": "waveform only",
+  "transcriber_started": false,
+  "passes_started": false
+}

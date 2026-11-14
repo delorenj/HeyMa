@@ -1,0 +1,7 @@
+{
+  "pid": 2060,
+  "ppid": 1,
+  "state": "R",
+  "starttick": "15373674",
+  "argv": "/usr/bin/ffmpeg -hide_banner -loglevel info -nostats -flush_packets 1 -readrate 20 -i /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/fixtures/live-source.ogg -af silencedetect=noise=-50dB:d=5 -ac 1 -ar 48000 -c:a libopus -b:a 32k -f segment -segment_time 10 -segment_format ogg -reset_timestamps 1 /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/root/stream/20261114-072614-7a4546.segs/seg-%05d.ogg "
+}

@@ -1,0 +1,12 @@
+{
+  "assertions": "passed",
+  "S3": "not contacted; local mc seam",
+  "production": "not contacted",
+  "daemon": {
+    "pid": 603,
+    "ppid": 8,
+    "state": "S",
+    "starttick": "15370386",
+    "argv": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/py/bin/python3 /home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL/integration/launch-waxd.py "
+  }
+}

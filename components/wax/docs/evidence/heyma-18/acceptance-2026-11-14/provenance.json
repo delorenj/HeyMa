@@ -1,0 +1,105 @@
+{
+  "base": "c47f22686f4f9d66616fe3b5328e9f22ca3eb7d5",
+  "code_under_test": "c47f22686f4f9d66616fe3b5328e9f22ca3eb7d5",
+  "branch": "fix/heyma-18-acceptance",
+  "runtime_source_changes": false,
+  "source_files": {
+    "components/wax/src/wax/archive.py": {
+      "sha256": "0ad46faf7567e02618e8f1e5c55d4cfb56f1858ed71efd910053fc4ea49c1258",
+      "base_blob": "b9c25cbbbea13bf7ce360da217b7bb8cc9afab73"
+    },
+    "components/wax/src/wax/split.py": {
+      "sha256": "b6097a78e33798106eda6352399ce5488cdba0ab898198bf419cc8b4543dd424",
+      "base_blob": "e74d60801b8e3bd039f134d8c918212e2eb1ec86"
+    },
+    "components/wax/src/wax/fence.py": {
+      "sha256": "3c9f90f4a1be3c67fcc2721ac7c05d129e8ec4adf4281fbcf95e99577a5b9796",
+      "base_blob": "534158d36237185a101c1a2fa61b09ee795a70f2"
+    },
+    "components/wax/src/wax/worker.py": {
+      "sha256": "c5bdb630dc20259e09b49c262a0f8e68d45a8f282a07a259d90ee76435bfebf1",
+      "base_blob": "787b57dd4f30c471699f2964095db8ef632ac2be"
+    },
+    "components/wax/src/wax/transcribe_adapter.py": {
+      "sha256": "3d53c57b11f99dde30f4f3b9be1ad3e3d4af2d7398f982c1f37bd264ffe67dde",
+      "base_blob": "195649dc3772a80cb16dba05da7e68b5d536f568"
+    },
+    "components/wax/src/wax/passes.py": {
+      "sha256": "9340ad98b7c1b960114c40446e9168455b0ccb1c85d6a44650ed08503cf8a282",
+      "base_blob": "d7fb9d56d139d9d66a162c5a90e644f6ab245390"
+    },
+    "components/wax/bin/wax": {
+      "sha256": "f463984738c903e52f55d276ba1be23336ff4089152a08b14d2493da463e6864",
+      "base_blob": "18055abe7ce635545da1eb05319021913c604b53"
+    },
+    "components/wax/bin/waxd": {
+      "sha256": "9c5faf68e449f45de2497035bf60ff48a9c6c2a1151f15ed18fa7c34580a13cb",
+      "base_blob": "97993d4a96a0e14a3843802849ce82efe55a953e"
+    },
+    "components/wax/tests/split_fixtures.py": {
+      "sha256": "58acb9dbe48fb6def2518a1d50218f6dead25069bbb3a2131c789f109ec5de87",
+      "base_blob": "2020c5c18df99474575b84fd78cc29afc9f495f3"
+    }
+  },
+  "reused_committed_proof": {
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/README.md": {
+      "commit": "5919928",
+      "blob": "cdb6bda22e5c535c0bf9dbee4bf4f928b4abcde1",
+      "sha256": "cbf3850e934cba4b43d86dfb53c7458892277731dbce2a389ca19589e5d3e2fa"
+    },
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/10-scenario-a-split-while-transcribing.txt": {
+      "commit": "5919928",
+      "blob": "b119216861bc101b5aea887fc57d2bdf755ec0da",
+      "sha256": "0ad0df0d69dbcaa4ddf98cc7b456c264ebd658ec54716239a9139759e126f9d8"
+    },
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/11-scenario-a-verify.txt": {
+      "commit": "5919928",
+      "blob": "34704ef6d1c9655af0183e096666d95c99fa939f",
+      "sha256": "a0f433fec34824e2f91904ab0e35d54758cfa9050c0db8ad02d2a277a9f06a45"
+    },
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/12-scenario-submit-s3-order.txt": {
+      "commit": "5919928",
+      "blob": "b68986867ebdb5d1971c6609b409da70b61c4c9b",
+      "sha256": "141bdb9229a72c0cf0e6432241eacdb34f8b3042acda820469eacef00933ec27"
+    },
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/20-scenario-b-late-transcript.txt": {
+      "commit": "5919928",
+      "blob": "70201b22e4e7394ff0503b7f224209991d9023fa",
+      "sha256": "1b624d965172c17efe6763272e7dfc244fabc73157da3f5187af3938e672782b"
+    },
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/30-scenario-d-pass-in-flight.txt": {
+      "commit": "5919928",
+      "blob": "650a34c067ae03697dee29642e8d90b477f03c62",
+      "sha256": "3aed0ebdfa80f058ea33d8b3115112af7bbdab8bc0d07a9a1929db6b7872ff93"
+    },
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/50-scenario-live-capture.txt": {
+      "commit": "5919928",
+      "blob": "510187fa5758752965f211e5d0db2d1e0c8d6c2d",
+      "sha256": "083ee3443e8880bed5b01808a707b5d3319dd6f003c8d5da5e42926aeea0c171"
+    },
+    "/home/delorenj/HeyMa/.worktrees/heyma-18-acceptance/components/wax/docs/evidence/heyma-18/validation-2026-11-13/71-pytest-split-suites.txt": {
+      "commit": "5919928",
+      "blob": "fabccb9b44452bc94aa21a8555159845394ce38d",
+      "sha256": "61baaacf5bb26d840b63f029b00342db34a0592547eeb8439a22aa8e80f57977"
+    }
+  },
+  "schema_test_inputs": {
+    "/home/delorenj/code/33GOD/bloodbank/schemas/bloodbank/audio/intake.detected.json": {
+      "isolated_copy": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/home/code/33GOD/bloodbank/schemas/bloodbank/audio/intake.detected.json",
+      "sha256": "bf18f60198e11a2d203dfe7e2898476a67665ef873182a49e2d501f6353b3aab"
+    },
+    "/home/delorenj/code/33GOD/bloodbank/schemas/_common/cloudevent_base.v1.json": {
+      "isolated_copy": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/home/code/33GOD/bloodbank/schemas/_common/cloudevent_base.v1.json",
+      "sha256": "93b50f2071b4619c4b4aa592ab11b1699c9ff238685dc9752b78a35a11a1a0ea"
+    },
+    "/home/delorenj/code/33GOD/bloodbank/schemas/_common/types.v1.json": {
+      "isolated_copy": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN/home/code/33GOD/bloodbank/schemas/_common/types.v1.json",
+      "sha256": "b189bace8456645becaf9e137bc4df69c63f7d214ecb26001b8b8d495aa35216"
+    }
+  },
+  "runs": {
+    "initial": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/heyma18-native-20261114-FCDzPS",
+    "tests": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18OFmN",
+    "acceptance": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/a185BcL"
+  }
+}
