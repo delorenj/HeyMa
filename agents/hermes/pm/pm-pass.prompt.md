@@ -6,7 +6,8 @@ charter (your system prompt) outranks this file. This file only says what one pa
 
 ## How this pass works (interval-driver: the driver holds the context and does the writes)
 
-- **The work list is the monitor diff** injected above: tickets whose lane changed, whose count
+- **The work list is the monitor diff** injected above: tickets whose lane or `review`/`held`
+  flag changed (Krebs lifecycle v2: five stock lanes, meaning in labels), whose count
   of operator comments waiting on you changed, whose claim went stale (`agent:working` with no
   activity in 48h), and `wax doctor` probes that started or stopped FAILING. The date line
   makes the day's first pass review the queue once.
@@ -40,11 +41,13 @@ charter (your system prompt) outranks this file. This file only says what one pa
     "roadmap": "# PM roadmap ...the whole new roadmap, under 40 lines...",
     "note": "one line for the pass history"}
    ```
-   Lanes are `Backlog`, `Todo`, `In Progress`. `release` drops the claim and lands the ticket
-   in Todo, where it gets dispatched: give `"lane": "Backlog"` to park it instead. At most 6
-   writes; comments under 400 characters. Omit `roadmap` on a pass where nothing changed.
+   Ops are `comment`, `move`, `release`, `create` and `close`. Lanes are `Backlog`, `Todo`,
+   `In Progress`. `release` drops the claim and lands the ticket in Todo, where Krebs
+   dispatches it again once it is triaged and a slot frees: give `"lane": "Backlog"` to park it
+   instead. At most 6 writes; comments under 400 characters. Omit `roadmap` on a pass where
+   nothing changed.
 3. **One `terminal`** call: `python3 /home/delorenj/HeyMa/agents/hermes/pm/pm-pass.py --apply`.
-   The driver takes the board-driver lease (and writes nothing if Momo, a worker or another desk
+   The driver takes the board-driver lease (and writes nothing if a worker or another desk
    holds it), adds the `[pm]` tag, skips a comment you already posted, releases the lease and
    writes your roadmap. Its output is your read-back. Don't check the board afterwards.
 
@@ -52,23 +55,37 @@ Then your final answer. Nothing else: no scripts, heredocs or extra reads.
 
 ## What to act on, in order (stop at 6 writes)
 
-1. **Operator comments waiting on you.** Answer each in one comment: the decision, the lane
+1. **Verdicts.** HeyMa has no Launch Director, so you give the verdict. A ticket handed back
+   for review is In Progress with `lifecycle:review` (`review` in the snapshot): check its
+   evidence comment against its acceptance criteria. Met: `close` it with the evidence in the
+   text (a doctor-failure ticket is met only when the snapshot shows its probe passing). Not
+   met: `move` it to Todo with "returned: <criterion>" (it keeps `lifecycle:triaged`; Krebs
+   drops the review label and re-dispatches it when a slot frees). You never verify by
+   running code or `wax doctor` yourself; the snapshot and the evidence comment are the proof,
+   and missing evidence is UNKNOWN, never a pass.
+2. **Operator comments waiting on you.** Answer each in one comment: the decision, the lane
    change it implies (as a `move`), or the one question you need answered. Never invent a fact
    about the operator (names, people, preferences); ask instead.
-2. **A doctor probe that started FAILING.** If no open ticket covers it, `create` one with
+3. **A doctor probe that started FAILING.** If no open ticket covers it, `create` one with
    priority `high`, `key` `doctor:<probe-slug>`, the probe's detail and fix line in the
    description, and "acceptance: `wax doctor` shows the probe passing". If one is open,
    comment on it only if the detail changed in substance. A probe that stopped failing: comment
-   on its ticket that it passes now (the operator or a worker closes it; you never close).
+   on its ticket that it passes now (the verdict step closes it once the worker hands it back).
    WARN probes are context, never a ticket on their own.
-3. **Stale `agent:working`** whose worker your roadmap doesn't show as alive: `release` (to
+4. **Stale `agent:working`** whose worker your roadmap doesn't show as alive: `release` (to
    Backlog if it was in Backlog). Never release a ticket your roadmap shows as actively worked.
-4. **Queue order**, on the day's first pass only: owner-filed bugs and doctor failures on top
+5. **Queue order**, on the day's first pass only: owner-filed bugs and doctor failures on top
    of Todo, then the rest. Move at most 2 tickets up from Backlog per pass, and only ones with
-   acceptance criteria.
+   acceptance criteria. Entering Todo starts a triage turn; Krebs dispatches triaged Todo
+   tickets in board order into the project's two implementation slots, so the Todo order you
+   keep is the dispatch order.
+6. **Held tickets.** A ticket with `lifecycle:needs-input` or `lifecycle:blocked` (`held` in
+   the snapshot) waits on a person or a blocker and holds no slot. If the roadmap or an
+   operator comment answers it, relay the answer in one comment; otherwise leave it.
 
-**Not this pass:** dispatching workers, merging, deploying, editing code or config, restarting
-`waxd`, closing tickets. Workers pick up from Todo through their existing paths.
+**Not this pass:** dispatching workers (only `krebs tick` dispatches), merging, deploying,
+editing code or config, restarting `waxd`, closing a ticket that has not been handed back for
+review.
 
 ## Finish
 

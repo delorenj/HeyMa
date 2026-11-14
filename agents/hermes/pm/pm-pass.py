@@ -5,7 +5,7 @@ An interval driver (the interval-driver skill: ~/.agents/skills/interval-driver)
 the model, holds the context:
 
   pm-pass.py --monitor   stable snapshot: one line per open HEYMA ticket (lane, owner comments
-                         waiting on the PM, stale claim) plus one line per FAILING `wax doctor`
+                         waiting on the PM, review/held flags, stale claim) plus one line per FAILING `wax doctor`
                          probe (name only). Hermes hashes it; unchanged = the agent never starts.
   pm-pass.py --brief     the pass contract (pm-pass.prompt.md), the PM's roadmap
                          (runtime/pm-roadmap.md), the waiting owner comments and the failing and
@@ -69,6 +69,8 @@ def ticket(ref: str) -> dict:
         "group": t.get("state_group"),
         "pri": t.get("priority") or "none",
         "working": "agent:working" in labels,
+        "review": "lifecycle:review" in labels,
+        "held": any(l in labels for l in ("lifecycle:needs-input", "lifecycle:blocked", "agent:failed")),
         "updated": datetime.fromisoformat(t["updated_at"]),
         "waiting": waiting,
     }
@@ -97,7 +99,10 @@ def monitor() -> None:
     print(f"date {NOW.astimezone(ET):%F}")
     try:
         for r in rows():
-            print(f"{r['ref']}|{r['lane']}|owner-waiting:{len(r['waiting'])}|{'stale-claim' if stale(r) else '-'}")
+            # review/held are Krebs lifecycle v2 labels (they replace the QA and Needs Attention
+            # lanes), so a handback or a hold wakes the PM the way a lane move did.
+            tags = [t for t, on in (("review", r["review"]), ("held", r["held"])) if on]
+            print(f"{r['ref']}|{r['lane']}|{','.join(tags) or '-'}|owner-waiting:{len(r['waiting'])}|{'stale-claim' if stale(r) else '-'}")
     except Exception:
         print("board UNAVAILABLE")
     try:
@@ -129,6 +134,8 @@ def brief() -> None:
     print("\n## Open tickets (ref | lane | priority | age since update | name)")
     for r in rs:
         flag = " STALE-CLAIM" if stale(r) else (" agent:working" if r["working"] else "")
+        flag += " REVIEW(awaiting your verdict)" if r["review"] else ""
+        flag += " HELD(needs-input/blocked/failed)" if r["held"] else ""
         print(f"- {r['ref']} | {r['lane']} | {r['pri']} | {age(r['updated'])}{flag} | {r['name'][:90]}")
     if not rs:
         print("none")
@@ -156,7 +163,7 @@ def apply() -> None:
     os.execvp(sys.executable, [
         sys.executable, str(Path.home() / ".agents/skills/interval-driver/scripts/px-apply.py"),
         str(RT / "pm-pass.json"), "--cwd", str(ROOT), "--tag", "[pm]",
-        "--ops", "comment,move,release,create", "--max", "6",
+        "--ops", "comment,move,release,create,close", "--max", "6",
         "--lease", str(RT / "wip-driver.lock"), "--owner", "hermes:heyma-pm:pm-pass",
         "--roadmap", str(RT / "pm-roadmap.md")])
 
