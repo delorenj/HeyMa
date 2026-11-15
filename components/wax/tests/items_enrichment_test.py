@@ -62,7 +62,7 @@ class ItemEnrichmentTest(unittest.TestCase):
         self.assertEqual(status["plan_id"], "plan-1")
         self.assertEqual(status["exhausted"], ["voice-id"], "a pass skipped after it was exhausted is not stuck")
         self.assertEqual([p["ep_slug"] for p in status["passes"]], ["diarization", "title-slug", "voice-id"])
-        self.assertEqual(status["passes"][1], {"ep_slug": "voice-id", "state": "failed", "version": 2, "attempt": 3,
+        self.assertEqual(status["passes"][2], {"ep_slug": "voice-id", "state": "failed", "version": 2, "attempt": 3,
                                                "updated_at": NOW, "reason_code": "provider_error"})
 
     def test_completion_row_is_the_authority(self):
