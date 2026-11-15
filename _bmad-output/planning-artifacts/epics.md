@@ -105,6 +105,10 @@ Wax users receive truthful default diarization and can discover, inspect, enqueu
 
 **FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7
 
+### Epic 2: Wax on macOS (Apple silicon)
+
+Wax records, transcribes and diarizes meetings on a Mac with no traffic to big-chungus, installed from `delorenj/tap/wax`. Added 2026-11-15; follows the Vinyl transcribe-cpp epic (`components/vinyl/_bmad-output/planning-artifacts/epics.md`). Parent: 33GOD I-6.2.
+
 ## Epic 1: Trustworthy, Operator-Controlled Enrichment
 
 Wax users receive truthful default diarization and can discover, inspect, enqueue, and observe enrichment for any Wax Item through one reusable EP model.
@@ -338,3 +342,35 @@ So that enrichment runs durably in the background and survives CLI or daemon res
 **Given** concurrent enqueue, claim, restart, failure, retry, and version-upgrade tests under isolated roots
 **When** the suite runs
 **Then** it proves single execution, durable recovery, correct exit codes and JSON, current-state consistency, append-only attempt history, and artifact preservation.
+
+---
+
+## Epic 2: Wax on macOS (Apple silicon)
+
+Starts after Vinyl Epic 2 story 2.5 (real-Mac dictation acceptance). Uses the same transcribe-cpp engine Vinyl adopts (Vinyl Epic 1). Evidence: `components/vinyl/_bmad-output/planning-artifacts/research/orca-2026-11-speech-uplift.md`.
+
+### Story 2.1: Wax portability shims for macOS
+
+**Given** a real Mac **When** the wax unit suite runs **Then** it passes, with:
+- `rename.py` using `renamex_np(RENAME_EXCL)` keyed on `sys.platform == "darwin"` (today it keys on machine name: it raises on `arm64` and issues the wrong syscall on Intel Macs, src/wax/rename.py:21-38);
+- `procutil.py` using psutil/sysctl instead of `/proc` (:14-40);
+- `capture.py` not calling `systemd-run` on darwin;
+- `mc` located on PATH instead of `/usr/local/bin/mc` (archive.py:51; mc is deprecated in Homebrew, disabled 2027-07-17, so pick a replacement source);
+- notifications via osascript.
+
+### Story 2.2: `bin/transcribe` local mode on macOS
+
+**Given** macOS `/bin/bash` 3.2 **When** `bin/transcribe` runs **Then** it needs no `${1^^}` or GNU `stat -c`; `TRANSCRIBE_HOST` is a hostname, not the hard-coded 192.168.1.12; a local mode transcribes on the Mac with no scp to big-chungus (bin/transcribe:5-6,137-163).
+
+### Story 2.3: Mac capture and its permission prompts
+
+**Given** a Mac **When** a 30-minute call is recorded **Then** mic capture works via `ffmpeg -f avfoundation`, system audio uses the owner-chosen path (**decision: ScreenCaptureKit or BlackHole**), TCC grants are on the real installed process (PLAN.md W8-2), and the recording archives to S3.
+
+### Story 2.4: On-device ASR and diarization on Apple silicon
+
+**Given** a recorded meeting on a Mac **When** wax processes it **Then** faster-whisper/CUDA is replaced by transcribe-cpp (Whisper large-v3-turbo or Parakeet on Metal) keeping wax's segment format and duration gate; diarization uses transcribe-cpp Sortformer 4spk v2.1 instead of NeMo (diarization_sortformer.py:24) with DER checked against real meetings; voiceprints use a separate runtime (transcribe-cpp has no speaker-embedding API and no TitaNet GGUF; e.g. the sherpa-onnx TitaNet-small path `vinyl live` uses, voiceprint.py:10) and are re-enrolled on the Mac.
+
+### Story 2.5: `Formula/wax.rb` with a launchd service (homebrew-tap)
+
+**Given** the tap **When** `brew install delorenj/tap/wax` runs **Then** it depends on ffmpeg and python@3.13 with its own venv, its `service do` runs waxd, it has no GTK dependency (tray state moves to HeyMa.app), and `brew test` imports wax and runs `waxd --help`. Real-Mac acceptance: one meeting recorded, transcribed and diarized with no traffic to big-chungus.
+
