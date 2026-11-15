@@ -34,7 +34,8 @@ class ItemEnrichmentTest(unittest.TestCase):
                      (self.item, "0" * 64, "/nowhere/a.ogg", "enrichment_pending", NOW, NOW))
         conn.execute("INSERT INTO processing_plans(item_id,plan_id,definitions,created_at) VALUES(?,?,?,?)",
                      (self.item, "plan-1", "{}", NOW))
-        for slug, state, exhausted in (("title-slug", "completed", None), ("voice-id", "failed", NOW)):
+        for slug, state, exhausted in (("title-slug", "completed", None), ("voice-id", "failed", NOW),
+                                       ("diarization", "skipped", NOW)):
             conn.execute("INSERT INTO passes(item_id,ep_slug,version,state,attempt,updated_at,reason_code,exhausted_at)"
                          " VALUES(?,?,?,?,?,?,?,?)", (self.item, slug, 2, state, 3, NOW,
                                                       "provider_error" if state == "failed" else None, exhausted))
@@ -59,8 +60,8 @@ class ItemEnrichmentTest(unittest.TestCase):
         self.assertIsNone(status["completion"])
         self.assertEqual(status["state"], "enrichment_pending")
         self.assertEqual(status["plan_id"], "plan-1")
-        self.assertEqual(status["exhausted"], ["voice-id"])
-        self.assertEqual([p["ep_slug"] for p in status["passes"]], ["title-slug", "voice-id"])
+        self.assertEqual(status["exhausted"], ["voice-id"], "a pass skipped after it was exhausted is not stuck")
+        self.assertEqual([p["ep_slug"] for p in status["passes"]], ["diarization", "title-slug", "voice-id"])
         self.assertEqual(status["passes"][1], {"ep_slug": "voice-id", "state": "failed", "version": 2, "attempt": 3,
                                                "updated_at": NOW, "reason_code": "provider_error"})
 

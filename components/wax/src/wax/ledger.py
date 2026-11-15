@@ -583,7 +583,7 @@ def item_enrichment(item_id: str) -> Optional[dict[str, Any]]:
     plan's version; a completed plan is history, so the newest row is the one
     reported. `items.state == 'complete'` also counts, for items finished before
     completions existed. `exhausted` names the passes the retry sweep gave up on
-    (exhausted_at set): they will not finish without a human, so a caller waiting
+    (exhausted_at set, and not since completed or skipped): they will not finish without a human, so a caller waiting
     for completion should stop waiting on them. Returns None for an unknown item.
     The pilot harvest worker polls this before it runs `px harvest`.
     """
@@ -602,7 +602,9 @@ def item_enrichment(item_id: str) -> Optional[dict[str, Any]]:
         "enrichment_complete": done is not None or item["state"] == "complete",
         "completion": dict(done) if done else None,
         "plan_id": plan["plan_id"] if plan else None,
-        "exhausted": [r["ep_slug"] for r in rows if r["exhausted_at"]],
+        # a pass that later completed or was skipped keeps its old exhausted_at; it is not stuck
+        "exhausted": [r["ep_slug"] for r in rows
+                      if r["exhausted_at"] and r["state"] not in ("completed", "skipped")],
         "passes": [{k: r[k] for k in ("ep_slug", "state", "version", "attempt", "updated_at", "reason_code")}
                    for r in rows],
     }
