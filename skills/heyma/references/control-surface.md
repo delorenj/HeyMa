@@ -8,6 +8,7 @@ Wax owns every artifact mutation, receipt, retry and schedule. The control surfa
 |---|---|---|---|
 | Holocene Wax tab | `wax --json catalog` only | nothing | Read-only. Allowlist projection of the catalog |
 | Holocene Transcripts | `wax --json transcripts browse`, `wax --json transcripts search --lexical` | nothing | The `ro` Postgres role; no bodies |
+| pilot harvest worker (`px harvest worker`, `pilot-harvest-worker.service`) | `wax --json items --id <item_id>` | nothing in Wax (it runs `px harvest`; Wax writes harvest tables only via `wax transcripts link-harvest`) | Waits for `enrichment_complete` before harvesting, on `bloodbank.audio.harvest.start` fired by the Holocene Transcripts tab's Harvest button |
 | n8n authoring workflows | catalog (live pass options) | graph authoring only | **Unpublished** authoring graphs; never schedulers |
 | n8n adapter nodes | CLI output | manual or preview runs, explicit compiles | Absolute Wax CLI; never executes pass scripts |
 | Tray and HeyMa window | `var/state.json` | CLI actions | Own no state |

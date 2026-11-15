@@ -575,6 +575,41 @@ def counts(live_only: bool = False) -> dict[str, int]:
     return out
 
 
+def item_enrichment(item_id: str) -> Optional[dict[str, Any]]:
+    """One item's enrichment status, read-only: the read behind `wax --json items --id`.
+
+    The authority for "every enrichment pass is done" is the `completions` row
+    finalize() writes once every planned pass is completed or skipped at the
+    plan's version; a completed plan is history, so the newest row is the one
+    reported. `items.state == 'complete'` also counts, for items finished before
+    completions existed. `exhausted` names the passes the retry sweep gave up on
+    (exhausted_at set, and not since completed or skipped): they will not finish without a human, so a caller waiting
+    for completion should stop waiting on them. Returns None for an unknown item.
+    The pilot harvest worker polls this before it runs `px harvest`.
+    """
+    conn = connect()
+    item = conn.execute("SELECT item_id, state FROM items WHERE item_id=?", (item_id,)).fetchone()
+    if item is None:
+        return None
+    done = conn.execute("SELECT plan_id, event_id, created_at FROM completions WHERE item_id=? "
+                        "ORDER BY created_at DESC LIMIT 1", (item_id,)).fetchone()
+    plan = conn.execute("SELECT plan_id FROM processing_plans WHERE item_id=?", (item_id,)).fetchone()
+    rows = conn.execute("SELECT ep_slug, state, version, attempt, updated_at, reason_code, exhausted_at "
+                        "FROM passes WHERE item_id=? ORDER BY ep_slug", (item_id,)).fetchall()
+    return {
+        "item_id": item["item_id"],
+        "state": item["state"],
+        "enrichment_complete": done is not None or item["state"] == "complete",
+        "completion": dict(done) if done else None,
+        "plan_id": plan["plan_id"] if plan else None,
+        # a pass that later completed or was skipped keeps its old exhausted_at; it is not stuck
+        "exhausted": [r["ep_slug"] for r in rows
+                      if r["exhausted_at"] and r["state"] not in ("completed", "skipped")],
+        "passes": [{k: r[k] for k in ("ep_slug", "state", "version", "attempt", "updated_at", "reason_code")}
+                   for r in rows],
+    }
+
+
 def inbox_counts() -> dict[str, int]:
     """Ledger states for files physically present in the live inbox."""
     from . import state as state_mod

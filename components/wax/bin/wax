@@ -2706,7 +2706,9 @@ def main() -> int:
 
     h = sub.add_parser("history", help="append-only transition log", parents=[common])
     h.add_argument("-n", type=int, default=20); h.add_argument("--machine", choices=["stream", "inbox", "item"])
-    sub.add_parser("items", help="ledger item states", parents=[common])
+    its = sub.add_parser("items", help="ledger item states; --id: one item's enrichment status", parents=[common])
+    its.add_argument("--id", dest="item_id", default=None,
+                     help="one item: state, enrichment_complete, completion, exhausted and pass rows")
     sub.add_parser("queue", help="tray queue rows", parents=[common]).add_argument("--clear-completed", action="store_true")
     sk = sub.add_parser("skip", help="preserve a queued item without processing it", parents=[common])
     sk.add_argument("item_id")
@@ -3162,7 +3164,15 @@ def main() -> int:
         return 0
 
     if args.cmd == "items":
-        _emit(ledger.counts(), J)
+        if args.item_id is None:
+            _emit(ledger.counts(), J)
+            return 0
+        # Read-only status of one item; the pilot harvest worker polls it before `px harvest`.
+        status = ledger.item_enrichment(args.item_id)
+        if status is None:
+            _emit({"error": "unknown_item", "item_id": args.item_id}, True)
+            return 1
+        _emit(status, True)
         return 0
 
     if args.cmd == "queue":
