@@ -379,6 +379,73 @@ class PruneSweepTest(_Vault):
             prune.prune()
 
 
+TWIN_A, TWIN_B, OTHER = ("aaaaaaaa-0000-11f1-0000-000000000001", "bbbbbbbb-0000-11f1-0000-000000000002",
+                         "cccccccc-0000-11f1-0000-000000000003")
+
+
+class DuplicateCallTest(_Vault):
+    """A Telnyx twin: one call recorded twice, in two sessions; only one session has legs."""
+
+    def recording(self, leg, session, started, millis, legs=True):
+        from wax import calls
+        conn = calls.db()
+        conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,channels,started_at,"
+                     "duration_millis,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     (f"rec-{leg}", "trunk", leg, session, "dual", started, millis, "{}", started))
+        if legs:
+            conn.execute("INSERT INTO call_legs(call_leg_id,call_session_id,started_at,raw,updated_at) "
+                         "VALUES(?,?,?,?,?)", (f"cdr-{leg}", session, started, "{}", started))
+
+    def call_note(self, name, item, leg):
+        path = self.note(name, REAL, item=item)
+        self.conn.execute("UPDATE items SET orig_name=? WHERE item_id=?",
+                          (f"telnyx-2026-11-11-{leg}-1794431481.mp3", item))
+        return path
+
+    def pair(self):
+        self.recording(TWIN_B, "session-kept", "2026-11-11T21:11:30Z", 59780)
+        self.recording(TWIN_A, "session-legless", "2026-11-11T21:11:31Z", 59663, legs=False)
+        kept = self.call_note("kept.md", "kept0001", TWIN_B)
+        twin = self.call_note("twin.md", "twin0001", TWIN_A)
+        return kept, twin
+
+    def test_the_twin_is_pruned_and_the_note_with_the_call_record_is_kept(self):
+        kept, twin = self.pair()
+        out = prune.prune(apply=True, sync_store=False)
+        self.assertEqual(out["by_reason"], {"duplicate-call": 1})
+        self.assertTrue(kept.is_file())
+        self.assertFalse(twin.exists())
+        self.assertTrue(self.trashed("twin.md").is_file())
+        self.assertIn("same call as kept.md", prune.read_manifest()[-1]["detail"])
+        self.assertEqual(prune.prune(apply=True, sync_store=False)["by_reason"], {}, "idempotent")
+
+    def test_a_twin_whose_kept_note_is_gone_is_the_only_copy_and_stays(self):
+        kept, twin = self.pair()
+        kept.unlink()
+        self.assertEqual(prune.prune()["by_reason"], {})
+        self.conn.execute("UPDATE transcripts SET pruned_at='2026-11-12T00:00:00Z' WHERE item_id='kept0001'")
+        kept.write_text("x")
+        self.assertEqual(prune.prune()["by_reason"], {}, "a pruned kept note does not count")
+
+    def test_ambiguous_or_distant_recordings_are_not_twins(self):
+        from wax import calls
+        _, twin = self.pair()
+        self.recording(OTHER, "session-other", "2026-11-11T21:11:29Z", 59700)  # a second candidate
+        self.assertIsNone(calls.twin_of(f"telnyx-2026-11-11-{TWIN_A}-1794431481.mp3"))
+        self.assertEqual(prune.prune()["by_reason"], {})
+        self.conn.execute("DELETE FROM call_recordings WHERE call_leg_id=?", (OTHER,))
+        self.conn.execute("UPDATE call_recordings SET duration_millis=50000 WHERE call_leg_id=?", (TWIN_B,))
+        self.assertIsNone(calls.twin_of(f"telnyx-2026-11-11-{TWIN_A}-1794431481.mp3"), "lengths differ")
+        self.assertIsNone(calls.twin_of(f"telnyx-2026-11-11-{TWIN_B}-1794431481.mp3"),
+                          "a recording whose session has legs is never the twin")
+
+    def test_reason_is_opt_out(self):
+        self.pair()
+        reasons = [r for r in prune.DEFAULT_REASONS if r != "duplicate-call"]
+        self.assertIn("duplicate-call", prune.DEFAULT_REASONS)
+        self.assertEqual(prune.prune(reasons=reasons)["by_reason"], {})
+
+
 class PrunedLedgerTest(_Vault):
     def test_pruned_items_leave_every_failure_surface(self):
         self.note("vm.md", JUNK, item="aaaa1111")

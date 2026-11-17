@@ -860,6 +860,53 @@ def call_for_audio(name: str, *, fetch: bool = False) -> Optional[dict[str, Any]
                         "record_verb": ident.get("record_verb", False)}
 
 
+# A legless twin: Telnyx sometimes records one call twice, as two trunk recordings in two
+# sessions that start within a second of each other with the same length. Only one session
+# gets detail records (legs, a `calls` row); the other's recording is the same conversation.
+TWIN_START_S = 2.0
+TWIN_DURATION_MS = 1000
+
+
+def twin_of(name: str) -> Optional[dict[str, Any]]:
+    """The recording a Telnyx trunk file duplicates, or None. Read-only, never fetches.
+
+    A twin is a trunk recording whose own session has no legs, and exactly one other trunk
+    recording (a different leg, in a session that has legs) starts within TWIN_START_S and
+    differs in length by at most TWIN_DURATION_MS. No match, or more than one, is None:
+    an ambiguous twin is never attached to an arbitrary call.
+    """
+    ident = audio_identity(name)
+    if not ident or ident.get("source") != "telnyx" or not ident.get("call_leg_id"):
+        return None
+    conn = db()
+    rec = conn.execute("SELECT * FROM call_recordings WHERE call_leg_id=? AND kind='trunk' "
+                       "AND started_at IS NOT NULL AND duration_millis IS NOT NULL", (ident["call_leg_id"],)).fetchone()
+    if rec is None or not rec["call_session_id"]:
+        return None
+    if conn.execute("SELECT 1 FROM call_legs WHERE call_session_id=? LIMIT 1", (rec["call_session_id"],)).fetchone():
+        return None
+    start = _ts(rec["started_at"])
+    if start is None:
+        return None
+    lo, hi = _iso(start - timedelta(seconds=TWIN_START_S)), _iso(start + timedelta(seconds=TWIN_START_S))
+    found = []
+    for other in conn.execute(
+            "SELECT r.* FROM call_recordings r WHERE r.kind='trunk' AND r.call_leg_id!=? AND r.started_at BETWEEN ? AND ? "
+            "AND r.duration_millis IS NOT NULL AND ABS(r.duration_millis-?)<=? "
+            "AND EXISTS (SELECT 1 FROM call_legs l WHERE l.call_session_id=r.call_session_id)",
+            (ident["call_leg_id"], lo, hi, rec["duration_millis"], TWIN_DURATION_MS)):
+        found.append(other)
+    if len(found) != 1:
+        return None
+    other = found[0]
+    call = conn.execute("SELECT * FROM calls WHERE call_session_id=?", (other["call_session_id"],)).fetchone()
+    return {"call_leg_id": ident["call_leg_id"], "call_session_id": rec["call_session_id"],
+            "twin_of_leg": other["call_leg_id"], "twin_of_session": other["call_session_id"],
+            "call": dict(call) if call else None,
+            "start_delta_s": abs((_ts(other["started_at"]) - start).total_seconds()),
+            "duration_delta_ms": abs(other["duration_millis"] - rec["duration_millis"])}
+
+
 def remote_name(call: dict[str, Any], *, refresh_stale: bool = True) -> Optional[str]:
     """The far party's name: the contact directory first (canonical), then the row's CNAM name."""
     return (contacts.name_for(call.get("remote_number"), refresh_stale=refresh_stale)

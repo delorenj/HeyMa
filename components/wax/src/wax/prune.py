@@ -28,6 +28,9 @@ wins:
                 ``no_content``, on a short note
 ``too-short``   fewer than ``min_words`` spoken words
 ``call-noise``  a phone call with at most ``CALL_NOISE_MAX_WORDS`` spoken words
+``duplicate-call`` (ledger, not text) a Telnyx twin recording of a call whose
+                other recording already has a published note
+                (``calls.twin_of``); the note with the call record is kept
 ``body-lost``   (reported, not pruned by default, checked first) a body far
                 smaller than the word count recorded for it (the note's
                 ``word-count`` or the ledger's): a clobbered transcript
@@ -74,7 +77,7 @@ from . import documents, finalize, frontmatter, hygiene, ledger, operations, pat
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
-REASONS = ("empty", "voicemail", "no-content", "too-short", "call-noise", "body-lost")
+REASONS = ("empty", "voicemail", "no-content", "too-short", "call-noise", "duplicate-call", "body-lost")
 # body-lost is reported, never pruned unless asked for: the note once had a
 # real transcript (its word-count says so) and something wiped the body. That
 # is a bug to recover from (the store keeps every version), not junk.
@@ -370,13 +373,13 @@ def _transcript_item(path: Path, fm: dict[str, Any]) -> Optional[dict[str, Any]]
     """
     conn = ledger.connect()
     rows = conn.execute(
-        "SELECT t.item_id, t.md_path, t.pruned_at, t.word_count, i.state FROM transcripts t "
+        "SELECT t.item_id, t.md_path, t.pruned_at, t.word_count, i.state, i.orig_name FROM transcripts t "
         "LEFT JOIN items i USING(item_id) WHERE t.md_path=?", (str(path),)).fetchall()
     if not rows:
         claimed = fm.get(frontmatter.ITEM_KEY)
         if isinstance(claimed, str) and claimed:
             rows = conn.execute(
-                "SELECT t.item_id, t.md_path, t.pruned_at, t.word_count, i.state FROM transcripts t "
+                "SELECT t.item_id, t.md_path, t.pruned_at, t.word_count, i.state, i.orig_name FROM transcripts t "
                 "LEFT JOIN items i USING(item_id) WHERE t.item_id=?", (claimed,)).fetchall()
             rows = [r for r in rows if r["md_path"]
                     and os.path.realpath(r["md_path"]) == os.path.realpath(path)]
@@ -385,6 +388,44 @@ def _transcript_item(path: Path, fm: dict[str, Any]) -> Optional[dict[str, Any]]
     claimed = fm.get(frontmatter.ITEM_KEY)
     best = next((r for r in rows if r["item_id"] == claimed), rows[0])
     return dict(best)
+
+
+def duplicate_of(path: Path, item: Optional[dict[str, Any]]) -> Optional[str]:
+    """Why this note is a second copy of a call, or None.
+
+    The note's recording must be a Telnyx twin (``calls.twin_of``), and the
+    other recording must have its own published note, a different file that
+    still exists: the twin is pruned only when the same conversation is kept.
+    """
+    if not item or not item.get("orig_name"):
+        return None
+    from . import calls  # calls is a heavy module; only this reason needs it
+    try:
+        twin = calls.twin_of(item["orig_name"])
+    except Exception as exc:  # noqa: BLE001 - a broken call log never prunes anything
+        log.warning("prune: twin check for %s failed: %s: %s", item.get("item_id"), type(exc).__name__, exc)
+        return None
+    if not twin:
+        return None
+    leg = twin["twin_of_leg"]
+    for row in ledger.connect().execute(
+            "SELECT t.md_path FROM transcripts t JOIN items i USING(item_id) "
+            "WHERE i.orig_name LIKE ? AND t.pruned_at IS NULL AND t.md_path IS NOT NULL", (f"telnyx-%-{leg}-%",)):
+        kept = Path(row["md_path"])
+        if os.path.realpath(kept) != os.path.realpath(path) and kept.is_file():
+            return f"same call as {kept.name} (Telnyx twin of leg {leg[:8]})"
+    return None
+
+
+def _verdict(path: Path, text: str, item: Optional[dict[str, Any]], reasons: tuple, *,
+             min_words: int, recorded_words: int) -> tuple[dict[str, Any], Verdict]:
+    """The text verdict, then (for a note the text keeps) the ledger's duplicate check."""
+    fm, verdict = judge(path, text, min_words=min_words, recorded_words=recorded_words)
+    if verdict.reason is None and "duplicate-call" in reasons and verdict.detail != "unparseable frontmatter":
+        why = duplicate_of(path, item)
+        if why:
+            verdict = Verdict("duplicate-call", why, verdict.words)
+    return fm, verdict
 
 
 def _busy_reason(item: Optional[dict[str, Any]]) -> Optional[str]:
@@ -587,7 +628,7 @@ def prune_note(path: Path, folder: hygiene.Folder, *, reasons: Iterable[str] = D
     fm, _ = frontmatter.split(first.text)
     item = _transcript_item(path, fm)
     recorded = _int((item or {}).get("word_count"))
-    fm, verdict = judge(path, first.text, min_words=min_words, recorded_words=recorded)
+    fm, verdict = _verdict(path, first.text, item, reasons, min_words=min_words, recorded_words=recorded)
     base = {"path": str(path), "name": path.name, "title": frontmatter_title(fm),
             "reason": verdict.reason, "detail": verdict.detail, "words": verdict.words}
     if item is not None:
@@ -611,7 +652,7 @@ def prune_note(path: Path, folder: hygiene.Folder, *, reasons: Iterable[str] = D
         second = look(path, folder, min_age=min_age, now=time.time())
         if second.verdict != "ok":
             return {**base, "outcome": "changed", "detail": second.verdict}
-        _, again = judge(path, second.text, min_words=min_words, recorded_words=recorded)
+        _, again = _verdict(path, second.text, item, reasons, min_words=min_words, recorded_words=recorded)
         if again.reason != verdict.reason:
             return {**base, "outcome": "changed",
                     "detail": f"now {again.reason or 'not junk'}"}
