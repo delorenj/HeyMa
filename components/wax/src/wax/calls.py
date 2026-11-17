@@ -915,15 +915,7 @@ def twin_of(name: str) -> Optional[dict[str, Any]]:
     conn = db()
     rec = recording_for_audio(name)
     if rec is None:
-        # Legacy rows without an object still support a provisional call join
-        # only if this leg has one recording. The worker never treats this guess
-        # as publication identity: it requires recording_for_audio on both sides.
-        candidates = conn.execute("SELECT * FROM call_recordings WHERE call_leg_id=? AND kind='trunk' "
-                                  "AND started_at IS NOT NULL AND duration_millis IS NOT NULL",
-                                  (ident["call_leg_id"],)).fetchall()
-        if len(candidates) != 1:
-            return None
-        rec = candidates[0]
+        return None
     if not rec["started_at"] or rec["duration_millis"] is None or not rec["call_session_id"]:
         return None
     if conn.execute("SELECT 1 FROM call_legs WHERE call_leg_id=? LIMIT 1", (ident["call_leg_id"],)).fetchone():

@@ -183,6 +183,24 @@ class TwinPreventionTest(JunkGateHarness):
                 self.assertEqual(len(self.vault_files()), index + 1)
                 self.assertIsNone(self.run_once(), "a skipped twin must not run again")
 
+    def test_unmapped_twin_filename_never_borrows_a_call(self):
+        twin, kept = PAIRS[0]
+        self.seed((twin, kept))
+        self.drop_rec(kept, 910)
+        self.run_once()
+        unmapped = self.name(twin).replace("-1794431481.mp3", "-1794431482.mp3")
+        self.assertIsNone(calls.recording_for_audio(unmapped))
+        self.assertIsNone(calls.twin_of(unmapped))
+        self.assertIsNone(calls.call_for_audio(unmapped, fetch=False))
+        self.assertEqual(calls.call_for_audio(self.name(twin))["call_session_id"], kept[1],
+                         "the exact twin object must still resolve")
+        self.drop(unmapped, words(40), payload=b"unmapped twin receipt " * 45)
+        result = self.run_once()
+        self.assertIn("transcribe", result)
+        self.assertIsNone(ledger.connect().execute(
+            "SELECT duplicate_of_call_session_id FROM items WHERE item_id=?", (self.item,)).fetchone()[0])
+        self.assertEqual(self.transcript_rows(), 2)
+
     def test_unmatched_and_ambiguous_recordings_remain_ordinary(self):
         twin, kept = PAIRS[0]
         self.seed((twin, kept))

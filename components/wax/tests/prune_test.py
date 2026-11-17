@@ -390,8 +390,9 @@ class DuplicateCallTest(_Vault):
         from wax import calls
         conn = calls.db()
         conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,channels,started_at,"
-                     "duration_millis,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                     (f"rec-{leg}", "trunk", leg, session, "dual", started, millis, "{}", started))
+                     "duration_millis,object_name,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                     (f"rec-{leg}", "trunk", leg, session, "dual", started, millis,
+                      f"{leg}-1794431481.mp3", "{}", started))
         if legs:
             conn.execute("INSERT INTO call_legs(call_leg_id,call_session_id,started_at,raw,updated_at) "
                          "VALUES(?,?,?,?,?)", (f"cdr-{leg}", session, started, "{}", started))
