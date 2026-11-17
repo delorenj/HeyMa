@@ -908,7 +908,7 @@ class Worker(threading.Thread):
 
     def __init__(self):
         super().__init__(daemon=True, name="wax-worker")
-        self._stop = threading.Event()
+        self._halt = threading.Event()
         # 0.0, not now: the first tick sweeps, because a failure that stranded
         # while waxd was down is exactly the failure the sweep exists for.
         self._last_sweep = 0.0
@@ -921,7 +921,7 @@ class Worker(threading.Thread):
         self._state_lock = threading.Lock()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._halt.set()
 
     # -- shared liveness state (main loop writes, heartbeat thread reads) ----
 
@@ -939,7 +939,7 @@ class Worker(threading.Thread):
             return self._tick, self._busy, busy_since
 
     def _heartbeat_loop(self) -> None:
-        while not self._stop.wait(self.HEARTBEAT_INTERVAL_S):
+        while not self._halt.wait(self.HEARTBEAT_INTERVAL_S):
             tick, busy, busy_since = self._liveness_snapshot()
             try:
                 documents.write_worker_heartbeat(
@@ -993,7 +993,7 @@ class Worker(threading.Thread):
         heartbeat = threading.Thread(target=self._heartbeat_loop,
                                      name="wax-worker-heartbeat", daemon=True)
         heartbeat.start()
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             try:
                 worked = self._tick_once()
             except Exception as e:  # noqa: BLE001 - a worker crash must not kill waxd
@@ -1006,4 +1006,4 @@ class Worker(threading.Thread):
                 _clear_claim()
                 worked = False
             if not worked:
-                self._stop.wait(POLL_S)
+                self._halt.wait(POLL_S)
