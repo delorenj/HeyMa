@@ -24,11 +24,13 @@ forces it. The Telephony page and `wax calls relabel` read the cache only. No
 lookup ever raises: a broken directory costs a name, never a call.
 
 Privacy: the vault's Identity items include the family's. A contact name
-reaches only the operator's private surfaces (the call notes, the transcripts
-store, the Telephony page); it is not in the stored call row, so the webhook's
-call.ended event and ntfy line still carry CNAM only. Logs carry counts only,
-and `wax contacts list` masks numbers to their last four digits. No 1Password
-secret or credential is ever read: only Identity name and phone fields.
+reaches the operator's private surfaces (the call notes, the transcripts store,
+the Telephony page) and the operator's own ntfy line on topic `telephony`
+(`call.contact_name` from `wax calls event`, the operator's choice 2026-11-17).
+It is not in the stored call row, so the bloodbank call.ended event still
+carries CNAM only. Logs carry counts only, and `wax contacts list` masks
+numbers to their last four digits. No 1Password secret or credential is ever
+read: only Identity name and phone fields.
 
 `WAX_CONTACTS=off` disables the directory (the test suite pins this).
 """

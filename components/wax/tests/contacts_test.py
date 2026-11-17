@@ -171,6 +171,24 @@ class CallLabelTest(_Ledger):
         self.assertEqual(calls.channel_parties(AUDIO, fetch=False), ("Me", "Carrie"))
         self.assertEqual(calls.frontmatter_for(calls.call_for_audio(AUDIO))["call-remote-name"], "Carrie")
 
+    def test_the_webhook_result_names_the_contact_for_the_ntfy_line_only(self):
+        self.sync()
+        calls.ingest_event({"data": {"id": "e1", "event_type": "call.initiated", "occurred_at": "2026-11-17T13:41:58Z",
+                                     "record_type": "event", "payload": {
+                                         "call_session_id": SESSION, "call_leg_id": LEG, "direction": "incoming",
+                                         "from": WIFE, "to": calls.LINE, "start_time": "2026-11-17T13:41:58Z"}}})
+        result = calls.ingest_event({"data": {"id": "e2", "event_type": "call.hangup",
+                                              "occurred_at": "2026-11-17T13:44:00Z", "record_type": "event",
+                                              "payload": {"call_session_id": SESSION, "call_leg_id": LEG,
+                                                          "end_time": "2026-11-17T13:44:00Z"}}})
+        self.assertEqual(result["call"]["contact_name"], "Carrie")
+        self.assertIsNone(result["call"]["remote_name"], "the bloodbank event's remote_name stays CNAM")
+        release = (Path(__file__).resolve().parents[2] / "n8n-workflows/telnyx_calls.py").read_text()
+        ntfy = release[release.index("NTFY_MESSAGE"):release.index("def build")]
+        ended = release[release.index("ENDED_DATA"):release.index("NTFY_MESSAGE")]
+        self.assertIn("$json.call.contact_name ||", ntfy)
+        self.assertNotIn("contact_name", ended, "names go to the operator's ntfy line, not the bloodbank event")
+
     def test_without_a_contact_the_number_stands(self):
         calls.upsert_leg(self.conn, inbound())
         self.assertIsNone(calls.derive(self.conn, SESSION)["remote_name"])

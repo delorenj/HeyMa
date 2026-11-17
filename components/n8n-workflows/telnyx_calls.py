@@ -5,6 +5,8 @@ The workflow is the Telnyx webhook's only consumer. It owns nothing: every event
 to `wax calls event` through the n8n-nodes-heyma "Wax Calls" node, and Wax keeps the call log.
 Only the event that settles a call (Wax answers `ended: true`, once per call: an outbound hangup,
 an answered inbound hangup, or a voicemail landing; never a missed or declined call) is announced: bloodbank.telephony.call.ended plus one ntfy line on topic `telephony`.
+The ntfy line names the caller from the 1Password contact directory (`call.contact_name`, operator's
+choice 2026-11-17), then CNAM, then the number; the bloodbank event carries CNAM `remote_name` only.
 
 Dry run by default (prints the candidate). --apply PUTs it (n8n publishes an active workflow on
 PUT) and checks the published version is the one sent. Re-running changes nothing.
@@ -38,7 +40,8 @@ ENDED_DATA = (
     " forward_reason: $json.call.forward_reason || null } }}"
 )
 NTFY_MESSAGE = (
-    "={{ ($json.call.direction === 'inbound' ? '← ' : '→ ') + ($json.call.remote_name || $json.call.remote_number"
+    "={{ ($json.call.direction === 'inbound' ? '← ' : '→ ') + ($json.call.contact_name || $json.call.remote_name"
+    " || $json.call.remote_number"
     " || 'anonymous') + ' · ' + $json.call.outcome + ($json.call.talk_seconds ? ' · ' + $json.call.talk_seconds"
     " + 's' : '') + ($json.call.forward_reason ? ' · fwd ' + $json.call.forward_reason : '') }}"
 )

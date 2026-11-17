@@ -565,6 +565,12 @@ def ingest_event(raw: Any, *, via: str = "webhook", fetch: bool = True) -> dict[
     if stored["call_session_id"]:
         result["call"] = derive(conn, stored["call_session_id"])
         result["ended"] = _announce(conn, result["call"]) if stored["new"] else False
+        if result["call"]:
+            # For the ntfy line only (n8n reads it; the bloodbank event keeps CNAM `remote_name`).
+            # Cache only: `wax calls sync` keeps it fresh, and the webhook must not wait on 1Password.
+            name = contacts.name_for(result["call"].get("remote_number"), refresh_stale=False)
+            if name:
+                result["call"]["contact_name"] = name
     if stored["event_type"] == "calls.voicemail.completed":
         try:
             result["voicemail"] = fetch_voicemail(conn, stored["event_id"], fetch=fetch)
