@@ -143,9 +143,19 @@ follow-ups for heyma-pm, not part of this command yet.
    `ledger.set_item_state` refuses further state changes for it (`Fenced`),
    `worker.next_item` skips it, passes and finalize refuse it, and
    `transcribe_adapter` and `passes.run` check the fence after their child
-   returns, before publishing. A late transcript is parked under
-   `recovered/split-late/` (never deleted, never in the vault). Only the
-   targeted item is fenced; the queue, the worker and other items continue.
+   returns, before publishing. Each transcriber attempt has a unique private
+   output directory allocated before spawn (`--output`, child `TRANSCRIPTS`
+   and `WAX_VAULT`); stdout must identify a file inside that directory.
+   On any fenced exit, even TERM/nonzero/no stdout after a partial write, that
+   directory is parked under `recovered/split-late/output-*/` (never deleted,
+   never in the vault). No unrelated/preexisting note is swept or moved.
+   Final publication and its fence check share a short SQLite write transaction
+   with respect to the fence INSERT, closing the post-check publication race.
+   The existing junk gate still runs after sanity and before publication:
+   rejected text stays in the item logs, and a sanity-failed note stays
+   `transcript.suspect.md` in its private output directory, outside the vault.
+   Caller-supplied output paths are refused before spawning the transcriber.
+   Only the targeted item is fenced; the queue, the worker and other items continue.
 3. **Halt.** Child processes of that item (the transcriber, a pass) are tracked
    in `item_children`; `wax split` signals their process trees (TERM, then KILL
    after 5 s). It then waits (bounded, `--halt-timeout-s`, default 180) for the

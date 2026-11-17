@@ -1,14 +1,11 @@
-"""waxd's run of bin/transcribe is untouched by the wrapper's scratch-source guard.
+"""waxd's private output is honored by the wrapper's scratch-source guard.
 
 bin/transcribe treats audio under /tmp, $TMPDIR, ~/.claude/tmp, ~/.cache and ~/.hermes/**/cache as a throwaway and
 writes its transcript outside the vault (tests/test_transcribe_scratch_output.py, repo root). waxd must never be
 caught by that: it transcribes files under WAX_ROOT (inbox/, stream/) and reads the transcript path the wrapper
-prints. Since the junk gate (wax/junk.py) waxd stages the note itself: it passes an explicit
---output <WAX_ROOT>/var/logs/<item>/<stem>.md so the gates can judge a transcript before it reaches the vault, and
-only a passing note is moved into the vault. That staging path lives under WAX_ROOT, so it must still never be
-treated as scratch or rerouted. This builds the command and environment with the REAL `transcribe_adapter.transcribe` (the subprocess is
-captured, not run), checks that the command carries nothing that would opt into the guard, then executes exactly
-that command through the real wrapper, with a stand-in interpreter, to show where the transcript goes.
+prints. This captures the REAL adapter's command, then executes it through the
+real wrapper with a stand-in interpreter: explicit per-attempt --output must
+win without sending a child note to either the vault or the ephemeral folder.
 """
 
 import os
@@ -32,7 +29,7 @@ class WaxdInvocationTest(unittest.TestCase):
         if not WRAPPER.is_file():
             self.skipTest(f"{WRAPPER} not found: not running inside the HeyMa checkout")
         # /tmp on purpose: the wrapper calls it scratch, so only the WAX_ROOT exemption can protect waxd here.
-        self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="waxd-scratch-guard-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="waxd-scratch-guard-")
         self.addCleanup(self.tmp.cleanup)
         self.d = Path(os.path.realpath(self.tmp.name))
         self.wax_root = self.d / "waxroot"
@@ -91,7 +88,7 @@ echo "Written: $out" >&2
                    TRANSCRIBE_LOCK_FILE=str(self.d / "heavy.lock"), TRANSCRIBE_FAST_LOCK_FILE=str(self.d / "fast.lock"),
                    TRANSCRIBE_LOG_FILE=str(self.d / "run.log"), TRANSCRIBE_STASH_DIR=str(self.d / "stash"),
                    TRANSCRIBE_EPHEMERAL_DIR=str(self.eph), TRANSCRIPTS=str(self.vault))
-        env.pop("TMPDIR", None)
+        env["TMPDIR"] = str(self.d / "elsewhere")
         return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
 
     def staged_output(self, stem: str) -> Path:
@@ -109,11 +106,15 @@ echo "Written: $out" >&2
         for opted in ("--ephemeral", "--archive-s3", "-o"):
             self.assertNotIn(opted, flags)
         self.assertFalse([f for f in flags if f.startswith("--output=")])
+        output = Path(flags[flags.index("--output") + 1])
+        self.assertTrue(output.is_relative_to(self.wax_root / "var/logs" / ITEM))
         self.assertEqual(flags[:1], ["--no-diarization"])
         self.assertEqual(flags[flags.index("--asr-output") + 1], str(self.wax_root / "var" / "logs" / ITEM / "asr.json"))
         # The one deliberate --output: the staging note under WAX_ROOT (never the vault, never scratch).
         self.assertEqual(flags.count("--output"), 1)
-        self.assertEqual(flags[flags.index("--output") + 1], str(self.staged_output("20261110-120000-clip")))
+        self.assertEqual(flags[flags.index("--output") + 1], str(output))
+        self.assertEqual(output.name, "transcript.md")
+        self.assertTrue(output.parent.name.startswith("output-"))
 
     def test_the_wrapper_leaves_waxds_transcript_at_its_staging_path_never_in_the_vault(self):
         for sub in ("inbox", "stream"):
@@ -122,14 +123,14 @@ echo "Written: $out" >&2
                 audio.parent.mkdir(parents=True, exist_ok=True)
                 audio.write_bytes(b"x")
                 cmd, env = self.waxd_command(audio)
-                staged = self.staged_output(f"clip-{sub}")
-                staged.parent.mkdir(parents=True, exist_ok=True)   # the adapter makes the log dir before it runs
+                staged = Path(cmd[cmd.index("--output") + 1])
+                staged.parent.mkdir(parents=True, exist_ok=True)
                 r = self.run_it(cmd, env)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertEqual(r.stdout.splitlines(), [str(staged)])
-                self.assertTrue(staged.is_file())
+                self.assertEqual(r.stdout.splitlines(), [cmd[cmd.index("--output") + 1]])
                 self.assertNotIn("[scratch]", r.stderr)
-                self.assertEqual(self.args_file.read_text().split("\n").count("--output"), 1)
+                self.assertIn("--output", self.args_file.read_text().split("\n"))
+                self.assertFalse(self.vault.exists())
                 self.assertFalse(self.eph.exists())
                 self.assertFalse(self.vault.exists())     # only a note that passes the gates is moved there
 
@@ -151,7 +152,7 @@ echo "Written: $out" >&2
         r = self.run_it(no_output[:4] + [str(elsewhere)] + no_output[5:], env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("[scratch]", r.stderr)
-        self.assertEqual(Path(r.stdout.strip()).parent, self.eph)
+        self.assertTrue(Path(r.stdout.strip()).is_relative_to(self.eph))
         self.assertFalse(self.vault.exists())
 
 

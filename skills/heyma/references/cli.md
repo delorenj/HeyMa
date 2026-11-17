@@ -20,12 +20,18 @@ Exit codes: 0 clean, 2 failure or unhealthy where noted, 130 interrupted (Ctrl-C
 
 | Command | What it does |
 |---|---|
-| `wax split [run] [TARGET] [--dry-run] [--submit SEG]... [--force] [--halt-timeout-s 180] [--min-quiet-s 300] [--margin-db 10] [--floor-dbfs -60] [--min-range-db 12] [--blip-s 3] [--tail-slack-s 60] [--pad-s 5] [--min-active-s 30] [--min-drop-db 20]` | Find the end of the meeting from the waveform alone and cut there. `TARGET` is a capture id, an item id prefix (6+ hex digits) or an audio file name or path; with none, the active capture or the item in processing. `run` is implied. Derived parts are held under `skipped/split/<split_id>/` until submitted. Exit 0 split, proposed (`--dry-run`) or already split; 2 refused or failed (including: an item that needs a halt while the running waxd predates the fence and does not advertise `daemon.capabilities` `item-fence/1`: "restart waxd first", nothing changed); **3 no usable boundary** (nothing changed) |
+| `wax split [run] [TARGET] [--dry-run] [--submit SEG]... [--force] [--halt-timeout-s 180] [--min-quiet-s 300] [--margin-db 10] [--floor-dbfs -60] [--min-range-db 12] [--blip-s 3] [--tail-slack-s 60] [--pad-s 5] [--min-active-s 30] [--min-drop-db 20]` | Propose a sustained trailing-quiet boundary from the waveform alone and cut there; it cannot infer meeting meaning. `TARGET` is a capture id, an item id prefix (6+ hex digits), a registered audio item's name/path, or an unregistered file in `inbox/`; with none, the active capture or the item in processing. `run` is implied. Derived parts are held under `skipped/split/<split_id>/` until submitted. Exit 0 split, proposed (`--dry-run`) or already split; 2 refused or failed (including: an item that needs a halt while the running waxd predates the fence and does not advertise `daemon.capabilities` `item-fence/1`: "restart waxd first", nothing changed); **3 no usable boundary** (no cut; initial detection changes nothing, but a live post-stop recheck can release the unsplit original into `inbox/`) |
 | `wax split run TARGET` | The explicit spelling of the line above |
 | `wax split submit SPLIT_ID SEG...` | Copy held parts (1-based index or `all`) into `inbox/` through a hidden temp name and an atomic rename, so the worker backs each one up to S3 before transcription. Submitting twice is a no-op |
 | `wax split list [SPLIT_ID]` | Held splits, their parts and whether each was submitted |
 
 Detail, thresholds and limits: [capture](capture.md#splitting-a-recording-left-running-wax-split).
+The 2026-11-14 acceptance rerun (fixture characteristics, real CLI output,
+isolated daemon fencing and candid test-environment limits) is retained in
+`components/wax/docs/evidence/heyma-18/acceptance-2026-11-14/README.md`.
+The quality followup stages transcriber output privately before publication;
+split preserves even a killed child's partial/no-stdout note without sweeping
+the vault ([transcription](transcription.md)).
 
 The hotkey must call `~/.local/bin/wax-toggle` (symlink to `components/wax/bin/wax-toggle`), never a PATH lookup of `wax rec toggle`.
 

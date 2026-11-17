@@ -93,9 +93,10 @@ recording was then parked under `skipped/overduration/` by the duration cap; see
 ## Splitting a recording left running (`wax split`)
 
 You forgot to stop, and the capture ran for hours after the meeting. `wax split`
-finds the end of the meeting **from the waveform alone** (ffmpeg to mono PCM,
-RMS in dBFS, an adaptive noise floor; ASR, transcripts, diarization and LLMs are
-never inputs) and cuts there. It works on three kinds of target:
+proposes a sustained trailing-quiet boundary **from the waveform alone** (ffmpeg
+to mono PCM, RMS in dBFS, an adaptive noise floor; ASR, transcripts, diarization
+and LLMs are never inputs) and cuts there. Quiet is an acoustic observation, not
+proof that a meeting ended. It works on three kinds of target:
 
 | Target | What happens |
 |---|---|
@@ -139,6 +140,21 @@ Full design, thresholds and policy: `components/wax/docs/WAX-SPLIT.md`;
 evidence: `components/wax/docs/evidence/heyma-18/`. Not covered: the unsplit
 original is not uploaded to S3 by `wax split` (`wax archive <path>` if it exists
 only locally).
+
+Acceptance rerun (2026-11-14):
+`components/wax/docs/evidence/heyma-18/acceptance-2026-11-14/README.md` retains
+deterministic fixture timelines and actual CLI/capture/processing results.
+Those synthetic acoustic labels do not establish recall on human meetings.
+The live path detects twice: if the authoritative, finalized recording no
+longer has a boundary, exit 3 releases that complete recording to `inbox/`
+without a cut; the capture has already stopped. Check the returned capture
+state and `changes`, not just the exit code.
+
+Quality followup: the transcriber now writes to a unique private per-attempt
+output, not directly into the vault. If split kills it after a note write but
+before stdout, that private output is still preserved under
+`recovered/split-late/output-*/`. No unrelated or preexisting vault note is
+searched for, moved or overwritten. See [transcription](transcription.md).
 
 ## The capture guard
 

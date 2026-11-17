@@ -22,6 +22,8 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -256,23 +258,39 @@ def vault_name(audio: Path, when: Optional[float] = None) -> str:
     return f"{time.strftime('%Y%m%d-%H%M%S', t)}-{slug}.md"
 
 
-def _park_late_output(result: "subprocess.CompletedProcess[str]", item_id: Optional[str]) -> None:
-    """Move a transcript that finished after the item was fenced out of the vault.
+@contextmanager
+def _staged_output(item_id: Optional[str], logdir: Path, env: dict[str, str]):
+    """Own the child's output BEFORE spawning it, independently of stdout/exit.
 
-    bin/transcribe writes into the vault itself, so a child that beat the halt has
-    already published a note for a recording that is being split. Park it under
-    recovered/split-late/ (preserved, out of the vault, out of the store).
+    Never inspect or sweep the vault. Even a partial note written before the
+    child is killed belongs to this unique private directory and is preserved.
     """
-    if result.returncode != 0 or not (result.stdout or "").strip():
-        return
-    late = Path(result.stdout.strip().splitlines()[-1])
-    if not late.is_file():
-        return
-    from . import rename as rn
-    dest = paths.RECOVERED / "split-late"
-    dest.mkdir(parents=True, exist_ok=True)
-    moved = rn.move_noclobber(late, dest / late.name)
-    log.warning("item %s was split while transcribing; late transcript parked at %s", item_id, moved)
+    stage = Path(tempfile.mkdtemp(prefix="output-", dir=logdir))
+    env.update(TRANSCRIPTS=str(stage), WAX_VAULT=str(stage))
+    try:
+        yield stage / "transcript.md"
+    finally:
+        if ledger.fence_of(item_id) is not None:
+            from . import rename as rn
+            dest = paths.RECOVERED / "split-late"
+            dest.mkdir(parents=True, exist_ok=True)
+            moved = rn.move_noclobber(stage, dest / stage.name)
+            log.warning("item %s was split; private transcription output parked at %s", item_id, moved)
+
+
+@contextmanager
+def _publication(item_id: Optional[str]):
+    """Serialize the final fence check + publication against raise_fence's INSERT."""
+    conn = ledger.connect()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        ledger.guard_fence(item_id)
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 def transcribe(audio: Path, *, item_id: Optional[str] = None,
@@ -305,214 +323,200 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
 
     env = transcribe_env(logfile)
 
-    mode = diarization_mode(env)
-    asr_path = logdir / "asr.json"
-    requested = [arg for arg in list(extra or []) if arg not in ("--diarization", "--no-diarization")]
-    requested.extend(["--no-diarization", "--asr-output", str(asr_path)])
-    # Stage the note beside the item's logs, never straight into the vault: the
-    # sanity and junk gates judge it first, and only a transcript that passes
-    # both is moved into paths.VAULT. (A remote run still writes the vault's
-    # local dir; the gates move a refused note out of it.)
-    if not _has_output_arg(requested):
-        requested.extend(["--output", str(logdir / f"{audio.stem}.md")])
-    started = __import__("time").monotonic()
-    cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
-    desktop.ding("start")
-    try:
-        # Tracked so `wax split` can stop exactly this item's transcriber.
-        r = fence.run_tracked(item_id, cmd, env=env, timeout=86400)
-    except subprocess.TimeoutExpired as e:
-        raise TranscribeError(f"timeout after 24h; log: {logfile}") from e
-
-    # The late-result fence. If `wax split` halted this item while the child ran,
-    # whatever it produced is stale: it must not be published, gated, renamed or
-    # recorded. A transcript the child managed to finish is parked, never deleted.
-    if ledger.fence_of(item_id) is not None:
-        _park_late_output(r, item_id)
-        ledger.guard_fence(item_id)
-
-    if r.returncode != 0:
-        raise TranscribeError(
-            f"transcribe exited {r.returncode}; log retained: {logfile}\n"
-            f"{(r.stderr or '')[-800:]}"
-        )
-
-    # stdout contract: exactly one line, the markdown path.
-    md = Path((r.stdout or "").strip().splitlines()[-1]) if r.stdout.strip() else None
-    if md is None or not md.is_file():
-        raise TranscribeError(f"no 'Written:' path produced; log retained: {logfile}")
-
-    meta = parse_metadata(r.stderr)
-
-    # Diarization degrades by returning nothing instead of failing, so the item
-    # state stays "transcribed" while the speaker track has in fact been empty
-    # since 2026-08-12. Name the condition once, here, and carry it to both the
-    # journal and the note so a human surface can finally represent it.
-    diar_requested = bool(meta.get("diarization_requested"))
-    if "diarization_degraded" in meta:
-        diar_degraded = bool(meta["diarization_degraded"])
-    else:
-        # Older transcribe.py builds emit neither flag; the stderr marker (and,
-        # failing that, requested-but-not-diarized) is the fallback signal.
-        diar_degraded = DEGRADED_MARKER in (r.stderr or "") or (
-            diar_requested and not meta.get("diarized")
-        )
-    if diar_degraded:
-        detail = "diarization requested but produced no speaker turns: %s (mode=%s, log=%s)"
-        if mode == "required":
-            # WAX_DIARIZATION=1 means require it. The transcript is still
-            # published — hours of ASR are not worth discarding over a missing
-            # speaker track — but this must never read as a clean run.
-            log.error(detail, audio.name, mode, logfile)
-        else:
-            log.warning(detail, audio.name, mode, logfile)
-
-    verdict = sanity.check(audio, meta)
-
-    # If the source changed under us the transcript describes a prefix of a file
-    # that no longer exists — precisely the record_0016 failure.
-    if not sanity.source_unchanged(audio, before):
-        verdict = {**verdict, "ok": False, "reason_code": "source_changed"}
-
-    if not verdict["ok"]:
-        # The suspect note is quarantined in the vault, as before staging: it is
-        # the operator's evidence (prune and the store reconcile both skip *.suspect.md).
-        suspect = _move_suspect(md)
-        if item_id:
-            ledger.set_item_state(item_id, "suspect", cause=verdict["reason_code"] or "gate_failed",
-                                  evidence=str(verdict))
-        raise TranscribeError(
-            f"SANITY GATE FAILED ({verdict['reason_code']}): "
-            f"audio={verdict['audio_duration_s']}s asr={verdict['asr_duration_s']}s "
-            f"ratio={verdict['duration_ratio']} -> quarantined as {suspect.name}; log: {logfile}"
-        )
-
-    # The junk gate: a voicemail, a "Hello?" call, a one-word misfire is never
-    # published, recorded or enriched (wax/junk.py). The text is set aside next
-    # to the item's logs; the caller parks the audio and records the state.
-    from . import junk
-    rejection = junk.after_asr(md, audio, item_id)
-    if rejection is not None:
-        kept: Optional[Path] = md
+    with _staged_output(item_id, logdir, env) as output:
+        mode = diarization_mode(env)
+        asr_path = logdir / "asr.json"
+        requested = list(extra or [])
+        if _has_output_arg(requested):
+            raise TranscribeError("caller-supplied output is not allowed; transcriber output must stay private")
+        requested = [arg for arg in requested if arg not in ("--diarization", "--no-diarization")]
+        requested.extend(["--no-diarization", "--asr-output", str(asr_path), "--output", str(output)])
+        started = __import__("time").monotonic()
+        cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
+        desktop.ding("start")
         try:
-            kept = _move_out(md, logdir / "rejected.md")
-        except OSError as exc:
-            log.warning("junk gate could not set %s aside: %s", md, exc)
-        if rejection.reason == "empty" and junk.empty_is_an_outage(verdict.get("audio_duration_s")):
-            # Minutes of audio and no words is a Whisper/VAD/GPU outage, not a silent
-            # clip. Filing it as junk would hide the outage behind `skipped`: fail the
-            # item so it stays visible and `wax retry` works.
+            # Tracked so `wax split` can stop exactly this item's transcriber.
+            r = fence.run_tracked(item_id, cmd, env=env, timeout=86400)
+        except subprocess.TimeoutExpired as e:
+            raise TranscribeError(f"timeout after 24h; log: {logfile}") from e
+
+        # The late-result fence. If `wax split` halted this item while the child ran,
+        # whatever it produced is stale: it must not be published, gated, renamed or
+        # recorded. A transcript the child managed to finish is parked, never deleted.
+        if ledger.fence_of(item_id) is not None:
+            ledger.guard_fence(item_id)
+
+        if r.returncode != 0:
             raise TranscribeError(
-                f"EMPTY TRANSCRIPT from {verdict.get('audio_duration_s')}s of audio; not published, "
-                f"empty note kept at {kept}; log: {logfile}")
-        raise TranscriptRejected(
-            f"JUNK GATE REJECTED ({rejection.reason}): {rejection.detail}; "
-            f"not published, text kept at {kept}",
-            rejection, kept)
+                f"transcribe exited {r.returncode}; log retained: {logfile}\n"
+                f"{(r.stderr or '')[-800:]}"
+            )
 
-    # Passed. Give it a dated, findable name in the vault.
-    desired = paths.VAULT / vault_name(audio)
-    final = md
-    if md.resolve() != desired.resolve():
-        try:
-            final = _move_out(md, desired)
-        except OSError as exc:
-            # Falling back to `md` is only safe when it is already in the vault
-            # (a caller -o, a remote copy). A staged note left in var/logs would be
-            # recorded and enriched while the vault stays empty: fail the item
-            # instead, so `wax retry` works and the staged note is preserved.
-            if not _in_vault(md):
-                raise TranscribeError(
-                    f"could not publish {md.name} to the vault ({exc}); staged note kept at {md}; "
-                    f"log: {logfile}") from exc
+        # stdout contract: exactly one line, the markdown path.
+        md = Path((r.stdout or "").strip().splitlines()[-1]) if r.stdout.strip() else None
+        if md is None or not md.is_file() or not md.resolve().is_relative_to(output.parent.resolve()):
+            raise TranscribeError(f"no private 'Written:' path produced; log retained: {logfile}")
+
+        meta = parse_metadata(r.stderr)
+
+        # Diarization degrades by returning nothing instead of failing, so the item
+        # state stays "transcribed" while the speaker track has in fact been empty
+        # since 2026-08-12. Name the condition once, here, and carry it to both the
+        # journal and the note so a human surface can finally represent it.
+        diar_requested = bool(meta.get("diarization_requested"))
+        if "diarization_degraded" in meta:
+            diar_degraded = bool(meta["diarization_degraded"])
+        else:
+            # Older transcribe.py builds emit neither flag; the stderr marker (and,
+            # failing that, requested-but-not-diarized) is the fallback signal.
+            diar_degraded = DEGRADED_MARKER in (r.stderr or "") or (
+                diar_requested and not meta.get("diarized")
+            )
+        if diar_degraded:
+            detail = "diarization requested but produced no speaker turns: %s (mode=%s, log=%s)"
+            if mode == "required":
+                # WAX_DIARIZATION=1 means require it. The transcript is still
+                # published — hours of ASR are not worth discarding over a missing
+                # speaker track — but this must never read as a clean run.
+                log.error(detail, audio.name, mode, logfile)
+            else:
+                log.warning(detail, audio.name, mode, logfile)
+
+        verdict = sanity.check(audio, meta)
+
+        # If the source changed under us the transcript describes a prefix of a file
+        # that no longer exists — precisely the record_0016 failure.
+        if not sanity.source_unchanged(audio, before):
+            verdict = {**verdict, "ok": False, "reason_code": "source_changed"}
+
+        if not verdict["ok"]:
+            suspect = md.with_name(md.stem + ".suspect.md")
+            shutil.move(str(md), str(suspect))
+            if item_id:
+                ledger.set_item_state(item_id, "suspect", cause=verdict["reason_code"] or "gate_failed",
+                                      evidence=str(verdict))
+            raise TranscribeError(
+                f"SANITY GATE FAILED ({verdict['reason_code']}): "
+                f"audio={verdict['audio_duration_s']}s asr={verdict['asr_duration_s']}s "
+                f"ratio={verdict['duration_ratio']} -> quarantined as {suspect.name}; log: {logfile}"
+            )
+
+        # Inspect junk before opening the publication transaction: classification
+        # may initialize the contacts schema (executescript commits SQLite's
+        # active transaction). Output is still private until the final fence gate.
+        from . import junk
+        rejection = junk.after_asr(md, audio, item_id)
+        with _publication(item_id):
+            if rejection is not None:
+                kept: Optional[Path] = md
+                try:
+                    kept = _move_out(md, logdir / "rejected.md")
+                except OSError as exc:
+                    log.warning("junk gate could not set %s aside: %s", md, exc)
+                if rejection.reason == "empty" and junk.empty_is_an_outage(verdict.get("audio_duration_s")):
+                    raise TranscribeError(
+                        f"EMPTY TRANSCRIPT from {verdict.get('audio_duration_s')}s of audio; not published, "
+                        f"empty note kept at {kept}; log: {logfile}")
+                raise TranscriptRejected(
+                    f"JUNK GATE REJECTED ({rejection.reason}): {rejection.detail}; "
+                    f"not published, text kept at {kept}", rejection, kept)
+
+            # Passed. Give it a dated, findable name.
+            paths.VAULT.mkdir(parents=True, exist_ok=True)
+            desired = paths.VAULT / vault_name(audio)
             final = md
-
-    # Stamp identity onto the note itself, at publish time — NOT only when an
-    # enrichment pass happens to run. This is what makes "a .md with no
-    # wax-item-id has not been processed" a true statement, and what lets the
-    # ledger be rebuilt from the vault alone.
-    if item_id:
-        try:
             try:
-                refs = archive.references(item_id)
-            except Exception:  # noqa: BLE001 - provenance backfill must not discard a transcript
-                refs = []
-            provenance: dict[str, Any] = {
-                "schema-version": 1,
-                "asset-kind": "transcript",
-                "specialist": "transcripts",
-                "source": "audio-recording",
-                "captured": datetime.fromtimestamp(audio.stat().st_mtime).astimezone().isoformat(
-                    timespec="seconds"
-                ),
-                frontmatter.ITEM_KEY: item_id,
-                frontmatter.WAX_KEY: {
-                    "transcribed_at": sentinel.utcnow(),
-                    "audio_duration_s": verdict["audio_duration_s"],
-                    "duration_ratio": verdict["duration_ratio"],
-                    "source_audio": audio.name,
-                    # The ledger's transcripts table can only say diarized 0/1.
-                    # Until it grows a column, the note is the only durable
-                    # record of the difference between "one speaker" and
-                    # "the diarizer gave us nothing".
-                    "diarization_requested": diar_requested,
-                    "diarization_degraded": diar_degraded,
-                    "diarization_device_requested": meta.get(
-                        "diarization_device_requested"
-                    ),
-                    "diarization_device": meta.get("diarization_device"),
-                    # Dual-channel call: speakers come from the carrier's channel
-                    # split (scripts/transcribe.py), and the diarization pass skips.
-                    "channel_attributed": bool(meta.get("channel_separated")),
-                },
-            }
-            if refs:
-                provenance.update({
-                    "source-sha256": refs[0]["sha256"],
-                    "source-s3-key": refs[0]["s3_key"],
-                    "source-s3-uri": f"s3://{refs[0]['bucket']}/{refs[0]['s3_key']}",
-                })
-            frontmatter.merge(final, provenance)
-        except OSError:
-            pass
+                final = _move_out(md, desired)
+            except OSError as exc:
+                raise TranscribeError(f"could not publish private transcript: {exc}") from exc
 
-    if item_id:
-        ledger.connect().execute(
-            "INSERT INTO transcripts(item_id,md_path,audio_duration,asr_duration,duration_ratio,"
-            "word_count,diarized,engine_model,created_at) VALUES(?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(item_id) DO UPDATE SET md_path=excluded.md_path, "
-            "audio_duration=excluded.audio_duration, asr_duration=excluded.asr_duration, "
-            "duration_ratio=excluded.duration_ratio, word_count=excluded.word_count",
-            (item_id, str(final), verdict["audio_duration_s"], verdict["asr_duration_s"],
-             verdict["duration_ratio"], meta.get("word_count"), int(bool(meta.get("diarized"))),
-             meta.get("model"), sentinel.utcnow()),
-        )
-        import hashlib
-        _, body = frontmatter.read(final)
-        processing_s = __import__("time").monotonic() - started
-        ledger.connect().execute(
-            "UPDATE transcripts SET asr_path=?,body_sha256=?,processing_seconds=?,diarized=?,engine_model=? WHERE item_id=?",
-            (str(asr_path), hashlib.sha256(body.encode()).hexdigest(),
-             processing_s, int(bool(meta.get("diarized"))),
-             meta.get("model"), item_id),
-        )
-        ledger.set_item_state(item_id, "transcribed", cause="gate_passed",
-                              evidence=f"ratio={verdict['duration_ratio']} -> {final.name}")
-        try:
-            from . import transcriptions
-            transcriptions.record_transcription(item_id=item_id, md_path=final, meta=meta, verdict=verdict,
-                                                asr_path=asr_path, attempt=attempt,
-                                                processing_seconds=processing_s)
-        except Exception as exc:  # noqa: BLE001 - the store must never cost a transcript
-            log.warning("transcriptions capture failed for %s: %s", item_id, exc)
+            # Stamp identity onto the note itself, at publish time — NOT only when an
+            # enrichment pass happens to run. This is what makes "a .md with no
+            # wax-item-id has not been processed" a true statement, and what lets the
+            # ledger be rebuilt from the vault alone.
+            if item_id:
+                try:
+                    try:
+                        refs = archive.references(item_id)
+                    except Exception:  # noqa: BLE001 - provenance backfill must not discard a transcript
+                        refs = []
+                    provenance: dict[str, Any] = {
+                        "schema-version": 1,
+                        "asset-kind": "transcript",
+                        "specialist": "transcripts",
+                        "source": "audio-recording",
+                        "captured": datetime.fromtimestamp(audio.stat().st_mtime).astimezone().isoformat(
+                            timespec="seconds"
+                        ),
+                        frontmatter.ITEM_KEY: item_id,
+                        frontmatter.WAX_KEY: {
+                            "transcribed_at": sentinel.utcnow(),
+                            "audio_duration_s": verdict["audio_duration_s"],
+                            "duration_ratio": verdict["duration_ratio"],
+                            "source_audio": audio.name,
+                            # The ledger's transcripts table can only say diarized 0/1.
+                            # Until it grows a column, the note is the only durable
+                            # record of the difference between "one speaker" and
+                            # "the diarizer gave us nothing".
+                            "diarization_requested": diar_requested,
+                            "diarization_degraded": diar_degraded,
+                            "diarization_device_requested": meta.get(
+                                "diarization_device_requested"
+                            ),
+                            "diarization_device": meta.get("diarization_device"),
+                            # Dual-channel call: speakers come from the carrier's channel
+                            # split (scripts/transcribe.py), and the diarization pass skips.
+                            "channel_attributed": bool(meta.get("channel_separated")),
+                        },
+                    }
+                    if refs:
+                        provenance.update({
+                            "source-sha256": refs[0]["sha256"],
+                            "source-s3-key": refs[0]["s3_key"],
+                            "source-s3-uri": f"s3://{refs[0]['bucket']}/{refs[0]['s3_key']}",
+                        })
+                    frontmatter.merge(final, provenance)
+                except OSError:
+                    pass
 
-    return {
-        "item_id": item_id,
-        "md_path": str(final),
-        "log": str(logfile),
-        "diarization_requested": diar_requested,
-        "diarization_degraded": diar_degraded,
-        "diarization_device_requested": meta.get("diarization_device_requested"),
-        "diarization_device": meta.get("diarization_device"),
-        **verdict,
-    }
+            if item_id:
+                ledger.connect().execute(
+                    "INSERT INTO transcripts(item_id,md_path,audio_duration,asr_duration,duration_ratio,"
+                    "word_count,diarized,engine_model,created_at) VALUES(?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(item_id) DO UPDATE SET md_path=excluded.md_path, "
+                    "audio_duration=excluded.audio_duration, asr_duration=excluded.asr_duration, "
+                    "duration_ratio=excluded.duration_ratio, word_count=excluded.word_count",
+                    (item_id, str(final), verdict["audio_duration_s"], verdict["asr_duration_s"],
+                     verdict["duration_ratio"], meta.get("word_count"), int(bool(meta.get("diarized"))),
+                     meta.get("model"), sentinel.utcnow()),
+                )
+                import hashlib
+                _, body = frontmatter.read(final)
+                processing_s = __import__("time").monotonic() - started
+                ledger.connect().execute(
+                    "UPDATE transcripts SET asr_path=?,body_sha256=?,processing_seconds=?,diarized=?,engine_model=? WHERE item_id=?",
+                    (str(asr_path), hashlib.sha256(body.encode()).hexdigest(),
+                     processing_s, int(bool(meta.get("diarized"))),
+                     meta.get("model"), item_id),
+                )
+                ledger.set_item_state(item_id, "transcribed", cause="gate_passed",
+                                      evidence=f"ratio={verdict['duration_ratio']} -> {final.name}")
+        if item_id:
+            try:
+                from . import transcriptions
+                transcriptions.record_transcription(item_id=item_id, md_path=final, meta=meta, verdict=verdict,
+                                                    asr_path=asr_path, attempt=attempt,
+                                                    processing_seconds=processing_s)
+            except Exception as exc:  # noqa: BLE001 - the store must never cost a transcript
+                log.warning("transcriptions capture failed for %s: %s", item_id, exc)
+
+        return {
+            "item_id": item_id,
+            "md_path": str(final),
+            "log": str(logfile),
+            "diarization_requested": diar_requested,
+            "diarization_degraded": diar_degraded,
+            "diarization_device_requested": meta.get("diarization_device_requested"),
+            "diarization_device": meta.get("diarization_device"),
+            **verdict,
+        }

@@ -8,7 +8,9 @@ and the kill are real.
 """
 
 import os
+import json
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -64,12 +66,13 @@ class FenceBase(unittest.TestCase):
 
     def slow_transcriber(self, seconds: float, *, writes_note: bool = True) -> Path:
         note = paths.VAULT / "late-note.md"
-        body = f"""echo $$ > {self.marks}/pid
+        body = f"""note="$TRANSCRIPTS/late-note.md"
+echo $$ > {self.marks}/pid
 sleep {seconds} &
 echo $! > {self.marks}/sleeper
 wait
-{f'echo late transcript > {note}' if writes_note else ''}
-echo {note}"""
+{f'echo late transcript > "$note"' if writes_note else ''}
+echo "$note" """
         script = sup.fake_transcriber(self.tmp, body)
         env = patch.dict(os.environ, {"WAX_TRANSCRIBE": str(script)})
         env.start()
@@ -190,12 +193,186 @@ class SplitWhileProcessingTest(FenceBase):
         run["thread"].join(15)
         self.assertIn("fenced", run["result"])
         self.assertFalse(note.exists(), "the late transcript is out of the vault")
-        parked = paths.RECOVERED / "split-late" / note.name
+        parked, = (paths.RECOVERED / "split-late").rglob(note.name)
         self.assertEqual(parked.read_text().strip(), "late transcript", "preserved, never deleted")
         self.assertIsNone(ledger.connect().execute("SELECT 1 FROM transcripts WHERE item_id=?", (item_id,)).fetchone())
         self.assertEqual(self.state_of(item_id), "skipped", "the late worker did not move the item")
         self.assertEqual(len(list(Path(report["held_dir"]).glob("*part*.ogg"))), 2, "no duplicate outcome")
         self.assertEqual(len(ledger.connect().execute("SELECT 1 FROM split_segments").fetchall()), 2)
+
+    def test_real_cli_kill_after_write_before_stdout_preserves_only_owned_output(self):
+        item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        original_sha = ledger.sha256_file(audio)
+        other_id, other = self.stage_item("continuous_activity", "bystander.ogg")
+        other_sha = ledger.sha256_file(other)
+        # Both the normal final name and an unrelated note already exist.
+        existing = paths.VAULT / transcribe_adapter.vault_name(audio)
+        unrelated = paths.VAULT / "unrelated.md"
+        existing.write_text("preexisting transcript\n")
+        unrelated.write_text("unrelated note\n")
+        # Actual scripts/transcribe.py output-writing code; only ASR is a seam.
+        # Block at its first metadata log AFTER write_text but BEFORE the shim
+        # would print the output path. No Whisper/models/network are used.
+        script = self.tmp / "early-write-transcribe"
+        actual = Path(__file__).resolve().parents[3] / "scripts/transcribe.py"
+        script.write_text(f"""#!{sys.executable}
+import importlib.util, pathlib, sys, time
+spec = importlib.util.spec_from_file_location("real_transcriber", {str(actual)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.transcribe_local = lambda *_args: {{
+    "text": "preserve this transcript", "segments": [{{"start": 0, "end": 1, "text": "preserve this transcript"}}],
+    "language": "en", "language_probability": 1.0, "duration": 213.5,
+    "model": "ASR-STUB", "backend": "ASR-STUB"
+}}
+real_log = module.log
+def log(message):
+    if message.startswith("Transcription-Metadata: "):
+        import json
+        output = json.loads(message.split(": ", 1)[1])["mdPath"]
+        pathlib.Path({str(self.marks / 'written')!r}).write_text(output)
+        time.sleep(120)
+    real_log(message)
+module.log = log
+module.main()
+print(sys.argv[sys.argv.index("--output") + 1])
+""")
+        script.chmod(0o755)
+        with patch.dict(os.environ, {"WAX_TRANSCRIBE": str(script),
+                                     "TRANSCRIPTS": str(paths.VAULT),
+                                     "WAX_VAULT": str(paths.VAULT)}):
+            run = self.run_worker(item_id, audio)
+            written = Path(self.wait_for("written"))
+            self.assertTrue(written.is_file(), "the child wrote before being killed, with no stdout yet")
+            written_text = written.read_text()
+            result = sup.cli(self.root, "--json", "split", item_id,
+                             "--min-quiet-s", "30", "--tail-slack-s", "10",
+                             "--min-active-s", "20", "--pad-s", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["outcome"], "split")
+        run["thread"].join(15)
+        self.assertFalse(run["thread"].is_alive())
+        self.assertNotIn("error", run)
+        self.assertIn("fenced", run["result"])
+        self.assertEqual(set(paths.VAULT.iterdir()), {existing, unrelated},
+                         "no stale or duplicate unsplit note may remain in the vault")
+        self.assertEqual(existing.read_text(), "preexisting transcript\n")
+        self.assertEqual(unrelated.read_text(), "unrelated note\n")
+        parked, = (paths.RECOVERED / "split-late").rglob(written.name)
+        self.assertEqual(parked.read_text(), written_text)
+        self.assertEqual(self.state_of(item_id), "skipped")
+        self.assertIsNone(ledger.connect().execute(
+            "SELECT 1 FROM transcripts WHERE item_id=?", (item_id,)).fetchone())
+        self.assertEqual(ledger.sha256_file(Path(report["processing"]["original"])), original_sha)
+        self.assertEqual(len(report["segments"]), 2)
+        self.assertEqual(self.state_of(other_id), "pending")
+        self.assertEqual(ledger.sha256_file(other), other_sha)
+        self.assertIsNone(ledger.fence_of(other_id))
+
+    def test_fence_during_sanity_parks_private_note_before_publication(self):
+        item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        existing = paths.VAULT / transcribe_adapter.vault_name(audio)
+        existing.write_text("published before this attempt\n")
+        script = sup.fake_transcriber(self.tmp, '''
+note="$TRANSCRIPTS/transcript.md"
+printf "new transcript\\n" > "$note"
+printf "%s\\n" "$note"
+''')
+        def fence_during_gate(*_args):
+            fence.raise_fence(item_id, "gate-race")
+            return {"ok": True, "reason_code": None, "audio_duration_s": 213.5,
+                    "asr_duration_s": 213.5, "duration_ratio": 1.0}
+        with patch.dict(os.environ, {"WAX_TRANSCRIBE": str(script)}), \
+                patch.object(transcribe_adapter.sanity, "check", side_effect=fence_during_gate):
+            result = worker.process(item_id, audio)
+        self.assertIn("fenced", result)
+        self.assertEqual(existing.read_text(), "published before this attempt\n")
+        self.assertEqual(list(paths.VAULT.iterdir()), [existing])
+        parked, = (paths.RECOVERED / "split-late").rglob("transcript.md")
+        self.assertEqual(parked.read_text(), "new transcript\n")
+        self.assertIsNone(ledger.connect().execute(
+            "SELECT 1 FROM transcripts WHERE item_id=?", (item_id,)).fetchone())
+
+    def test_junk_rejection_and_split_share_the_private_output_fence(self):
+        item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        original_sha = ledger.sha256_file(audio)
+        script = sup.fake_transcriber(self.tmp, '''
+note="$TRANSCRIPTS/transcript.md"
+printf '# Transcription: meeting.ogg\\n\\n**Speaker 1 (00:00):** Hello?\\n' > "$note"
+echo 'Transcription-Metadata: {"duration_seconds": 213.5, "word_count": 1, "model": "ASR-STUB"}' >&2
+printf "%s\\n" "$note"
+''')
+        with patch.dict(os.environ, {"WAX_TRANSCRIBE": str(script)}):
+            with self.assertRaises(transcribe_adapter.TranscriptRejected) as refused:
+                transcribe_adapter.transcribe(audio, item_id=item_id)
+        self.assertEqual(refused.exception.rejection.reason, "too-short")
+        self.assertEqual((paths.LOGS / item_id / "rejected.md").read_text().splitlines()[-1],
+                         "**Speaker 1 (00:00):** Hello?")
+        self.assertEqual(list(paths.VAULT.iterdir()), [])
+        report = split.run(item_id[:10], PARAMS, halt_timeout_s=30)
+        self.assertEqual(report["outcome"], "split")
+        self.assertEqual(self.state_of(item_id), "skipped")
+        self.assertEqual(ledger.sha256_file(Path(report["processing"]["original"])), original_sha)
+        self.assertFalse(list(paths.VAULT.iterdir()))
+        self.assertIsNone(ledger.connect().execute(
+            "SELECT 1 FROM transcripts WHERE item_id=?", (item_id,)).fetchone())
+
+    def test_publication_and_fence_insert_are_serialized(self):
+        item_id, _ = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        entering = threading.Event()
+        errors = []
+        def raise_after_start():
+            try:
+                entering.set()
+                fence.raise_fence(item_id, "publish-race")
+            except BaseException as exc:
+                errors.append(exc)
+        with transcribe_adapter._publication(item_id):
+            thread = threading.Thread(target=raise_after_start)
+            thread.start()
+            self.assertTrue(entering.wait(5))
+            thread.join(0.1)
+            self.assertTrue(thread.is_alive(), "the fence writer must wait for publication")
+            self.assertIsNone(ledger.fence_of(item_id))
+        thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(errors)
+        self.assertIsNotNone(ledger.fence_of(item_id))
+
+    def test_stdout_cannot_claim_a_preexisting_note_outside_private_output(self):
+        item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        existing = paths.VAULT / "preexisting.md"
+        existing.write_text("do not move or overwrite\n")
+        script = sup.fake_transcriber(self.tmp, f'printf "%s\\n" "{existing}"')
+        with patch.dict(os.environ, {"WAX_TRANSCRIBE": str(script)}):
+            result = worker.process(item_id, audio)
+        self.assertIn("no private 'Written:' path", result["error"])
+        self.assertEqual(existing.read_text(), "do not move or overwrite\n")
+        self.assertEqual(list(paths.VAULT.iterdir()), [existing])
+
+    def test_publication_creates_an_absent_configured_vault(self):
+        item_id, audio = self.stage_item("meeting_overrun_quiet", "meeting.ogg")
+        configured = self.root / "configured" / "new" / "vault"
+        script = sup.fake_transcriber(self.tmp, '''
+note="$TRANSCRIPTS/transcript.md"
+printf "this is a full meeting discussion with enough spoken words to survive the junk filter\\n" > "$note"
+echo 'Transcription-Metadata: {"duration_seconds": 213.5, "word_count": 16, "model": "ASR-STUB"}' >&2
+printf "%s\\n" "$note"
+''')
+        self.assertFalse(configured.exists())
+        with patch.object(paths, "VAULT", configured), \
+                patch.dict(os.environ, {"WAX_TRANSCRIBE": str(script)}):
+            result = transcribe_adapter.transcribe(audio, item_id=item_id)
+        published = Path(result["md_path"])
+        self.assertTrue(configured.is_dir())
+        self.assertEqual(published.parent, configured)
+        self.assertIn("full meeting discussion", published.read_text())
+        self.assertEqual(self.state_of(item_id), "transcribed")
+        rows = ledger.connect().execute(
+            "SELECT md_path FROM transcripts WHERE item_id=?", (item_id,)).fetchall()
+        self.assertEqual([row["md_path"] for row in rows], [str(published)])
+        self.assertEqual(list(configured.glob("*.md")), [published])
 
     def test_no_boundary_leaves_the_processing_item_running(self):
         self.slow_transcriber(3, writes_note=False)

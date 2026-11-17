@@ -353,7 +353,9 @@ class SanityGateOrderTest(JunkGateHarness):
         result = self.run_once()
         self.assertNotIn("skipped", result)
         self.assertIn("SANITY GATE", result["error"])
-        self.assertEqual(self.vault_files(), [f"{Path(MEMO_NAME).stem}.suspect.md"])
+        self.assertEqual(self.vault_files(), [])
+        suspects = list((self.root / "var/logs" / self.item).glob("output-*/transcript.suspect.md"))
+        self.assertEqual(len(suspects), 1)
         self.assertEqual(self.state_of(), ("suspect", "duration_mismatch"))
         self.assertTrue(audio.is_file(), "a suspect item's audio stays visible in the inbox")
         self.assertEqual(audio.read_bytes(), AUDIO_BYTES)
@@ -367,7 +369,8 @@ class SanityGateOrderTest(JunkGateHarness):
         self.sanity_verdict = {**SANITY_OK, "ok": False, "reason_code": "audio_unprobeable"}
         self.drop(MEMO_NAME, words(50))
         self.run_once()
-        self.assertEqual(self.vault_files(), [f"{Path(MEMO_NAME).stem}.suspect.md"])
+        self.assertEqual(self.vault_files(), [])
+        self.assertEqual(len(list((self.root / "var/logs" / self.item).glob("output-*/transcript.suspect.md"))), 1)
         self.assertEqual(self.state_of()[0], "suspect")
 
 
@@ -483,25 +486,28 @@ class FailOpenTest(JunkGateHarness):
 
 
 class StagingContractTest(JunkGateHarness):
-    def test_waxd_stages_the_note_in_the_item_logs_not_the_vault(self):
+    def test_waxd_stages_the_note_in_a_private_per_attempt_directory(self):
         self.drop(MEMO_NAME, "remember to buy more coffee")
         with patch.object(transcribe_adapter.fence, "run_tracked", wraps=transcribe_adapter.fence.run_tracked) as run:
             self.run_once()
         cmd = run.call_args.args[1]
-        staged = self.root / "var/logs" / self.item / f"{Path(MEMO_NAME).stem}.md"
-        self.assertEqual(cmd[cmd.index("--output") + 1], str(staged))
+        staged = Path(cmd[cmd.index("--output") + 1])
+        self.assertEqual(staged.name, "transcript.md")
+        self.assertTrue(staged.parent.name.startswith("output-"))
+        self.assertEqual(staged.parent.parent, self.root / "var/logs" / self.item)
+        self.assertEqual(run.call_args.kwargs["env"]["TRANSCRIPTS"], str(staged.parent))
+        self.assertEqual(run.call_args.kwargs["env"]["WAX_VAULT"], str(staged.parent))
 
-    def test_a_caller_supplied_output_is_honoured_and_not_doubled(self):
+    def test_a_caller_supplied_output_cannot_escape_private_output(self):
         audio = self.root / "inbox" / MEMO_NAME
         audio.write_bytes(AUDIO_BYTES)
-        self.transcript.write_text(note(words(30), MEMO_NAME))
         explicit = self.root / "elsewhere" / "mine.md"
-        explicit.parent.mkdir()
-        with patch.object(transcribe_adapter.fence, "run_tracked", wraps=transcribe_adapter.fence.run_tracked) as run:
-            transcribe_adapter.transcribe(audio, item_id="0123456789abcdef", extra=["--output", str(explicit)])
-        cmd = run.call_args.args[1]
-        self.assertEqual(cmd.count("--output"), 1)
-        self.assertEqual(cmd[cmd.index("--output") + 1], str(explicit))
+        with patch.object(transcribe_adapter.fence, "run_tracked") as run:
+            with self.assertRaisesRegex(transcribe_adapter.TranscribeError, "caller-supplied output"):
+                transcribe_adapter.transcribe(audio, item_id="0123456789abcdef",
+                                               extra=["--output", str(explicit)])
+        run.assert_not_called()
+        self.assertFalse(explicit.exists())
 
     def test_has_output_arg_spellings(self):
         for args in (["-o", "x"], ["--output", "x"], ["--output=x"], ["-ox"]):
@@ -544,8 +550,9 @@ class ReviewFixesTest(JunkGateHarness):
         self.record.assert_not_called()
         self.run_auto.assert_not_called()
         self.assertTrue(audio.is_file(), "audio stays in the inbox so wax retry works")
-        staged = self.root / "var/logs" / self.item / f"{Path(MEMO_NAME).stem}.md"
-        self.assertIn("word0", staged.read_text())
+        staged = list((self.root / "var/logs" / self.item).glob("output-*/transcript.md"))
+        self.assertEqual(len(staged), 1)
+        self.assertIn("word0", staged[0].read_text())
         # and the operator's retry works once the vault is writable again
         worker.retry_item(self.item)
         result = self.run_once()
@@ -553,14 +560,15 @@ class ReviewFixesTest(JunkGateHarness):
         self.assertEqual(len(self.vault_files()), 1)
         self.assertEqual(self.transcript_rows(), 1)
 
-    def test_a_note_already_in_the_vault_still_falls_back_when_the_rename_fails(self):
+    def test_a_caller_supplied_vault_output_is_refused_before_spawning(self):
         audio = self.root / "inbox" / MEMO_NAME
         audio.write_bytes(AUDIO_BYTES)
-        self.transcript.write_text(note(words(30), MEMO_NAME))
-        inside = self.vault / "mine.md"                      # a caller -o that points into the vault
-        with patch.object(transcribe_adapter, "_move_out", side_effect=OSError(1, "nope")):
-            result = transcribe_adapter.transcribe(audio, item_id="0123456789abcdef", extra=["-o", str(inside)])
-        self.assertEqual(Path(result["md_path"]), inside)
+        inside = self.vault / "mine.md"
+        with patch.object(transcribe_adapter.fence, "run_tracked") as run:
+            with self.assertRaisesRegex(transcribe_adapter.TranscribeError, "caller-supplied output"):
+                transcribe_adapter.transcribe(audio, item_id="0123456789abcdef", extra=["-o", str(inside)])
+        run.assert_not_called()
+        self.assertFalse(inside.exists())
 
     # D2 (data safety): a repeat sanity failure must stay a *.suspect.md, never read as a note.
     def test_a_second_sanity_failure_of_the_same_stem_is_still_a_suspect_note(self):
@@ -569,9 +577,10 @@ class ReviewFixesTest(JunkGateHarness):
         self.run_once()
         worker.retry_item(self.item)
         self.run_once()
-        stem = Path(MEMO_NAME).stem
-        self.assertEqual(self.vault_files(), [f"{stem}-1.suspect.md", f"{stem}.suspect.md"])
-        self.assertTrue(all(n.endswith(".suspect.md") for n in self.vault_files()))
+        self.assertEqual(self.vault_files(), [])
+        suspects = list((self.root / "var/logs" / self.item).glob("output-*/transcript.suspect.md"))
+        self.assertEqual(len(suspects), 2)
+        self.assertTrue(all(p.read_text() for p in suspects))
 
     # D2 (ops): empty text from a long recording is an outage, not junk.
     def test_empty_transcript_from_long_audio_fails_visibly_instead_of_being_skipped(self):

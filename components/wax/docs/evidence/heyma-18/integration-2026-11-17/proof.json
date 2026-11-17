@@ -1,0 +1,432 @@
+{
+  "source_base": "9c02aaaeeff09ab070a2ecc4252e41860286da1f",
+  "saved_patch": "5bb504edd286d5048e97877baca1ea2eb7cf1e64",
+  "runner_exit": 0,
+  "runner_final": "ACCEPTANCE_ASSERTIONS_PASSED",
+  "fixture_characteristics": {
+    "meeting_overrun_quiet": {
+      "name": "meeting_overrun_quiet",
+      "file": "meeting_overrun_quiet.ogg",
+      "scale": 1.0,
+      "seconds": 2135.0,
+      "timeline": [
+        [
+          "talk",
+          120.0
+        ],
+        [
+          "pause",
+          45.0
+        ],
+        [
+          "talk",
+          150.0
+        ],
+        [
+          "pause",
+          90.0
+        ],
+        [
+          "talk",
+          140.0
+        ],
+        [
+          "pause",
+          30.0
+        ],
+        [
+          "talk",
+          60.0
+        ],
+        [
+          "quiet",
+          1500.0
+        ]
+      ],
+      "room_dbfs": -62.0,
+      "speech_dbfs": -24.0,
+      "overrun_at_s": 635.0,
+      "bytes": 7454754,
+      "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+      "seed": 18,
+      "sha256": "8a99570ad0e63dbe0416b13ebc5ee268dff47271d96d6c3f8142a9b1cb65027a"
+    },
+    "continuous_activity": {
+      "name": "continuous_activity",
+      "file": "continuous_activity.ogg",
+      "scale": 1.0,
+      "seconds": 1800.0,
+      "timeline": [
+        [
+          "talk",
+          1800.0
+        ]
+      ],
+      "room_dbfs": -62.0,
+      "speech_dbfs": -24.0,
+      "overrun_at_s": null,
+      "bytes": 7473131,
+      "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+      "seed": 18,
+      "sha256": "2d83492d9abe5adf2174085859f172f62c200250b506035eb0090ae007fdf61a"
+    },
+    "all_quiet": {
+      "name": "all_quiet",
+      "file": "all_quiet.ogg",
+      "scale": 1.0,
+      "seconds": 1800.0,
+      "timeline": [
+        [
+          "quiet",
+          1800.0
+        ]
+      ],
+      "room_dbfs": -66.0,
+      "speech_dbfs": -24.0,
+      "overrun_at_s": null,
+      "bytes": 6319575,
+      "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+      "seed": 18,
+      "sha256": "3dd046741c92b76362fa4e3277a30759b0be46f029f926b206624867bb12a221"
+    },
+    "meeting_with_pauses": {
+      "name": "meeting_with_pauses",
+      "file": "meeting_with_pauses.ogg",
+      "scale": 1.0,
+      "seconds": 675.0,
+      "timeline": [
+        [
+          "talk",
+          120.0
+        ],
+        [
+          "pause",
+          45.0
+        ],
+        [
+          "talk",
+          150.0
+        ],
+        [
+          "pause",
+          90.0
+        ],
+        [
+          "talk",
+          140.0
+        ],
+        [
+          "pause",
+          30.0
+        ],
+        [
+          "talk",
+          60.0
+        ],
+        [
+          "quiet",
+          40.0
+        ]
+      ],
+      "room_dbfs": -62.0,
+      "speech_dbfs": -24.0,
+      "overrun_at_s": null,
+      "bytes": 2661358,
+      "format": "ogg/opus mono 48000 Hz 32k (as captured by wax)",
+      "seed": 18,
+      "sha256": "8c4bce24b81ff0561597082406f71eaa44d6a0c98ffb755f147feb839fa23e7d"
+    }
+  },
+  "cli": {
+    "02-quiet-dry-run": {
+      "exit": 0,
+      "outcome": "proposed",
+      "reason": "trailing_quiet",
+      "boundary_s": 640.0,
+      "processing": null,
+      "capture": null,
+      "segment_ranges_s": [],
+      "halted_children_count": 0
+    },
+    "03-quiet-split": {
+      "exit": 0,
+      "outcome": "split",
+      "reason": "trailing_quiet",
+      "boundary_s": 640.0,
+      "processing": {
+        "disposition": "item untouched (already finished or skipped); parts held",
+        "fenced": false,
+        "original": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18i/accept/integration/fixtures/meeting_overrun_quiet.ogg",
+        "state_after": "complete",
+        "state_before": "complete"
+      },
+      "capture": null,
+      "segment_ranges_s": [
+        [
+          0.0,
+          640.0
+        ],
+        [
+          640.0,
+          2135.0
+        ]
+      ],
+      "halted_children_count": 0
+    },
+    "04-continuous_activity": {
+      "exit": 3,
+      "outcome": "no_boundary",
+      "reason": "no_contrast",
+      "boundary_s": null,
+      "processing": null,
+      "capture": null,
+      "segment_ranges_s": [],
+      "halted_children_count": 0
+    },
+    "04-all_quiet": {
+      "exit": 3,
+      "outcome": "no_boundary",
+      "reason": "no_activity",
+      "boundary_s": null,
+      "processing": null,
+      "capture": null,
+      "segment_ranges_s": [],
+      "halted_children_count": 0
+    },
+    "04-meeting_with_pauses": {
+      "exit": 3,
+      "outcome": "no_boundary",
+      "reason": "no_sustained_quiet",
+      "boundary_s": null,
+      "processing": null,
+      "capture": null,
+      "segment_ranges_s": [],
+      "halted_children_count": 0
+    },
+    "11-slow-split": {
+      "exit": 0,
+      "outcome": "split",
+      "reason": "trailing_quiet",
+      "boundary_s": 640.0,
+      "processing": {
+        "disposition": "in-flight work halted (nice); original preserved; parts held until submitted",
+        "fenced": true,
+        "original": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18i/accept/integration/root/skipped/split/20261117-213107-f2e2096e/slow-meeting.ogg",
+        "state_after": "skipped",
+        "state_before": "archived"
+      },
+      "capture": null,
+      "segment_ranges_s": [
+        [
+          0.0,
+          640.0
+        ],
+        [
+          640.0,
+          2135.0
+        ]
+      ],
+      "halted_children_count": 1
+    },
+    "11-stubborn-split": {
+      "exit": 0,
+      "outcome": "split",
+      "reason": "trailing_quiet",
+      "boundary_s": 640.0,
+      "processing": {
+        "disposition": "in-flight work halted (nice); original preserved; parts held until submitted",
+        "fenced": true,
+        "original": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18i/accept/integration/root/skipped/split/20261117-213118-b1bf319b/stubborn-meeting.ogg",
+        "state_after": "skipped",
+        "state_before": "archived"
+      },
+      "capture": null,
+      "segment_ranges_s": [
+        [
+          0.0,
+          640.0
+        ],
+        [
+          640.0,
+          2135.0
+        ]
+      ],
+      "halted_children_count": 1
+    },
+    "11-passslow-split": {
+      "exit": 0,
+      "outcome": "split",
+      "reason": "trailing_quiet",
+      "boundary_s": 640.0,
+      "processing": {
+        "disposition": "in-flight work halted (fx-stamp); original preserved; parts held until submitted",
+        "fenced": true,
+        "original": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18i/accept/integration/root/skipped/split/20261117-213130-aec48c16/passslow-meeting.ogg",
+        "state_after": "skipped",
+        "state_before": "transcribed"
+      },
+      "capture": null,
+      "segment_ranges_s": [
+        [
+          0.0,
+          640.0
+        ],
+        [
+          640.0,
+          2135.0
+        ]
+      ],
+      "halted_children_count": 1
+    },
+    "22-live-no-boundary": {
+      "exit": 3,
+      "outcome": "no_boundary",
+      "reason": "no_contrast",
+      "boundary_s": null,
+      "processing": null,
+      "capture": {
+        "id": "20261117-163131-a1949d",
+        "segments_analyzed": 11,
+        "segments_unreadable": 0,
+        "snapshot_duration_s": 109.928,
+        "state_after": "recording",
+        "state_before": "recording"
+      },
+      "segment_ranges_s": [],
+      "halted_children_count": 0
+    },
+    "23-live-dry-run": {
+      "exit": 0,
+      "outcome": "proposed",
+      "reason": "trailing_quiet",
+      "boundary_s": 640.0,
+      "processing": null,
+      "capture": {
+        "id": "20261117-163131-a1949d",
+        "segments_analyzed": 109,
+        "segments_unreadable": 0,
+        "snapshot_duration_s": 1089.292,
+        "state_after": "recording",
+        "state_before": "recording"
+      },
+      "segment_ranges_s": [],
+      "halted_children_count": 0
+    },
+    "24-live-split": {
+      "exit": 0,
+      "outcome": "split",
+      "reason": "trailing_quiet",
+      "boundary_s": 640.0,
+      "processing": {
+        "disposition": "capture stopped and finalized into the hold, not the inbox; original preserved; parts held until submitted; recording not restarted",
+        "fenced": false,
+        "original": "/home/delorenj/.hermes/profiles/heyma-pm/cache/scratch/h18i/accept/integration/root/skipped/split/20261117-163131-a1949d/20261117-163131-acceptance-live.ogg",
+        "state_after": null,
+        "state_before": null
+      },
+      "capture": {
+        "finalized_duration_s": 1592.76,
+        "id": "20261117-163131-a1949d",
+        "segments_analyzed": 132,
+        "segments_skipped": 0,
+        "segments_unreadable": 0,
+        "segments_used": 160,
+        "snapshot_duration_s": 1319.142,
+        "state_after": "ready",
+        "state_before": "recording"
+      },
+      "segment_ranges_s": [
+        [
+          0.0,
+          640.0
+        ],
+        [
+          640.0,
+          1591.714
+        ]
+      ],
+      "halted_children_count": 0
+    }
+  },
+  "verification": {
+    "12-slow-verified": {
+      "original_sha256": "f2e2096e5e9abf5de8d1994aa797f84f2627d3c143406f2d5650fd4cbaac4b6f",
+      "all_assertions": "passed"
+    },
+    "12-stubborn-verified": {
+      "original_sha256": "b1bf319b12fcce02e8519a061b005b930b3e2621b6da952a5fdfe2df5bcbd5e2",
+      "all_assertions": "passed"
+    },
+    "12-passslow-verified": {
+      "original_sha256": "aec48c16bb43e483d5aa2d867a189241883f22c5bc547d321fdd43c0284ec684",
+      "all_assertions": "passed"
+    },
+    "25-live-verified": {
+      "encoder_after": {
+        "pid": 3017269,
+        "exited": true
+      },
+      "capture_not_restarted": true,
+      "all_assertions": "passed"
+    }
+  },
+  "ledger_counts": {
+    "items": 8,
+    "fences": 3,
+    "segments": 10,
+    "backups": 4,
+    "children": 0
+  },
+  "ledger_item_states": {
+    "meeting_overrun_quiet.ogg": "complete",
+    "continuous_activity.ogg": "complete",
+    "all_quiet.ogg": "complete",
+    "meeting_with_pauses.ogg": "complete",
+    "slow-meeting.ogg": "skipped",
+    "unrelated-talk.ogg": "complete",
+    "stubborn-meeting.ogg": "skipped",
+    "passslow-meeting.ogg": "skipped"
+  },
+  "local_object_seam_not_live_s3": true,
+  "historical_verified_s3": "components/wax/docs/evidence/heyma-18/validation-2026-11-13/README.md",
+  "tests": {
+    "combined": {
+      "exit": 0,
+      "tail": [
+        ".....................................................                    [100%]",
+        "53 passed in 4.86s"
+      ]
+    },
+    "focused-final": {
+      "exit": 0,
+      "tail": [
+        "........................................................................ [ 64%]",
+        "........................................                                 [100%]",
+        "112 passed, 1 deselected in 24.72s"
+      ]
+    },
+    "systemd-verify": {
+      "exit": 0,
+      "tail": [
+        ".                                                                        [100%]",
+        "1 passed in 0.13s"
+      ]
+    },
+    "full-wax": {
+      "exit": 1,
+      "tail": [
+        "=========================== short test summary info ============================",
+        "FAILED tests/portability_test.py::PortabilityTest::test_systemd_render_handles_spaces_and_special_characters",
+        "1 failed, 1396 passed in 216.05s (0:03:36)"
+      ]
+    },
+    "root-isolated": {
+      "exit": 0,
+      "tail": [
+        "........................................................................ [ 60%]",
+        "...............................................                          [100%]",
+        "119 passed in 211.56s (0:03:31)"
+      ]
+    }
+  }
+}
