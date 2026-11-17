@@ -46,7 +46,7 @@ The hotkey must call `~/.local/bin/wax-toggle` (symlink to `components/wax/bin/w
 | Command | What it does |
 |---|---|
 | `wax skip <item_id>` | Preserve a queued item without processing it (`skipped/`, reason `operator_skip`) |
-| `wax retry [item_id] [--all]` | Requeue preserved failed or suspect inbox items |
+| `wax retry [item_id] [--all]` | Requeue preserved failed or suspect inbox items; on a junk-gate reject (`skipped`, cause `junk_*`) `wax retry <item>` moves the audio back from `skipped/junk/` and exempts it from the gate (see [transcription](transcription.md)) |
 | `wax drain [-n 1]` | Process the inbox now, one-shot |
 | `wax reconcile --rebuild` | Rebuild the ledger from durable sources. Without `--rebuild` it prints "pass --rebuild" and exits 2. Never run it before the cause is known |
 | `wax migrate --plan\|--dry-run\|--apply` | Fold legacy directories into the one inbox. Refuses with none of the three flags |

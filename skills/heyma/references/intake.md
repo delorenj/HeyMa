@@ -32,11 +32,13 @@ Copy any media file into `inbox/` (at any depth). Respect the dot-name-then-rena
 
 ## After the inbox
 
-From here it is the standard item pipeline: archive (S3 backup-first, [archive](archive.md)), then transcription ([transcription](transcription.md)). `skipped`/`failed`/`suspect` items stay in the inbox until an operator acts (`wax retry`); `complete` duplicates are parked to `archive/duplicates/`, never deleted.
+From here it is the standard item pipeline: archive (S3 backup-first, [archive](archive.md)), then transcription ([transcription](transcription.md)). `skipped`/`failed`/`suspect` items stay in the inbox until an operator acts (`wax retry`); `complete` duplicates are parked to `archive/duplicates/`, never deleted. Audio the [junk gate](transcription.md#the-junk-gate) rejected (voicemails, "Hello?" calls, one-word clips) is archived to S3, then moved to `skipped/junk/` as `skipped` (cause `junk_*`); it never gets a note, and a re-dropped copy goes to `skipped/junk/duplicates/`.
 
 **Phantom rows (2026-11-05):** 214 `pending` ledger rows point at paths that no longer exist (189 under `inbox/202*`, 13 `inbox/ASR*`, 7 `inbox/voi*`, 2 under retired `~/audio/`, plus 3 one-off drops: `test-1769351396.mp3`, `neos_problems.m4a`, `IntelliforiaPivot.m4a`). They are history, not a queue: `wax items` counts them, `wax queue` does not. `wax reconcile` without `--rebuild` refuses (exit 2) and has **no `--dry-run`** — older doctor notes citing one are stale.
 
 ## "Recorded but no transcript" triage
+
+First rule out the junk gate: a recording that was a voicemail or a few words is `skipped` with cause `junk_*` and sits in `skipped/junk/` on purpose ([transcription](transcription.md#the-junk-gate)).
 
 Work top to bottom; stop at the first row that matches. The ledger is ground truth: `sqlite3 "file:$HOME/HeyMa/var/wax.db?mode=ro"` → `select item_id, origin, state, first_seen from items order by first_seen desc limit 10;`
 

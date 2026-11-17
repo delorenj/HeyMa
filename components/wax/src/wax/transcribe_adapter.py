@@ -60,6 +60,66 @@ class TranscriptionDurationError(TranscribeError):
     pass
 
 
+class TranscriptRejected(TranscribeError):
+    """The junk gate (wax/junk.py) refused a fresh transcript: nothing was published.
+
+    ``rejection`` is the junk.Rejection; ``kept`` is where the ASR text was set
+    aside (out of the vault). The caller owns the item state and the audio.
+    """
+
+    def __init__(self, message: str, rejection: Any, kept: Optional[Path]):
+        super().__init__(message)
+        self.rejection = rejection
+        self.kept = kept
+
+
+def _has_output_arg(args: list[str]) -> bool:
+    return any(a in ("-o", "--output") or a.startswith("--output=") or (a.startswith("-o") and len(a) > 2)
+               for a in args)
+
+
+def _move_out(src: Path, dst: Path) -> Path:
+    """move_noclobber, falling back to a copy-move when renameat2 cannot cross filesystems.
+
+    Never overwrites: on the fallback the first free ``dst``/``dst-N`` name is used.
+    """
+    from . import rename as rn
+    try:
+        return rn.move_noclobber(src, dst)
+    except rn.RenameCollision:
+        raise
+    except OSError:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        cand, n = dst, 0
+        while os.path.lexists(cand):
+            n += 1
+            cand = dst.with_name(f"{dst.stem}-{n}{dst.suffix}")
+        return Path(shutil.move(str(src), str(cand)))
+
+
+def _move_suspect(md: Path) -> Path:
+    """Quarantine a sanity-failed note in the vault as ``<stem>.suspect.md``.
+
+    A repeat failure of the same stem becomes ``<stem>-N.suspect.md``: the
+    suffix must stay ``.suspect.md`` because prune and the store reconcile skip
+    exactly that, and a generic ``<stem>.suspect-1.md`` would read as a real note.
+    """
+    dst = paths.VAULT / (md.stem + ".suspect.md")
+    n = 0
+    while os.path.lexists(dst):
+        n += 1
+        dst = paths.VAULT / f"{md.stem}-{n}.suspect.md"
+    return _move_out(md, dst)
+
+
+def _in_vault(p: Path) -> bool:
+    try:
+        p.resolve().relative_to(paths.VAULT.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def diarization_mode(env: Optional[dict[str, str]] = None) -> str:
     """Resolve WAX_DIARIZATION to "default" | "required" | "disabled".
 
@@ -249,6 +309,12 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
     asr_path = logdir / "asr.json"
     requested = [arg for arg in list(extra or []) if arg not in ("--diarization", "--no-diarization")]
     requested.extend(["--no-diarization", "--asr-output", str(asr_path)])
+    # Stage the note beside the item's logs, never straight into the vault: the
+    # sanity and junk gates judge it first, and only a transcript that passes
+    # both is moved into paths.VAULT. (A remote run still writes the vault's
+    # local dir; the gates move a refused note out of it.)
+    if not _has_output_arg(requested):
+        requested.extend(["--output", str(logdir / f"{audio.stem}.md")])
     started = __import__("time").monotonic()
     cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
     desktop.ding("start")
@@ -309,8 +375,9 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
         verdict = {**verdict, "ok": False, "reason_code": "source_changed"}
 
     if not verdict["ok"]:
-        suspect = md.with_name(md.stem + ".suspect.md")
-        shutil.move(str(md), str(suspect))
+        # The suspect note is quarantined in the vault, as before staging: it is
+        # the operator's evidence (prune and the store reconcile both skip *.suspect.md).
+        suspect = _move_suspect(md)
         if item_id:
             ledger.set_item_state(item_id, "suspect", cause=verdict["reason_code"] or "gate_failed",
                                   evidence=str(verdict))
@@ -320,14 +387,44 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
             f"ratio={verdict['duration_ratio']} -> quarantined as {suspect.name}; log: {logfile}"
         )
 
-    # Passed. Give it a dated, findable name.
+    # The junk gate: a voicemail, a "Hello?" call, a one-word misfire is never
+    # published, recorded or enriched (wax/junk.py). The text is set aside next
+    # to the item's logs; the caller parks the audio and records the state.
+    from . import junk
+    rejection = junk.after_asr(md, audio, item_id)
+    if rejection is not None:
+        kept: Optional[Path] = md
+        try:
+            kept = _move_out(md, logdir / "rejected.md")
+        except OSError as exc:
+            log.warning("junk gate could not set %s aside: %s", md, exc)
+        if rejection.reason == "empty" and junk.empty_is_an_outage(verdict.get("audio_duration_s")):
+            # Minutes of audio and no words is a Whisper/VAD/GPU outage, not a silent
+            # clip. Filing it as junk would hide the outage behind `skipped`: fail the
+            # item so it stays visible and `wax retry` works.
+            raise TranscribeError(
+                f"EMPTY TRANSCRIPT from {verdict.get('audio_duration_s')}s of audio; not published, "
+                f"empty note kept at {kept}; log: {logfile}")
+        raise TranscriptRejected(
+            f"JUNK GATE REJECTED ({rejection.reason}): {rejection.detail}; "
+            f"not published, text kept at {kept}",
+            rejection, kept)
+
+    # Passed. Give it a dated, findable name in the vault.
     desired = paths.VAULT / vault_name(audio)
     final = md
-    if md.name != desired.name:
-        from . import rename as rn
+    if md.resolve() != desired.resolve():
         try:
-            final = rn.move_noclobber(md, desired)
-        except OSError:
+            final = _move_out(md, desired)
+        except OSError as exc:
+            # Falling back to `md` is only safe when it is already in the vault
+            # (a caller -o, a remote copy). A staged note left in var/logs would be
+            # recorded and enriched while the vault stays empty: fail the item
+            # instead, so `wax retry` works and the staged note is preserved.
+            if not _in_vault(md):
+                raise TranscribeError(
+                    f"could not publish {md.name} to the vault ({exc}); staged note kept at {md}; "
+                    f"log: {logfile}") from exc
             final = md
 
     # Stamp identity onto the note itself, at publish time — NOT only when an

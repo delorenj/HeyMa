@@ -259,7 +259,9 @@ class TranscribeHookTest(unittest.TestCase):
             audio = root / "audio.ogg"
             md = root / "derived.md"
             audio.write_bytes(b"audio")
-            md.write_text("# Transcription: audio.ogg\n\nhello\n")
+            # A realistic body: the junk gate (wax/junk.py) rejects a one-word transcript before any hook runs.
+            md.write_text("# Transcription: audio.ogg\n\n**Speaker 1 (00:00):** "
+                          "hello there this is an ordinary dictation with enough words in it\n")
             metadata = ('Transcription-Metadata: {"duration_seconds": 1, "word_count": 1, '
                         '"diarized": true, "model": "large-v3"}\n')
             connection = SimpleNamespace(execute=lambda *_args, **_kwargs: None)

@@ -10,7 +10,7 @@ The runtime root is `WAX_ROOT` (default `~/HeyMa`, this repo). Code and state sh
 | `inbox/` | The one work queue. Plain local directory, recursive |
 | `dropoff/` | Syncthing receive-only feed (folder id `audio`, "Transcription Inbox"). waxd only copies out of it |
 | `archive/` | Audio parked after S3 verify |
-| `skipped/`, `quarantine/`, `recovered/` | Preserved, never processed and never deleted. `skipped/split/<split_id>/` holds a `wax split`: the original, the held parts and `split.json`; `recovered/split-late/` holds a transcript that finished after its item was split ([capture](capture.md#splitting-a-recording-left-running-wax-split)) |
+| `skipped/`, `quarantine/`, `recovered/` | Preserved, never processed and never deleted. `skipped/split/<split_id>/` holds a `wax split`: the original, the held parts and `split.json`; `skipped/junk/` holds audio the [junk gate](transcription.md#the-junk-gate) rejected (re-drops in `junk/duplicates/`); `recovered/split-late/` holds a transcript that finished after its item was split ([capture](capture.md#splitting-a-recording-left-running-wax-split)) |
 | `Dictionary.yaml` | The custom dictionary, read by `dictionary-correction` every run |
 | `var/wax.db` | SQLite WAL ledger: `items`, `backups`, `transcripts`, `passes`, `outbox`, `transitions`, plus `calls`, `call_legs`, `call_recordings`, `call_events`, `documents`, `pipelines` |
 | `var/state.json` | Live mirror the tray reads once a second |
@@ -59,8 +59,8 @@ Item states in the ledger: `pending`, `archived`, `transcribed`, `enrichment_pen
 | `archived` | `s3_verified` |
 | `failed` | `archive_failed`, `transcribe_failed`, `s3_reverify_failed` |
 | `enrichment_pending` | `completion_withheld` |
-| `skipped` | `operator_skip`, `split` (`wax split` halted the item; the ledger then refuses any later state change for it: table `item_fences`) |
-| `transcribed`, `suspect` | set by the transcribe adapter |
+| `skipped` | `operator_skip`, `junk_voicemail`/`junk_empty`/`junk_too_short`/`junk_call_noise`/`junk_no_content` (the junk gate; `junk_redropped` journals a re-dropped copy), `split` (`wax split` halted the item; the ledger then refuses any later state change for it: table `item_fences`) |
+| `transcribed`, `suspect` | set by the transcribe adapter (a note the junk gate refuses gets neither: it is `skipped`) |
 | `complete` | set by finalize, once every planned pass is done |
 
 ## Tray colors

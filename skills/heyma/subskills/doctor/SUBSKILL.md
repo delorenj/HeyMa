@@ -174,6 +174,7 @@ Load the reference for the **first** failing layer (table above), plus:
 
 | Symptom | Go to |
 |---|---|
+| A voicemail or "Hello?" call has no note and no title | Not a bug: the junk gate (`skipped`, cause `junk_*`, audio in `skipped/junk/`, text in `var/logs/<item>/rejected.md`; see [transcription](../../references/transcription.md#the-junk-gate)). A real recording wrongly rejected: read `rejected.md`, fix the rule in `prune.classify` (shared with the nightly prune). There is no re-run command; a re-dropped copy of the same bytes is parked, so transcribe it by hand with `bin/transcribe` |
 | "I transcribed a lot and there are no transcripts" | Check intake before the pipeline: ledger `first_seen`, hotkey scopes, Syncthing. `Ctrl+BackSpace` is vinyl dictation, not Wax (the `vinyl` hub skill, `components/vinyl/skills/vinyl/SKILL.md`). See [intake](../../references/intake.md). |
 | Titles missing or odd, chain evidence shows `missing_model` | [passes/model-chain](../../references/passes/model-chain.md) |
 | Wrong respellings | [passes/dictionary](../../references/passes/dictionary.md) |

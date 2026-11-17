@@ -90,7 +90,9 @@ class PortabilityTest(unittest.TestCase):
             audio = root / "audio.ogg"
             md = root / "derived.md"
             audio.write_bytes(b"audio")
-            md.write_text("# transcript\n")
+            # A realistic body: the junk gate rejects a one-word transcript, and this test is about the dings.
+            md.write_text("# Transcription: audio.ogg\n\n**Speaker 1 (00:00):** "
+                          "this is a perfectly ordinary dictation with plenty of words in it\n")
             metadata = (
                 'Transcription-Metadata: {"duration_seconds": 1, "word_count": 1, '
                 '"diarized": true, "model": "large-v3"}\n'

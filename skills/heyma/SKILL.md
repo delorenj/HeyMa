@@ -34,6 +34,7 @@ HeyMa is the Wax audio pipeline: record, archive, transcribe, enrich. One daemon
 | Is the transcript store behind? | `wax transcripts sync --check` |
 | What is the latest transcript (overall or for a project)? | `wax tx [PROJECT...]` |
 | Which transcripts are dated today or yesterday? | `wax tx --today`, `wax tx --yesterday` |
+| Why was a voicemail or "Hello?" call never transcribed or titled? | The junk gate: `skipped` items, cause `junk_*`, audio in `skipped/junk/`, text in `var/logs/<item>/rejected.md` ([transcription](references/transcription.md#the-junk-gate)); off with `WAX_JUNK_GATE=0` |
 | Which notes in `~/d/Transcripts` are junk (voicemail, empty, "Hello? Hello?")? | `wax transcripts prune` (dry run; `--apply` trashes, `unprune` undoes) |
 | What would the vault-wide tidy trash, title, consolidate or move? | `wax vault sweep` (dry run; `--apply` acts, `wax vault unsweep --run` undoes) |
 | Did the call land? | `wax calls list`, `wax calls show <ref>` |

@@ -10,7 +10,7 @@ on 2026-11-05.
 ## The ASR step
 
 ```
-worker.process -> transcribe_adapter.transcribe -> nice -n 15 <transcribe> <audio> --no-diarization --asr-output <logs>/asr.json
+worker.process -> transcribe_adapter.transcribe -> nice -n 15 <transcribe> <audio> --no-diarization --asr-output <logs>/asr.json --output <logs>/<stem>.md
 ```
 
 | Fact | Value |
@@ -19,8 +19,8 @@ worker.process -> transcribe_adapter.transcribe -> nice -n 15 <transcribe> <audi
 | Engine | `scripts/transcribe.py`, faster-whisper, default model `large-v3`, `beam_size=5`, `vad_filter=True` |
 | Device | `--device auto`: CUDA float16 when there is enough free VRAM, else CPU int8. The floor is `TRANSCRIBE_MIN_FREE_VRAM_MB` (default 5000 MB for large-v3, smaller for smaller models), waiting `TRANSCRIBE_VRAM_WAIT_SECS` (30 s) for a transient spike to clear. cuDNN is loaded in-process because `LD_LIBRARY_PATH` is dropped by n8n, mise and uv. |
 | Output | Exactly one stdout line (the markdown path); logs go to stderr. Per-item logs live in `logs/<item>/transcription.<attempt>.log`. |
-| Landing place | `~/d/Transcripts/` (`WAX_VAULT`, really `~/code/DeLoDocs/Transcripts`), named `YYYYMMDD-HHMMSS-<slug>.md`. |
-| Scratch audio never reaches the vault | An ad-hoc `bin/transcribe` run on audio under `/tmp`, `/var/tmp`, `$TMPDIR`, `~/.claude/tmp`, `~/.cache` or a `~/.hermes/**/cache` or `audio_cache` dir is treated as `--ephemeral` for **output placement**: the shim passes `--output ${TRANSCRIBE_EPHEMERAL_DIR:-/tmp/ephemeral_transcripts}/<stem>-<pid>.md` and says `[scratch] ...` on stderr (the file is `.json` under `--json`, as `transcribe.py` names it). The remote branch does the same on both hosts: it tells the remote `transcribe.py` to write into `/tmp/transcribe-staging/` (removed on exit) instead of that host's `~/d/Transcripts`, and copies the transcript back to the ephemeral dir instead of `$TRANSCRIPTS`. `scripts/transcribe.py` itself never reads `$TRANSCRIPTS`: with no `--output` it writes `~/d/Transcripts/<stem>.md`, which is how `tmp*.md` and `proof.md` reached the vault in 2026-11. An explicit `-o/--output` always wins; `--archive-s3`, the fast lane and diarization are unchanged (only `--ephemeral` skips S3). Audio under `$WAX_ROOT` (else the legacy `$WAX_AUDIO_ROOT`, else `~/HeyMa`: `wax/paths.py`'s order; `inbox/`, `stream/`), where waxd works, is never scratch, and waxd's command (`--no-diarization --asr-output`) carries no flag the guard keys on. Paths are resolved by one `resolve_path` in the shim (GNU `realpath -m` when the machine's `realpath` proves it does `-m` with a one-time probe, else a pure-bash walker that follows symlinks with plain `readlink`, no python; a one-operand `realpath` script that ignores options would otherwise answer `$PWD/-m` with exit 0), so the guard also works on a Mac, where `/bin/realpath` (13+) has no `-m` and older macOS has none: `/tmp`, `/var/tmp` and a `$TMPDIR` such as `/var/folders/xx/yyyy/T/` are compared in both their `/private/...` spellings. If a symlink cannot be followed at all (no `readlink`, or a loop) the path is judged by its spelling and a `[warn]` says so when that verdict is "not scratch"; a resolver failure never switches the guard off silently. A missing audio file now stops the shim at once (`[error] audio file not found`, exit 1) instead of at the later `stat`/`scp`. `bin/transcribe` ships in none of the Mac packages (the `heyma` cask is the UI, `vinyl-client` and the direct installer carry only `bin/vinyl`); it reaches a Mac only from a HeyMa checkout, in its remote mode, and the rest of the script still wants GNU `stat` and `date` and bash 4 there (so this fix is necessary, not sufficient, for a stock Mac). Pinned by `tests/test_transcribe_scratch_output.py` and `tests/test_transcribe_portable_paths.py` (root suite; the second simulates a Mac with `realpath` shims and a `/private` symlink farm) and `components/wax/tests/transcribe_scratch_guard_test.py`. |
+| Landing place | `~/d/Transcripts/` (`WAX_VAULT`, really `~/code/DeLoDocs/Transcripts`), named `YYYYMMDD-HHMMSS-<slug>.md`. waxd does not let the transcriber write there: it stages the note at `var/logs/<item>/<stem>.md` (an explicit `--output`, which also keeps it out of the scratch guard below) and moves it into the vault only after the sanity gate and the [junk gate](#the-junk-gate) both pass. A remote run still writes the local vault directory; the gates move a refused note out of it. |
+| Scratch audio never reaches the vault | An ad-hoc `bin/transcribe` run on audio under `/tmp`, `/var/tmp`, `$TMPDIR`, `~/.claude/tmp`, `~/.cache` or a `~/.hermes/**/cache` or `audio_cache` dir is treated as `--ephemeral` for **output placement**: the shim passes `--output ${TRANSCRIBE_EPHEMERAL_DIR:-/tmp/ephemeral_transcripts}/<stem>-<pid>.md` and says `[scratch] ...` on stderr (the file is `.json` under `--json`, as `transcribe.py` names it). The remote branch does the same on both hosts: it tells the remote `transcribe.py` to write into `/tmp/transcribe-staging/` (removed on exit) instead of that host's `~/d/Transcripts`, and copies the transcript back to the ephemeral dir instead of `$TRANSCRIPTS`. `scripts/transcribe.py` itself never reads `$TRANSCRIPTS`: with no `--output` it writes `~/d/Transcripts/<stem>.md`, which is how `tmp*.md` and `proof.md` reached the vault in 2026-11. An explicit `-o/--output` always wins; `--archive-s3`, the fast lane and diarization are unchanged (only `--ephemeral` skips S3). Audio under `$WAX_ROOT` (else the legacy `$WAX_AUDIO_ROOT`, else `~/HeyMa`: `wax/paths.py`'s order; `inbox/`, `stream/`), where waxd works, is never scratch, and waxd's command (`--no-diarization --asr-output`, plus its staging `--output` under `WAX_ROOT`) carries no flag the guard keys on. Paths are resolved by one `resolve_path` in the shim (GNU `realpath -m` when the machine's `realpath` proves it does `-m` with a one-time probe, else a pure-bash walker that follows symlinks with plain `readlink`, no python; a one-operand `realpath` script that ignores options would otherwise answer `$PWD/-m` with exit 0), so the guard also works on a Mac, where `/bin/realpath` (13+) has no `-m` and older macOS has none: `/tmp`, `/var/tmp` and a `$TMPDIR` such as `/var/folders/xx/yyyy/T/` are compared in both their `/private/...` spellings. If a symlink cannot be followed at all (no `readlink`, or a loop) the path is judged by its spelling and a `[warn]` says so when that verdict is "not scratch"; a resolver failure never switches the guard off silently. A missing audio file now stops the shim at once (`[error] audio file not found`, exit 1) instead of at the later `stat`/`scp`. `bin/transcribe` ships in none of the Mac packages (the `heyma` cask is the UI, `vinyl-client` and the direct installer carry only `bin/vinyl`); it reaches a Mac only from a HeyMa checkout, in its remote mode, and the rest of the script still wants GNU `stat` and `date` and bash 4 there (so this fix is necessary, not sufficient, for a stock Mac). Pinned by `tests/test_transcribe_scratch_output.py` and `tests/test_transcribe_portable_paths.py` (root suite; the second simulates a Mac with `realpath` shims and a `/private` symlink farm) and `components/wax/tests/transcribe_scratch_guard_test.py`. |
 | Limits | `MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` = 300MB and `MAX_AUDIO_DURATION_FOR_TRANSCRIPTION` = 3h, both exclusive; over either the item is archived then skipped ([archive](archive.md)). The adapter repeats the check so a direct call cannot bypass it. |
 | Timeout | 24 h for the child process. The child is registered per item (`item_children`) so `wax split` can stop exactly that item's transcriber; a transcript that finishes after a split is moved to `recovered/split-late/`, not published |
 | Concurrency | One item at a time (`worker.process` is serialized) |
@@ -37,8 +37,9 @@ publishes), a falsy value (`0|false|no|off`) is "disabled" and the pass records
 
 After the child exits, `sanity.check` compares an independent `ffprobe` duration
 of the audio with the duration faster-whisper says it decoded. It fails closed.
-On failure the note is moved to `<stem>.suspect.md`, the item becomes `suspect`,
-and the audio stays in the inbox.
+On failure the note is moved into the vault as `<stem>.suspect.md`, the item
+becomes `suspect`, and the audio stays in the inbox. This gate speaks first: a
+one-word note that also fails it is `suspect`, not junk.
 
 | `reason_code` | Meaning |
 |---|---|
@@ -50,6 +51,48 @@ and the audio stays in the inbox.
 The gate is on container durations, deliberately not on words per minute or the
 last segment's end: with VAD on, a three-hour recording that goes quiet after 25
 minutes is legitimate. Retry a preserved item with `wax retry [<item>]`.
+
+## The junk gate
+
+A voicemail, a "Hello?" call, a one-word misfire or a silent clip is never worth
+a vault note, a `transcripts` row, a store version or an enrichment pass.
+`src/wax/junk.py` stops them with deterministic rules (no model, zero LLM
+tokens), for every intake source. The 30 days to 2026-11-17 spent about 117
+items and 840k input tokens enriching audio that `wax transcripts prune` then
+trashed.
+
+| Stage | Rule | `reason` |
+|---|---|---|
+| Before ASR (audio archived to S3 first, never transcribed) | A `telnyx-vm-*` file name, or a local `calls` row (`call_for_audio`, no Telnyx GET) with `outcome = voicemail` | `voicemail` |
+| After ASR, after the sanity gate, before the note is published | `prune.classify` on the fresh note. It has no title or summary yet, so only the structural rules fire: no spoken words (`empty`), a voicemail greeting opening a call (`voicemail`), a test utterance that opens a short note (`no-content`), fewer than 4 words (`too-short`), a phone call of 20 words or fewer (`call-noise`) | as listed |
+
+A rejected item is `skipped` with cause `junk_<reason>` (`junk_voicemail`,
+`junk_empty`, `junk_too_short`, `junk_call_noise`, `junk_no_content`). The audio
+moves to `skipped/junk/` (never deleted; `items.path` follows it). The ASR text
+is kept out of the vault at `var/logs/<item>/rejected.md`. No `transcripts` row,
+store version or pass plan is written, so no pass ever runs, and the item is not
+a failure (no ticket, no tray alarm). A copy of the same bytes dropped into the
+inbox again is parked in `skipped/junk/duplicates/` (cause `junk_redropped`),
+never reprocessed.
+
+- `wax retry <item>` releases a false positive: the audio moves from
+  `skipped/junk/` back to the inbox and a `junk_override` transition makes both
+  stages skip that item from then on.
+- Two cases are not junk: an empty transcript from audio over 120 s is a
+  Whisper/VAD outage and fails the item (`failed`, `wax retry` works), and CJK
+  text is counted per character, not per space.
+- A failed move into the vault fails the item (`transcribe_failed`, staged note
+  kept in `var/logs/<item>/`); it never records a note outside the vault.
+- `WAX_JUNK_GATE=0` (also `false|no|off`) turns both stages off for new work in
+  that process. Rule changes live in `prune.classify`,
+  one definition shared with the nightly prune.
+- The gate fails open: a missing call row, a failing calls lookup or an
+  unreadable note means "not junk" and the item carries on.
+- `wax transcripts prune` stays as the backstop for what only a title or summary
+  reveals ([transcriptions-store](transcriptions-store.md#pruning-junk-notes)).
+- To find rejections: `sqlite3 "file:$HOME/HeyMa/var/wax.db?mode=ro" "SELECT
+  subject, cause_code, evidence FROM transitions WHERE machine='item' AND
+  cause_code LIKE 'junk_%'"`, or `ls ~/HeyMa/skipped/junk`.
 
 ## Diarization
 

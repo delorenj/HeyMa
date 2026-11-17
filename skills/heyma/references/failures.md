@@ -47,7 +47,7 @@ Never ticket-worthy: `dependency_failed` (its upstream gets the ticket),
 `voicemail_empty` (a caller hung up at the beep, final, never retried), call
 outcomes such as `CALL_REJECTED` (a person's choice), documents that were
 superseded, trashed or vanished, transcripts pruned by `wax transcripts prune`
-(`transcripts.pruned_at`), passes that are switched off (registry or
+(`transcripts.pruned_at`), items the junk gate skipped (`skipped`, cause `junk_*`), passes that are switched off (registry or
 operator), and failures at a version older than the registry's.
 
 A **signature** folds failures by `(kind, slug, reason_code)`; its fingerprint is

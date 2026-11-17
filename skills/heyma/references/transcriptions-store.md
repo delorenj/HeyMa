@@ -71,6 +71,8 @@ mise: `wax:transcripts:sync`, `wax:transcripts:search`, `wax:transcripts:migrate
 
 ## Pruning junk notes
 
+Since 2026-11-17 the [junk gate](transcription.md#the-junk-gate) rejects the structural cases (voicemails, empty, one-word, short calls) before a note exists, so this prune is the **backstop** for what only a title or summary reveals, and for notes written before the gate.
+
 `wax transcripts prune` (`src/wax/prune.py`) moves voicemails, header-only and
 silent notes, self-declared "no content" notes, one-to-three-word misfires and
 "Hello? Hello?" calls from `~/d/Transcripts` to `<vault>/.trash/Transcripts/`.

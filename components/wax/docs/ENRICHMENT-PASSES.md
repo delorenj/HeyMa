@@ -14,7 +14,11 @@ the fleet keeps running; fixing the YAML lifts the quarantine live.
 New recordings follow this order:
 
 1. upload and verify the immutable, content-addressed audio object;
-2. transcribe and publish the initial Markdown note;
+2. transcribe and publish the initial Markdown note. A voicemail, or a note that
+   is empty, one-to-three words, a test utterance or a short call, is rejected
+   by the junk gate (`wax/junk.py`) before it is published: the item is
+   `skipped` (`junk_*`) and steps 3 to 6 never run, so no pass spends a token on
+   it (`WAX_JUNK_GATE=0` disables it);
 3. run every enabled pass with `auto: true`, in dependency order;
 4. **publish what is ready**: a completed pass's declared events are enqueued
    as soon as the pass's own `requires` subgraph is `completed`/`skipped` —

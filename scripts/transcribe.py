@@ -787,6 +787,9 @@ def main():
     if args.stdout:
         print(output)
     else:
+        # waxd stages the note under var/logs/<item>/ (the junk gate judges it before the vault sees it):
+        # a remote host has no such directory until we make it.
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text(output, encoding="utf-8")
         meta = {
             "mdPath": output_path,

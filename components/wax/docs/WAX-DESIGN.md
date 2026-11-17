@@ -336,7 +336,7 @@ Deliberate naming call: **not** `audio.file.received` — `tonnybox-server` owns
 
 **Identity is content, not time.** `item_id = sha256(bytes)[:16]`. This is also `transcription_id` and the S3 key component. It kills two verified production bugs at the root: n8n's `transcription_id = String($execution.id)` (a fresh id on every reprocess), and `bin/transcribe:163-169`'s mtime-derived S3 key which already minted byte-identical twins (same ETag `1ae68b528032a51cf09d49a958d78379-10` under `2026-07-20/105044-...` **and** `2026-07-21/145223-105044-...`).
 
-Item states in `wax.db`: `pending → claimed → archived → transcribing → transcribed → enriching → complete`, plus `failed`, `suspect`, `quarantined`. Nothing ever leaves without an explicit operator action, and nothing is deleted.
+Item states in `wax.db`: `pending → claimed → archived → transcribing → transcribed → enriching → complete`, plus `failed`, `suspect`, `quarantined`, and `skipped` (oversize, over-duration, `wax split`, or the junk gate: voicemails and near-empty recordings are archived, parked in `skipped/junk/` and never published or enriched; see `wax/junk.py`). Nothing ever leaves without an explicit operator action, and nothing is deleted.
 
 The user's three cold-start predicates become the **bootstrap inference rules**, hardened:
 - *local non-markdown file with no ledger row* → assume **not** backed up, unless a HEAD on `.by-content/<sha256>.json` proves otherwise. Extension allowlist + 64 KiB floor applied.

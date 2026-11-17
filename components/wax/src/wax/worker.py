@@ -37,6 +37,7 @@ from typing import Any, Optional
 
 from . import (archive, config, desktop, documents, dropoff, fence, finalize, ledger, passes, paths, procutil,
                rename, sanity, sentinel, state, transcribe_adapter)
+from . import junk
 
 # Contract B: name only, handler configured exactly once in bin/waxd. Before
 # this existed there was no `import logging` anywhere under src/wax, and 22 h of
@@ -246,7 +247,7 @@ WORK_STATES = ("pending", "archived", "transcribed")
 def next_item() -> Optional[tuple[str, Path, str]]:
     """Oldest inbox file needing attention, and what to do with it.
 
-    Returns (item_id, path, action) where action is "process" or "park".
+    Returns (item_id, path, action) where action is "process", "park" or "park-junk".
 
     The `park` case matters more than it looks: a file whose CONTENT is already
     fully processed (a re-dropped copy, a restored backup) must still leave the
@@ -268,12 +269,40 @@ def next_item() -> Optional[tuple[str, Path, str]]:
             return item_id, p, "process"
         if st == "complete":
             return item_id, p, "park"
+        if st == "skipped" and _junk_redrop(conn, item_id, p):
+            return item_id, p, "park-junk"
         if st in ("suspect", "failed", "skipped"):
             # Poison items remain visible and preserved in the inbox until an
             # explicit operator action. Continue scanning so they never wedge
             # healthy work behind them.
             continue
     return None
+
+
+def _junk_redrop(conn, item_id: str, path: Path) -> bool:
+    """A copy of audio the junk gate already rejected has landed in the inbox again."""
+    row = conn.execute("SELECT path FROM items WHERE item_id=?", (item_id,)).fetchone()
+    if not row or Path(row["path"]) == path:
+        return False
+    last = conn.execute(
+        "SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
+        "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
+    return bool(last) and junk.is_junk_cause(last["cause_code"])
+
+
+def park_junk_redrop(item_id: str, path: Path) -> dict[str, Any]:
+    """Move a re-dropped copy of rejected junk beside the original. Never deletes."""
+    dest_dir = junk.reject_dir() / "duplicates"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    moved = rename.move_noclobber(path, dest_dir / path.name)
+    evidence = "duplicate=" + str(moved).replace(str(paths.AUDIO), "~/HeyMa")
+    log.info("item %s re-dropped as %s after the junk gate rejected it -> parked %s",
+             item_id, path.name, moved)
+    try:
+        ledger.record_transition("item", item_id, "skipped", "skipped", "junk_redropped", evidence)
+    except Exception as e:  # noqa: BLE001 - the audio is already safely parked
+        log.warning("could not journal junk re-drop of %s: %s", item_id, e)
+    return {"item_id": item_id, "parked": str(moved), "reason": "junk_redropped"}
 
 
 def park_duplicate(item_id: str, path: Path) -> dict[str, Any]:
@@ -321,6 +350,28 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
     except fence.Fenced as exc:
         log.warning("item %s halted by wax split: %s", item_id, exc)
         return {"item_id": item_id, "path": str(path), "fenced": str(exc)}
+
+
+def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
+                 stage: str, kept: Optional[Path] = None) -> dict[str, Any]:
+    """Park junk audio in skipped/junk/ and mark the item skipped. Never deletes.
+
+    The audio is already archived to S3 (step 1). No vault note, transcripts
+    row, store version or pass plan exists for it, so nothing downstream runs.
+    """
+    dest_dir = junk.reject_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    moved = rename.move_noclobber(path, dest_dir / path.name)
+    ledger.connect().execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
+                             (str(moved), sentinel.utcnow(), item_id))
+    words = "" if rejection.words is None else f" ({rejection.words} words)"
+    evidence = (f"{stage}: {rejection.detail}{words}; archived then moved to "
+                + str(moved).replace(str(paths.AUDIO), "~/HeyMa")
+                + (f"; text kept at {kept}" if kept else ""))
+    _set_state(item_id, "skipped", cause=rejection.cause, evidence=evidence, subject=path.name)
+    return {"reason": rejection.cause, "stage": stage, "detail": rejection.detail,
+            "words": rejection.words, "path": str(moved),
+            **({"text": str(kept)} if kept else {})}
 
 
 def _process_item(item_id: str, path: Path) -> dict[str, Any]:
@@ -416,6 +467,13 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
 
     ledger.guard_fence(item_id)
 
+    # Junk by structure (a Telnyx voicemail): archived, never transcribed (wax/junk.py).
+    if start_state != "transcribed":
+        rejection = junk.before_asr(path, item_id)
+        if rejection is not None:
+            result["skipped"] = _reject_junk(item_id, path, rejection, "before ASR")
+            return result
+
     # ---- 2. transcription (skipped if this item already has one) -------
     if start_state == "transcribed":
         result["transcribe"] = {"skipped": "already transcribed"}
@@ -423,6 +481,11 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
         _write_claim(item_id, path, "transcribe")
         try:
             result["transcribe"] = transcribe_adapter.transcribe(path, item_id=item_id)
+        except transcribe_adapter.TranscriptRejected as e:
+            # Junk by content ("Hello?", one word, a greeting): nothing was
+            # published, so park the audio and stop before any pass is planned.
+            result["skipped"] = _reject_junk(item_id, path, e.rejection, "after ASR", e.kept)
+            return result
         except transcribe_adapter.TranscribeError as e:
             # The gate already moved a failed transcript aside and set the item
             # to `suspect`. The audio stays in the inbox so the failure stays
@@ -502,10 +565,12 @@ def run_once() -> Optional[dict[str, Any]]:
         if nxt is None:
             return None
         item_id, path, action = nxt
-        _write_claim(item_id, path, "park" if action == "park" else "claimed")
+        _write_claim(item_id, path, "park" if action in ("park", "park-junk") else "claimed")
     try:
         if action == "park":
             return park_duplicate(item_id, path)
+        if action == "park-junk":
+            return park_junk_redrop(item_id, path)
         return process(item_id, path)
     finally:
         _clear_claim()
@@ -542,6 +607,37 @@ def skip_item(item_id: str) -> dict[str, Any]:
         return {"item_id": item_id, "state": "skipped", "path": str(moved)}
 
 
+def _is_junk_rejected(conn, item_id: str) -> bool:
+    last = conn.execute(
+        "SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
+        "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
+    return bool(last) and junk.is_junk_cause(last["cause_code"])
+
+
+def _release_junk(conn, item_id: str, source: Path, orig_name: Optional[str]) -> dict[str, Any]:
+    """Recover a junk false positive: audio back to the inbox, gate bypassed for this item.
+
+    The ``junk_override`` transition is the durable marker the gate looks for
+    (junk.overridden), so the item is not rejected again and a re-drop of its
+    bytes is not parked as a junk duplicate.
+    """
+    try:
+        source.resolve().relative_to(junk.reject_dir().resolve())
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("junk-rejected audio is not in skipped/junk") from exc
+    if not source.is_file():
+        raise RuntimeError("junk-rejected audio is missing")
+    paths.INBOX.mkdir(parents=True, exist_ok=True)
+    moved = rename.move_noclobber(source, paths.INBOX / source.name)
+    conn.execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
+                 (str(moved), sentinel.utcnow(), item_id))
+    _set_state(item_id, "pending", cause=junk.OVERRIDE_CAUSE,
+               evidence=f"operator released a junk rejection; audio back at {moved}",
+               subject=orig_name or moved.name)
+    return {"item_id": item_id, "state": "pending", "path": str(moved),
+            "previous_cause": "junk", "junk_override": True}
+
+
 def retry_item(item_id: str) -> dict[str, Any]:
     """Explicitly requeue one preserved failed or suspect inbox item.
 
@@ -562,9 +658,11 @@ def retry_item(item_id: str) -> dict[str, Any]:
         ).fetchone()
         if not row:
             raise RuntimeError(f"unknown queue item: {item_id}")
+        source = Path(row["path"])
+        if row["state"] == "skipped" and _is_junk_rejected(conn, item_id):
+            return _release_junk(conn, item_id, source, row["orig_name"])
         if row["state"] not in ("failed", "suspect"):
             raise RuntimeError(f"item is not failed or suspect: {row['state']}")
-        source = Path(row["path"])
         try:
             source.resolve().relative_to(paths.INBOX.resolve())
         except (OSError, ValueError) as exc:
