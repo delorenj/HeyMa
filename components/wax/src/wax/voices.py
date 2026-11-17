@@ -358,25 +358,61 @@ def set_name(conn, voice_id: str, name: str) -> None:
     conn.execute("UPDATE voices SET name=?, status=? WHERE voice_id=?", (name, STATUS_NAMED, voice_id))
 
 
+class MergeOutcomeUncertain(RuntimeError):
+    """SQLite commit may have landed; inspect the registry before retrying."""
+
+
 def merge(conn, keep: str, drop: str) -> int:
-    """Fold voice `drop` into `keep` (the same person registered twice). Nothing is deleted."""
+    """Fold voice `drop` into `keep` (the same person registered twice). Nothing is deleted.
+
+    Publish the dropped note before committing the ledger. If the note write fails,
+    restore its bytes and roll back the transaction while holding the registry lock.
+    A lost COMMIT acknowledgement is reported as uncertain, not rolled back blindly.
+    """
     if keep == drop:
         raise ValueError("a voice cannot be merged into itself")
     with locked():
         conn.execute("BEGIN IMMEDIATE")
+        note = None
+        original = None
+        note_written = False
         try:
+            rows = {r["voice_id"]: r for r in conn.execute(
+                "SELECT voice_id, note_path, merged_into FROM voices WHERE voice_id IN (?,?)", (keep, drop))}
+            if keep not in rows or drop not in rows:
+                raise ValueError("both voices must exist")
+            if rows[keep]["merged_into"] or rows[drop]["merged_into"]:
+                raise ValueError("both voices must be live and not already merged")
+            note = Path(rows[drop]["note_path"])
+            if not note.is_file():
+                raise FileNotFoundError(f"dropped voice note is missing: {note}")
+            original = note.read_bytes()
             moved = conn.execute("UPDATE voice_sightings SET voice_id=? WHERE voice_id=?", (keep, drop)).rowcount
             conn.execute("INSERT OR IGNORE INTO voice_exemplars SELECT ?, item_id, label, domain, seconds, vec, "
                          "added_at FROM voice_exemplars WHERE voice_id=?", (keep, drop))
             conn.execute("DELETE FROM voice_exemplars WHERE voice_id=?", (drop,))
             conn.execute("UPDATE voices SET merged_into=? WHERE voice_id=?", (keep, drop))
+            frontmatter.merge(note, {"status": "merged", "merged-into": f"[[{keep}]]"})
+            note_written = True
             conn.execute("COMMIT")
-        except BaseException:
+        except BaseException as exc:
+            if not conn.in_transaction:
+                # A COMMIT can succeed before its caller sees an error. Never put
+                # the old note back over an identity that may already be committed.
+                raise MergeOutcomeUncertain(f"merge outcome uncertain after commit ({exc}); "
+                                            f"check registry and {note} before retrying") from exc
             conn.execute("ROLLBACK")
+            # frontmatter.merge writes by atomic rename; even a raised write may have
+            # reached disk. Restore the exact old bytes while holding the writer lock.
+            if note is not None and original is not None and (note_written or note.read_bytes() != original):
+                try:
+                    restore = note.with_suffix(note.suffix + ".merge-restore")
+                    restore.write_bytes(original)
+                    os.replace(restore, note)
+                except OSError as restore_exc:
+                    raise RuntimeError(f"merge failed ({exc}); note restoration failed ({restore_exc}); "
+                                       f"check registry and {note} before retrying") from exc
             raise
-    row = conn.execute("SELECT note_path FROM voices WHERE voice_id=?", (drop,)).fetchone()
-    if row and Path(row["note_path"]).exists():
-        frontmatter.merge(Path(row["note_path"]), {"status": "merged", "merged-into": f"[[{keep}]]"})
     return moved
 
 
@@ -416,9 +452,10 @@ RELABEL_OK = ("completed", "skipped")
 
 
 def needs_relabel(conn) -> list[str]:
-    """Items whose transcript still shows an old name for a voice: a `Speaker N` turn the voice
-    was confidently named on, or a `voices:` link whose name is not the voice's name now."""
+    """Items with stale rendered turns or `voices:` links, including merged-away IDs."""
     voices_now = {v.voice_id: v for v in load(conn).values()}
+    merged = {row["voice_id"]: row["merged_into"] for row in conn.execute(
+        "SELECT voice_id, merged_into FROM voices WHERE merged_into IS NOT NULL")}
     stale = set()
     for row in conn.execute("SELECT item_id, label, rendered, voice_id FROM voice_sightings "
                             "WHERE voice_id IS NOT NULL AND verdict IN ('matched','new','context')"):
@@ -435,7 +472,9 @@ def needs_relabel(conn) -> list[str]:
         fm, _ = frontmatter.read(Path(row["md_path"]))
         for voice_id, shown in link.findall(" ".join(str(x) for x in fm.get("voices") or [])):
             voice = voices_now.get(voice_id)
-            if voice is not None and shown != voice.display:
+            # A merged note may still be linked by an older transcript. Even when
+            # its displayed name matches the survivor, the ID must be rewritten.
+            if voice_id in merged or (voice is not None and shown != voice.display):
                 stale.add(row["item_id"])
                 break
     return sorted(stale)

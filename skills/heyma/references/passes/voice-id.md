@@ -220,9 +220,9 @@ the test suites pin it off.
 | `wax voices list [--json]` | Every voice, most heard first; how many are waiting for a name |
 | `wax voices show <voice>` | One voice (id, id prefix or name) and every sighting |
 | `wax voices name <voice> <name> [--no-sync]` | Name it (note and cache), merge namesakes, then relabel its transcripts |
-| `wax voices merge <keep> <drop>` | The same person registered twice: sightings and exemplars move to `keep`; `drop`'s note is marked `merged` (nothing deleted) |
+| `wax voices merge <keep> <drop>` | The same person registered twice: sightings and exemplars move to `keep`; `drop`'s note is marked `merged` (nothing deleted). If the note write fails, the registry rolls back; retry once the note is writable. If note restoration itself fails, stop and inspect the reported note and registry before retrying |
 | `wax voices tui [--no-sync] [--no-play]` | Full-screen naming and merging with audio (below); the same `set_name`, `merge_namesakes` and `merge` as `name` and `merge` |
-| `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id --live` on every transcript still showing an old label |
+| `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id --live` on stale turns and links, including links to merged-away IDs whose shown name already matches the survivor |
 
 ### Naming in the TUI
 
@@ -243,8 +243,12 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
   at the turn heads the voice's `confident` sightings recorded (longest turns first,
   one recording at a time in rotation, centred inside the turn). A voice with no
   usable turn (channel-separated calls, audio gone) falls back to 5 s slices of its
-  `<voice-id>.ogg`. Clips are cached as WAV under `var/voice-clips/` (safe to
-  delete; never in the vault or `~/d/Voices`). Player: `$WAX_VOICES_PLAYER` (a
+  `<voice-id>.ogg`. Short-clip rule: a first fallback shorter than 2 s is
+  still offered when it is the only usable audio; after the first slice, tails
+  shorter than 2 s are omitted (and turn-derived slices must be at least 2 s).
+  If neither a turn nor a fallback yields a clip, the status line says there is
+  nothing to play; naming remains available. Clips are cached as WAV under
+  `var/voice-clips/` (safe to delete; never in the vault or `~/d/Voices`). Player: `$WAX_VOICES_PLAYER` (a
   command that takes the file path), else `pw-play`, `paplay`, `ffplay -nodisp`,
   `aplay`. No player: the status line says so and naming still works.
 - **Keys, name focus** (default on an unnamed row; every printable key types, so
@@ -263,7 +267,10 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
   `voices.merge(keep, drop)`, `n` goes back to picking, Esc cancels. A voice cannot
   be folded into itself or into an already merged voice (refused on the status
   line, nothing called). Merge direction is yours: pick the named voice as the
-  target, since the target's name wins.
+  target, since the target's name wins. If SQLite's commit outcome is uncertain,
+  the TUI says so, clears its stale rows and reloads the registry; it does not
+  claim rollback. If reload fails, retry `r` or inspect the registry and note
+  before another merge.
 - **Nothing blocks keys.** A name, merge or reload runs on a worker thread with its
   own ledger connection, because `voices.merge` waits on the registry lock a
   voice-id pass holds across its LLM call. While one is pending the screen keeps

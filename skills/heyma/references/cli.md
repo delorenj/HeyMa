@@ -160,9 +160,9 @@ Detail: [transcriptions-store](transcriptions-store.md).
 | `wax voices list [--json]` | Every registered voice, most heard first, and how many wait for a name |
 | `wax voices show <voice>` | One voice (id, id prefix or name) and every sighting |
 | `wax voices name <voice> <name> [--no-sync]` | Name a voice (its note and the cache), merge namesakes, relabel its transcripts |
-| `wax voices merge <keep> <drop>` | Fold a voice registered twice into the other; nothing is deleted |
-| `wax voices tui [--no-sync] [--no-play]` | Full-screen naming: highlight an unnamed voice and its 5 s clips loop while the NAME field waits; Enter names it, Alt+M picks a merge target. Keys: [passes/voice-id](passes/voice-id.md#naming-in-the-tui) |
-| `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id` on transcripts still showing an old label |
+| `wax voices merge <keep> <drop>` | Fold a voice registered twice into the other; dropped note is marked merged before the registry commits, and a note-write failure rolls back sightings/exemplars. If a commit acknowledgement is uncertain, inspect the reported registry and note before retrying; TUI reloads rather than claiming rollback. Nothing is deleted |
+| `wax voices tui [--no-sync] [--no-play]` | Full-screen naming: highlight an unnamed voice and its ~5 s clips loop while the NAME field waits; the first fallback may be under 2 s, but later tails under 2 s are omitted. Enter names it, Alt+M picks a merge target. Keys: [passes/voice-id](passes/voice-id.md#naming-in-the-tui) |
+| `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id` on transcripts with stale turns or links (including links to merged-away IDs even when their displayed name matches the survivor) |
 
 Detail: [failures](failures.md), [events](events.md), [calls](calls.md), [passes/dictionary](passes/dictionary.md), [passes/voice-id](passes/voice-id.md).
 

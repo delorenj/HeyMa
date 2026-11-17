@@ -183,6 +183,17 @@ class ClipPlanTest(_Fixture):
         self.assertTrue(all(wavs))
         self.assertAlmostEqual(tui.probe_seconds(wavs[2]), 3.0, delta=0.2)
 
+    def test_fallback_keeps_first_short_clip_but_omits_later_sub_two_second_tail(self):
+        short = voices.VOICES_DIR / "voice-b00002.ogg"
+        tone(short, 1.4, codec="libopus", fmt="ogg")
+        clips = tui.plan_clips(self.conn, "voice-b00002")
+        self.assertEqual(len(clips), 1)
+        self.assertLess(clips[0].dur, tui.MIN_CLIP_S)
+        tone(short, 6.0, codec="libopus", fmt="ogg")
+        clips = tui.plan_clips(self.conn, "voice-b00002")
+        self.assertEqual(len(clips), 1)
+        self.assertAlmostEqual(clips[0].dur, 5.0)
+
     def test_turns_whose_audio_is_gone_fall_back_then_nothing(self):
         self.audio2.unlink()
         self.audio1.unlink()
@@ -474,6 +485,45 @@ class OffTheUiThreadTest(_Fixture):
         self.assertIn("could not name voice-a00001: database is locked", model.status)
         self.assertEqual(relabeler.requests, 0)
         self.assertFalse(model.busy)
+
+    def test_failed_merge_keeps_rows_and_registry_consistent_then_retry_succeeds(self):
+        model, worker, relabeler = self.threaded()
+        model.handle_key("ALT_M")
+        model.handle_key("ENTER")
+        with patch.object(voices.frontmatter, "merge", side_effect=OSError("fixture write refused")):
+            model.handle_key("y")
+            self.settle(model, worker)
+        self.assertEqual(model.mode, tui.MERGE_PICK)
+        self.assertIn("merge failed: fixture write refused", model.status)
+        self.assertEqual(relabeler.requests, 0)
+        self.assertIsNone(self.conn.execute("SELECT merged_into FROM voices WHERE voice_id='voice-a00001'").fetchone()[0])
+        self.assertEqual(model.rows[0]["merged_into"], None)
+        model.handle_key("ENTER")
+        model.handle_key("y")
+        self.settle(model, worker)
+        self.assertEqual(model.mode, tui.BROWSE)
+        self.assertEqual(relabeler.requests, 1)
+        self.assertEqual(model.rows[0]["merged_into"], "voice-c00003")
+
+    def test_uncertain_commit_reloads_rows_and_never_claims_failure_is_rollback(self):
+        model, worker, relabeler = self.threaded()
+        model.handle_key("ALT_M")
+        model.handle_key("ENTER")
+        real_merge = voices.merge
+        def committed_then_uncertain(conn, keep, drop):
+            real_merge(conn, keep, drop)
+            raise voices.MergeOutcomeUncertain("merge outcome uncertain after commit; inspect registry")
+        with patch.object(voices, "merge", side_effect=committed_then_uncertain):
+            model.handle_key("y")
+            self.settle(model, worker)
+        self.assertEqual(model.mode, tui.BROWSE)
+        self.assertTrue(worker.wait(10))
+        model.tick()
+        self.assertEqual(next(r for r in model.rows if r["voice_id"] == "voice-a00001")["merged_into"],
+                         "voice-c00003")
+        self.assertIn("outcome uncertain", model.status)
+        self.assertNotIn("merge failed", model.status)
+        self.assertEqual(relabeler.requests, 0)
 
     def test_a_registry_read_that_raises_in_a_key_handler_is_a_status_line_not_a_crash(self):
         model, player, relabeler = self.model()

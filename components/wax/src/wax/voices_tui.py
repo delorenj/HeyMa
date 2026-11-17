@@ -868,8 +868,22 @@ class Model:
 
         def done(result, error):
             if error:
-                self.mode = MERGE_PICK
-                self.status = f"merge failed: {error}"
+                if isinstance(error, voices.MergeOutcomeUncertain):
+                    self.mode = BROWSE
+                    self.player.stop()
+                    self.status = str(error) + " (reload with r)"
+                    # No stale row may be selected if a reload fails.
+                    self.rows = []
+                    def reconciled(rows, reload_error):
+                        if reload_error:
+                            self.status = f"{error}; reload failed: {reload_error} (retry r)"
+                        else:
+                            self._apply(rows)
+                            self.status = f"{error}; registry reloaded"
+                    self.worker.submit("reloading", lambda conn: voices.listing(conn), reconciled)
+                else:
+                    self.mode = MERGE_PICK
+                    self.status = f"merge failed: {error}"
                 return
             moved, rows = result
             self.drafts.pop(drop_id, None)

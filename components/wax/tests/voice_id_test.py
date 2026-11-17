@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from wax import jev, ledger, paths, provider, voice_context, voice_id_pass, voiceprint, voices
+from wax import frontmatter, jev, ledger, paths, provider, voice_context, voice_id_pass, voiceprint, voices
 
 RNG = np.random.default_rng(7)
 T = voiceprint.Thresholds()
@@ -230,6 +230,67 @@ class RegistryTest(_Registry):
         self.assertEqual(voices.needs_relabel(self.conn), ["i1", "i2"])
 
 
+    def test_merge_note_failure_does_not_commit_identity_or_move_evidence(self):
+        for vid, seed in (("voice-aaaaaa", 1), ("voice-bbbbbb", 2)):
+            voices.register(self.conn, item_id=f"i{seed}", label="Speaker 1", domain="room", seconds=30,
+                            vec=unit(seed), note="---\nname: \nstatus: unnamed\n---\n", voice_id=vid)
+            voices.record_sighting(self.conn, item_id=f"i{seed}", label="Speaker 1", rendered="Speaker 1",
+                                   voice_id=vid, verdict="new", score=None, runner_up=None, domain="room",
+                                   seconds=30, vec=unit(seed))
+        before = (voices.VOICES_DIR / "voice-bbbbbb.md").read_bytes()
+        with patch.object(frontmatter, "merge", side_effect=OSError("fixture write refused")):
+            with self.assertRaisesRegex(OSError, "fixture write refused"):
+                voices.merge(self.conn, "voice-aaaaaa", "voice-bbbbbb")
+        self.assertIsNone(self.conn.execute("SELECT merged_into FROM voices WHERE voice_id='voice-bbbbbb'").fetchone()[0])
+        self.assertEqual(self.conn.execute("SELECT voice_id FROM voice_sightings WHERE item_id='i2'").fetchone()[0],
+                         "voice-bbbbbb")
+        self.assertEqual(self.conn.execute("SELECT voice_id FROM voice_exemplars WHERE item_id='i2'").fetchone()[0],
+                         "voice-bbbbbb")
+        self.assertEqual((voices.VOICES_DIR / "voice-bbbbbb.md").read_bytes(), before)
+        self.assertEqual(voices.merge(self.conn, "voice-aaaaaa", "voice-bbbbbb"), 1)
+        self.assertIn("status: merged", (voices.VOICES_DIR / "voice-bbbbbb.md").read_text())
+        with self.assertRaises(ValueError):
+            voices.merge(self.conn, "voice-aaaaaa", "voice-bbbbbb")
+
+    def test_merge_restores_note_even_if_frontmatter_raises_after_publish(self):
+        for vid, seed in (("voice-aaaaaa", 1), ("voice-bbbbbb", 2)):
+            voices.register(self.conn, item_id=f"i{seed}", label="Speaker 1", domain="room", seconds=30,
+                            vec=unit(seed), note="---\nname: \nstatus: unnamed\n---\n", voice_id=vid)
+        note = voices.VOICES_DIR / "voice-bbbbbb.md"
+        before = note.read_bytes()
+        real_merge = frontmatter.merge
+
+        def publish_then_fail(path, updates):
+            real_merge(path, updates)
+            raise OSError("post-publish failure")
+
+        with patch.object(frontmatter, "merge", side_effect=publish_then_fail):
+            with self.assertRaisesRegex(OSError, "post-publish failure"):
+                voices.merge(self.conn, "voice-aaaaaa", "voice-bbbbbb")
+        self.assertEqual(note.read_bytes(), before)
+        self.assertIsNone(self.conn.execute("SELECT merged_into FROM voices WHERE voice_id='voice-bbbbbb'").fetchone()[0])
+
+    def test_commit_result_uncertain_keeps_published_note_and_forces_inspection(self):
+        for vid, seed in (("voice-aaaaaa", 1), ("voice-bbbbbb", 2)):
+            voices.register(self.conn, item_id=f"i{seed}", label="Speaker 1", domain="room", seconds=30,
+                            vec=unit(seed), note="---\nname: \nstatus: unnamed\n---\n", voice_id=vid)
+        class CommitThenFail:
+            def __init__(self, connection):
+                self.connection = connection
+            @property
+            def in_transaction(self):
+                return self.connection.in_transaction
+            def execute(self, sql, *params):
+                result = self.connection.execute(sql, *params)
+                if sql == "COMMIT":
+                    raise OSError("commit acknowledgement lost")
+                return result
+        with self.assertRaisesRegex(voices.MergeOutcomeUncertain, "outcome uncertain"):
+            voices.merge(CommitThenFail(self.conn), "voice-aaaaaa", "voice-bbbbbb")
+        self.assertEqual(self.conn.execute("SELECT merged_into FROM voices WHERE voice_id='voice-bbbbbb'").fetchone()[0],
+                         "voice-aaaaaa")
+        self.assertIn("status: merged", (voices.VOICES_DIR / "voice-bbbbbb.md").read_text())
+
 class PassTest(_Registry):
     """The pass end to end, with the GPU half replaced."""
 
@@ -398,6 +459,48 @@ class PassTest(_Registry):
         self.assertEqual(voices.merge_namesakes(self.conn), [("voice-aaaaaa", "voice-bbbbbb")])
         self.assertEqual(sorted(voices.load(self.conn)), ["voice-aaaaaa"])
 
+
+    def test_namesake_merge_selects_and_rewrites_dropped_link_through_voice_id(self):
+        keep = voices.register(self.conn, item_id="seed1", label="Speaker 1", domain="room", seconds=60,
+                               vec=unit(1), name="Chase", note="---\nname: Chase\nstatus: named\n---\n",
+                               voice_id="voice-aaaaaa")
+        drop = voices.register(self.conn, item_id="seed2", label="Speaker 1", domain="room", seconds=60,
+                               vec=unit(2), name="Other", note="---\nname: Other\nstatus: named\n---\n",
+                               voice_id="voice-bbbbbb")
+        voices.add_exemplar(self.conn, drop, "seed3", "Speaker 1", "room", 60, near(unit(2), 0.7, 7))
+        md = self.note("merged.md", "**Speaker 1 (00:00):** I spoke for a whole minute today\n",
+                       item="merge1", duration=60)
+        with patch.dict("os.environ", {"WAX_VOICE_CONTEXT": "0"}):
+            first = self.run_pass(md, "merge1", {"Speaker 1": (unit(2), 60.0)})
+            self.assertEqual(first["frontmatter"]["voices"], [drop.link])
+            frontmatter.merge(md, first["frontmatter"])
+            if "body_replace" in first:
+                fm, _ = frontmatter.read(md)
+                md.write_text(frontmatter.render(fm, first["body_replace"]["text"]))
+            voices.set_name(self.conn, drop.voice_id, "Chase")
+            self.assertEqual(voices.merge_namesakes(self.conn), [(keep.voice_id, drop.voice_id)])
+            # The rendered turn already shows the survivor's name; only the dropped link ID is stale.
+            fm, body = frontmatter.read(md)
+            fm["voices"] = [drop.link.replace("|Other", "|Chase")]
+            md.write_text(frontmatter.render(fm, body.replace("**Other (", "**Chase (")))
+            self.conn.execute("UPDATE voice_sightings SET rendered='Chase' WHERE item_id='merge1'")
+            self.assertEqual(voices.needs_relabel(self.conn), ["merge1"])
+            again = self.run_pass(md, "merge1", {"Speaker 1": (unit(2), 60.0)})
+        self.assertEqual(again["frontmatter"]["voices"], [keep.link], again)
+        frontmatter.merge(md, again["frontmatter"])
+        self.assertEqual(voices.needs_relabel(self.conn), [])
+        self.assertEqual(voices.merge_namesakes(self.conn), [])
+
+    def test_explicit_merge_selects_dropped_link_even_when_survivor_is_unnamed(self):
+        for vid, seed in (("voice-aaaaaa", 1), ("voice-bbbbbb", 2)):
+            voices.register(self.conn, item_id=f"i{seed}", label="Me", domain="room", seconds=30,
+                            vec=unit(seed), note="---\nname: \nstatus: unnamed\n---\n", voice_id=vid)
+        md = self.note("linked.md", "**Me (00:00):** hello there\n", item="link1")
+        frontmatter.merge(md, {"voices": ["[[voice-bbbbbb|Chase]]"]})
+        voices.record_sighting(self.conn, item_id="link1", label="Me", rendered="Me", voice_id="voice-bbbbbb",
+                               verdict="owner", score=0.9, runner_up=None, domain="room", seconds=30, vec=unit(2))
+        self.assertEqual(voices.merge(self.conn, "voice-aaaaaa", "voice-bbbbbb"), 1)
+        self.assertEqual(voices.needs_relabel(self.conn), ["link1"])
 
 class UnfoldTest(PassTest):
     """A name the pass wrote comes back off exactly the turns it was written on."""
