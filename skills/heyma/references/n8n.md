@@ -28,12 +28,12 @@ Each release script dry-runs by default (prints `unchanged` / `would change`) an
 
 | Workflow | Id | Release script | Status 2026-11-05 |
 |---|---|---|---|
-| On Telnyx DeLoSIP Event | `9BkQCtKxdEtPWLAn` | `telnyx_calls.py` (co-owned with DeLoSIP) | **Live and current** (dry run prints `unchanged`; published version `46912344…`, 2026-11-17) |
+| On Telnyx DeLoSIP Event | `9BkQCtKxdEtPWLAn` | `telnyx_calls.py` (co-owned with DeLoSIP) | **Live and current** (dry run prints `unchanged`; published version `acd86e9a…`, 2026-11-17) |
 | Transcription Notifications | `XHWRrrYCzu4ifdS7` | `release.py` | **NOT applied.** Live is still the 4-node pre-release shape; dry run refuses: "workflow changed since review" |
 
 **`9BkQCtKxdEtPWLAn` (calls):**
 - **Flow:** Webhook → DeLoSIP signature check and ring queue → Wax Calls (`event`) → IF `$json.ended` → Bloodbank `bloodbank.telephony.call.ended` (orderingKey `call:<session>`) + ntfy topic `telephony`.
-- **Caller name:** the ntfy line names the caller from the [contact directory](calls.md) (`call.contact_name`). The Bloodbank payload stays CNAM-only.
+- **Caller name:** the ntfy line names the caller from the [contact directory](calls.md) (`call.contact_name`). The Bloodbank payload's `data.remote_name` carries the same name (contact, else CNAM; operator's choice 2026-11-17).
 - **Disposition mapping:** declined → `rejected`; unknown → `failed`.
 
 **Two owners.** `telnyx_calls.py` owns Wax Calls, Call Ended?, Bloodbank and Ntfy Send.

@@ -20,8 +20,8 @@ pipeline state, never schedules, never watches files. See
 Webhook → *DeLoSIP signature check and ring queue* → Wax Calls node (`event`)
 → IF `$json.ended` → Bloodbank `bloodbank.telephony.call.ended` (orderingKey
 `call:<session>`) + one ntfy line on topic `telephony`. The ntfy line names the
-caller from the contact directory (`call.contact_name`); the Bloodbank payload
-stays CNAM-only. This is the push half of the call log; the pull half is the
+caller from the contact directory (`call.contact_name`), and the Bloodbank
+payload's `data.remote_name` carries the same name (contact, else CNAM). This is the push half of the call log; the pull half is the
 Candybar job `wax-calls-sync` (`wax calls sync` every 10 minutes). Node ids are
 pinned in the script so re-applies are stable.
 
@@ -36,7 +36,7 @@ by id, and keeps every other live node and the live connections. Never make it
 write the whole graph. A republish from DeLoSIP's rollback
 (`delosip/rollback.py`) drops HeyMa's changes. Run `python3 telnyx_calls.py
 --apply` afterwards to restore them. Live version as of 2026-11-17:
-`46912344…`.
+`acd86e9a…`.
 
 ## Transcription Notifications (`release.py`)
 
