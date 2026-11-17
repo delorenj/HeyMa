@@ -144,6 +144,8 @@ Detail: [transcriptions-store](transcriptions-store.md).
 | `wax calls list [--limit 30] [--outcome O]` | Outcome: answered, voicemail, missed, declined, no_answer, failed |
 | `wax calls show <ref>` | One call with legs, recordings and events |
 | `wax calls telephony [--limit N]` | Local read-only call/screening/processing snapshot for the Telephony page; disabled/shadow only, no Telnyx refresh or live control. See [telephony](telephony.md) |
+| `wax telephony alert --targets GLOB --state-dir ABSOLUTE_PATH status\|enable UUID_OR_ALIAS\|disable UUID_OR_ALIAS\|alias add UUID SLUG\|alias remove UUID SLUG\|tone UUID_OR_ALIAS RINGTONE_ID\|preview KIND HANDLE [--projection-cache ABSOLUTE_PATH]` | Canonical offline target-watch facade; `--json` at any position, no live gating or ringtone playback. See [telephony](telephony.md) |
+| `wax calls alert-mode --targets GLOB --state-dir ABSOLUTE_PATH ...` | Legacy compatibility alias for `wax telephony alert`; not the preferred operator surface |
 | `wax dict add <term> [--about T] [--heard FORM]... [--section S] [--update] [--force] [--dry-run] [--no-scan] [--no-commit]` | Add a term to `Dictionary.yaml` |
 | `wax dict heard <term> <form>...` | Add mis-hearings to a term |
 | `wax dict remove <term> [--heard]` | Remove a term, or only its heard forms |

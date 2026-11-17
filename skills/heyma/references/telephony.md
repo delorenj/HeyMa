@@ -30,10 +30,19 @@ Use this checkout’s absolute launchers, never a PATH-selected stale copy:
 | `bin/telephony --json rules remove +12125550123` | Remove its explicit rule |
 | `bin/telephony --json preview` | Evaluate JSON on stdin without persisting a decision |
 | `bin/telephony --json event` | Local shadow event simulation on stdin; never issues provider commands |
+| `bin/telephony alert --targets GLOB --state-dir ABSOLUTE_PATH status` | Read offline target-watch identity bindings, policy tone and execution capability; 1Password provider is not configured |
+| `bin/telephony alert --targets GLOB --state-dir ABSOLUTE_PATH enable UUID_OR_ALIAS` | Set private offline eligibility for an identity bound by 1Password item UUID; not live alert gating |
+| `bin/telephony alert --targets GLOB --state-dir ABSOLUTE_PATH disable UUID_OR_ALIAS` | Clear offline eligibility |
+| `bin/telephony alert --targets GLOB --state-dir ABSOLUTE_PATH alias add UUID OPERATOR_SLUG` | Bind a unique private operator alias (remove reverses it); never matches display names or family records |
+| `bin/telephony alert --targets GLOB --state-dir ABSOLUTE_PATH tone UUID_OR_ALIAS RINGTONE_ID` | Store a safe opaque ringtone ID, policy only; `default` resets fallback, phone playback not implemented |
+| `bin/telephony alert --targets GLOB --state-dir ABSOLUTE_PATH preview email ADDRESS` | Offline canonical target-watch matcher preview with selected tone; also accepts e164, label or platform_user; ambiguous matches refused as eligible |
+| `wax --json telephony alert --targets GLOB --state-dir ABSOLUTE_PATH status` | Canonical Wax facade; `--json` and explicit path flags work before or after actions |
 | `wax --json calls telephony` | Joined call/screening/processing projection for the native page |
 | `heyma --page telephony` | Open the native page, including in an already-open window |
 
 Do not send synthetic events to the live Wax call ledger to test the screen. Use isolated temporary `WAX_ROOT`/component config paths and mocked providers; the component tests illustrate that boundary.
+
+Alert Mode is a separate **offline** slice owned by Bloodbank target-watch (`services/target-watch/target_watch/alert_mode.py`), not Telephony's shadow spam rules. Its CLI requires an explicit target TOML glob and absolute isolated state directory; it never reads family contacts, invokes `op`, subscribes to events, or alters live Jim/all-call behavior. A target may declare `target.identity_ref` as a 1Password item UUID while retaining its existing handles and sink unchanged. The private policy is `STATE/alert-mode/policy.json` (0700 directory, 0600 file). Unique operator aliases are set explicitly with `alias add UUID SLUG`, stored only in this private policy and never inferred from names; unknown/ambiguous aliases fail. A validated lowercase opaque ringtone ID may be stored per identity, with `default` fallback; status and preview expose the selected policy tone separately from `per_identity_phone_ringtone: not_implemented`. `--projection-cache ABSOLUTE_PATH` optionally reads only operator-approved `UUID.json` files in a 0700 directory, with 0600 files shaped `{"identity_ref":"UUID","handles":{"email":["..."]}}`. No contact-fetch, 1Password lookup or cache writer exists. Without the explicit flag projection is `not_configured`; matching SMS/MMS/RCS/calls is an offline canonical handle preview, not verified provider ingress or a per-contact Samsung ringtone. No consumer loads this policy. Do not infer live eligibility from `enabled`. `wax calls alert-mode` remains a legacy CLI alias; use `wax telephony alert` for new commands.
 
 ## Runtime and ownership
 

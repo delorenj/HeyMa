@@ -2645,6 +2645,13 @@ def dict_command(args, J: bool) -> int:
 
 
 def main() -> int:
+    # Alert Mode is an offline facade. Dispatch before argparse and before any
+    # call-ledger path; wax accepts --json at every position.
+    args = [arg for arg in sys.argv[1:] if arg != "--json"]
+    if len(args) >= 2 and args[0] in ("telephony", "calls") and args[1] in ("alert", "alert-mode"):
+        import subprocess
+        launcher = COMPONENT_ROOT.parent.parent / "bin" / "telephony"
+        return subprocess.run([str(launcher), "alert", *args[2:]], check=False).returncode
     # --json accepted at ANY position: `wax --json state stream` and
     # `wax state stream --json` both work. Requiring it before the subcommand
     # is the kind of papercut that makes a tool feel hostile at 3am.
@@ -2953,6 +2960,8 @@ def main() -> int:
     cll.add_argument("--outcome", help="answered | voicemail | missed | declined | no_answer | failed")
     clt = cl.add_parser("telephony", parents=[common], help="read-only local shadow screening and Wax processing snapshot")
     clt.add_argument("--limit", type=int, default=30, help="recent calls, 1–100 (default 30)")
+    cla = cl.add_parser("alert-mode", parents=[common], help="offline target-watch Alert Mode (no live gating)")
+    cla.add_argument("args", nargs=argparse.REMAINDER)
     cl.add_parser("show", parents=[common], help="one call: legs, recordings, events").add_argument(
         "ref", help="call_session_id, call_leg_id, item id or file name")
 
