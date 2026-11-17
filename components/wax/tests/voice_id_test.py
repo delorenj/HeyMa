@@ -369,6 +369,19 @@ class PassTest(_Registry):
         voices.set_name(self.conn, voice.voice_id, "Mama")
         self.assertEqual(voices.needs_relabel(self.conn), ["l1"])
 
+    def test_bare_link_detects_named_voice_but_not_unchanged_unnamed_voice(self):
+        voice = voices.register(self.conn, item_id="seed", label="Speaker 1", domain="room", seconds=60,
+                                vec=unit(1), note="---\nname: \nstatus: unnamed\n---\n",
+                                voice_id="voice-aaaaaa")
+        md = self.note("bare-rename.md", "**Me (00:00):** hello there\n", item="bare-rename")
+        frontmatter.merge(md, {"voices": [voice.link]})
+        voices.record_sighting(self.conn, item_id="bare-rename", label="Me", rendered="Me",
+                               voice_id=voice.voice_id, verdict="owner", score=0.9, runner_up=None,
+                               domain="room", seconds=30, vec=unit(1))
+        self.assertEqual(voices.needs_relabel(self.conn), [])
+        voices.set_name(self.conn, voice.voice_id, "Chase")
+        self.assertEqual(voices.needs_relabel(self.conn), ["bare-rename"])
+
     def test_a_known_voice_in_a_new_recording_is_named_and_learned(self):
         jarad = unit(1)
         md1 = self.note("one.md", self.BODY, item="b1")
@@ -490,6 +503,66 @@ class PassTest(_Registry):
         frontmatter.merge(md, again["frontmatter"])
         self.assertEqual(voices.needs_relabel(self.conn), [])
         self.assertEqual(voices.merge_namesakes(self.conn), [])
+
+    def test_unaliased_merged_link_is_rewritten_by_shared_voice_id_sync(self):
+        for alias in (False, True):
+            with self.subTest(alias=alias):
+                # Each fixture uses a fresh item. The first pass creates an unaliased
+                # link for the unnamed drop, rather than just seeding a stale string.
+                keep = voices.register(self.conn, item_id=f"keep{alias}", label="Speaker 1", domain="room",
+                                       seconds=60, vec=unit(11 + alias), name=f"Chase{alias}",
+                                       note=f"---\nname: Chase{alias}\nstatus: named\n---\n",
+                                       voice_id=f"voice-a{int(alias):05x}")
+                drop = voices.register(self.conn, item_id=f"drop{alias}", label="Speaker 1", domain="room",
+                                       seconds=60, vec=unit(21 + alias),
+                                       note="---\nname: \nstatus: unnamed\n---\n",
+                                       voice_id=f"voice-b{int(alias):05x}")
+                voices.add_exemplar(self.conn, drop, f"extra{alias}", "Speaker 1", "room", 60,
+                                    near(unit(21 + alias), 0.7, 7))
+                item = f"bare{alias}"
+                md = self.note(f"{item}.md", "**Speaker 1 (00:00):** I spoke for a whole minute today\n",
+                               item=item, duration=60)
+                with patch.dict("os.environ", {"WAX_VOICE_CONTEXT": "0"}):
+                    first = self.run_pass(md, item, {"Speaker 1": (unit(21 + alias), 60.0)})
+                    self.assertEqual(first["frontmatter"]["voices"], [drop.link])
+                    frontmatter.merge(md, first["frontmatter"])
+                    if alias:
+                        frontmatter.merge(md, {"voices": [f"[[{drop.voice_id}|Old label]]"]})
+                    self.assertEqual(voices.merge(self.conn, keep.voice_id, drop.voice_id), 1)
+                    # Isolate the link: a stale turn must not be another reason to sync.
+                    fm, body = frontmatter.read(md)
+                    md.write_text(frontmatter.render(fm, body.replace("**Speaker 1 (", f"**{keep.name} (")))
+                    self.conn.execute("UPDATE voice_sightings SET rendered=? WHERE item_id=?", (keep.name, item))
+                    self.assertEqual(voices.needs_relabel(self.conn), [item])
+                    again = self.run_pass(md, item, {"Speaker 1": (unit(21 + alias), 60.0)})
+                    self.assertEqual(again["frontmatter"]["voices"], [keep.link])
+                    frontmatter.merge(md, again["frontmatter"])
+                    self.assertEqual(voices.needs_relabel(self.conn), [])
+
+    def test_namesake_sync_rewrites_originally_unaliased_link(self):
+        keep = voices.register(self.conn, item_id="seed1", label="Speaker 1", domain="room", seconds=60,
+                               vec=unit(1), name="Chase", note="---\nname: Chase\nstatus: named\n---\n",
+                               voice_id="voice-aaaaaa")
+        drop = voices.register(self.conn, item_id="seed2", label="Speaker 1", domain="room", seconds=60,
+                               vec=unit(2), note="---\nname: \nstatus: unnamed\n---\n",
+                               voice_id="voice-bbbbbb")
+        voices.add_exemplar(self.conn, drop, "seed3", "Speaker 1", "room", 60, near(unit(2), 0.7, 7))
+        md = self.note("namesake-bare.md", "**Speaker 1 (00:00):** I spoke for a whole minute today\n",
+                       item="namesake-bare", duration=60)
+        with patch.dict("os.environ", {"WAX_VOICE_CONTEXT": "0"}):
+            first = self.run_pass(md, "namesake-bare", {"Speaker 1": (unit(2), 60.0)})
+            self.assertEqual(first["frontmatter"]["voices"], [drop.link])
+            frontmatter.merge(md, first["frontmatter"])
+            voices.set_name(self.conn, drop.voice_id, "Chase")
+            self.assertEqual(voices.merge_namesakes(self.conn), [(keep.voice_id, drop.voice_id)])
+            fm, body = frontmatter.read(md)
+            md.write_text(frontmatter.render(fm, body.replace("**Speaker 1 (", "**Chase (")))
+            self.conn.execute("UPDATE voice_sightings SET rendered='Chase' WHERE item_id='namesake-bare'")
+            self.assertEqual(voices.needs_relabel(self.conn), ["namesake-bare"])
+            again = self.run_pass(md, "namesake-bare", {"Speaker 1": (unit(2), 60.0)})
+            self.assertEqual(again["frontmatter"]["voices"], [keep.link])
+            frontmatter.merge(md, again["frontmatter"])
+            self.assertEqual(voices.needs_relabel(self.conn), [])
 
     def test_explicit_merge_selects_dropped_link_even_when_survivor_is_unnamed(self):
         for vid, seed in (("voice-aaaaaa", 1), ("voice-bbbbbb", 2)):

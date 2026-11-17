@@ -464,17 +464,18 @@ def needs_relabel(conn) -> list[str]:
             continue
         if GENERIC_LABEL.match(row["label"]) and row["rendered"] != voice.name:
             stale.add(row["item_id"])
-    link = re.compile(r"\[\[(voice-[0-9a-f]{6})\|([^\]]*)\]\]")
+    link = re.compile(r"\[\[(voice-[0-9a-f]{6})(?:\|([^\]]*))?\]\]")
     for row in conn.execute("SELECT DISTINCT s.item_id, t.md_path FROM voice_sightings s "
                             "JOIN transcripts t USING(item_id) WHERE s.voice_id IS NOT NULL"):
         if row["item_id"] in stale or not row["md_path"] or not Path(row["md_path"]).exists():
             continue
         fm, _ = frontmatter.read(Path(row["md_path"]))
-        for voice_id, shown in link.findall(" ".join(str(x) for x in fm.get("voices") or [])):
+        for match in link.finditer(" ".join(str(x) for x in fm.get("voices") or [])):
+            voice_id, shown = match.groups()
             voice = voices_now.get(voice_id)
             # A merged note may still be linked by an older transcript. Even when
             # its displayed name matches the survivor, the ID must be rewritten.
-            if voice_id in merged or (voice is not None and shown != voice.display):
+            if voice_id in merged or (voice is not None and (shown if shown is not None else voice_id) != voice.display):
                 stale.add(row["item_id"])
                 break
     return sorted(stale)

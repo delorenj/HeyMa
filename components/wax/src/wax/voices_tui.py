@@ -687,7 +687,10 @@ class Model:
     def _key_browse(self, key: str) -> None:
         row = self.row
         if row is None:
-            if key in ("q", "ESC"):
+            if key == "r":
+                self.status = "reloading"
+                self.refresh()
+            elif key in ("q", "ESC"):
                 self.quit = True
             return
         if key in ("UP", "DOWN", "PGUP", "PGDN"):

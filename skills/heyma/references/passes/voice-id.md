@@ -222,7 +222,7 @@ the test suites pin it off.
 | `wax voices name <voice> <name> [--no-sync]` | Name it (note and cache), merge namesakes, then relabel its transcripts |
 | `wax voices merge <keep> <drop>` | The same person registered twice: sightings and exemplars move to `keep`; `drop`'s note is marked `merged` (nothing deleted). If the note write fails, the registry rolls back; retry once the note is writable. If note restoration itself fails, stop and inspect the reported note and registry before retrying |
 | `wax voices tui [--no-sync] [--no-play]` | Full-screen naming and merging with audio (below); the same `set_name`, `merge_namesakes` and `merge` as `name` and `merge` |
-| `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id --live` on stale turns and links, including links to merged-away IDs whose shown name already matches the survivor |
+| `wax voices sync [--dry-run]` | Merge namesakes, then rerun `voice-id --live` on stale turns and links, including unaliased `[[voice-id]]` links and links to merged-away IDs whose shown name already matches the survivor |
 
 ### Naming in the TUI
 
@@ -269,8 +269,8 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
   line, nothing called). Merge direction is yours: pick the named voice as the
   target, since the target's name wins. If SQLite's commit outcome is uncertain,
   the TUI says so, clears its stale rows and reloads the registry; it does not
-  claim rollback. If reload fails, retry `r` or inspect the registry and note
-  before another merge.
+  claim rollback. If reload fails, retry `r` even on the empty screen, or inspect
+  the registry and note before another merge.
 - **Nothing blocks keys.** A name, merge or reload runs on a worker thread with its
   own ledger connection, because `voices.merge` waits on the registry lock a
   voice-id pass holds across its LLM call. While one is pending the screen keeps

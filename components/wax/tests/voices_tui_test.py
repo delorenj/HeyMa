@@ -525,6 +525,42 @@ class OffTheUiThreadTest(_Fixture):
         self.assertNotIn("merge failed", model.status)
         self.assertEqual(relabeler.requests, 0)
 
+    def test_uncertain_commit_reload_failure_can_retry_from_empty_screen(self):
+        model, worker, relabeler = self.threaded()
+        model.handle_key("ALT_M")
+        model.handle_key("ENTER")
+        real_merge, real_listing = voices.merge, voices.listing
+        calls = []
+
+        def committed_then_uncertain(conn, keep, drop):
+            real_merge(conn, keep, drop)
+            raise voices.MergeOutcomeUncertain("merge outcome uncertain after commit; inspect registry")
+
+        def one_failed_reload(conn):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("registry temporarily unavailable")
+            return real_listing(conn)
+
+        with patch.object(voices, "merge", side_effect=committed_then_uncertain), \
+                patch.object(voices, "listing", side_effect=one_failed_reload):
+            model.handle_key("y")
+            self.settle(model, worker)
+            self.settle(model, worker)
+            self.assertEqual(model.mode, tui.BROWSE)
+            self.assertEqual(model.rows, [])
+            self.assertIn("retry r", model.status)
+            self.assertNotIn("folded into", model.status)
+            self.assertEqual(relabeler.requests, 0)
+            model.handle_key("r")
+            self.settle(model, worker)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(next(r for r in model.rows if r["voice_id"] == "voice-a00001")["merged_into"],
+                         "voice-c00003")
+        self.assertNotIn("folded into", model.status)
+        self.assertEqual(relabeler.requests, 0)
+        self.assertFalse(model.quit)
+
     def test_a_registry_read_that_raises_in_a_key_handler_is_a_status_line_not_a_crash(self):
         model, player, relabeler = self.model()
         with patch.object(model, "planner", side_effect=sqlite_locked):
