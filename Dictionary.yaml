@@ -163,3 +163,6 @@ terms:
   # Real words that sound like a term above. Listing one here makes it win over
   # the sound-alike, so it is never respelled into the term.
   Skrillex: "the electronic musician (not Skillex)"
+
+  # -- Added with wax dict --------------------------------------------------------
+  Pauly: [poly]
