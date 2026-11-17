@@ -6,6 +6,84 @@ import subprocess
 import sys
 from pathlib import Path
 
+COMPONENT_ROOT = next(parent for parent in Path(__file__).resolve().parents
+                      if (parent / "pyproject.toml").is_file())
+sys.path.insert(0, str(COMPONENT_ROOT / "src"))
+
+from wax.tray_process import SESSION_KEYS
+
+COPY_TIMEOUT_S = 5
+SOUND_TIMEOUT_S = 3
+
+
+class ClipboardUnavailable(Exception):
+    pass
+
+
+def desktop_env() -> dict:
+    # waxd may have started before the desktop imported its display/auth values.
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    try:
+        out = subprocess.run(["systemctl", "--user", "show-environment"], env=env,
+                             capture_output=True, text=True, timeout=2, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        # No authoritative answer: retain explicit context and the existing
+        # per-user Wayland discovery fallback, never guess an X11 display.
+        if not env.get("WAYLAND_DISPLAY"):
+            sockets = sorted(p.name for p in Path(env["XDG_RUNTIME_DIR"]).glob("wayland-*")
+                             if not p.name.endswith(".lock"))
+            if sockets:
+                env["WAYLAND_DISPLAY"] = sockets[0]
+        return env
+    # A successful query is authoritative even when keys are absent/empty.
+    # Never send a transcript to an inherited display from an obsolete session.
+    for key in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
+        env.pop(key, None)
+    for line in out.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and value and key in SESSION_KEYS:
+            env[key] = value
+    return env
+
+
+def copy_body(body: str, env: dict) -> dict:
+    attempts = []
+    commands = []
+    if env.get("WAYLAND_DISPLAY"):
+        commands.append(["wl-copy", "--type", "text/plain;charset=utf-8"])
+    if env.get("DISPLAY"):
+        commands.append(["xclip", "-selection", "clipboard", "-in", "-target", "UTF8_STRING"])
+    for command in commands:
+        try:
+            subprocess.run(command, input=body.encode("utf-8"), check=True, env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=COPY_TIMEOUT_S)
+            return {"clipboard_backend": command[0], "clipboard_fallbacks": attempts}
+        except subprocess.TimeoutExpired:
+            reason = "timeout"
+        except subprocess.CalledProcessError as exc:
+            reason = f"exit_{exc.returncode}"
+        except OSError:
+            reason = "unavailable"
+        attempts.append({"backend": command[0], "reason": reason})
+    detail = "; ".join(f"{a['backend']}={a['reason']}" for a in attempts)
+    raise ClipboardUnavailable(detail or "no current graphical display")
+
+
+def play_sound(env: dict) -> str:
+    # A chime is best effort. A stalled audio sink must not undo a real copy.
+    try:
+        result = subprocess.run(
+            ["paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"],
+            check=False, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=SOUND_TIMEOUT_S,
+        )
+        return "played" if result.returncode == 0 else "unavailable"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+
+
 def get_document_body(content: str) -> str:
     """Extracts the body from a markdown document, skipping frontmatter."""
     if not content.startswith('---'):
@@ -28,40 +106,21 @@ def main() -> int:
             print("Document body is empty", file=sys.stderr)
             return 1
 
-        # Determine environment for Wayland/X11 clipboard tools
-        # A systemd user unit might not pass all these through explicitly unless configured.
-        # But we'll grab what we can and pass to subprocess.
-        env = os.environ.copy()
-        if "WAYLAND_DISPLAY" not in env:
-            env["WAYLAND_DISPLAY"] = "wayland-0"
-        if "XDG_RUNTIME_DIR" not in env:
-            env["XDG_RUNTIME_DIR"] = "/run/user/1000"
-
-        # Copy to clipboard
-        subprocess.run(
-            ["wl-copy"], 
-            input=body.encode('utf-8'), 
-            check=True, 
-            env=env, 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL
-        )
-        
-        # Play a sound
-        subprocess.run(
-            ["paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"], 
-            check=False, 
-            env=env,
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL
-        )
+        env = desktop_env()
+        evidence = copy_body(body, env)
+        evidence["sound"] = play_sound(env)
         
         # Portable result envelope
         print(json.dumps({
             "wax_ep_version": 1,
-            "frontmatter": {}
+            "frontmatter": {},
+            "evidence": evidence,
         }))
         return 0
+    except ClipboardUnavailable as exc:
+        print("reason_code=clipboard_unavailable", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
