@@ -65,7 +65,7 @@ class ThreadSubclassShadowTest(unittest.TestCase):
     def test_scanner_assignment_targets(self):
         cases = (
             ("self._stop = threading.Event()", {"_stop"}),
-            ("self._halt: object = threading.Event()", {"_halt"}),
+            ("self._stop: object = threading.Event()", {"_stop"}),
             ("self._stop += 1", {"_stop"}),
             ("self._stop = self._halt = threading.Event()", {"_stop", "_halt"}),
             ("self._stop, self._halt = threading.Event(), threading.Event()",
