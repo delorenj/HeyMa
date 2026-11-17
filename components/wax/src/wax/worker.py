@@ -269,6 +269,8 @@ def next_item() -> Optional[tuple[str, Path, str]]:
             return item_id, p, "process"
         if st == "complete":
             return item_id, p, "park"
+        if st == "skipped" and _duplicate_call_redrop(conn, item_id, p):
+            return item_id, p, "park-twin-redrop"
         if st == "skipped" and _junk_redrop(conn, item_id, p):
             return item_id, p, "park-junk"
         if st in ("suspect", "failed", "skipped"):
@@ -277,6 +279,27 @@ def next_item() -> Optional[tuple[str, Path, str]]:
             # healthy work behind them.
             continue
     return None
+
+
+def _duplicate_call_redrop(conn, item_id: str, path: Path) -> bool:
+    row = conn.execute("SELECT path,duplicate_of_call_session_id FROM items WHERE item_id=?", (item_id,)).fetchone()
+    if not row or not row["duplicate_of_call_session_id"] or Path(row["path"]) == path:
+        return False
+    last = conn.execute("SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
+                        "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
+    return bool(last) and last["cause_code"] in ("duplicate_call", "duplicate_call_redropped")
+
+def park_twin_redrop(item_id: str, path: Path) -> dict[str, Any]:
+    """Preserve a repeat delivery without replacing its canonical parked audio."""
+    dest_dir = paths.SKIPPED / "duplicate-call" / "duplicates"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    moved = rename.move_noclobber(path, dest_dir / path.name)
+    try:
+        ledger.record_transition("item", item_id, "skipped", "skipped", "duplicate_call_redropped",
+                                 f"duplicate={moved}")
+    except Exception as exc:  # noqa: BLE001 - the extra copy is already parked
+        log.warning("could not journal twin re-drop of %s: %s", item_id, exc)
+    return {"item_id": item_id, "parked": str(moved), "reason": "duplicate_call_redropped"}
 
 
 def _junk_redrop(conn, item_id: str, path: Path) -> bool:
@@ -374,22 +397,47 @@ def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
             **({"text": str(kept)} if kept else {})}
 
 
-def _published_note(conn, *, session: str, leg: Optional[str] = None,
-                    exclude: Optional[str] = None) -> bool:
-    """A real, unpruned note owns this call; a calls row alone does not."""
+def _published_note(conn, *, twin: dict[str, Any], exclude: Optional[str] = None) -> bool:
+    """Only the recorded pair can own the note, even after a late CDR changes twin_of."""
     from . import calls
+    session = twin["twin_of_session"]
     for row in conn.execute(
-            "SELECT i.item_id,i.orig_name,i.duplicate_of_call_session_id,t.md_path,t.pruned_at FROM items i "
-            "JOIN transcripts t ON t.item_id=i.item_id WHERE "
-            "i.duplicate_of_call_session_id=? OR i.orig_name LIKE ?",
-            (session, f"%-{leg}-%" if leg else "")):
+            "SELECT i.item_id,i.orig_name,i.duplicate_of_call_session_id,i.twin_of_recording_key,"
+            "t.md_path,t.pruned_at FROM items i JOIN transcripts t ON t.item_id=i.item_id "
+            "WHERE i.duplicate_of_call_session_id=? OR i.twin_of_recording_key=? OR i.orig_name LIKE ?",
+            (session, twin["recording_key"], f"%-{twin['twin_of_leg']}-%")):
         if row["item_id"] == exclude or row["pruned_at"] or not Path(row["md_path"]).is_file():
             continue
-        if leg and (calls.audio_identity(row["orig_name"] or "") or {}).get("call_leg_id") == leg:
+        ident = calls.audio_identity(row["orig_name"] or "") or {}
+        # The receipt epoch distinguishes another recording on the SAME leg an hour
+        # later. The persisted recording key survives the first twin's own late CDR.
+        if ident.get("source") != "telnyx" or abs(ident["epoch"] - twin["epoch"]) > calls.TWIN_START_S:
+            continue
+        if (ident.get("call_leg_id") == twin["twin_of_leg"]
+                and row["duplicate_of_call_session_id"] is None
+                or row["twin_of_recording_key"] == twin["twin_of_recording_key"]):
             return True
-        if row["duplicate_of_call_session_id"] == session:
-            if leg is None or (calls.twin_of(row["orig_name"] or "") or {}).get("twin_of_leg") == leg:
-                return True
+    return False
+
+def _published_primary_twin(conn, *, name: str, item_id: str, session: str) -> bool:
+    """A primary only yields to a published counterpart of its exact recording."""
+    from . import calls
+    ident = calls.audio_identity(name) or {}
+    recs = {row["recording_key"] for row in calls.db().execute(
+        "SELECT recording_key FROM call_recordings WHERE kind='trunk' AND call_leg_id=? "
+        "AND call_session_id=?", (ident.get("call_leg_id"), session))}
+    if not recs:
+        return False
+    for row in conn.execute(
+            "SELECT i.item_id,i.orig_name,i.twin_of_recording_key,t.md_path,t.pruned_at "
+            "FROM items i JOIN transcripts t ON t.item_id=i.item_id "
+            "WHERE i.duplicate_of_call_session_id=? AND i.twin_of_recording_key IS NOT NULL", (session,)):
+        other = calls.audio_identity(row["orig_name"] or "") or {}
+        if (row["item_id"] != item_id and row["twin_of_recording_key"] in recs
+                and not row["pruned_at"] and other.get("source") == "telnyx"
+                and abs(other["epoch"] - ident["epoch"]) <= calls.TWIN_START_S
+                and Path(row["md_path"]).is_file()):
+            return True
     return False
 
 
@@ -448,20 +496,20 @@ def _skip_twin(item_id: str, path: Path, start_state: str) -> Optional[dict[str,
     except Exception as exc:  # noqa: BLE001 - a broken calls ledger must not lose a recording
         log.warning("twin check failed for %s: %s: %s", path.name, type(exc).__name__, exc)
         return None
+    ident = calls.audio_identity(path.name) or {}
     if twin and twin["call"]:
         session = twin["twin_of_session"]
-        if _published_note(conn, session=session, leg=twin["twin_of_leg"], exclude=item_id):
+        twin = twin | {"epoch": ident["epoch"]}
+        if _published_note(conn, twin=twin, exclude=item_id):
             return _park_twin(item_id, path, session)
-        # The primary is absent, failed, pruned, or missing its note. Let this
-        # copy publish, but record its claim first so a late primary cannot
-        # publish another note. The marker is not itself proof of publication.
-        conn.execute("UPDATE items SET duplicate_of_call_session_id=?,updated_at=? WHERE item_id=?",
-                     (session, sentinel.utcnow(), item_id))
+        # Persist the exact matched recording even if this twin's own CDR later
+        # arrives and twin_of() correctly stops returning the old association.
+        conn.execute("UPDATE items SET duplicate_of_call_session_id=?,twin_of_recording_key=?,updated_at=? "
+                     "WHERE item_id=?", (session, twin["twin_of_recording_key"], sentinel.utcnow(), item_id))
         return None
     if call and call.get("call_session_id") and not call.get("duplicate_of_call_session_id"):
         session = call["call_session_id"]
-        if _published_note(conn, session=session,
-                           leg=(calls.audio_identity(path.name) or {}).get("call_leg_id"), exclude=item_id):
+        if _published_primary_twin(conn, name=path.name, item_id=item_id, session=session):
             return _park_twin(item_id, path, session)
     return None
 
@@ -664,12 +712,14 @@ def run_once() -> Optional[dict[str, Any]]:
         if nxt is None:
             return None
         item_id, path, action = nxt
-        _write_claim(item_id, path, "park" if action in ("park", "park-junk") else "claimed")
+        _write_claim(item_id, path, "park" if action in ("park", "park-junk", "park-twin-redrop") else "claimed")
     try:
         if action == "park":
             return park_duplicate(item_id, path)
         if action == "park-junk":
             return park_junk_redrop(item_id, path)
+        if action == "park-twin-redrop":
+            return park_twin_redrop(item_id, path)
         return process(item_id, path)
     finally:
         _clear_claim()

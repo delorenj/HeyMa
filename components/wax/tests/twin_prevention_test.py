@@ -44,6 +44,113 @@ class TwinPreventionTest(JunkGateHarness):
     def drop_rec(self, rec, index):
         return self.drop(self.name(rec), words(40), payload=(f"unique audio {index} ".encode() * 40))
 
+    def test_same_leg_distinct_recording_hour_later_publishes_own_note(self):
+        twin, kept = PAIRS[1]
+        self.seed((twin, kept))
+        self.drop_rec(kept, 430)
+        first = self.run_once()
+        note = Path(first["transcribe"]["md_path"])
+        before = note.read_bytes()
+        later_start = "2026-11-05T20:40:29Z"
+        later_twin = "bbbbbbbb-d950-11f1-ba69-4aec9a62b814"
+        later_session = "cccccccc-d950-11f1-ba69-4aec9a62b814"
+        conn = calls.db()
+        conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,started_at,"
+                     "duration_millis,raw,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                     ("later-kept-recording", "trunk", kept[0], kept[1], later_start, 15000, "{}", later_start))
+        conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,started_at,"
+                     "duration_millis,raw,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                     (later_twin, "trunk", later_twin, later_session,
+                      "2026-11-05T20:40:31Z", 14000, "{}", later_start))
+        later_name = self.name(kept).replace("-1794431481.mp3", "-1794435081.mp3")
+        self.drop(later_name, words(40), payload=b"unrelated later call " * 50)
+        second = self.run_once()
+        self.assertIn("transcribe", second)
+        self.assertEqual(self.transcript_rows(), 2)
+        self.assertEqual(note.read_bytes(), before)
+        self.assertTrue(Path(second["transcribe"]["md_path"]).is_file())
+        self.assertIsNone(self.run_once())
+
+    def test_late_own_cdr_preserves_published_pair_but_not_unrelated_same_leg(self):
+        twin, kept = PAIRS[0]
+        self.seed((twin, kept))
+        self.drop_rec(twin, 401)
+        twin_id = self.item
+        first = self.run_once()
+        note = Path(first["transcribe"]["md_path"])
+        original = note.read_bytes()
+        self.assertEqual(ledger.connect().execute(
+            "SELECT twin_of_recording_key FROM items WHERE item_id=?", (twin_id,)).fetchone()[0], kept[0])
+        own_session = "aaaaaaaa-d87b-11f1-92e4-02420aef2620"
+        conn = calls.db()
+        conn.execute("INSERT INTO call_legs(call_leg_id,call_session_id,started_at,raw,updated_at) VALUES(?,?,?,?,?)",
+                     (twin[0], own_session, twin[2], "{}", twin[2]))
+        conn.execute("INSERT INTO calls(call_session_id,started_at,outcome,first_seen,updated_at) VALUES(?,?,?,?,?)",
+                     (own_session, twin[2], "answered", twin[2], twin[2]))
+        self.assertIsNone(calls.twin_of(self.name(twin)))
+        self.drop_rec(kept, 402)
+        second = self.run_once()
+        self.assertEqual(second["skipped"]["reason"], "duplicate_call")
+        self.assertEqual(self.transcript_rows(), 1)
+        self.assertEqual(note.read_bytes(), original)
+
+        # A distinct receipt on the primary's same leg an hour later owns its note.
+        late = self.name(kept).replace("-1794431481.mp3", "-1794435081.mp3")
+        self.drop(late, words(40), payload=b"distinct later conversation " * 40)
+        own = self.run_once()
+        self.assertIn("transcribe", own)
+        self.assertEqual(self.transcript_rows(), 2)
+        self.assertTrue(Path(own["transcribe"]["md_path"]).is_file())
+        self.assertIsNone(self.run_once())
+
+    def test_redelivered_twin_parks_extra_bytes_without_changing_canonical(self):
+        twin, kept = PAIRS[3]
+        self.seed((twin, kept))
+        self.drop_rec(kept, 410)
+        self.run_once()
+        self.drop_rec(twin, 411)
+        twin_id = self.item
+        first = self.run_once()
+        canonical = Path(first["skipped"]["path"])
+        original = canonical.read_bytes()
+        self.drop_rec(twin, 411)
+        self.assertEqual(self.item, twin_id)
+        second = self.run_once()
+        self.assertEqual(second["reason"], "duplicate_call_redropped")
+        self.assertEqual(Path(second["parked"]).read_bytes(), original)
+        self.assertEqual(canonical.read_bytes(), original)
+        self.assertEqual(ledger.connect().execute("SELECT path FROM items WHERE item_id=?",
+                                                  (twin_id,)).fetchone()[0], str(canonical))
+        self.assertEqual(self.transcript_rows(), 1)
+        self.assertIsNone(self.run_once())
+
+    def test_redelivery_after_rename_crash_recovers_then_parks_extra(self):
+        twin, kept = PAIRS[4]
+        self.seed((twin, kept))
+        self.drop_rec(kept, 420)
+        self.run_once()
+        self.drop_rec(twin, 421)
+        twin_id = self.item
+        real_move = worker.rename.move_noclobber
+        def crash_after_move(*args, **kwargs):
+            real_move(*args, **kwargs)
+            raise RuntimeError("injected crash after rename")
+        with patch.object(worker.rename, "move_noclobber", side_effect=crash_after_move):
+            with self.assertRaisesRegex(RuntimeError, "injected crash"):
+                self.run_once()
+        canonical = Path(ledger.connect().execute("SELECT path FROM items WHERE item_id=?",
+                                                 (twin_id,)).fetchone()[0])
+        original = canonical.read_bytes()
+        self.drop_rec(twin, 421)
+        self.assertEqual(self.item, twin_id)
+        self.assertEqual(self.run_once()["skipped"]["reason"], "duplicate_call")
+        extra = self.run_once()
+        self.assertEqual(extra["reason"], "duplicate_call_redropped")
+        self.assertEqual(Path(extra["parked"]).read_bytes(), original)
+        self.assertEqual(canonical.read_bytes(), original)
+        self.assertEqual(self.transcript_rows(), 1)
+        self.assertIsNone(self.run_once())
+
     def test_six_pairs_link_mark_and_never_publish_second_notes(self):
         for index, pair in enumerate(PAIRS):
             with self.subTest(pair=pair[0][0][:8]):

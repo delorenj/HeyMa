@@ -914,6 +914,7 @@ def twin_of(name: str) -> Optional[dict[str, Any]]:
     other = found[0]
     call = conn.execute("SELECT * FROM calls WHERE call_session_id=?", (other["call_session_id"],)).fetchone()
     return {"call_leg_id": ident["call_leg_id"], "call_session_id": rec["call_session_id"],
+            "recording_key": rec["recording_key"], "twin_of_recording_key": other["recording_key"],
             "twin_of_leg": other["call_leg_id"], "twin_of_session": other["call_session_id"],
             "call": dict(call) if call else None,
             "start_delta_s": abs((_ts(other["started_at"]) - start).total_seconds()),
