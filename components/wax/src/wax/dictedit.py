@@ -30,6 +30,7 @@ import json
 import multiprocessing
 import os
 import re
+import shlex
 import signal
 import tempfile
 import threading
@@ -352,6 +353,19 @@ def offered(term: str, form: str, book: dictionary.Dictionary) -> Optional[str]:
     return None
 
 
+def about_missing(term: str) -> str:
+    """Jev judges every correction in context, and `about` is the context it gets for the term.
+
+    Without one, a name that is also an ordinary name or word loses to it: Pauly
+    (a dog) listed with heard [polly] and no about had "features Polly" scored
+    0.37 and rejected under the 0.4 heard bar; the same line with an about scored
+    0.82. Listing more heard forms does not help, because the heard form already
+    reached Jev."""
+    return (f"{term} has no `about`, so Jev judges its corrections blind and rejects most of them "
+            f"(listed mis-hearings included). Say what it is: "
+            f"wax dict add {shlex.quote(term)} --update --about \"...\"")
+
+
 def lint_heard(term: str, form: str, book: dictionary.Dictionary, *, others_only: bool = False) -> Lint:
     """What is wrong with listing `form` as a mis-hearing of `term`."""
     out = Lint()
@@ -523,6 +537,8 @@ def add(term: str, *, about: str = "", heard: tuple[str, ...] = (), section: Opt
             raise DictEditError("; ".join(lint.refusals), "add --force to list it anyway")
         if existing is not None and new_heard == cur_heard and new_about == cur_about:
             return Change("unchanged", term, None, new_heard, new_about, lint, target, False)
+        if not new_about:
+            lint.warnings.append(about_missing(term))
         line = render(term, new_heard, new_about)
         new = _replace_line(old, term, line) if existing is not None else _insert(old, line, section)
         _verify(old, new, {term: _entry_value(new_heard, new_about)}, target)

@@ -108,6 +108,16 @@ class EditTest(Base):
         self.assertEqual(change.action, "unchanged")
         self.assertEqual(len(change.lint.notes), 2)
 
+    def test_an_entry_without_about_warns_and_one_with_about_does_not(self):
+        # Pauly (a dog) was added with heard forms and no about; Jev rejected
+        # every "Polly" blind. The warning names the command that fixes it.
+        change = dictedit.add("Pauly", heard=("paulie",), path=self.book)
+        self.assertEqual(change.action, "added")
+        self.assertTrue(any("no `about`" in w and "--update --about" in w for w in change.lint.warnings))
+        change = dictedit.add("Pauly", about="my dog", update=True, path=self.book)
+        self.assertFalse(any("no `about`" in w for w in change.lint.warnings))
+        self.assertEqual(self.terms()["Pauly"], {"heard": ["paulie"], "about": "my dog"})
+
     def test_dry_run_writes_nothing(self):
         change = dictedit.add("Kapture", dry_run=True, path=self.book)
         self.assertFalse(change.written)

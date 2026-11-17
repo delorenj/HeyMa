@@ -25,7 +25,11 @@ Case matters: write the term exactly as it should appear. Quote an `about` that
 contains a comma or a colon. `heard` lists mis-hearings you have **actually
 seen**; they are accepted more readily than a sound-alike the pass finds on its
 own, but Jev still checks each in context. `about` is one short line Jev sees, so
-it can tell "Skillex" from "skill set". A spoken "dot" in a domain or file name
+it can tell "Skillex" from "skill set". **Always give one**: without it Jev
+judges blind and rejects most corrections, listed `heard` forms included (Pauly,
+a dog, added with `heard: [polly]` and no `about`: "features Polly" scored 0.37,
+under the 0.4 bar; with an `about`, 0.82). `wax dict` warns when an entry it
+writes has none. A spoken "dot" in a domain or file name
 is fixed without being listed. The `# -- Look-alikes` section holds real words
 that keep getting respelled into a term (see below).
 
