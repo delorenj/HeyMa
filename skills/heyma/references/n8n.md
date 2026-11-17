@@ -28,10 +28,19 @@ Each release script dry-runs by default (prints `unchanged` / `would change`) an
 
 | Workflow | Id | Release script | Status 2026-11-05 |
 |---|---|---|---|
-| On Telnyx DeLoSIP Event | `9BkQCtKxdEtPWLAn` | `telnyx_calls.py` | **Live and current** (dry run prints `unchanged`; published version `17c7043e…`, 2026-11-03) |
+| On Telnyx DeLoSIP Event | `9BkQCtKxdEtPWLAn` | `telnyx_calls.py` (co-owned with DeLoSIP) | **Live and current** (dry run prints `unchanged`; published version `46912344…`, 2026-11-17) |
 | Transcription Notifications | `XHWRrrYCzu4ifdS7` | `release.py` | **NOT applied.** Live is still the 4-node pre-release shape; dry run refuses: "workflow changed since review" |
 
-**`9BkQCtKxdEtPWLAn` (calls):** Webhook → Wax Calls (`event`) → IF `$json.ended` → Bloodbank `bloodbank.telephony.call.ended` (orderingKey `call:<session>`) + ntfy topic `telephony`. Disposition mapping: declined → `rejected`; unknown → `failed`.
+**`9BkQCtKxdEtPWLAn` (calls):**
+- **Flow:** Webhook → DeLoSIP signature check and ring queue → Wax Calls (`event`) → IF `$json.ended` → Bloodbank `bloodbank.telephony.call.ended` (orderingKey `call:<session>`) + ntfy topic `telephony`.
+- **Caller name:** the ntfy line names the caller from the [contact directory](calls.md) (`call.contact_name`). The Bloodbank payload stays CNAM-only.
+- **Disposition mapping:** declined → `rejected`; unknown → `failed`.
+
+**Two owners.** `telnyx_calls.py` owns Wax Calls, Call Ended?, Bloodbank and Ntfy Send.
+- DeLoSIP (`~/code/delonet-n8n-workflows/delosip`, Hermes profile `rererere`, the n8n workflows director) owns the five verify/ring nodes between the webhook and Wax Calls, and their wiring.
+- `--apply` replaces only HeyMa's own nodes, matched by id. It keeps every other live node and the live connections.
+- Never make it write the whole graph. Before ffc0c06, it would have deleted DeLoSIP's signature check.
+- DeLoSIP's `rollback.py` republishes a pre-contact-name graph. Re-run `telnyx_calls.py --apply` after a rollback.
 
 **`XHWRrrYCzu4ifdS7` (notifications):** live today it is two Bloodbank Trigger → ntfy pairs (`audio.file.received` → "Transcription Started"; `audio.transcription.completed` → "Transcription Complete"). The release adds a completion formatter and an intake branch (`bloodbank.audio.intake.detected` → ntfy). Consequence of it not being applied: **nothing relays intake events to ntfy** (moot while `ticketable` is disabled) and there is no formatted completion message. Formatter code and node tests exist and pass (`node --test format-completion.test.js format-intake.test.js`).
 
