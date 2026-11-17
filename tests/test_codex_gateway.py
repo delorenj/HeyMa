@@ -26,6 +26,12 @@ DISCOVERY = [{"id": route["id"], "automaticai": {
     "effort": ["medium", "high", "xhigh", "max"],
     "capabilities": ["responses", "streaming", "function_tools"],
 }} for route in ROUTES if route.get("billing") == "subscription"]
+CANDIDATES = len(DISCOVERY)
+# Live discovery also lists metered rows with no default_effort; the owner must skip them, not fail.
+DISCOVERY.append({"id": "automaticai/fixture/metered-no-effort", "automaticai": {
+    "account": "fixture", "upstream_model": "metered-no-effort", "billing": "metered",
+    "effort_control": "none", "capabilities": ["responses", "streaming", "function_tools"],
+}})
 
 
 class CodexLaunchOwnershipTest(unittest.TestCase):
@@ -58,7 +64,7 @@ class CodexLaunchOwnershipTest(unittest.TestCase):
             self.assertEqual(first["provider"], "automaticai")
             self.assertEqual(first["model"], "automaticai/personal/sol-6.1")
             self.assertEqual(first["effort"], "xhigh")
-            self.assertEqual(first["models"], len(DISCOVERY))
+            self.assertEqual(first["models"], CANDIDATES, "the metered row is skipped, never listed")
             self.assertFalse(first["daemon_auto_start"])
             config = OWNER.read_toml(home / "config.toml")
             original = tomllib.loads(settings)
