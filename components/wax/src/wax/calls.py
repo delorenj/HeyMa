@@ -891,19 +891,24 @@ def twin_of(name: str) -> Optional[dict[str, Any]]:
                        "AND started_at IS NOT NULL AND duration_millis IS NOT NULL", (ident["call_leg_id"],)).fetchone()
     if rec is None or not rec["call_session_id"]:
         return None
+    if conn.execute("SELECT 1 FROM call_legs WHERE call_leg_id=? LIMIT 1", (ident["call_leg_id"],)).fetchone():
+        return None  # The recording's own CDR wins even if its recording session differs.
     if conn.execute("SELECT 1 FROM call_legs WHERE call_session_id=? LIMIT 1", (rec["call_session_id"],)).fetchone():
         return None
     start = _ts(rec["started_at"])
     if start is None:
         return None
-    lo, hi = _iso(start - timedelta(seconds=TWIN_START_S)), _iso(start + timedelta(seconds=TWIN_START_S))
+    # ISO text bounds alone are unsafe across fractional seconds and timestamp formats.
+    # Widen the indexed candidate scan, then apply the exact elapsed-time bound.
+    lo, hi = _iso(start - timedelta(seconds=TWIN_START_S + 1)), _iso(start + timedelta(seconds=TWIN_START_S + 1))
     found = []
     for other in conn.execute(
             "SELECT r.* FROM call_recordings r WHERE r.kind='trunk' AND r.call_leg_id!=? AND r.started_at BETWEEN ? AND ? "
             "AND r.duration_millis IS NOT NULL AND ABS(r.duration_millis-?)<=? "
             "AND EXISTS (SELECT 1 FROM call_legs l WHERE l.call_session_id=r.call_session_id)",
             (ident["call_leg_id"], lo, hi, rec["duration_millis"], TWIN_DURATION_MS)):
-        found.append(other)
+        if abs((_ts(other["started_at"]) - start).total_seconds()) <= TWIN_START_S:
+            found.append(other)
     if len(found) != 1:
         return None
     other = found[0]

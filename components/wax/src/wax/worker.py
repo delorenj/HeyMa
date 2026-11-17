@@ -374,8 +374,68 @@ def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
             **({"text": str(kept)} if kept else {})}
 
 
+def _published_note(conn, *, session: str, leg: Optional[str] = None,
+                    exclude: Optional[str] = None) -> bool:
+    """A real, unpruned note owns this call; a calls row alone does not."""
+    from . import calls
+    for row in conn.execute(
+            "SELECT i.item_id,i.orig_name,i.duplicate_of_call_session_id,t.md_path,t.pruned_at FROM items i "
+            "JOIN transcripts t ON t.item_id=i.item_id WHERE "
+            "i.duplicate_of_call_session_id=? OR i.orig_name LIKE ?",
+            (session, f"%-{leg}-%" if leg else "")):
+        if row["item_id"] == exclude or row["pruned_at"] or not Path(row["md_path"]).is_file():
+            continue
+        if leg and (calls.audio_identity(row["orig_name"] or "") or {}).get("call_leg_id") == leg:
+            return True
+        if row["duplicate_of_call_session_id"] == session:
+            if leg is None or (calls.twin_of(row["orig_name"] or "") or {}).get("twin_of_leg") == leg:
+                return True
+    return False
+
+
+def _park_twin(item_id: str, path: Path, session: str) -> dict[str, Any]:
+    """Journal each collision-free destination before rename; retry can finish after a crash."""
+    conn = ledger.connect()
+    ledger.guard_fence(item_id)
+    conn.execute("UPDATE items SET duplicate_of_call_session_id=?, updated_at=? WHERE item_id=?",
+                 (session, sentinel.utcnow(), item_id))
+    dest = paths.SKIPPED / "duplicate-call" / path.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    def journal(candidate: Path) -> None:
+        conn.execute("UPDATE items SET path=?, updated_at=? WHERE item_id=?",
+                     (str(candidate), sentinel.utcnow(), item_id))
+    try:
+        moved = rename.move_noclobber(path, dest, on_destination=journal)
+    except Exception:
+        # A failed attempt before the move leaves the original inbox file intact.
+        # A failure after the move keeps its journaled destination for retry.
+        if path.is_file():
+            conn.execute("UPDATE items SET path=?, updated_at=? WHERE item_id=?",
+                         (str(path), sentinel.utcnow(), item_id))
+        raise
+    _set_state(item_id, "skipped", cause="duplicate_call",
+               evidence=f"duplicate of call {session}; audio preserved at {moved}", subject=path.name)
+    return {"reason": "duplicate_call", "call_session_id": session, "path": str(moved)}
+
+
+def _recover_parked_twin() -> Optional[dict[str, Any]]:
+    """Complete only a journaled twin move whose actual parked audio exists."""
+    conn = ledger.connect()
+    for row in conn.execute("SELECT item_id,path,duplicate_of_call_session_id FROM items "
+                            "WHERE state='archived' AND duplicate_of_call_session_id IS NOT NULL"):
+        path = Path(row["path"])
+        if path.parent != paths.SKIPPED / "duplicate-call" or not path.is_file():
+            continue
+        _set_state(row["item_id"], "skipped", cause="duplicate_call",
+                   evidence=f"duplicate of call {row['duplicate_of_call_session_id']}; audio preserved at {path}",
+                   subject=path.name)
+        return {"item_id": row["item_id"], "skipped": {"reason": "duplicate_call",
+                "call_session_id": row["duplicate_of_call_session_id"], "path": str(path)}}
+    return None
+
+
 def _skip_twin(item_id: str, path: Path, start_state: str) -> Optional[dict[str, Any]]:
-    """Park only new legless twins after backup, before any note can be created."""
+    """Choose one note owner using real publication, not merely a CDR or recording row."""
     if start_state not in ("pending", "archived"):
         return None  # Existing transcripts and notes are HEYMA-26's operator decision.
     from . import calls
@@ -383,25 +443,27 @@ def _skip_twin(item_id: str, path: Path, start_state: str) -> Optional[dict[str,
         return None
     try:
         twin = calls.twin_of(path.name)
+        conn = ledger.connect()
+        call = calls.call_for_audio(path.name) if not (twin and twin["call"]) else None
     except Exception as exc:  # noqa: BLE001 - a broken calls ledger must not lose a recording
         log.warning("twin check failed for %s: %s: %s", path.name, type(exc).__name__, exc)
         return None
-    if not twin or not twin["call"]:
+    if twin and twin["call"]:
+        session = twin["twin_of_session"]
+        if _published_note(conn, session=session, leg=twin["twin_of_leg"], exclude=item_id):
+            return _park_twin(item_id, path, session)
+        # The primary is absent, failed, pruned, or missing its note. Let this
+        # copy publish, but record its claim first so a late primary cannot
+        # publish another note. The marker is not itself proof of publication.
+        conn.execute("UPDATE items SET duplicate_of_call_session_id=?,updated_at=? WHERE item_id=?",
+                     (session, sentinel.utcnow(), item_id))
         return None
-    ledger.guard_fence(item_id)
-    conn = ledger.connect()
-    conn.execute("UPDATE items SET duplicate_of_call_session_id=?, updated_at=? WHERE item_id=?",
-                 (twin["twin_of_session"], sentinel.utcnow(), item_id))
-    dest = paths.SKIPPED / "duplicate-call" / path.name
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    moved = rename.move_noclobber(path, dest)
-    conn.execute("UPDATE items SET path=?, updated_at=? WHERE item_id=?",
-                 (str(moved), sentinel.utcnow(), item_id))
-    _set_state(item_id, "skipped", cause="duplicate_call",
-               evidence=f"duplicate of call {twin['twin_of_session']}; audio preserved at {moved}",
-               subject=path.name)
-    return {"reason": "duplicate_call", "call_session_id": twin["twin_of_session"],
-            "path": str(moved)}
+    if call and call.get("call_session_id") and not call.get("duplicate_of_call_session_id"):
+        session = call["call_session_id"]
+        if _published_note(conn, session=session,
+                           leg=(calls.audio_identity(path.name) or {}).get("call_leg_id"), exclude=item_id):
+            return _park_twin(item_id, path, session)
+    return None
 
 
 def _process_item(item_id: str, path: Path) -> dict[str, Any]:
@@ -595,6 +657,9 @@ def run_once() -> Optional[dict[str, Any]]:
     # Selection and operator skip share a short lock. The expensive work runs
     # outside it; the durable claim closes the race before the lock is released.
     with _SELECTION_LOCK:
+        recovered = _recover_parked_twin()
+        if recovered is not None:
+            return recovered
         nxt = next_item()
         if nxt is None:
             return None
