@@ -55,7 +55,7 @@ def build(live):
         "orderingKey": "=call:{{ $json.call_session_id }}", "connection": {}})
     ntfy.update(position=[704, 96], parameters={
         "topic": "telephony", "title": "Call", "message": NTFY_MESSAGE})
-    nodes = [
+    owned = [
         webhook,
         {"id": WAX_CALLS, "name": "Wax Calls", "type": "n8n-nodes-heyma.waxCalls", "typeVersion": 1,
          "position": [224, 0], "parameters": {"operation": "event", "eventSource": "item"}},
@@ -77,6 +77,16 @@ def build(live):
         "Call Ended?": {"main": [[{"node": bloodbank["name"], "type": "main", "index": 0},
                                   {"node": ntfy["name"], "type": "main", "index": 0}], []]},
     }
+    # Nodes this script does not own (the signature-verification / ring-queue path that now sits
+    # between the webhook and Wax Calls) are kept as they are, and so is the live wiring once every
+    # owned node exists: a release changes only what it owns, never deletes someone else's nodes.
+    owned_ids = {node["id"] for node in owned}
+    live_ids = {node["id"] for node in live["nodes"]}
+    by_owned = {node["id"]: node for node in owned}
+    nodes = [by_owned.get(node["id"], node) for node in live["nodes"]] + [
+        node for node in owned if node["id"] not in live_ids]
+    if owned_ids <= live_ids:
+        connections = live["connections"]
     settings = {key: value for key, value in live["settings"].items() if key in API_SETTINGS}
     return {"name": live["name"], "nodes": nodes, "connections": connections, "settings": settings}
 
