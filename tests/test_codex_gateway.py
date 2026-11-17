@@ -17,12 +17,15 @@ GATEWAY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GATEWAY)
 OWNER = GATEWAY.load_owner()
 ROUTES = OWNER.load_catalog(OWNER.CATALOG)
+# Only subscription routes are Codex candidates: the owner skips every other
+# billing class (metered rows such as hypercharm carry no default_effort and
+# declare effort_control "none"), so the fake discovery lists subscription rows.
 DISCOVERY = [{"id": route["id"], "automaticai": {
     "account": route["account"], "upstream_model": route["upstream"],
     "default_effort": route["default_effort"], "billing": route["billing"],
     "effort": ["medium", "high", "xhigh", "max"],
     "capabilities": ["responses", "streaming", "function_tools"],
-}} for route in ROUTES]
+}} for route in ROUTES if route.get("billing") == "subscription"]
 
 
 class CodexLaunchOwnershipTest(unittest.TestCase):
