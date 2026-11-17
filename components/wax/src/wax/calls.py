@@ -248,6 +248,32 @@ def upsert_leg(conn: sqlite3.Connection, cdr: dict[str, Any]) -> Optional[str]:
     return session
 
 
+def _recording_iso(value: Any) -> Optional[str]:
+    """Preserve Telnyx recording-start fractions for the two-second twin bound."""
+    stamp = _ts(value)
+    return (stamp.isoformat(timespec="microseconds" if stamp.microsecond else "seconds")
+            .replace("+00:00", "Z")) if stamp else None
+
+
+def recording_for_audio(name: str) -> Optional[sqlite3.Row]:
+    """Resolve an intake/backfill filename to ONE ledger recording by its object.
+
+    Receipt hashes describe delivery, not recording time or identity. Without a
+    stored object/file name (or with conflicting rows), there is no safe key.
+    """
+    base = Path(name).name
+    match = TELNYX_TRUNK.fullmatch(base)
+    if not match:
+        return None
+    leg = match.group(2).lower()
+    obj = f"{leg}-{match.group(3)}.mp3"
+    rows = db().execute(
+        "SELECT * FROM call_recordings WHERE kind='trunk' AND call_leg_id=? "
+        "AND (object_name=? OR file_name=? OR file_name=?)",
+        (leg, obj, base, obj)).fetchall()
+    return rows[0] if len(rows) == 1 else None
+
+
 def upsert_recording(conn: sqlite3.Connection, rec: dict[str, Any]) -> Optional[str]:
     rid = _str(rec.get("id"))
     if not rid:
@@ -264,7 +290,7 @@ def upsert_recording(conn: sqlite3.Connection, rec: dict[str, Any]) -> Optional[
         "object_name=COALESCE(excluded.object_name,call_recordings.object_name),"
         "raw=excluded.raw,updated_at=excluded.updated_at",
         (rid, kind, _str(rec.get("call_leg_id")), _str(rec.get("call_session_id")), _str(rec.get("channels")),
-         _iso(_ts(rec.get("recording_started_at"))), _iso(_ts(rec.get("recording_ended_at"))),
+         _recording_iso(rec.get("recording_started_at")), _iso(_ts(rec.get("recording_ended_at"))),
          int(rec.get("duration_millis") or 0), object_name,
          json.dumps({k: v for k, v in rec.items() if k != "download_urls"} | {"object_name": object_name},
                     sort_keys=True),
@@ -887,9 +913,18 @@ def twin_of(name: str) -> Optional[dict[str, Any]]:
     if not ident or ident.get("source") != "telnyx" or not ident.get("call_leg_id"):
         return None
     conn = db()
-    rec = conn.execute("SELECT * FROM call_recordings WHERE call_leg_id=? AND kind='trunk' "
-                       "AND started_at IS NOT NULL AND duration_millis IS NOT NULL", (ident["call_leg_id"],)).fetchone()
-    if rec is None or not rec["call_session_id"]:
+    rec = recording_for_audio(name)
+    if rec is None:
+        # Legacy rows without an object still support a provisional call join
+        # only if this leg has one recording. The worker never treats this guess
+        # as publication identity: it requires recording_for_audio on both sides.
+        candidates = conn.execute("SELECT * FROM call_recordings WHERE call_leg_id=? AND kind='trunk' "
+                                  "AND started_at IS NOT NULL AND duration_millis IS NOT NULL",
+                                  (ident["call_leg_id"],)).fetchall()
+        if len(candidates) != 1:
+            return None
+        rec = candidates[0]
+    if not rec["started_at"] or rec["duration_millis"] is None or not rec["call_session_id"]:
         return None
     if conn.execute("SELECT 1 FROM call_legs WHERE call_leg_id=? LIMIT 1", (ident["call_leg_id"],)).fetchone():
         return None  # The recording's own CDR wins even if its recording session differs.
@@ -900,7 +935,9 @@ def twin_of(name: str) -> Optional[dict[str, Any]]:
         return None
     # ISO text bounds alone are unsafe across fractional seconds and timestamp formats.
     # Widen the indexed candidate scan, then apply the exact elapsed-time bound.
-    lo, hi = _iso(start - timedelta(seconds=TWIN_START_S + 1)), _iso(start + timedelta(seconds=TWIN_START_S + 1))
+    # Use a floor that includes fractional timestamps at either edge; the
+    # elapsed-time comparison below is authoritative, not SQLite text order.
+    lo, hi = _iso(start - timedelta(seconds=TWIN_START_S + 1)), _iso(start + timedelta(seconds=TWIN_START_S + 2))
     found = []
     for other in conn.execute(
             "SELECT r.* FROM call_recordings r WHERE r.kind='trunk' AND r.call_leg_id!=? AND r.started_at BETWEEN ? AND ? "

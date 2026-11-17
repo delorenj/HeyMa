@@ -398,7 +398,7 @@ def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
 
 
 def _published_note(conn, *, twin: dict[str, Any], exclude: Optional[str] = None) -> bool:
-    """Only the recorded pair can own the note, even after a late CDR changes twin_of."""
+    """Suppress only when the exact matched primary (or persisted twin) has a note."""
     from . import calls
     session = twin["twin_of_session"]
     for row in conn.execute(
@@ -408,36 +408,36 @@ def _published_note(conn, *, twin: dict[str, Any], exclude: Optional[str] = None
             (session, twin["recording_key"], f"%-{twin['twin_of_leg']}-%")):
         if row["item_id"] == exclude or row["pruned_at"] or not Path(row["md_path"]).is_file():
             continue
-        ident = calls.audio_identity(row["orig_name"] or "") or {}
-        # The receipt epoch distinguishes another recording on the SAME leg an hour
-        # later. The persisted recording key survives the first twin's own late CDR.
-        if ident.get("source") != "telnyx" or abs(ident["epoch"] - twin["epoch"]) > calls.TWIN_START_S:
+        recording = calls.recording_for_audio(row["orig_name"] or "")
+        if recording is None:
             continue
-        if (ident.get("call_leg_id") == twin["twin_of_leg"]
-                and row["duplicate_of_call_session_id"] is None
-                or row["twin_of_recording_key"] == twin["twin_of_recording_key"]):
+        if (recording["recording_key"] == twin["twin_of_recording_key"]
+                and row["duplicate_of_call_session_id"] is None):
+            return True
+        if (recording["recording_key"] == twin["recording_key"]
+                and row["twin_of_recording_key"] == twin["twin_of_recording_key"]
+                and row["duplicate_of_call_session_id"] == session):
             return True
     return False
 
 def _published_primary_twin(conn, *, name: str, item_id: str, session: str) -> bool:
-    """A primary only yields to a published counterpart of its exact recording."""
+    """A primary yields only to a note explicitly paired with its object key."""
     from . import calls
-    ident = calls.audio_identity(name) or {}
-    recs = {row["recording_key"] for row in calls.db().execute(
-        "SELECT recording_key FROM call_recordings WHERE kind='trunk' AND call_leg_id=? "
-        "AND call_session_id=?", (ident.get("call_leg_id"), session))}
-    if not recs:
+    recording = calls.recording_for_audio(name)
+    if recording is None:
         return False
     for row in conn.execute(
             "SELECT i.item_id,i.orig_name,i.twin_of_recording_key,t.md_path,t.pruned_at "
             "FROM items i JOIN transcripts t ON t.item_id=i.item_id "
-            "WHERE i.duplicate_of_call_session_id=? AND i.twin_of_recording_key IS NOT NULL", (session,)):
-        other = calls.audio_identity(row["orig_name"] or "") or {}
-        if (row["item_id"] != item_id and row["twin_of_recording_key"] in recs
-                and not row["pruned_at"] and other.get("source") == "telnyx"
-                and abs(other["epoch"] - ident["epoch"]) <= calls.TWIN_START_S
+            "WHERE i.duplicate_of_call_session_id=? AND i.twin_of_recording_key=?",
+            (session, recording["recording_key"])):
+        if (row["item_id"] != item_id and not row["pruned_at"]
                 and Path(row["md_path"]).is_file()):
-            return True
+            # The durable pair key survives a late CDR, but it must belong to
+            # an actual distinct recording; an unresolvable note is not proof.
+            other = calls.recording_for_audio(row["orig_name"] or "")
+            if other is not None and other["recording_key"] != recording["recording_key"]:
+                return True
     return False
 
 
@@ -492,14 +492,13 @@ def _skip_twin(item_id: str, path: Path, start_state: str) -> Optional[dict[str,
     try:
         twin = calls.twin_of(path.name)
         conn = ledger.connect()
+        recording = calls.recording_for_audio(path.name)
         call = calls.call_for_audio(path.name) if not (twin and twin["call"]) else None
     except Exception as exc:  # noqa: BLE001 - a broken calls ledger must not lose a recording
         log.warning("twin check failed for %s: %s: %s", path.name, type(exc).__name__, exc)
         return None
-    ident = calls.audio_identity(path.name) or {}
-    if twin and twin["call"]:
+    if twin and twin["call"] and recording is not None and recording["recording_key"] == twin["recording_key"]:
         session = twin["twin_of_session"]
-        twin = twin | {"epoch": ident["epoch"]}
         if _published_note(conn, twin=twin, exclude=item_id):
             return _park_twin(item_id, path, session)
         # Persist the exact matched recording even if this twin's own CDR later
@@ -507,7 +506,7 @@ def _skip_twin(item_id: str, path: Path, start_state: str) -> Optional[dict[str,
         conn.execute("UPDATE items SET duplicate_of_call_session_id=?,twin_of_recording_key=?,updated_at=? "
                      "WHERE item_id=?", (session, twin["twin_of_recording_key"], sentinel.utcnow(), item_id))
         return None
-    if call and call.get("call_session_id") and not call.get("duplicate_of_call_session_id"):
+    if call and call.get("call_session_id") and not call.get("duplicate_of_call_session_id") and recording is not None:
         session = call["call_session_id"]
         if _published_primary_twin(conn, name=path.name, item_id=item_id, session=session):
             return _park_twin(item_id, path, session)

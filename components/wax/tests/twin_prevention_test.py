@@ -31,8 +31,9 @@ class TwinPreventionTest(JunkGateHarness):
         conn = calls.db()
         for leg, session, start, duration in pair:
             conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,started_at,"
-                         "duration_millis,raw,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                         (leg, "trunk", leg, session, start, duration, "{}", start))
+                         "duration_millis,object_name,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                         (leg, "trunk", leg, session, start, duration,
+                          f"{leg}-1794431481.mp3", "{}", start))
         conn.execute("INSERT INTO call_legs(call_leg_id,call_session_id,started_at,raw,updated_at) VALUES(?,?,?,?,?)",
                      (kept[0], kept[1], kept[2], "{}", kept[2]))
         conn.execute("INSERT INTO calls(call_session_id,started_at,outcome,first_seen,updated_at) VALUES(?,?,?,?,?)",
@@ -359,6 +360,128 @@ class TwinPreventionTest(JunkGateHarness):
         self.assertEqual(self.transcript_rows(), 1)
         self.assertEqual(self.state_of(original_id)[0], "transcribed")
         self.assertIsNone(self.run_once())
+    def test_ingested_fractional_start_does_not_suppress_outside_window(self):
+        twin, kept = PAIRS[0]
+        twin = (twin[0], twin[1], "2026-11-04T18:15:46.100Z", 22971)
+        kept = (kept[0], kept[1], "2026-11-04T18:15:48.800Z", 22000)
+        conn = calls.db()
+        names = {}
+        for rec, epoch in ((twin, 1793816169), (kept, 1793816170)):
+            obj = f"{rec[0]}-{epoch}.mp3"
+            names[rec[0]] = f"telnyx-{rec[2][:10]}-{obj}"
+            calls.upsert_recording(conn, {
+                "id": rec[0], "call_leg_id": rec[0], "call_session_id": rec[1],
+                "initiated_by": "Trunking", "recording_started_at": rec[2],
+                "duration_millis": rec[3], "download_urls": {"mp3": f"s3://recordings/x/{obj}"},
+            })
+        calls.upsert_leg(conn, {"id": kept[0], "telnyx_session_id": kept[1],
+                                "started_at": kept[2], "answered_at": kept[2],
+                                "finished_at": "2026-11-04T18:16:10.800Z",
+                                "completed": True, "call_sec": 22})
+        calls.derive(conn, kept[1])
+        self.assertEqual([r[0] for r in conn.execute("SELECT started_at FROM call_recordings ORDER BY started_at")],
+                         ["2026-11-04T18:15:46.100000Z", "2026-11-04T18:15:48.800000Z"])
+        self.drop(names[kept[0]], words(40), payload=b"primary fractional audio " * 40)
+        first = self.run_once()
+        note = Path(first["transcribe"]["md_path"])
+        before = note.read_bytes()
+        self.drop(names[twin[0]], words(40), payload=b"twin fractional audio " * 40)
+        self.assertIsNone(calls.twin_of(names[twin[0]]))
+        self.assertIn("transcribe", self.run_once())
+        self.assertEqual(self.transcript_rows(), 2)
+        self.assertEqual(note.read_bytes(), before)
+
+    def test_object_epochs_are_not_recording_starts_in_either_order(self):
+        for index, first_is_twin in enumerate((False, True)):
+            with self.subTest(first_is_twin=first_is_twin):
+                twin, kept = PAIRS[index]
+                twin = (twin[0], twin[1], "2026-11-04T18:15:48Z", 24000)
+                kept = (kept[0], kept[1], "2026-11-04T18:15:46Z", 23000)
+                names = {}
+                conn = calls.db()
+                for rec, epoch in ((twin, 1793816172), (kept, 1793816169)):
+                    obj = f"{rec[0]}-{epoch}.mp3"
+                    names[rec[0]] = f"telnyx-{rec[2][:10]}-{obj[:-4]}-" + ("a" if rec == twin else "b") * 64 + ".mp3"
+                    calls.upsert_recording(conn, {
+                        "id": rec[0], "call_leg_id": rec[0], "call_session_id": rec[1],
+                        "initiated_by": "Trunking", "recording_started_at": rec[2],
+                        "duration_millis": rec[3], "download_urls": {"mp3": f"s3://recordings/x/{obj}"},
+                    })
+                calls.upsert_leg(conn, {"id": kept[0], "telnyx_session_id": kept[1],
+                                        "started_at": kept[2], "completed": True, "call_sec": 23})
+                calls.derive(conn, kept[1])
+                self.assertEqual(calls.twin_of(names[twin[0]])["start_delta_s"], 2)
+                first, later = (twin, kept) if first_is_twin else (kept, twin)
+                self.drop(names[first[0]], words(40), payload=f"first conversation {index} ".encode() * 40)
+                result = self.run_once()
+                note = Path(result["transcribe"]["md_path"])
+                before = note.read_bytes()
+                self.drop(names[later[0]], words(40), payload=f"second conversation {index} ".encode() * 40)
+                self.assertEqual(self.run_once()["skipped"]["reason"], "duplicate_call")
+                self.assertEqual(note.read_bytes(), before)
+                self.assertEqual(self.transcript_rows(), index + 1)
+                conn.execute("DELETE FROM call_recordings")
+                conn.execute("DELETE FROM call_legs")
+                conn.execute("DELETE FROM calls")
+
+    def test_distinct_primary_note_same_leg_one_second_away_is_not_pair_note(self):
+        twin, kept = PAIRS[0]
+        self.seed((twin, kept))
+        self.drop_rec(kept, 801)
+        self.run_once()
+        conn = calls.db()
+        conn.execute("UPDATE call_recordings SET duration_millis=50000 WHERE recording_key=?", (twin[0],))
+        conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,started_at,"
+                     "duration_millis,object_name,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     ("second-kept-recording", "trunk", kept[0], kept[1], "2026-11-04T18:15:47Z",
+                      50000, f"{kept[0]}-1794431482.mp3", "{}", kept[2]))
+        twin_name = self.name(twin).replace("-1794431481.mp3", "-1794431482.mp3")
+        # The newer twin is a separate object; the original leg row is no longer its identity.
+        conn.execute("UPDATE call_recordings SET object_name=? WHERE recording_key=?",
+                     (f"{twin[0]}-1794431482.mp3", twin[0]))
+        self.assertEqual(calls.twin_of(twin_name)["twin_of_recording_key"], "second-kept-recording")
+        self.drop(twin_name, words(40), payload=b"separate conversation requiring a note " * 45)
+        self.assertIn("transcribe", self.run_once())
+        self.assertEqual(self.transcript_rows(), 2)
+
+    def test_distinct_primary_recording_one_second_away_is_not_paired_twin(self):
+        twin, kept = PAIRS[0]
+        self.seed((twin, kept))
+        self.drop_rec(twin, 900)
+        self.run_once()
+        conn = calls.db()
+        conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,started_at,"
+                     "duration_millis,object_name,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     ("second-kept-recording", "trunk", kept[0], kept[1], "2026-11-04T18:15:47Z",
+                      50000, f"{kept[0]}-1794431482.mp3", "{}", kept[2]))
+        later = self.name(kept).replace("-1794431481.mp3", "-1794431482.mp3")
+        self.drop(later, words(40), payload=b"independent primary call data " * 55)
+        self.assertIn("transcribe", self.run_once())
+        self.assertEqual(self.transcript_rows(), 2)
+
+    def test_ambiguous_and_missing_object_identity_never_suppress(self):
+        twin, kept = PAIRS[0]
+        self.seed((twin, kept))
+        self.drop_rec(kept, 901)
+        self.run_once()
+        conn = calls.db()
+        conn.execute("INSERT INTO call_recordings(recording_key,kind,call_leg_id,call_session_id,started_at,"
+                     "duration_millis,object_name,raw,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                     ("conflicting-object", "trunk", kept[0], kept[1], kept[2],
+                      kept[3], f"{kept[0]}-1794431481.mp3", "{}", kept[2]))
+        self.drop_rec(twin, 902)
+        self.assertIn("transcribe", self.run_once())
+        self.assertEqual(self.transcript_rows(), 2)
+        # An unlabelled legacy primary is likewise not evidence for suppression.
+        twin2, kept2 = PAIRS[1]
+        self.seed((twin2, kept2))
+        self.drop_rec(kept2, 903)
+        self.run_once()
+        conn.execute("UPDATE call_recordings SET object_name=NULL WHERE recording_key=?", (kept2[0],))
+        self.drop_rec(twin2, 904)
+        self.assertIn("transcribe", self.run_once())
+        self.assertEqual(self.transcript_rows(), 4)
+
     def test_fractional_start_bounds_and_ambiguity(self):
         for index, (a, b, expected) in enumerate((("46.100", "48.800", False),
                                                     ("46.900", "44.950", True),
