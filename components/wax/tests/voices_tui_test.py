@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from wax import ledger, paths, voiceprint, voices, voices_tui as tui
 
@@ -577,6 +578,316 @@ class OffTheUiThreadTest(_Fixture):
             model.handle_key("r")
             self.settle(model, worker)
         self.assertIn("reload failed: database is locked", model.status)
+
+
+class CommitThenLoseAck:
+    def __init__(self, connection):
+        self.connection = connection
+        self.commits = 0
+
+    @property
+    def in_transaction(self):
+        return self.connection.in_transaction
+
+    def execute(self, sql, *params):
+        result = self.connection.execute(sql, *params)
+        if sql == "COMMIT":
+            self.commits += 1
+            raise OSError("commit acknowledgement lost")
+        return result
+
+
+@pytest.fixture
+def threaded_registry():
+    fixture = OffTheUiThreadTest()
+    fixture.setUp()
+    try:
+        yield fixture
+    finally:
+        fixture.tearDown()
+
+
+def keyboard_enter(model):
+    model.handle_key(tui.decode_key("\n", lambda: None))
+
+
+@pytest.mark.parametrize("operation", ["merge", "name"])
+@pytest.mark.parametrize("sync", [True, False])
+@pytest.mark.parametrize("quit_pending", [False, True])
+def test_committed_mutation_listing_failure_is_not_mutation_failure(threaded_registry, operation, sync, quit_pending):
+    fixture = threaded_registry
+    model, worker, relabeler = fixture.threaded()
+    if not sync:
+        model.relabeler = None
+    fixture.type(model, "Alice")
+    if operation == "merge":
+        model.handle_key("ALT_M")
+        keyboard_enter(model)
+    calls = []
+    real_listing = voices.listing
+
+    def listing_fails_once(conn):
+        calls.append(threading.get_ident())
+        if len(calls) == 1:
+            raise OSError("registry temporarily unavailable")
+        return real_listing(conn)
+
+    with patch.object(voices, "listing", side_effect=listing_fails_once), \
+            patch.object(voices, "merge", wraps=voices.merge) as merge, \
+            patch.object(voices, "set_name", wraps=voices.set_name) as name:
+        if operation == "merge":
+            model.handle_key("y")
+        else:
+            keyboard_enter(model)
+        if quit_pending:
+            model.handle_key("CTRL_C")
+        fixture.settle(model, worker)
+        assert relabeler.requests == int(sync)
+        assert "reload failed: registry temporarily unavailable" in model.status
+        assert "merge failed" not in model.status
+        assert "could not name" not in model.status
+        assert "folded into voice-c00003" in model.status if operation == "merge" else "is Alice" in model.status
+        if not sync:
+            assert "--no-sync" in model.status
+        assert model.mode == tui.BROWSE
+        assert model.rows == []
+        assert (model.buffer, model.focus, model.editing_named) == ("", "list", False)
+        assert "retry r" in model.status
+        model.handle_key("r")
+        fixture.settle(model, worker)
+        assert len(calls) == 2
+        assert all(thread_id != threading.get_ident() for thread_id in calls)
+        assert merge.call_count == int(operation == "merge")
+        assert name.call_count == int(operation == "name")
+    assert relabeler.requests == int(sync)
+    assert model.row["voice_id"] == "voice-b00002"
+    assert (model.buffer, model.focus, model.editing_named) == ("", "name", False)
+    keyboard_enter(model)
+    fixture.settle(model, worker)
+    assert voices.note_identity(voices.VOICES_DIR / "voice-b00002.md") == (None, "unnamed")
+    assert voices.note_identity(voices.VOICES_DIR / "voice-c00003.md") == ("Chase", "named")
+    expected = "voice-c00003" if operation == "merge" else None
+    assert fixture.conn.execute("SELECT merged_into FROM voices WHERE voice_id='voice-a00001'").fetchone()[0] == expected
+    if operation == "name":
+        assert voices.note_identity(voices.VOICES_DIR / "voice-a00001.md") == ("Alice", "named")
+
+
+@pytest.mark.parametrize("start_index,selected,focus", [(0, "voice-b00002", "name"), (1, "voice-c00003", "list")])
+@pytest.mark.parametrize("fail_first_reload", [False, True])
+def test_uncertain_real_commit_rebinds_dirty_name_before_keyboard_enter(threaded_registry, start_index, selected, focus,
+                                                                     fail_first_reload):
+    fixture = threaded_registry
+    model, worker, relabeler = fixture.threaded()
+    model.move(start_index)
+    original = model.row["voice_id"]
+    fixture.type(model, "Alice")
+    model.handle_key("ALT_M")
+    keyboard_enter(model)
+    real_merge, real_listing = voices.merge, voices.listing
+    commits, reads = [], []
+
+    def merge_losing_ack(conn, keep, drop):
+        wrapped = CommitThenLoseAck(conn)
+        commits.append(wrapped)
+        return real_merge(wrapped, keep, drop)
+
+    def listing_fails_once(conn):
+        reads.append(threading.get_ident())
+        if fail_first_reload and len(reads) == 1:
+            raise OSError("registry temporarily unavailable")
+        return real_listing(conn)
+
+    with patch.object(voices, "merge", side_effect=merge_losing_ack), \
+            patch.object(voices, "listing", side_effect=listing_fails_once):
+        model.handle_key("y")
+        fixture.settle(model, worker)
+        fixture.settle(model, worker)
+        if fail_first_reload:
+            assert model.rows == []
+            assert (model.buffer, model.focus, model.editing_named) == ("", "list", False)
+            assert "outcome uncertain" in model.status
+            model.handle_key("r")
+            fixture.settle(model, worker)
+    assert [wrapped.commits for wrapped in commits] == [1]
+    assert all(thread_id != threading.get_ident() for thread_id in reads)
+    assert model.row["voice_id"] == selected
+    assert (model.buffer, model.focus, model.editing_named) == ("", focus, False)
+    assert model.drafts[original] == "Alice"
+    assert "outcome uncertain" in model.status
+    assert "merge failed" not in model.status
+    assert relabeler.requests == 0
+    keyboard_enter(model)
+    fixture.settle(model, worker)
+    assert voices.note_identity(voices.VOICES_DIR / "voice-b00002.md") == (None, "unnamed")
+    assert fixture.conn.execute("SELECT merged_into FROM voices WHERE voice_id=?", (original,)).fetchone()[0] == "voice-c00003"
+    assert voices.note_identity(voices.VOICES_DIR / "voice-c00003.md") == ("Chase", "named")
+    if focus == "list":
+        assert (model.buffer, model.focus, model.editing_named) == ("Chase", "name", True)
+        keyboard_enter(model)
+        fixture.settle(model, worker)
+        assert voices.note_identity(voices.VOICES_DIR / "voice-c00003.md") == ("Chase", "named")
+
+
+@pytest.mark.parametrize("fail_first_reload", [False, True])
+def test_uncertain_reload_restores_only_selected_voice_own_draft(threaded_registry, fail_first_reload):
+    fixture = threaded_registry
+    model, worker, relabeler = fixture.threaded()
+    model.handle_key("DOWN")
+    fixture.type(model, "Bea")
+    model.handle_key("UP")
+    fixture.type(model, "Alice")
+    model.handle_key("ALT_M")
+    keyboard_enter(model)
+    real_merge, real_listing = voices.merge, voices.listing
+    reads = []
+
+    def merge_losing_ack(conn, keep, drop):
+        return real_merge(CommitThenLoseAck(conn), keep, drop)
+
+    def listing_fails_once(conn):
+        reads.append(1)
+        if fail_first_reload and len(reads) == 1:
+            raise OSError("registry temporarily unavailable")
+        return real_listing(conn)
+
+    with patch.object(voices, "merge", side_effect=merge_losing_ack), \
+            patch.object(voices, "listing", side_effect=listing_fails_once):
+        model.handle_key("y")
+        fixture.settle(model, worker)
+        fixture.settle(model, worker)
+        if fail_first_reload:
+            model.handle_key("r")
+            fixture.settle(model, worker)
+    assert model.row["voice_id"] == "voice-b00002"
+    assert (model.buffer, model.focus, model.editing_named) == ("Bea", "name", False)
+    assert model.drafts == {"voice-a00001": "Alice", "voice-b00002": "Bea"}
+    assert "outcome uncertain" in model.status
+    keyboard_enter(model)
+    fixture.settle(model, worker)
+    assert voices.note_identity(voices.VOICES_DIR / "voice-b00002.md") == ("Bea", "named")
+    assert voices.note_identity(voices.VOICES_DIR / "voice-c00003.md") == ("Chase", "named")
+    assert relabeler.requests == 1
+
+
+def test_reload_rebinds_named_editor_and_preserves_unnamed_draft_by_id(threaded_registry):
+    fixture = threaded_registry
+    model, worker, _ = fixture.threaded()
+    fixture.type(model, "Alice")
+    model.refresh()
+    fixture.settle(model, worker)
+    assert (model.row["voice_id"], model.buffer, model.focus) == ("voice-a00001", "Alice", "name")
+    model.handle_key("END")
+    keyboard_enter(model)
+    model.handle_key("CTRL_U")
+    fixture.type(model, "Wrong Chase")
+    model.refresh()
+    fixture.settle(model, worker)
+    assert (model.buffer, model.focus, model.editing_named) == ("", "list", False)
+    keyboard_enter(model)
+    fixture.settle(model, worker)
+    assert voices.note_identity(voices.VOICES_DIR / "voice-c00003.md") == ("Chase", "named")
+    model.handle_key("HOME")
+    assert model.buffer == "Alice"
+
+
+@pytest.mark.parametrize("fail_first_reload", [False, True])
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_name_committed_before_namesake_failure_is_truthful_and_syncs(threaded_registry, uncertain, fail_first_reload):
+    fixture = threaded_registry
+    model, worker, relabeler = fixture.threaded()
+    fixture.type(model, "chase")
+    real_listing, real_merge = voices.listing, voices.merge
+    reads, commits = [], []
+
+    def merge_fails(conn, keep, drop):
+        if uncertain:
+            wrapped = CommitThenLoseAck(conn)
+            commits.append(wrapped)
+            return real_merge(wrapped, keep, drop)
+        raise OSError("namesake note refused")
+
+    def listing_fails_once(conn):
+        reads.append(1)
+        if fail_first_reload and len(reads) == 1:
+            raise OSError("registry temporarily unavailable")
+        return real_listing(conn)
+
+    with patch.object(voices, "merge", side_effect=merge_fails), \
+            patch.object(voices, "listing", side_effect=listing_fails_once):
+        keyboard_enter(model)
+        fixture.settle(model, worker)
+        assert relabeler.requests == 1
+        assert "voice-a00001 is chase" in model.status
+        assert "namesake merge incomplete" in model.status
+        assert "could not name" not in model.status
+        if uncertain:
+            assert "outcome uncertain" in model.status
+            assert [wrapped.commits for wrapped in commits] == [1]
+        if fail_first_reload:
+            assert model.rows == []
+            model.handle_key("r")
+            fixture.settle(model, worker)
+        assert "namesake merge incomplete" in model.status
+    assert voices.note_identity(voices.VOICES_DIR / "voice-a00001.md") == ("chase", "named")
+    assert model.row["voice_id"] == "voice-b00002"
+    assert (model.buffer, model.focus, model.editing_named) == ("", "name", False)
+    keyboard_enter(model)
+    fixture.settle(model, worker)
+    assert voices.note_identity(voices.VOICES_DIR / "voice-b00002.md") == (None, "unnamed")
+
+
+def test_committed_name_with_relabel_request_failure_keeps_outcome_and_rebinds(threaded_registry):
+    fixture = threaded_registry
+    model, worker, relabeler = fixture.threaded()
+    fixture.type(model, "Alice")
+    with patch.object(relabeler, "request", side_effect=RuntimeError("worker unavailable")):
+        keyboard_enter(model)
+        fixture.settle(model, worker)
+    assert "voice-a00001 is Alice" in model.status
+    assert "relabel request failed: worker unavailable (run wax voices sync)" in model.status
+    assert model.row["voice_id"] == "voice-b00002"
+    assert model.buffer == ""
+    assert voices.note_identity(voices.VOICES_DIR / "voice-a00001.md") == ("Alice", "named")
+
+
+@pytest.mark.parametrize("operation", ["merge", "name"])
+def test_committed_mutation_preview_failure_keeps_outcome_and_final_editor(threaded_registry, operation):
+    fixture = threaded_registry
+    model, worker, relabeler = fixture.threaded()
+    fixture.type(model, "Alice")
+    if operation == "merge":
+        model.handle_key("ALT_M")
+        keyboard_enter(model)
+    with patch.object(model, "planner", side_effect=RuntimeError("preview unavailable")):
+        if operation == "merge":
+            model.handle_key("y")
+        else:
+            keyboard_enter(model)
+        fixture.settle(model, worker)
+    assert "preview failed: preview unavailable" in model.status
+    assert "folded into voice-c00003" in model.status if operation == "merge" else "is Alice" in model.status
+    assert relabeler.requests == 1
+    assert model.row["voice_id"] == "voice-b00002"
+    assert (model.buffer, model.focus, model.editing_named) == ("", "name", False)
+    keyboard_enter(model)
+    fixture.settle(model, worker)
+    assert voices.note_identity(voices.VOICES_DIR / "voice-b00002.md") == (None, "unnamed")
+
+
+def test_reload_removing_selected_row_never_inherits_its_draft(threaded_registry):
+    fixture = threaded_registry
+    model, worker, _ = fixture.threaded()
+    fixture.type(model, "Alice")
+    fresh = [row for row in voices.listing(fixture.conn) if row["voice_id"] != "voice-a00001"]
+    with patch.object(voices, "listing", return_value=fresh):
+        model.refresh()
+        fixture.settle(model, worker)
+    assert model.row["voice_id"] == "voice-b00002"
+    assert (model.buffer, model.focus, model.editing_named) == ("", "name", False)
+    assert model.drafts["voice-a00001"] == "Alice"
+    keyboard_enter(model)
+    fixture.settle(model, worker)
+    assert voices.note_identity(voices.VOICES_DIR / "voice-b00002.md") == (None, "unnamed")
 
 
 def sqlite_locked(*args, **kwargs):

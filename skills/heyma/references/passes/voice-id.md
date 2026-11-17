@@ -238,7 +238,9 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
 - **Unnamed row highlighted = listening.** Focus goes to the NAME field of that
   row and its clips loop 1, 2, ... N, 1 until you act. Moving the highlight kills
   the player at once and starts the next row's clips. A half-typed name is kept per
-  row while you look at another.
+  row while you look at another. Every reload rebinds NAME, focus and rename state
+  to the final selected voice ID; an unnamed draft never transfers to another row,
+  and a named row returns to list focus (Enter starts a fresh rename).
 - **Clips.** Up to 8 distinct ~5 s clips, cut from the item audio (`items.path`)
   at the turn heads the voice's `confident` sightings recorded (longest turns first,
   one recording at a time in rotation, centred inside the turn). A voice with no
@@ -269,8 +271,15 @@ up identical. Code: `components/wax/src/wax/voices_tui.py`.
   line, nothing called). Merge direction is yours: pick the named voice as the
   target, since the target's name wins. If SQLite's commit outcome is uncertain,
   the TUI says so, clears its stale rows and reloads the registry; it does not
-  claim rollback. If reload fails, retry `r` even on the empty screen, or inspect
-  the registry and note before another merge.
+  claim rollback, and the uncertainty warning survives a failed reload and `r`
+  retry. If reload fails, retry `r` even on the empty screen, or inspect the
+  registry and note before another merge.
+- **A committed change is not a failed reload.** If naming or merging succeeds
+  but reading the updated list fails, the status reports both outcomes, clears
+  stale rows and offers `r` to retry only the read. Relabelling is still requested
+  (unless `--no-sync`), even after Ctrl+C. If naming succeeds but the subsequent
+  namesake merge fails or has an uncertain commit, the name is reported as saved
+  with a separate merge warning; inspect the registry and use `wax voices sync`.
 - **Nothing blocks keys.** A name, merge or reload runs on a worker thread with its
   own ledger connection, because `voices.merge` waits on the registry lock a
   voice-id pass holds across its LLM call. While one is pending the screen keeps

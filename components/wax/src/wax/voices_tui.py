@@ -532,6 +532,8 @@ class Model:
         self.drafts: dict[str, str] = {}
         self.editing_named = False
         self.status = ""
+        self._reload_notice = ""
+        self._reload_advance = False
         self.top = 0                 # first visible row; kept by `layout`
         self.quit = False
         self.arrive()
@@ -579,16 +581,17 @@ class Model:
         self.player.stop()
         row = self.row
         self.editing_named = False
+        self.buffer = ""
         if row is None:
             self.focus = "list"
             return
         if _unnamed(row):
             self.focus = "name"
             self.buffer = self.drafts.get(row["voice_id"], "")
-            self.play(row)
+            if not self.quit:
+                self.play(row)
         else:
             self.focus = "list"
-            self.buffer = ""
 
     def play(self, row: dict) -> None:
         if not self.player.available:
@@ -627,20 +630,79 @@ class Model:
 
     def refresh(self) -> None:
         """Re-read every row's numbers and names (off the UI thread); order is kept, new voices join at the end."""
-        def done(rows, error):
-            if error:
-                self.status = f"reload failed: {error}"
-            else:
-                self._apply(rows)
+        self.worker.submit("reloading", lambda conn: voices.listing(conn), self._refreshed)
 
-        self.worker.submit("reloading", lambda conn: voices.listing(conn), done)
+    def _refreshed(self, rows, error) -> None:
+        notice = self._reload_notice
+        if error:
+            if notice:
+                self._invalidate_rows()
+            self.status = (notice + "; " if notice else "") + f"reload failed: {error} (retry r)"
+            return
+        try:
+            self._apply(rows, advance=self._reload_advance)
+        except Exception as exc:
+            self.status = (notice + "; " if notice else "") + f"registry reloaded; preview failed: {exc}"
+        else:
+            if notice:
+                self.status = notice + "; registry reloaded"
+        self._reload_notice, self._reload_advance = "", False
 
-    def _apply(self, listing: list[dict]) -> None:
+    def _invalidate_rows(self) -> None:
+        self._stash_draft()
+        self.rows = []
+        self.mode = BROWSE
+        self.top = 0
+        self.arrive()
+
+    def _apply(self, listing: list[dict], *, advance: bool = False) -> None:
+        self._stash_draft()
+        selected = self.row["voice_id"] if self.row else None
         fresh = {r["voice_id"]: r for r in listing}
         known = [fresh.pop(r["voice_id"]) for r in self.rows if r["voice_id"] in fresh]
         self.rows = known + sort_rows(list(fresh.values()))
-        self.cursor = min(self.cursor, max(0, len(self.rows) - 1))
+        self.cursor = next((i for i, row in enumerate(self.rows) if row["voice_id"] == selected),
+                           min(self.cursor, max(0, len(self.rows) - 1)))
         self.merge_cursor = min(self.merge_cursor, max(0, len(self.rows) - 1))
+        if advance:
+            self.advance()
+        else:
+            self.arrive()
+
+    def _mutate(self, label: str, change: Callable, draft_id: str, failed: Callable) -> None:
+        def job(conn):
+            message = change(conn)
+            try:
+                return message, voices.listing(conn), None
+            except Exception as exc:
+                # The mutation already returned; a read failure cannot undo it.
+                return message, None, exc
+
+        def done(result, error):
+            if error:
+                if isinstance(error, voices.MergeOutcomeUncertain):
+                    self._reload_notice, self._reload_advance = str(error), False
+                    self._invalidate_rows()
+                    self.status = str(error) + " (reload with r)"
+                    self.refresh()
+                else:
+                    failed(error)
+                return
+            message, rows, reload_error = result
+            self._stash_draft()
+            self.drafts.pop(draft_id, None)
+            self.buffer = ""
+            self.editing_named = False
+            self.mode = BROWSE
+            try:
+                message += self._relabel()
+            except Exception as exc:
+                message += f"; relabel request failed: {exc} (run wax voices sync)"
+            self._reload_notice, self._reload_advance = message, True
+            self._refreshed(rows, reload_error)
+
+        self.status = label + "..."
+        self.worker.submit(label, job, done)
 
     def next_unnamed(self, after: int) -> int | None:
         for offset in range(1, len(self.rows) + 1):
@@ -786,26 +848,19 @@ class Model:
             return
         vid = row["voice_id"]
 
-        def job(conn):
+        def change(conn):
             voices.set_name(conn, vid, name)
-            return voices.merge_namesakes(conn), voices.listing(conn)
+            message = f"{vid} is {name}"
+            try:
+                folded = voices.merge_namesakes(conn)
+            except Exception as exc:
+                return message + f"; namesake merge incomplete: {exc} (inspect registry; run wax voices sync)"
+            return message + "".join(f"; {drop} merged into {keep}, already named {name}" for keep, drop in folded)
 
-        def done(result, error):
-            if error:
-                self.status = f"could not name {vid}: {error} (r reloads)"
-                return
-            folded, rows = result
-            self.drafts.pop(vid, None)
-            note = "".join(f"; {drop} merged into {keep}, already named {name}" for keep, drop in folded)
-            message = f"{vid} is {name}{note}" + self._relabel()
-            if self.quit:                  # quit while the registry was busy: the change landed, the screen is gone
-                return
-            self._apply(rows)
-            self.advance()
-            self.status = message          # after advance: arriving on the next voice must not hide the confirmation
+        def failed(error):
+            self.status = f"could not name {vid}: {error} (Tab then r reloads)"
 
-        self.status = f"naming {vid}..."
-        self.worker.submit(f"naming {vid}", job, done)
+        self._mutate(f"naming {vid}", change, vid, failed)
 
     # -- merge
     def start_merge(self) -> None:
@@ -866,40 +921,15 @@ class Model:
             return self.cancel_merge("nothing merged: both voices must be live and different")
         keep_id, drop_id = keep["voice_id"], drop["voice_id"]
 
-        def job(conn):
-            return voices.merge(conn, keep_id, drop_id), voices.listing(conn)
+        def change(conn):
+            moved = voices.merge(conn, keep_id, drop_id)
+            return f"{drop_id} folded into {keep_id} ({moved} sightings moved)"
 
-        def done(result, error):
-            if error:
-                if isinstance(error, voices.MergeOutcomeUncertain):
-                    self.mode = BROWSE
-                    self.player.stop()
-                    self.status = str(error) + " (reload with r)"
-                    # No stale row may be selected if a reload fails.
-                    self.rows = []
-                    def reconciled(rows, reload_error):
-                        if reload_error:
-                            self.status = f"{error}; reload failed: {reload_error} (retry r)"
-                        else:
-                            self._apply(rows)
-                            self.status = f"{error}; registry reloaded"
-                    self.worker.submit("reloading", lambda conn: voices.listing(conn), reconciled)
-                else:
-                    self.mode = MERGE_PICK
-                    self.status = f"merge failed: {error}"
-                return
-            moved, rows = result
-            self.drafts.pop(drop_id, None)
-            message = f"{drop_id} folded into {keep_id} ({moved} sightings moved)" + self._relabel()
-            self.mode = BROWSE
-            if self.quit:
-                return
-            self._apply(rows)
-            self.advance()
-            self.status = message
+        def failed(error):
+            self.mode = MERGE_PICK
+            self.status = f"merge failed: {error}"
 
-        self.status = f"merging {drop_id} into {keep_id}..."
-        self.worker.submit(f"merging {drop_id}", job, done)
+        self._mutate(f"merging {drop_id}", change, drop_id, failed)
 
     def shutdown(self) -> None:
         self.player.stop()
