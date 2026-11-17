@@ -143,6 +143,11 @@ Detail: [transcriptions-store](transcriptions-store.md).
 | `wax calls backfill [--dry-run] [--min-seconds 3]` | Recover call rows from history |
 | `wax calls list [--limit 30] [--outcome O]` | Outcome: answered, voicemail, missed, declined, no_answer, failed |
 | `wax calls show <ref>` | One call with legs, recordings and events |
+| `wax calls relabel [--apply] [--item ID]` | Put contact names on call notes transcribed with a number (or `Channel A/B`): turn heads, `call-remote-name`, asr.json labels. Dry run unless `--apply` |
+| `wax contacts sync` | Re-read the phone contact directory (1Password Identity items) now; re-derive calls whose name changed |
+| `wax contacts list` | Names in the directory, numbers masked to the last four digits |
+| `wax contacts status` | Directory size, age, vault and last error |
+| `wax contacts who <number>` | The contact name for one number (exit 1 when unknown) |
 | `wax calls telephony [--limit N]` | Local read-only call/screening/processing snapshot for the Telephony page; disabled/shadow only, no Telnyx refresh or live control. See [telephony](telephony.md) |
 | `wax telephony alert --targets GLOB --state-dir ABSOLUTE_PATH status\|enable UUID_OR_ALIAS\|disable UUID_OR_ALIAS\|alias add UUID SLUG\|alias remove UUID SLUG\|tone UUID_OR_ALIAS RINGTONE_ID\|preview KIND HANDLE [--projection-cache ABSOLUTE_PATH]` | Canonical offline target-watch facade; `--json` at any position, no live gating or ringtone playback. See [telephony](telephony.md) |
 | `wax calls alert-mode --targets GLOB --state-dir ABSOLUTE_PATH ...` | Legacy compatibility alias for `wax telephony alert`; not the preferred operator surface |

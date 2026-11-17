@@ -47,7 +47,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from . import ledger, paths, rename, sentinel
+from . import contacts, ledger, paths, rename, sentinel
 
 log = logging.getLogger("wax.calls")
 
@@ -314,7 +314,8 @@ def _diversion(value: str) -> tuple[Optional[str], Optional[str]]:
 def person_name(name: Optional[str]) -> Optional[str]:
     """CNAM that names a person, title-cased; a location ("FLOURTOWN PA") is not a name."""
     text = re.sub(r"\s+", " ", name or "").strip()
-    if not text or text.lower() in {"spam likely", "unknown", "anonymous", "wireless caller", "unavailable"}:
+    if not text or text.lower() in {"spam likely", "unknown", "anonymous", "wireless caller", "unavailable", "unassigned",
+                                             "restricted", "private", "private caller", "toll free call"}:
         return None
     tokens = text.split(" ")
     if len(tokens) >= 2 and tokens[-1].upper() in US_STATES and text.isupper():
@@ -361,6 +362,9 @@ def derive(conn: sqlite3.Connection, session: str) -> Optional[dict[str, Any]]:
         known = conn.execute("SELECT remote_name FROM calls WHERE remote_number=? AND remote_name IS NOT NULL "
                              "AND call_session_id!=? ORDER BY started_at DESC LIMIT 1", (remote, session)).fetchone()
         name = known["remote_name"] if known else None
+    # The contact directory (1Password) is canonical over CNAM. Cache only: this runs on the
+    # webhook path, where a 1Password round-trip must not delay the announcement.
+    name = contacts.name_for(remote, refresh_stale=False) or name
 
     forwarded_from = reason = None
     for event in events:
@@ -579,6 +583,10 @@ def sync(since: datetime, *, key: Optional[str] = None, fetch: bool = True,
     conn = db()
     since_iso = _iso(since)
     sessions: set[str] = set()
+    # The Candybar beat that keeps the call log current keeps the contact directory current too.
+    directory = contacts.refresh()
+    if directory.get("changed"):
+        sessions.update(sessions_for_numbers(conn, directory["changed"]))
     counts = {"legs": 0, "recordings": 0, "events": 0, "events_new": 0, "voicemail_fetched": 0,
               "voicemail_errors": []}
     bound = {"filter[started_at][lte]": _iso(until)} if until else {}
@@ -848,8 +856,20 @@ def call_for_audio(name: str, *, fetch: bool = False) -> Optional[dict[str, Any]
                         "record_verb": ident.get("record_verb", False)}
 
 
+def sessions_for_numbers(conn: sqlite3.Connection, numbers: Iterable[str]) -> set[str]:
+    """Every call with one of these remote numbers (E.164): re-derive them when a contact's name changes."""
+    wanted = {n for n in (contacts.normalize(x) for x in numbers) if n}
+    return {r["call_session_id"] for r in conn.execute("SELECT call_session_id, remote_number FROM calls")
+            if contacts.normalize(r["remote_number"]) in wanted}
+
+
+def remote_name(call: dict[str, Any]) -> Optional[str]:
+    """The far party's name: the contact directory first (canonical), then the row's CNAM-derived name."""
+    return contacts.name_for(call.get("remote_number")) or call.get("remote_name") or None
+
+
 def party_label(call: dict[str, Any]) -> str:
-    return call.get("remote_name") or call.get("remote_number") or "Caller"
+    return remote_name(call) or call.get("remote_number") or "Caller"
 
 
 def channel_parties(audio_name: str, *, fetch: bool = True) -> Optional[tuple[str, str]]:
@@ -879,7 +899,7 @@ def frontmatter_for(call: dict[str, Any]) -> dict[str, Any]:
         "call-direction": call.get("direction"),
         "call-outcome": call.get("outcome"),
         "call-remote-number": call.get("remote_number"),
-        "call-remote-name": call.get("remote_name"),
+        "call-remote-name": remote_name(call),
         "call-line": call.get("line"),
         "call-forwarded-from": call.get("forwarded_from"),
         "call-forward-reason": call.get("forward_reason"),
@@ -939,3 +959,133 @@ def show(ref: str) -> Optional[dict[str, Any]]:
                    for r in conn.execute("SELECT event_type, occurred_at, via FROM call_events "
                                          "WHERE call_session_id=? ORDER BY occurred_at", (session,))],
     }
+
+
+# ------------------------------------------------------------------ relabel --
+
+TURN_HEAD = r"^\*\*{label} \((?=[0-9:]+\):\*\*)"
+
+
+def _swap_turns(body: str, old: str, new: str) -> tuple[str, int]:
+    """Rename `**old (mm:ss):**` turn heads only; the words are never touched."""
+    return re.subn(TURN_HEAD.format(label=re.escape(old)), f"**{new} (", body, flags=re.M)
+
+
+def _swap_remote_name(text: str, name: str) -> str:
+    """Set `call-remote-name` in a note's frontmatter by editing that one line (no YAML round-trip,
+    which would rewrite every timestamp in the block)."""
+    import yaml
+    line = yaml.safe_dump({"call-remote-name": name}, allow_unicode=True, default_flow_style=False,
+                          width=10**6).strip()
+    head, sep, rest = text.partition("\n---\n")
+    if not text.startswith("---\n") or not sep:
+        return text
+    if re.search(r"^call-remote-name:.*$", head, re.M):
+        head = re.sub(r"^call-remote-name:.*$", lambda _m: line, head, count=1, flags=re.M)
+    elif re.search(r"^call-remote-number:.*$", head, re.M):
+        head = re.sub(r"^(call-remote-number:.*)$", lambda m: f"{m.group(1)}\n{line}", head, count=1, flags=re.M)
+    else:
+        return text
+    return head + sep + rest
+
+
+def _atomic_write(path: Path, data: str) -> None:
+    tmp = path.with_name(f".{path.name}.wax-relabel")
+    tmp.write_text(data, encoding="utf-8")
+    try:
+        os.chmod(tmp, path.stat().st_mode)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def relabel_notes(*, apply: bool = False, item: Optional[str] = None) -> dict[str, Any]:
+    """`wax calls relabel`: put the contact name on call notes transcribed before the directory knew it.
+
+    A per-channel call note names channel B with whatever the call log knew at transcription
+    (usually the bare number). For every `telnyx-*` call note whose party now has a contact name,
+    this renames channel B's turn heads in the note, `call-remote-name` in its frontmatter, and
+    the channel label and segment labels in its asr.json (so voice-id reads the same name), and
+    carries the item's voice sightings over to the new label. Only turn heads change, under the
+    item lock, and a note edited meanwhile is left alone. Dry run unless `apply`.
+    """
+    from . import frontmatter, operations
+    conn = db()
+    sql = ("SELECT i.item_id, i.orig_name, i.path, t.md_path, t.asr_path FROM items i "
+           "JOIN transcripts t USING(item_id) WHERE (i.orig_name LIKE 'telnyx-%' OR i.path LIKE '%/telnyx-%')")
+    rows = [dict(r) for r in conn.execute(sql + (" AND i.item_id=?" if item else ""), (item,) if item else ())]
+    out: dict[str, Any] = {"apply": apply, "checked": len(rows), "relabelled": [], "skipped": {}}
+
+    def skip(why: str) -> None:
+        out["skipped"][why] = out["skipped"].get(why, 0) + 1
+
+    for row in rows:
+        name = row["orig_name"] or Path(row["path"] or "").name
+        md = Path(row["md_path"]) if row["md_path"] else None
+        asr_path = Path(row["asr_path"]) if row["asr_path"] else None
+        if md is None or not md.is_file():
+            skip("note_missing")
+            continue
+        try:
+            asr = json.loads(asr_path.read_text()) if asr_path and asr_path.is_file() else None
+        except (OSError, ValueError):
+            asr = None
+        result = (asr or {}).get("result") or {}
+        labels = list(result.get("channel_labels") or [])
+        if not result.get("channel_separated") or len(labels) != 2:
+            skip("not_per_channel")
+            continue
+        call = call_for_audio(name, fetch=False)
+        if not call:
+            skip("no_call")
+            continue
+        contact = contacts.name_for(call.get("remote_number"))
+        if not contact:
+            skip("no_contact")
+            continue
+        # Channel B gets the contact. Channel A is ours: it changes only from the split's
+        # fallback `Channel A` (the call was not in the log when it was transcribed).
+        wanted = [ME if labels[0] == "Channel A" else labels[0], contact]
+        renames = {old: new for old, new in zip(labels, wanted) if old != new}
+        if not renames:
+            skip("already_named")
+            continue
+        if wanted[0] == wanted[1]:
+            skip("name_collides_with_channel_a")
+            continue
+        with operations.item_lock(row["item_id"]):
+            text = md.read_text(encoding="utf-8")
+            fm, body = frontmatter.split(text)
+            new_body, turns = body, 0
+            for old, new in renames.items():
+                new_body, n = _swap_turns(new_body, old, new)
+                turns += n
+            if labels[1] in renames and not re.search(TURN_HEAD.format(label=re.escape(contact)), new_body, re.M):
+                skip("label_not_in_note")  # hand-edited, or a different label set
+                continue
+            entry = {"item_id": row["item_id"], "note": md.name, "turns": turns,
+                     "from": "number" if contacts.normalize(labels[1]) else labels[1], "to": contact}
+            out["relabelled"].append(entry)
+            if not apply:
+                continue
+            new_text = _swap_remote_name(text[:len(text) - len(body)] + new_body, contact)
+            result["channel_labels"] = wanted
+            for segment in result.get("segments") or []:
+                if isinstance(segment, dict) and segment.get("speaker_label") in renames:
+                    segment["speaker_label"] = renames[segment["speaker_label"]]
+            if md.read_text(encoding="utf-8") != text:
+                out["relabelled"].pop()
+                skip("note_changed_during_relabel")
+                continue
+            _atomic_write(md, new_text)
+            if asr_path is not None:
+                _atomic_write(asr_path, json.dumps(asr, ensure_ascii=False))
+            try:
+                for old, new in renames.items():
+                    conn.execute("UPDATE OR IGNORE voice_sightings SET label=?, "
+                                 "rendered=CASE WHEN rendered=? THEN ? ELSE rendered END "
+                                 "WHERE item_id=? AND label=?", (new, old, new, row["item_id"], old))
+            except sqlite3.OperationalError:
+                pass  # no voice registry on this ledger
+    out["count"] = len(out["relabelled"])
+    return out

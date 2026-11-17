@@ -20,6 +20,7 @@ See [telephony](telephony.md) for the native page, `wax --json calls telephony`,
 | `wax calls list [--limit N] [--outcome O]` | Recent calls. Outcomes: `answered`, `voicemail`, `missed`, `declined`, `no_answer`, `failed`. Excludes RecordVerb second copies. |
 | `wax calls show <ref>` | One call by session id, leg id, item id, or file name. |
 | `wax calls backfill [--dry-run] [--min-seconds 3]` | Fetch trunk recordings that predate custom S3 storage (attached 2026-10-15T21:18Z): rows with no `object_name` and no `file_name`. Fetches the presigned URL from `GET /recordings/<id>` and writes `inbox/telnyx-<day>-<leg>-<epoch>.mp3`. Skips stubs under `--min-seconds`. |
+| `wax calls relabel [--apply] [--item ID]` | For per-channel call notes whose party now has a contact name: renames channel B's turn heads (and a fallback `Channel A` to `Me`), sets `call-remote-name`, rewrites asr.json `channel_labels`/segment labels and carries voice sightings over. Only turn heads change; a hand-edited label is skipped (`label_not_in_note`). Dry run unless `--apply`. |
 
 Errors print `error: ... (<code>)` and exit 2. API codes: `no_api_key`, `telnyx_auth_failed` (401/403), `telnyx_http_error`, `telnyx_unreachable`, `telnyx_bad_response`, `not_an_event`.
 
@@ -27,6 +28,7 @@ Errors print `error: ... (<code>)` and exit 2. API codes: `no_api_key`, `telnyx_
 
 | Knob | Default |
 |---|---|
+| `WAX_CONTACTS`, `WAX_CONTACTS_VAULT`, `WAX_CONTACTS_TTL_S` | `1password` (`off` disables), `DeLoSecrets`, `900` |
 | `WAX_TELNYX_API` | `https://api.telnyx.com/v2` |
 | `WAX_TELNYX_API_KEY_OP` | `op://DeLoSecrets/74k7nz3xkryqns4lpf65a323ue/credential` |
 | `WAX_TELNYX_LINE`, `WAX_TELNYX_CELL`, `WAX_CALLS_ME` | the DID, the Verizon cell, "Me" |
@@ -50,7 +52,16 @@ Discrepancy (2026-11-05, reported, not fixed): the manifest carries `enabled = f
 - else outbound: `no_answer` for ORIGINATOR_CANCEL / NO_ANSWER / USER_BUSY / NORMAL_CLEARING, otherwise `failed`.
 - `in_progress` — no legs, no hangup, no end.
 
-Remote names come from CNAM filtered by `person_name()`: spam/unknown values, all-caps "CITY ST" place names and digit strings are dropped. An outbound call reuses a known name from an earlier inbound call from the same number. The Diversion SIP header sets `forwarded_from` / `forward_reason`. The Verizon forward changed from conditional (no-answer/user-busy) to **unconditional** on 2026-11-05T01:11Z — older notes saying "conditional" are stale.
+### Who the other party is: the contact directory
+
+Remote names come first from the **contact directory** (`components/wax/src/wax/contacts.py`, 2026-11-17). The phone's address book never reaches this box and Telnyx keeps no contacts, so 1Password is canonical: every **Identity** item in `DeLoSecrets` with a phone field is a contact, labelled by its `call name` / `nickname` field, else its first name, else its title. To name a caller, give their Identity item a phone number; the next `wax calls sync` (Candybar, every 10 min) picks it up and re-derives every call from that number, then `wax calls relabel --apply` fixes notes already transcribed. Items holding our own line or cell (and items named like them) are the operator and skipped; a number on two differently named items is ambiguous and unused.
+
+- Read path: one `op item list | op item get -` round-trip, cached in `var/wax.db` (`contacts`) as the last good read (a 1Password outage keeps the old names). Refreshed when older than `WAX_CONTACTS_TTL_S` (900 s) by `wax calls sync`, the call-metadata pass and channel labelling; the webhook path (`wax calls event` → `derive`) reads the cache only. Nothing in it ever raises.
+- Channel B's label, `call-remote-name`, `wax calls list`, the Telephony page and voice-id's caller-id rule (a far channel labelled with a name is that contact) all read it.
+- Privacy: the directory includes family items. Numbers stay in the ledger; logs carry counts; `wax contacts list` masks numbers. `WAX_CONTACTS=off` disables it (the test suite pins this).
+- Check: `wax contacts status`, `wax contacts who <number>`.
+
+Then CNAM, filtered by `person_name()`: spam/unknown values, all-caps "CITY ST" place names, `Unassigned`/`Restricted`/`Private` and digit strings are dropped. An outbound call reuses a known name from an earlier inbound call from the same number. The Diversion SIP header sets `forwarded_from` / `forward_reason`. The Verizon forward changed from conditional (no-answer/user-busy) to **unconditional** on 2026-11-05T01:11Z — older notes saying "conditional" are stale.
 
 Feet-era (TeXML, before 2026-10-25) RecordVerb second copies have a 16-digit microsecond epoch in the file name and are never the master recording.
 

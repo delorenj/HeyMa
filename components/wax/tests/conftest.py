@@ -79,6 +79,8 @@ os.environ["WAX_TRANSCRIPTS_UNIT_FILE"] = NO_UNIT
 # The harvest-link backstop (sync, tick) scans pilot's real output directory by default; a test that
 # wants it sets its own directory.
 os.environ["WAX_HARVEST_DIR"] = "off"
+# Call labels read the 1Password contact directory; a test never does (contacts_test passes a fake).
+os.environ["WAX_CONTACTS"] = "off"
 for _name in list(os.environ):
     if _name.startswith("WAX_TRANSCRIPTS_") and ("DSN" in _name or "PASSWORD" in _name):
         os.environ.pop(_name, None)
@@ -92,6 +94,10 @@ from wax.transcriptions import config as _transcriptions_config  # noqa: E402
 # A test that clears os.environ (patch.dict(..., clear=True)) drops the override above; the module
 # default must not be the real unit either.
 _transcriptions_config.UNIT_PATH = Path(NO_UNIT)
+
+from wax import contacts as _contacts  # noqa: E402
+
+_contacts.DEFAULT_SOURCE = "off"  # and a test that clears os.environ still never reads the real vault
 
 from wax import paths as _paths  # noqa: E402  (imported AFTER the pins above, so its constants bind to them)
 

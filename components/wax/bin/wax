@@ -61,6 +61,7 @@ from wax import (archive, catalog, capture, component, config, documents, events
                  worker)  # noqa: E402
 from wax import settings as operator_settings  # noqa: E402
 from wax import calls as telephony  # noqa: E402
+from wax import contacts  # noqa: E402
 from wax import telephony as telephony_shadow  # noqa: E402
 from wax import dictedit  # noqa: E402
 from wax.transcriptions import tx  # noqa: E402
@@ -2291,6 +2292,19 @@ def calls_command(args, J: bool) -> int:
                 audio = f"  [{len(r['recordings'])} audio]" if r["recordings"] else ""
                 print(f"{when[:19]}  {arrow} {who:<24} {r['outcome'] or '?':<10}{talk}{fwd}{audio}")
             return 0
+        if args.sub == "relabel":
+            result = telephony.relabel_notes(apply=args.apply, item=args.item)
+            if J:
+                _emit(result, True)
+                return 0
+            verb = "relabelled" if args.apply else "would relabel"
+            for r in result["relabelled"]:
+                print(f"  {r['note']}  {r['turns']} turn(s): {r['from']} -> {r['to']}")
+            skipped = ", ".join(f"{k} {v}" for k, v in sorted(result["skipped"].items()))
+            print(f"{verb} {result['count']} of {result['checked']} call note(s)" + (f"; skipped: {skipped}" if skipped else ""))
+            if result["count"] and not args.apply:
+                print("  apply with: wax calls relabel --apply")
+            return 0
         if args.sub == "show":
             found = telephony.show(args.ref)
             if not found:
@@ -2301,6 +2315,50 @@ def calls_command(args, J: bool) -> int:
     except telephony.CallsError as exc:
         print(f"error: {exc} ({exc.code})", file=sys.stderr)
         return 2
+    return 1
+
+
+def contacts_command(args, J: bool) -> int:
+    if args.sub == "sync":
+        result = contacts.refresh(force=True)
+        if result.get("changed"):
+            conn = telephony.db()
+            sessions = telephony.sessions_for_numbers(conn, result["changed"])
+            for session in sorted(sessions):
+                telephony.derive(conn, session)
+            result["calls_rederived"] = len(sessions)
+        result["changed"] = len(result.get("changed") or [])  # counts only: numbers stay in the ledger
+        _emit(result, True) if J else print(
+            f"{result['state']}: {result.get('numbers', '?')} number(s) from {result.get('items', '?')} "
+            f"1Password item(s); {result['changed']} changed"
+            + (f"; {result.get('calls_rederived', 0)} call(s) re-derived" if result["changed"] else "")
+            + (f" ({result['detail']})" if result.get("detail") else ""))
+        return 0 if result["state"] in ("refreshed", "fresh") else 2
+    if args.sub == "list":
+        rows = contacts.listing()
+        if J:
+            _emit(rows, True)
+            return 0
+        for r in rows:
+            print(f"  {r['name']:<28} {r['number']}")
+        print(f"{len(rows)} number(s)")
+        return 0
+    if args.sub == "status":
+        st = contacts.status()
+        if J:
+            _emit(st, True)
+            return 0
+        age = f"{st['age_s'] // 60} min ago" if st["age_s"] is not None else "never"
+        print(f"contacts: {'on' if st['enabled'] else 'off'}  vault {st['vault']}  {st['numbers']} number(s)  "
+              f"refreshed {age}" + (f"  last error: {st['error']}" if st["error"] else ""))
+        return 0
+    if args.sub == "who":
+        name = contacts.name_for(args.number)
+        if J:
+            _emit({"name": name}, True)
+        else:
+            print(name or "(not in the directory)")
+        return 0 if name else 1
     return 1
 
 
@@ -2964,6 +3022,19 @@ def main() -> int:
     cla.add_argument("args", nargs=argparse.REMAINDER)
     cl.add_parser("show", parents=[common], help="one call: legs, recordings, events").add_argument(
         "ref", help="call_session_id, call_leg_id, item id or file name")
+    clr = cl.add_parser("relabel", parents=[common],
+                        help="put contact names on call notes transcribed with a number (dry run unless --apply)")
+    clr.add_argument("--apply", action="store_true", help="write the notes (default: list what would change)")
+    clr.add_argument("--item", help="one item id only")
+
+    co_ = sub.add_parser("contacts", parents=[common],
+                         help="the phone contact directory (1Password Identity items) that names call parties"
+                         ).add_subparsers(dest="sub", required=True)
+    co_.add_parser("sync", parents=[common], help="re-read the directory from 1Password now; re-derive affected calls")
+    co_.add_parser("list", parents=[common], help="names in the directory (numbers masked to the last four digits)")
+    co_.add_parser("status", parents=[common], help="size, age and last error of the directory")
+    co_.add_parser("who", parents=[common], help="the contact name for one number (exit 1 when unknown)").add_argument(
+        "number", help="any written form: +19085551234, (908) 555-1234, 9085551234")
 
     dc_ = sub.add_parser("dict", parents=[common],
                          help="the HeyMa custom dictionary (Dictionary.yaml): add words, see how they fare"
@@ -3561,6 +3632,9 @@ def main() -> int:
 
     if args.cmd == "calls":
         return calls_command(args, J)
+
+    if args.cmd == "contacts":
+        return contacts_command(args, J)
 
     if args.cmd == "dict":
         return dict_command(args, J)
