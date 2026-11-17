@@ -144,7 +144,7 @@ Detail: [transcriptions-store](transcriptions-store.md).
 | `wax calls list [--limit 30] [--outcome O]` | Outcome: answered, voicemail, missed, declined, no_answer, failed |
 | `wax calls show <ref>` | One call with legs, recordings and events |
 | `wax calls relabel [--apply] [--item ID]` | Put contact names on call notes transcribed with a number (or `Channel A/B`): turn heads, `call-remote-name`, asr.json labels. Dry run unless `--apply` |
-| `wax contacts sync` | Re-read the phone contact directory (1Password Identity items) now; re-derive calls whose name changed |
+| `wax contacts sync` | Re-read the phone contact directory (1Password Identity items) now |
 | `wax contacts list` | Names in the directory, numbers masked to the last four digits |
 | `wax contacts status` | Directory size, age, vault and last error |
 | `wax contacts who <number>` | The contact name for one number (exit 1 when unknown) |

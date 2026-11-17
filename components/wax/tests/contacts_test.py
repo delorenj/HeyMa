@@ -5,6 +5,7 @@ Hermetic: a temporary ledger and fake 1Password items; `op` is never run.
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,7 +71,9 @@ class _Ledger(unittest.TestCase):
         self.root = root
         self.patches = [patch.object(paths, "VAR", root / "var"), patch.object(paths, "DB", root / "var/wax.db"),
                         patch.object(paths, "INBOX", root / "inbox"),
-                        patch.dict(os.environ, {"WAX_CONTACTS": "1password"})]
+                        patch.dict(os.environ, {"WAX_CONTACTS": "1password"}),
+                        # Only an explicit fake fetch ever reads a directory: the real `op` is never run.
+                        patch.object(contacts, "fetch_items", side_effect=AssertionError("a test ran the real op"))]
         for p in self.patches:
             p.start()
         self._close()
@@ -101,9 +104,8 @@ class RefreshTest(_Ledger):
         result = self.sync()
         self.assertEqual((result["state"], result["numbers"]), ("refreshed", 3))
         self.assertIn(WIFE, result["changed"])
-        with patch.object(contacts, "fetch_items", side_effect=AssertionError("fresh cache must not call op")):
-            self.assertEqual(contacts.name_for("908.555.0142"), "Carrie")
-            self.assertIsNone(contacts.name_for("+12125550000"))
+        self.assertEqual(contacts.name_for("908.555.0142"), "Carrie")  # fresh: fetch_items would raise
+        self.assertIsNone(contacts.name_for("+12125550000"))
         self.assertEqual(self.sync()["changed"], [], "an unchanged directory changes nothing")
 
     def test_a_1password_outage_keeps_the_last_good_directory(self):
@@ -114,6 +116,29 @@ class RefreshTest(_Ledger):
         self.assertIn("op exited 1", contacts.status()["error"])
         self.sync()
         self.assertIsNone(contacts.status()["error"], "a good read clears the error")
+
+    def test_a_failed_read_backs_off_instead_of_retrying_every_lookup(self):
+        calls_made = []
+
+        def broken():
+            calls_made.append(1)
+            raise RuntimeError("op timed out")
+        contacts.refresh(fetch=broken)
+        self.assertEqual(contacts.refresh(fetch=broken)["state"], "backoff")
+        self.assertEqual(len(calls_made), 1)
+        self.assertEqual(contacts.refresh(force=True, fetch=self.fetch)["state"], "refreshed")
+
+    def test_refresh_never_raises_and_never_commits_a_callers_transaction(self):
+        self.sync()
+        self.conn.execute("BEGIN IMMEDIATE")
+        self.conn.execute("INSERT INTO meta(k,v) VALUES('probe','1')")
+        self.assertEqual(contacts.refresh(force=True, fetch=self.fetch)["state"], "deferred")
+        self.assertEqual(contacts.name_for(WIFE), "Carrie")
+        self.assertTrue(self.conn.in_transaction, "the caller's transaction is still open")
+        self.conn.execute("ROLLBACK")
+        self.assertIsNone(ledger.meta_get("probe"))
+        with patch.object(contacts, "directory", side_effect=sqlite3.OperationalError("database is locked")):
+            self.assertEqual(contacts.refresh(force=True, fetch=self.fetch)["state"], "error")
 
     def test_off_never_reads_and_never_names(self):
         self.sync()
@@ -141,7 +166,8 @@ class CallLabelTest(_Ledger):
         self.sync()
         calls.upsert_leg(self.conn, inbound(cnam="WIRELESS CALLER"))
         row = calls.derive(self.conn, SESSION)
-        self.assertEqual(row["remote_name"], "Carrie")
+        self.assertIsNone(row["remote_name"], "the stored row keeps CNAM only (announcements carry no contact)")
+        self.assertEqual(calls.remote_name(row), "Carrie")
         self.assertEqual(calls.channel_parties(AUDIO, fetch=False), ("Me", "Carrie"))
         self.assertEqual(calls.frontmatter_for(calls.call_for_audio(AUDIO))["call-remote-name"], "Carrie")
 
@@ -150,18 +176,20 @@ class CallLabelTest(_Ledger):
         self.assertIsNone(calls.derive(self.conn, SESSION)["remote_name"])
         self.assertEqual(calls.channel_parties(AUDIO, fetch=False), ("Me", WIFE))
 
-    def test_a_contact_added_later_reaches_every_call_from_that_number(self):
+    def test_a_contact_added_or_removed_later_reaches_every_call_from_that_number(self):
         self.items = []
         self.sync()
         calls.upsert_leg(self.conn, inbound())
-        calls.derive(self.conn, SESSION)
+        row = calls.derive(self.conn, SESSION)
+        self.assertIsNone(calls.remote_name(row))
         self.items = list(ITEMS)
-        changed = self.sync()["changed"]
-        for session in calls.sessions_for_numbers(self.conn, changed):
-            calls.derive(self.conn, session)
-        self.assertEqual(self.conn.execute("SELECT remote_name FROM calls WHERE call_session_id=?",
-                                           (SESSION,)).fetchone()[0], "Carrie")
-
+        self.sync()
+        self.assertEqual(calls.remote_name(row), "Carrie")
+        self.items = []
+        self.sync()
+        calls.upsert_leg(self.conn, inbound(session="later", leg="later-leg"))
+        self.assertIsNone(calls.remote_name(calls.derive(self.conn, "later")),
+                          "a removed contact never lingers through an earlier call's name")
 
 NOTE = """---
 title: Financial stress
@@ -226,6 +254,17 @@ class RelabelTest(_Ledger):
         self.assertIn("**Me (00:04):**", md.read_text())
         self.assertIn("**Carrie (00:02):**", md.read_text())
         self.assertEqual(json.loads(asr.read_text())["result"]["channel_labels"], ["Me", "Carrie"])
+
+    def test_backslash_names_and_folded_frontmatter_values_are_safe(self):
+        self.items = [item("odd", "Odd", first="A\\1 Smith", phones=[("defphone", WIFE)])]
+        md, _ = self.note()
+        md.write_text(md.read_text().replace("call-started:", "call-remote-name: Some Very Long Business\n  Hotline Name\ncall-started:"))
+        calls.relabel_notes(apply=True)
+        text = md.read_text()
+        self.assertIn("**A\\1 Smith (00:02):**", text)
+        from wax import frontmatter
+        self.assertEqual(frontmatter.split(text)[0]["call-remote-name"], "A\\1 Smith")
+        self.assertNotIn("Hotline Name", text)
 
     def test_a_hand_relabelled_note_is_left_alone(self):
         md, _ = self.note()

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import calls, paths
+from . import calls, contacts, paths
 
 log = logging.getLogger("wax.telephony")
 CORE_CLI = Path(__file__).resolve().parents[4] / "bin" / "telephony"
@@ -308,7 +308,8 @@ def snapshot(limit: int = 30) -> dict[str, Any]:
                     "session_id": session, "direction": direction if direction in ("inbound", "outbound") else None,
                     "from_number": row["remote_number"] if direction == "inbound" else row["line"],
                     "to_number": row["line"] if direction == "inbound" else row["remote_number"],
-                    "remote_name": row["remote_name"], "started_at": row["started_at"],
+                    "remote_name": (contacts.name_for(row["remote_number"], refresh_stale=False)
+                                    or row["remote_name"]), "started_at": row["started_at"],
                     "ring_event_at": ring_event_at,
                     "answered_at": row["answered_at"], "ended_at": ended_at,
                     "call_state": call_state, "screening": screening,

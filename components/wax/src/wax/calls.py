@@ -362,9 +362,9 @@ def derive(conn: sqlite3.Connection, session: str) -> Optional[dict[str, Any]]:
         known = conn.execute("SELECT remote_name FROM calls WHERE remote_number=? AND remote_name IS NOT NULL "
                              "AND call_session_id!=? ORDER BY started_at DESC LIMIT 1", (remote, session)).fetchone()
         name = known["remote_name"] if known else None
-    # The contact directory (1Password) is canonical over CNAM. Cache only: this runs on the
-    # webhook path, where a 1Password round-trip must not delay the announcement.
-    name = contacts.name_for(remote, refresh_stale=False) or name
+    # `remote_name` holds CNAM only. The contact directory is applied where a name is shown
+    # (remote_name() below), so a contact deleted or renamed in 1Password never lingers here,
+    # and the webhook's call.ended event / ntfy line carry no 1Password-sourced name.
 
     forwarded_from = reason = None
     for event in events:
@@ -584,9 +584,7 @@ def sync(since: datetime, *, key: Optional[str] = None, fetch: bool = True,
     since_iso = _iso(since)
     sessions: set[str] = set()
     # The Candybar beat that keeps the call log current keeps the contact directory current too.
-    directory = contacts.refresh()
-    if directory.get("changed"):
-        sessions.update(sessions_for_numbers(conn, directory["changed"]))
+    contacts.refresh()
     counts = {"legs": 0, "recordings": 0, "events": 0, "events_new": 0, "voicemail_fetched": 0,
               "voicemail_errors": []}
     bound = {"filter[started_at][lte]": _iso(until)} if until else {}
@@ -856,16 +854,10 @@ def call_for_audio(name: str, *, fetch: bool = False) -> Optional[dict[str, Any]
                         "record_verb": ident.get("record_verb", False)}
 
 
-def sessions_for_numbers(conn: sqlite3.Connection, numbers: Iterable[str]) -> set[str]:
-    """Every call with one of these remote numbers (E.164): re-derive them when a contact's name changes."""
-    wanted = {n for n in (contacts.normalize(x) for x in numbers) if n}
-    return {r["call_session_id"] for r in conn.execute("SELECT call_session_id, remote_number FROM calls")
-            if contacts.normalize(r["remote_number"]) in wanted}
-
-
-def remote_name(call: dict[str, Any]) -> Optional[str]:
-    """The far party's name: the contact directory first (canonical), then the row's CNAM-derived name."""
-    return contacts.name_for(call.get("remote_number")) or call.get("remote_name") or None
+def remote_name(call: dict[str, Any], *, refresh_stale: bool = True) -> Optional[str]:
+    """The far party's name: the contact directory first (canonical), then the row's CNAM name."""
+    return (contacts.name_for(call.get("remote_number"), refresh_stale=refresh_stale)
+            or call.get("remote_name") or None)
 
 
 def party_label(call: dict[str, Any]) -> str:
@@ -968,7 +960,7 @@ TURN_HEAD = r"^\*\*{label} \((?=[0-9:]+\):\*\*)"
 
 def _swap_turns(body: str, old: str, new: str) -> tuple[str, int]:
     """Rename `**old (mm:ss):**` turn heads only; the words are never touched."""
-    return re.subn(TURN_HEAD.format(label=re.escape(old)), f"**{new} (", body, flags=re.M)
+    return re.subn(TURN_HEAD.format(label=re.escape(old)), lambda _m: f"**{new} (", body, flags=re.M)
 
 
 def _swap_remote_name(text: str, name: str) -> str:
@@ -981,7 +973,8 @@ def _swap_remote_name(text: str, name: str) -> str:
     if not text.startswith("---\n") or not sep:
         return text
     if re.search(r"^call-remote-name:.*$", head, re.M):
-        head = re.sub(r"^call-remote-name:.*$", lambda _m: line, head, count=1, flags=re.M)
+        # The key and any folded continuation lines (safe_dump wraps long values).
+        head = re.sub(r"^call-remote-name:.*(?:\n[ \t]+.*)*", lambda _m: line, head, count=1, flags=re.M)
     elif re.search(r"^call-remote-number:.*$", head, re.M):
         head = re.sub(r"^(call-remote-number:.*)$", lambda m: f"{m.group(1)}\n{line}", head, count=1, flags=re.M)
     else:
@@ -1039,7 +1032,9 @@ def relabel_notes(*, apply: bool = False, item: Optional[str] = None) -> dict[st
         if not call:
             skip("no_call")
             continue
-        contact = contacts.name_for(call.get("remote_number"))
+        # The cache only (kept fresh by `wax calls sync`): the dry run never runs `op`,
+        # and an --apply right after it changes exactly what it listed.
+        contact = contacts.name_for(call.get("remote_number"), refresh_stale=False)
         if not contact:
             skip("no_contact")
             continue
@@ -1054,6 +1049,14 @@ def relabel_notes(*, apply: bool = False, item: Optional[str] = None) -> dict[st
             skip("name_collides_with_channel_a")
             continue
         with operations.item_lock(row["item_id"]):
+            # A re-transcription can rewrite asr.json while this waited on the lock: decide on what is there now.
+            try:
+                fresh = json.loads(asr_path.read_text()) if asr_path and asr_path.is_file() else None
+            except (OSError, ValueError):
+                fresh = None
+            if fresh != asr:
+                skip("asr_changed_during_relabel")
+                continue
             text = md.read_text(encoding="utf-8")
             fm, body = frontmatter.split(text)
             new_body, turns = body, 0

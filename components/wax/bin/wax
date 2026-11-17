@@ -2285,7 +2285,7 @@ def calls_command(args, J: bool) -> int:
                 return 0
             for r in rows:
                 when = telephony.local_iso(r["started_at"]) or "?"
-                who = r["remote_name"] or r["remote_number"] or "?"
+                who = telephony.remote_name(r) or r["remote_number"] or "?"
                 arrow = {"inbound": "<-", "outbound": "->"}.get(r["direction"], "--")
                 talk = f" {r['talk_seconds']}s" if r["answered_at"] else ""
                 fwd = f"  fwd:{r['forward_reason']}" if r["forward_reason"] else ""
@@ -2321,17 +2321,10 @@ def calls_command(args, J: bool) -> int:
 def contacts_command(args, J: bool) -> int:
     if args.sub == "sync":
         result = contacts.refresh(force=True)
-        if result.get("changed"):
-            conn = telephony.db()
-            sessions = telephony.sessions_for_numbers(conn, result["changed"])
-            for session in sorted(sessions):
-                telephony.derive(conn, session)
-            result["calls_rederived"] = len(sessions)
         result["changed"] = len(result.get("changed") or [])  # counts only: numbers stay in the ledger
         _emit(result, True) if J else print(
             f"{result['state']}: {result.get('numbers', '?')} number(s) from {result.get('items', '?')} "
             f"1Password item(s); {result['changed']} changed"
-            + (f"; {result.get('calls_rederived', 0)} call(s) re-derived" if result["changed"] else "")
             + (f" ({result['detail']})" if result.get("detail") else ""))
         return 0 if result["state"] in ("refreshed", "fresh") else 2
     if args.sub == "list":
@@ -3030,7 +3023,7 @@ def main() -> int:
     co_ = sub.add_parser("contacts", parents=[common],
                          help="the phone contact directory (1Password Identity items) that names call parties"
                          ).add_subparsers(dest="sub", required=True)
-    co_.add_parser("sync", parents=[common], help="re-read the directory from 1Password now; re-derive affected calls")
+    co_.add_parser("sync", parents=[common], help="re-read the directory from 1Password now")
     co_.add_parser("list", parents=[common], help="names in the directory (numbers masked to the last four digits)")
     co_.add_parser("status", parents=[common], help="size, age and last error of the directory")
     co_.add_parser("who", parents=[common], help="the contact name for one number (exit 1 when unknown)").add_argument(

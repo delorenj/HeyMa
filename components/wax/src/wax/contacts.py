@@ -9,8 +9,10 @@ field is a contact. The label is the item's `call name` / `nickname` field when
 it has one, else its first name, else its title. Add a person to the directory
 by giving their Identity item a phone number; nothing else changes.
 
-Precedence for a call's name: this directory, then CNAM, then a name the same
-number carried on an earlier call, then the number itself.
+Precedence for a call's name: this directory, then CNAM, then a CNAM name the
+same number carried on an earlier call, then the number itself. The directory
+is applied where a name is shown (`calls.remote_name`), never stored in
+`calls.remote_name`, so a deleted or renamed contact never lingers.
 
 The directory is read in one `op item list | op item get -` round-trip (well
 under a second) and kept in `var/wax.db` (`contacts`) as the last good read:
@@ -18,12 +20,15 @@ a 1Password outage keeps the old names instead of reverting calls to numbers.
 It is refreshed when older than `WAX_CONTACTS_TTL_S` (15 min) by whichever
 reader can afford the round-trip (`wax calls sync` on its Candybar beat, the
 call-metadata pass, channel labelling at transcription); `wax contacts sync`
-forces it. The webhook path (`calls.derive` from `wax calls event`) only reads
-the cache. No lookup ever raises: a broken directory costs a name, never a call.
+forces it. The Telephony page and `wax calls relabel` read the cache only. No
+lookup ever raises: a broken directory costs a name, never a call.
 
-Privacy: the vault's Identity items include the family's. Numbers and names
-never leave the ledger and the operator's own notes: logs carry counts only,
-and `wax contacts list` masks numbers to their last four digits.
+Privacy: the vault's Identity items include the family's. A contact name
+reaches only the operator's private surfaces (the call notes, the transcripts
+store, the Telephony page); it is not in the stored call row, so the webhook's
+call.ended event and ntfy line still carry CNAM only. Logs carry counts only,
+and `wax contacts list` masks numbers to their last four digits. No 1Password
+secret or credential is ever read: only Identity name and phone fields.
 
 `WAX_CONTACTS=off` disables the directory (the test suite pins this).
 """
@@ -53,6 +58,9 @@ SOURCE = "1password"
 META_REFRESHED = "contacts.refreshed_at"
 META_ERROR = "contacts.error"
 META_STATS = "contacts.stats"
+META_ERROR_AT = "contacts.error_at"
+# After a failed read, wait this long before asking 1Password again (an outage must not cost every lookup 60 s).
+RETRY_S = 300.0
 
 # Fields whose value names the person on a call, most specific first.
 NAME_LABELS = ("call name", "caller name", "nickname", "display name")
@@ -83,14 +91,22 @@ def ttl_s() -> float:
         return 900.0
 
 
+# Connections whose schema is in place. sqlite3.Connection takes no attributes, and
+# executescript() COMMITs an open transaction, so it must run once per connection, not per call.
+# Keyed by id(); holding the connection keeps its id from being reused. Takes no weakrefs either.
+_READY: dict[int, sqlite3.Connection] = {}
+
+
 def db() -> sqlite3.Connection:
     conn = ledger.connect()
-    if not getattr(conn, "_wax_contacts_schema", False):
-        conn.executescript(SCHEMA)
-        try:
-            conn._wax_contacts_schema = True  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
+    if _READY.get(id(conn)) is not conn:
+        if conn.in_transaction:
+            # Never let executescript() commit someone else's transaction.
+            conn.execute("CREATE TABLE IF NOT EXISTS contacts (number TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                         "source TEXT NOT NULL, ref TEXT, updated_at TEXT NOT NULL)")
+        else:
+            conn.executescript(SCHEMA)
+        _READY[id(conn)] = conn
     return conn
 
 
@@ -244,19 +260,31 @@ def refresh(*, force: bool = False, fetch=None) -> dict[str, Any]:
     """
     if not enabled():
         return {"state": "off", "changed": []}
+    try:
+        return _refresh(force=force, fetch=fetch)
+    except Exception as exc:  # noqa: BLE001 - the directory must never cost a call (or calls sync) anything
+        log.warning("contacts: refresh failed (%s)", type(exc).__name__)
+        return {"state": "error", "detail": f"{type(exc).__name__}: {exc}", "changed": []}
+
+
+def _refresh(*, force: bool, fetch) -> dict[str, Any]:
     conn = db()
-    age = _age_s(ledger.meta_get(META_REFRESHED))
-    if not force and age is not None and age < ttl_s():
-        return {"state": "fresh", "changed": [], "age_s": int(age)}
     if conn.in_transaction:
         # A caller inside a ledger transaction reads the cache; the next reader outside one refreshes.
         return {"state": "deferred", "changed": []}
+    age = _age_s(ledger.meta_get(META_REFRESHED))
+    if not force and age is not None and age < ttl_s():
+        return {"state": "fresh", "changed": [], "age_s": int(age)}
+    failed = _age_s(ledger.meta_get(META_ERROR_AT))
+    if not force and failed is not None and failed < RETRY_S:
+        return {"state": "backoff", "changed": [], "detail": ledger.meta_get(META_ERROR)}
     from . import calls  # the owner's own numbers live there; imported late (calls imports this module)
     try:
         found, stats = directory((fetch or fetch_items)(), own=(calls.LINE, calls.CELL))
     except Exception as exc:  # noqa: BLE001 - the directory must never cost a call its processing
         detail = f"{type(exc).__name__}: {exc}"
         ledger.meta_set(META_ERROR, detail)
+        ledger.meta_set(META_ERROR_AT, sentinel.utcnow())
         log.warning("contacts: 1Password read failed, keeping the last good directory (%s)", detail)
         return {"state": "error", "detail": detail, "changed": []}
     now = sentinel.utcnow()
@@ -271,7 +299,7 @@ def refresh(*, force: bool = False, fetch=None) -> dict[str, Any]:
                      (META_REFRESHED, now))
         conn.execute("INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                      (META_STATS, json.dumps(stats)))
-        conn.execute("DELETE FROM meta WHERE k=?", (META_ERROR,))
+        conn.execute("DELETE FROM meta WHERE k IN (?,?)", (META_ERROR, META_ERROR_AT))
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")
