@@ -152,6 +152,8 @@ def connect() -> sqlite3.Connection:
             # trash (prune.py); its leftover pass rows are history.
             "transcripts": {"asr_path": "TEXT", "body_sha256": "TEXT", "processing_seconds": "REAL",
                             "pruned_at": "TEXT"},
+            # A matched legless Telnyx recording is retained but never given a second note.
+            "items": {"duplicate_of_call_session_id": "TEXT"},
             # Receipts surface through the catalog (Holocene/n8n): the raw
             # last_error stays operator-only, the machine cause travels in
             # reason_code. Additive for ledgers that predate the column.

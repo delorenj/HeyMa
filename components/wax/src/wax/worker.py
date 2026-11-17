@@ -374,6 +374,36 @@ def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
             **({"text": str(kept)} if kept else {})}
 
 
+def _skip_twin(item_id: str, path: Path, start_state: str) -> Optional[dict[str, Any]]:
+    """Park only new legless twins after backup, before any note can be created."""
+    if start_state not in ("pending", "archived"):
+        return None  # Existing transcripts and notes are HEYMA-26's operator decision.
+    from . import calls
+    if not calls.TELNYX_TRUNK.fullmatch(path.name):
+        return None
+    try:
+        twin = calls.twin_of(path.name)
+    except Exception as exc:  # noqa: BLE001 - a broken calls ledger must not lose a recording
+        log.warning("twin check failed for %s: %s: %s", path.name, type(exc).__name__, exc)
+        return None
+    if not twin or not twin["call"]:
+        return None
+    ledger.guard_fence(item_id)
+    conn = ledger.connect()
+    conn.execute("UPDATE items SET duplicate_of_call_session_id=?, updated_at=? WHERE item_id=?",
+                 (twin["twin_of_session"], sentinel.utcnow(), item_id))
+    dest = paths.SKIPPED / "duplicate-call" / path.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    moved = rename.move_noclobber(path, dest)
+    conn.execute("UPDATE items SET path=?, updated_at=? WHERE item_id=?",
+                 (str(moved), sentinel.utcnow(), item_id))
+    _set_state(item_id, "skipped", cause="duplicate_call",
+               evidence=f"duplicate of call {twin['twin_of_session']}; audio preserved at {moved}",
+               subject=path.name)
+    return {"reason": "duplicate_call", "call_session_id": twin["twin_of_session"],
+            "path": str(moved)}
+
+
 def _process_item(item_id: str, path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {"item_id": item_id, "path": str(path)}
     ledger.guard_fence(item_id)
@@ -466,6 +496,10 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
         return result
 
     ledger.guard_fence(item_id)
+    twin_skip = _skip_twin(item_id, path, start_state)
+    if twin_skip is not None:
+        result["skipped"] = twin_skip
+        return result
 
     # Junk by structure (a Telnyx voicemail): archived, never transcribed (wax/junk.py).
     if start_state != "transcribed":

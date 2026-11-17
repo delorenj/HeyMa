@@ -850,10 +850,18 @@ def call_for_audio(name: str, *, fetch: bool = False) -> Optional[dict[str, Any]
             row = None
     else:
         row = None
+    twin = twin_of(name)
+    if twin and twin["call"]:
+        return twin["call"] | {"source": ident["source"], "call_leg_id": ident.get("call_leg_id"),
+                               "record_verb": False, "duplicate_of_call_session_id": twin["twin_of_session"]}
     if row is None and fetch:
         _fetch_for(ident)
         session = _session_for(conn, ident)
         row = conn.execute("SELECT * FROM calls WHERE call_session_id=?", (session,)).fetchone() if session else None
+        twin = twin_of(name)
+        if twin and twin["call"]:
+            return twin["call"] | {"source": ident["source"], "call_leg_id": ident.get("call_leg_id"),
+                                   "record_verb": False, "duplicate_of_call_session_id": twin["twin_of_session"]}
     if row is None:
         return None
     return dict(row) | {"source": ident["source"], "call_leg_id": ident.get("call_leg_id"),

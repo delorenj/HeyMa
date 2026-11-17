@@ -706,7 +706,7 @@ The join, by name shape:
 | `telnyx-vm-<date>-<session>-<epoch>.wav` (voicemail) | the `call_session_id` in the name |
 | `rec_<profile>_[<name>_]<digits>@yymmdd_hhmmss.*` (retired Groundwire) | remote number and local start within ±5 s, an answered leg first |
 
-Anything else ends `skipped`/`not_a_call`. An unknown call is fetched once from the Telnyx
+Anything else ends `skipped`/`not_a_call`. A legless trunk recording links only through `calls.twin_of`: exactly one other trunk recording within 2 seconds and 1 second of duration, with call legs and a call row. The returned call includes `duplicate_of_call_session_id`; new duplicates are marked on the item and parked before note creation (see [the calls route](../../../skills/heyma/references/calls.md)). An unmatched or ambiguous recording gets no arbitrary call. An unknown call is fetched once from the Telnyx
 API before the pass fails with `call_not_found`; an API failure is `telnyx_auth_failed`,
 `telnyx_http_error` or `telnyx_unreachable`. The same join names the two channels of a
 dual-channel Telnyx call (`calls.channel_parties`: outbound ch0 is Me, inbound ch0 is the
