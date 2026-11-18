@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from heyma_shell import adapters
@@ -8,6 +9,7 @@ from fakes import NOW, FakeWorld, ok, wax_snapshot
 WAX = "/repo/bin/wax"
 TELEPHONY = "/repo/bin/telephony"
 VINYL_STATE = "/home/u/.local/state/vinyl/state.json"
+MIRROR = "/home/u/HeyMa/var/state.json"
 
 
 class SectionShapeTest(unittest.TestCase):
@@ -23,8 +25,9 @@ class SectionShapeTest(unittest.TestCase):
 
 
 class WaxAdapterTest(unittest.TestCase):
-    def world(self, snap, **kw):
-        return FakeWorld(present=[WAX], cli={(WAX, "--json", "status"): ok(snap)}, **kw)
+    def world(self, snap, mirror=None, **kw):
+        files = {MIRROR: wax_snapshot() if mirror is None else mirror}
+        return FakeWorld(present=[WAX], cli={(WAX, "--json", "status"): ok(snap)}, files=files, **kw)
 
     def test_not_installed_when_the_repo_cli_is_missing(self):
         row = adapters.wax_adapter(FakeWorld().context())
@@ -54,21 +57,43 @@ class WaxAdapterTest(unittest.TestCase):
         self.assertEqual(row["health"], "warn")
         self.assertIn("failed items: 2", row["summary"])
 
-    def test_stale_mirror_is_a_dead_daemon_not_a_green_one(self):
-        row = adapters.wax_adapter(self.world(wax_snapshot(age=600)).context())
-        self.assertEqual((row["running"], row["health"]), (False, "fail"))
+    def test_status_exit_2_is_a_verdict_not_a_failure_to_answer(self):
+        """`wax status` exits 2 for anything non-nominal, JSON intact (live 2026-11-18)."""
+        snap = wax_snapshot(queue={"failed": 4}, inbox="error")
+        world = FakeWorld(present=[WAX], files={MIRROR: wax_snapshot()},
+                          cli={(WAX, "--json", "status"): Run(2, json.dumps(snap), "")})
+        row = adapters.wax_adapter(world.context())
+        self.assertEqual((row["running"], row["health"]), (True, "warn"))
+        self.assertEqual(row["detail"]["inbox"], "error")
+        self.assertNotIn("cli_error", row["detail"])
 
-    def test_cli_failure_falls_back_to_the_state_mirror(self):
-        world = FakeWorld(present=[WAX], cli={(WAX, "--json", "status"): Run(1, "", "boom")},
-                          files={"/home/u/HeyMa/var/state.json": wax_snapshot()})
+    def test_dead_daemon_is_fail_even_though_the_cli_answers_fresh(self):
+        """The CLI stamps updated_at with its own clock, so it looks alive with no
+        waxd at all; only the mirror waxd rewrites every second can say (review 2026-11-18)."""
+        for mirror, why in ((None, "no readable"), (wax_snapshot(age=600), "600s old")):
+            with self.subTest(why=why):
+                world = FakeWorld(present=[WAX], files={MIRROR: mirror} if mirror else {},
+                                  cli={(WAX, "--json", "status"): ok(wax_snapshot(age=0))})
+                row = adapters.wax_adapter(world.context())
+                self.assertEqual((row["running"], row["health"]), (False, "fail"))
+                self.assertIn(why, row["summary"])
+                self.assertIn(why, row["detail"]["error"])
+
+    def test_dead_daemon_does_not_spend_a_cli_call(self):
+        world = FakeWorld(present=[WAX], cli={(WAX, "--json", "status"): ok(wax_snapshot())})
+        adapters.wax_adapter(world.context())
+        self.assertEqual(world.calls, [])
+
+    def test_cli_failure_falls_back_to_the_live_mirror(self):
+        world = FakeWorld(present=[WAX], cli={(WAX, "--json", "status"): Run(1, "", "boom\nmore")},
+                          files={MIRROR: wax_snapshot()})
         row = adapters.wax_adapter(world.context())
         self.assertTrue(row["running"])
+        self.assertEqual(row["detail"]["cli_error"], "boom")
 
-    def test_cli_failure_with_no_mirror_reports_the_error(self):
-        world = FakeWorld(present=[WAX], cli={(WAX, "--json", "status"): Run(1, "", "boom\nmore")})
-        row = adapters.wax_adapter(world.context())
-        self.assertEqual((row["running"], row["health"]), (False, "fail"))
-        self.assertEqual(row["detail"]["error"], "boom")
+    def test_error_line_prefers_stderr_over_a_json_body(self):
+        self.assertEqual(adapters._first_error(Run(1, "{\n  \"a\": 1\n}", "real reason\n")), "real reason")
+        self.assertEqual(adapters._first_error(Run(3, "", "")), "exit 3")
 
     def test_wax_root_env_moves_the_mirror(self):
         world = FakeWorld(present=[WAX], environ={"WAX_ROOT": "/data/wax"},

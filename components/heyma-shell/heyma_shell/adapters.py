@@ -135,7 +135,9 @@ def _parse_json_object(text: str) -> dict | None:
 
 
 def _first_error(result: Run) -> str:
-    return (result.stderr or result.stdout or f"exit {result.rc}").strip().splitlines()[0][:160]
+    """The first line of what went wrong. stderr first: stdout may be a JSON body."""
+    text = (result.stderr or "").strip() or (result.stdout or "").strip() or f"exit {result.rc}"
+    return text.splitlines()[0][:160]
 
 
 # -- wax --------------------------------------------------------------------
@@ -194,32 +196,47 @@ def wax_verdict(snapshot: Any, now_epoch: float) -> dict:
 
 
 def wax_adapter(ctx: Context) -> dict:
+    """Liveness from waxd's mirror; content from `wax --json status`.
+
+    The CLI computes its snapshot itself and stamps `updated_at` with its own
+    clock, so it answers just as freshly with waxd dead: it can never be the
+    proof that the daemon is alive. Only the mirror waxd rewrites every second
+    is. And `wax status` exits 2 for anything non-nominal, with its JSON intact,
+    so the exit code is a health verdict here, not a failure to answer.
+    """
     actions = [_action("rec.toggle", "Toggle recording"), _action("open.inbox", "Open inbox"),
                _action("open.settings", "Settings")]
     if not ctx.exists(ctx.wax_cli):
         return section("wax", installed=False, summary="not installed", actions=[])
-    result = ctx.run([str(ctx.wax_cli), "--json", "status"], CLI_TIMEOUT_S)
-    snapshot = _parse_json_object(result.stdout) if result.rc == 0 else None
-    if snapshot is None:
-        # The CLI could not answer; the mirror still can say what waxd last saw.
-        snapshot = ctx.read_json(ctx.wax_state_path)
-    verdict = wax_verdict(snapshot, ctx.now())
-    if not verdict["fresh"]:
-        detail = {"colour": "yellow", "recording": False,
-                  "error": _first_error(result) if result.rc else "stale mirror"}
+    mirror = ctx.read_json(ctx.wax_state_path)
+    age = snapshot_age_s(mirror, ctx.now())
+    if not isinstance(mirror, dict) or age is None or age > WAX_STATE_STALE_S:
+        why = ("no readable var/state.json" if not isinstance(mirror, dict)
+               else f"var/state.json is {int(age)}s old" if age is not None
+               else "var/state.json has no updated_at")
         return section("wax", installed=True, running=False, health="fail",
-                       summary="waxd not running or its state is stale", actions=actions,
-                       detail=detail)
+                       summary=f"waxd not running ({why})", actions=actions,
+                       detail={"colour": "yellow", "recording": False, "error": why})
+    result = ctx.run([str(ctx.wax_cli), "--json", "status"], CLI_TIMEOUT_S)
+    cli_snapshot = _parse_json_object(result.stdout) if result.rc in (0, 2) else None
+    if cli_snapshot is not None:
+        # The CLI's own stamp says nothing about waxd; carry the mirror's.
+        snapshot = {**cli_snapshot, "updated_at": mirror.get("updated_at")}
+    else:
+        snapshot = mirror  # the CLI could not answer; the live mirror still can
+    verdict = wax_verdict(snapshot, ctx.now())
     stream = (snapshot.get("stream") or {}).get("state")
     inbox = (snapshot.get("inbox") or {}).get("state")
     degraded = verdict["colour"] == "yellow"
     summary = "recording" if verdict["recording"] else f"stream {stream} · inbox {inbox}"
     if degraded:
         summary += " · " + verdict["tip"].splitlines()[-1]
+    detail = {"colour": verdict["colour"], "recording": verdict["recording"],
+              "stream": stream, "inbox": inbox}
+    if cli_snapshot is None:
+        detail["cli_error"] = _first_error(result)
     return section("wax", installed=True, running=True, health="warn" if degraded else "ok",
-                   summary=summary, actions=actions,
-                   detail={"colour": verdict["colour"], "recording": verdict["recording"],
-                           "stream": stream, "inbox": inbox})
+                   summary=summary, actions=actions, detail=detail)
 
 
 # -- vinyl ------------------------------------------------------------------

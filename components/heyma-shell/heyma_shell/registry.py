@@ -32,6 +32,16 @@ def by_id(doc: dict | None) -> dict[str, dict]:
     return {s["id"]: s for s in (doc or {}).get("sections", [])}
 
 
+def exit_code(doc: dict) -> int:
+    """`wax status`'s contract, for the whole client: 0 all nominal, 2 anything degraded.
+
+    An always-0 status is how a week of 100% pass failure scripted as healthy;
+    `heyma status && …` must not pass with waxd down or Phonograph unreachable.
+    `off` is not degraded (not installed, or deliberately disabled).
+    """
+    return 2 if any(s.get("health") in ("warn", "fail") for s in (doc or {}).get("sections", [])) else 0
+
+
 def render_text(doc: dict) -> str:
     """The human form of `heyma status`: one line per product."""
     lines = []

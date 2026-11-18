@@ -34,7 +34,7 @@ Do not judge `wax.db` by its mtime: it is WAL, so the main file can be old while
 |---|---|
 | `waxd.service` (user, enabled, active) | The single owner. Parent of the encoder and every worker. `OnFailure=wax-alert.service` |
 | waxd threads | Worker (inbox, passes, 900 s sweep, 120 s document scan), `wax-outbox` (drain every 10 s), `wax-transcriptions` (15 s tick), socket server |
-| tray child | `python -m wax.tray_process`, a GTK 3 child of waxd, spawned unless `WAX_TRAY=off`. It renders from `var/state.json` once a second. On big-chungus it is off and `heyma-tray.service` owns the icon ([shell](shell.md)) |
+| tray child | `python -m wax.tray_process`, a GTK 3 child of waxd, spawned unless `WAX_TRAY=off`, and under `WAX_TRAY=off` only while `heyma-tray.service` is not running. It renders from `var/state.json` once a second. On big-chungus it is off and `heyma-tray.service` owns the icon ([shell](shell.md)) |
 | HeyMa window | `bin/heyma`, GTK 4 and libadwaita in its own process, single-instance. It owns no state; every action is the `wax` CLI |
 | `wax-capture-guard.service` | Quiesces an active capture before an orderly graphical-session stop. A plain waxd restart does not stop the encoder scope |
 | `wax-alert.service` | notify-send plus ntfy on waxd failure |

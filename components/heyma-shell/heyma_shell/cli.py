@@ -25,7 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="HeyMa: Wax, Vinyl, Telephony and Phonograph behind one client. "
                     "With no arguments (or --page settings|telephony|logs) it opens the window.")
     sub = parser.add_subparsers(dest="command", required=True)
-    status = sub.add_parser("status", help="one line per product (add --json for the registry)")
+    status = sub.add_parser(
+        "status", help="one line per product (add --json for the registry); "
+                       "exits 0 when every section is ok or off, 2 when any is warn or fail")
     status.add_argument("--json", action="store_true", help="the heyma.shell.status.v1 document")
     sub.add_parser("tray", help="run the one tray (heyma-tray.service does this)")
     return parser
@@ -41,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         doc = registry.collect()
         print(json.dumps(doc, indent=2, sort_keys=True) if args.json else registry.render_text(doc))
-        return 0
+        return registry.exit_code(doc)
     if args.command == "tray":
         from . import tray_ui
         return tray_ui.main()

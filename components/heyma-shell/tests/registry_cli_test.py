@@ -12,6 +12,7 @@ from fakes import FakeWorld, ok, wax_snapshot
 def world():
     return FakeWorld(
         present=["/repo/bin/wax", "/repo/bin/telephony", "/usr/bin/vinyl"],
+        files={"/home/u/HeyMa/var/state.json": wax_snapshot()},
         cli={("/repo/bin/wax", "--json", "status"): ok(wax_snapshot()),
              ("/usr/bin/vinyl", "status"): ok({"state": "idle"}),
              ("/repo/bin/telephony", "--json", "status"): ok({"mode": "shadow", "ring_enabled": False})},
@@ -56,6 +57,17 @@ class CliRoutingTest(unittest.TestCase):
                 redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["status", "--json"]), 0)
         self.assertEqual(json.loads(out.getvalue())["schema"], "x")
+
+    def test_status_exit_code_is_0_only_when_nothing_is_degraded(self):
+        """`heyma status && …` must not pass with waxd down (review 2026-11-18)."""
+        for healths, code in ((["ok", "off", "ok"], 0), (["ok", "warn"], 2), (["fail", "ok"], 2),
+                              ([], 0)):
+            doc = {"schema": "x", "sections": [{"id": f"p{i}", "health": h, "summary": ""}
+                                                for i, h in enumerate(healths)]}
+            for argv in (["status"], ["status", "--json"]):
+                with self.subTest(healths=healths, argv=argv), \
+                        patch.object(registry, "collect", return_value=doc), redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.main(argv), code)
 
     def test_status_text(self):
         doc = registry.collect(world().context())

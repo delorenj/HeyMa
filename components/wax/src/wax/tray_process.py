@@ -45,6 +45,14 @@ def session_env() -> dict:
 
 OFF_VALUES = ("off", "0", "false", "no", "external", "heyma")
 EXTERNAL_REASON = "external: the HeyMa tray owns the icon (WAX_TRAY=off)"
+# The unit that owns the icon when WAX_TRAY=off. The installer writes the drop-in
+# and this unit together, so the unit's state is the owner's liveness.
+OWNER_UNIT = "heyma-tray.service"
+OWNER_LIVE = ("active", "activating", "reloading")  # activating covers Restart= back-off
+OWNER_CHECK_S = 5.0
+# Consecutive "not running" answers before waxd takes the icon back: one missed
+# check during a login or a tray restart must not flash a second icon.
+OWNER_GRACE = 2
 
 
 def tray_enabled(environ=None) -> bool:
@@ -53,10 +61,21 @@ def tray_enabled(environ=None) -> bool:
     Default yes, so a host without the HeyMa shell keeps its Wax tray. A host
     that runs `heyma-tray.service` sets WAX_TRAY=off in a waxd drop-in (written
     by deploy/install-systemd-user), because two icons for one product family is
-    the thing the shell exists to remove.
+    the thing the shell exists to remove. WAX_TRAY=off means "the HeyMa tray owns
+    the icon", not "no icon": while that unit is not running, waxd shows its own.
     """
     value = (environ if environ is not None else os.environ).get("WAX_TRAY", "")
     return value.strip().lower() not in OFF_VALUES
+
+
+def owner_state(unit: str = OWNER_UNIT) -> str:
+    """`systemctl --user is-active <unit>`, or "unknown" when systemd cannot answer."""
+    try:
+        out = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True,
+                             text=True, timeout=2, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return out.stdout.strip() or "unknown"
 
 
 def _has_display() -> bool:
@@ -69,21 +88,51 @@ class TrayProcess:
         self.next_attempt = 0
         self.available = False
         self.reason = "not started"
+        self.owner = None           # last answer from owner_state()
+        self.owner_missing = 0      # consecutive "not running" answers
+        self.owner_next_check = 0.0
+
+    def external_owner_live(self) -> bool:
+        """Is the HeyMa tray (the icon's owner under WAX_TRAY=off) running?
+
+        Asked every OWNER_CHECK_S, not every tick. An "unknown" answer (no user
+        manager, a timeout) changes nothing, so a slow systemctl cannot flap
+        the icon. Before the first answer the owner is assumed live.
+        """
+        now = time.monotonic()
+        if now >= self.owner_next_check:
+            self.owner_next_check = now + OWNER_CHECK_S
+            state = owner_state()
+            if state in OWNER_LIVE:
+                self.owner_missing = 0
+            elif state != "unknown":
+                self.owner_missing += 1
+            self.owner = state
+        return self.owner_missing < OWNER_GRACE
 
     def poll(self):
+        fallback = None
         if not tray_enabled():
-            # Someone else owns the icon. Report that as healthy: waxd's
-            # `tray_unavailable` condition means "the icon is missing", and it
-            # is not.
-            if self.child is not None:
-                self.stop()
-                self.child = None
-            self.available = True
-            self.reason = EXTERNAL_REASON
-            return
+            if self.external_owner_live():
+                # Someone else owns the icon. Report that as healthy: waxd's
+                # `tray_unavailable` condition means "the icon is missing", and
+                # it is not.
+                if self.child is not None:
+                    self.stop()
+                    self.child = None
+                self.available = True
+                self.reason = EXTERNAL_REASON
+                return
+            # The owner is gone (Quit HeyMa, a disabled or failed unit). Nobody
+            # owns the icon, and a recorder with no indicator is the one state
+            # this switch must never produce: show waxd's own tray until the
+            # owner is back, then hand the icon over again.
+            fallback = f"fallback: {OWNER_UNIT} is {self.owner}, so waxd shows its own tray"
         if self.child is not None:
             if self.child.poll() is None:
                 self.available = True
+                if fallback:
+                    self.reason = fallback
                 return
             self.reason = f"tray child exited {self.child.returncode}"
             self.child = None

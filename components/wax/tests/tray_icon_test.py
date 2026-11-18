@@ -343,6 +343,7 @@ class TrayProcessDisplayTest(unittest.TestCase):
         os.environ["WAX_TRAY"] = "off"
         subject = self.mod.TrayProcess()
         with patch.object(self.mod, "session_env", return_value={"WAYLAND_DISPLAY": "wayland-0"}), \
+                patch.object(self.mod, "owner_state", return_value="active"), \
                 patch.object(self.mod.subprocess, "Popen") as popen:
             subject.poll()
         popen.assert_not_called()
@@ -358,9 +359,74 @@ class TrayProcessDisplayTest(unittest.TestCase):
         child.poll.return_value = None
         subject.child = child
         os.environ["WAX_TRAY"] = "off"
-        subject.poll()
+        with patch.object(self.mod, "owner_state", return_value="active"):
+            subject.poll()
         child.terminate.assert_called_once()
         self.assertIsNone(subject.child)
+
+    def poll_with_owner(self, subject, state):
+        subject.owner_next_check = 0
+        with patch.object(self.mod, "session_env", return_value={"WAYLAND_DISPLAY": "wayland-0"}), \
+                patch.object(self.mod, "owner_state", return_value=state), \
+                patch.object(self.mod.subprocess, "Popen") as popen:
+            subject.poll()
+        return popen
+
+    def test_switched_off_with_the_owner_gone_takes_the_icon_back(self):
+        """Quit HeyMa (or a disabled heyma-tray) must not leave a recorder with no
+        icon behind a green `tray` block (review 2026-11-18)."""
+        import os
+        os.environ["WAX_TRAY"] = "off"
+        subject = self.mod.TrayProcess()
+        # One "inactive" is inside the grace: a login or a restart, not a quit.
+        self.poll_with_owner(subject, "inactive").assert_not_called()
+        self.assertEqual(subject.reason, self.mod.EXTERNAL_REASON)
+        popen = self.poll_with_owner(subject, "inactive")
+        popen.assert_called_once()
+        subject.child = popen.return_value
+        subject.child.poll.return_value = None
+        self.poll_with_owner(subject, "inactive")
+        self.assertTrue(subject.available)
+        self.assertIn("fallback: heyma-tray.service is inactive", subject.reason)
+
+    def test_owner_returning_hands_the_icon_back(self):
+        import os
+        os.environ["WAX_TRAY"] = "off"
+        subject = self.mod.TrayProcess()
+        subject.owner_missing = self.mod.OWNER_GRACE
+        child = MagicMock()
+        child.poll.return_value = None
+        subject.child = child
+        self.poll_with_owner(subject, "activating")
+        child.terminate.assert_called_once()
+        self.assertIsNone(subject.child)
+        self.assertEqual(subject.reason, self.mod.EXTERNAL_REASON)
+
+    def test_an_unknown_owner_state_never_flips_the_icon(self):
+        import os
+        os.environ["WAX_TRAY"] = "off"
+        subject = self.mod.TrayProcess()
+        for _ in range(5):
+            self.poll_with_owner(subject, "unknown").assert_not_called()
+        self.assertEqual(subject.reason, self.mod.EXTERNAL_REASON)
+
+    def test_owner_state_is_asked_at_most_every_few_seconds(self):
+        import os
+        os.environ["WAX_TRAY"] = "off"
+        subject = self.mod.TrayProcess()
+        with patch.object(self.mod, "owner_state", return_value="active") as asked:
+            for _ in range(10):
+                subject.poll()
+        self.assertEqual(asked.call_count, 1)
+
+    def test_owner_state_reads_systemctl_and_survives_its_absence(self):
+        with patch.object(self.mod.subprocess, "run",
+                          return_value=MagicMock(stdout="activating\n")) as run:
+            self.assertEqual(self.mod.owner_state(), "activating")
+        self.assertEqual(run.call_args.args[0],
+                         ["systemctl", "--user", "is-active", "heyma-tray.service"])
+        with patch.object(self.mod.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertEqual(self.mod.owner_state(), "unknown")
 
     def test_default_without_the_switch_still_spawns_the_wax_tray(self):
         subject = self.mod.TrayProcess()

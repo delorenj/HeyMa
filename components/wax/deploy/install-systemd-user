@@ -2,6 +2,7 @@
 """Render Wax's user units for the repository's actual installation location."""
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 
@@ -82,6 +83,40 @@ def units_for(heyma_tray: bool) -> tuple:
     return UNITS + ((HEYMA_TRAY_UNIT,) if heyma_tray else ())
 
 
+def masked_by_us(target_dir: Path, name: str = VINYL_TRAY_UNIT) -> bool:
+    """`systemctl mask` writes exactly this: a user-dir symlink to /dev/null."""
+    link = target_dir / name
+    return link.is_symlink() and os.readlink(link) == "/dev/null"
+
+
+def opt_out_steps(target_dir: Path, heyma_tray: bool, keep_vinyl_tray: bool) -> list:
+    """What an opt-out must undo from an earlier default run, as (kind, arg) steps.
+
+    An opt-out that only skips writing leaves the previous install in force: the
+    WAX_TRAY=off drop-in, an enabled heyma-tray and a masked vinyl-tray, which is
+    the "keep waxd's tray" flag producing a host with no Wax tray at all. Each
+    step is conditional on what is on disk, so a re-run finds nothing to do.
+    """
+    steps = []
+    if not heyma_tray:
+        dropin = target_dir / "waxd.service.d" / WAXD_TRAY_DROPIN
+        if dropin.exists():
+            steps.append(("remove", dropin))
+        unit = target_dir / HEYMA_TRAY_UNIT
+        if unit.exists():
+            # disable --now stops the HeyMa icon; waxd sees its owner gone and
+            # shows its own tray within seconds (tray_process.OWNER_GRACE), and
+            # drops WAX_TRAY=off for good at its next restart.
+            steps.append(("run", ["systemctl", "--user", "disable", "--now", HEYMA_TRAY_UNIT]))
+            steps.append(("remove", unit))
+    if (not heyma_tray or keep_vinyl_tray) and masked_by_us(target_dir):
+        # Only a mask this installer could have made, and only then started:
+        # nothing that was running is touched.
+        steps.append(("run", ["systemctl", "--user", "unmask", VINYL_TRAY_UNIT]))
+        steps.append(("run", ["systemctl", "--user", "start", VINYL_TRAY_UNIT]))
+    return steps
+
+
 def render(component=None, repo=None) -> str:
     """waxd.service alone — the original entry point, kept for existing callers."""
     return render_unit("waxd.service", component, repo)
@@ -93,14 +128,17 @@ def main():
     parser.add_argument(
         "--no-heyma-tray", action="store_true",
         help="keep waxd's own tray: install no heyma-tray.service, no waxd WAX_TRAY=off "
-             "drop-in, and leave vinyl-tray.service alone")
+             "drop-in, and leave vinyl-tray.service alone; on a host that had them, remove "
+             "the drop-in, disable and remove heyma-tray, and unmask vinyl-tray")
     parser.add_argument(
         "--keep-vinyl-tray", action="store_true",
-        help="install the HeyMa tray but do not mask the deb-owned vinyl-tray.service")
+        help="install the HeyMa tray but do not mask the deb-owned vinyl-tray.service "
+             "(unmasks it if an earlier run masked it)")
     args = parser.parse_args()
     heyma_tray = not args.no_heyma_tray
     names = units_for(heyma_tray)
     target_dir = Path.home() / ".config" / "systemd" / "user"
+    undo = opt_out_steps(target_dir, heyma_tray, args.keep_vinyl_tray)
     for name in names:
         rendered = render_unit(name)
         if args.dry_run:
@@ -120,7 +158,16 @@ def main():
             (dropin_dir / WAXD_TRAY_DROPIN).write_text(dropin)
             print(dropin_dir / WAXD_TRAY_DROPIN)
     if args.dry_run:
+        for kind, arg in undo:
+            print(f"# would {kind}: {' '.join(arg) if isinstance(arg, list) else arg}")
         return
+    for kind, arg in undo:
+        if kind == "remove":
+            Path(arg).unlink(missing_ok=True)
+            print(f"removed {arg}")
+        else:
+            subprocess.run(arg, check=False)
+            print(" ".join(arg))
     # Writing the file never moves its enablement: waxd's template switched to
     # WantedBy=default.target while the July symlink kept it in
     # graphical-session.target.wants, starting it in the same instant as the
