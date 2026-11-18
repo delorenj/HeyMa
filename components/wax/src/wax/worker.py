@@ -724,8 +724,46 @@ def run_once() -> Optional[dict[str, Any]]:
         _clear_claim()
 
 
+SKIPPABLE_STATES = WORK_STATES + ("failed", "suspect")
+
+
+def _last_cause(conn, item_id: str) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        "SELECT cause_code,evidence FROM transitions WHERE machine='item' AND subject=? "
+        "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def _has_verified_backup(conn, item_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM backups WHERE item_id=? AND verified_at IS NOT NULL LIMIT 1",
+        (item_id,)).fetchone() is not None
+
+
+def _not_skippable(conn, item_id: str, row) -> str:
+    """The refusal for an item `wax skip` cannot take, naming what to do instead."""
+    st = row["state"]
+    if st == "skipped":
+        if _is_junk_rejected(conn, item_id):
+            return (f"item {item_id} is already parked (skipped, junk gate): audio is in "
+                    f"skipped/; `wax retry {item_id}` releases it back to the inbox")
+        return f"item {item_id} is already skipped; its audio is in skipped/"
+    if st in ("complete", "enrichment_pending"):
+        return f"item {item_id} is {st}: nothing to skip (it has already been transcribed)"
+    return (f"item {item_id} is {st}: only an inbox item that is waiting, failed or "
+            f"suspect can be skipped (see wax queue)")
+
+
 def skip_item(item_id: str) -> dict[str, Any]:
-    """Preserve a queued file outside the inbox and exclude it from processing."""
+    """Preserve an inbox file outside the inbox and exclude it from processing.
+
+    Takes a waiting item, and a failed or suspect one (`wax retry` is the other
+    way out of those; without a verb that parks them they sit in the inbox
+    forever). Never deletes: the audio moves to ``skipped/``. A failed item keeps
+    its previous cause in the transition evidence, and when the ledger holds no
+    verified S3 backup for it the result carries a ``warning`` saying the
+    skipped/ copy is then the only one.
+    """
     with _SELECTION_LOCK:
         claim = state._active_claim()
         if claim and claim.get("item") == item_id:
@@ -735,24 +773,39 @@ def skip_item(item_id: str) -> dict[str, Any]:
             "SELECT path,state,orig_name FROM items WHERE item_id=?", (item_id,)
         ).fetchone()
         if not row:
-            raise RuntimeError(f"unknown queue item: {item_id}")
-        if row["state"] not in WORK_STATES:
-            raise RuntimeError(f"item is not queued: {row['state']}")
+            raise RuntimeError(f"no item with id {item_id} (see wax queue)")
+        if row["state"] not in SKIPPABLE_STATES:
+            raise RuntimeError(_not_skippable(conn, item_id, row))
         source = Path(row["path"])
         try:
             source.resolve().relative_to(paths.INBOX.resolve())
         except (OSError, ValueError) as e:
-            raise RuntimeError("queued item is not in the inbox") from e
+            raise RuntimeError(f"item {item_id} ({row['state']}) is not in the inbox; "
+                               "there is nothing to move") from e
         if not source.is_file():
-            raise RuntimeError("queued audio is missing")
+            raise RuntimeError(f"item {item_id} ({row['state']}): its audio is missing from "
+                               f"the inbox ({source.name}); nothing to skip")
+        previous = _last_cause(conn, item_id) if row["state"] in ("failed", "suspect") else None
+        backed_up = _has_verified_backup(conn, item_id)
         paths.SKIPPED.mkdir(parents=True, exist_ok=True)
         moved = rename.move_noclobber(source, paths.SKIPPED / source.name)
         conn.execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
                      (str(moved), sentinel.utcnow(), item_id))
-        _set_state(item_id, "skipped", cause="operator_skip",
-                   evidence=str(moved).replace(str(paths.AUDIO), "~/HeyMa"),
+        shown = str(moved).replace(str(paths.AUDIO), "~/HeyMa")
+        evidence = shown
+        if previous:
+            evidence = f"previous_cause={previous.get('cause_code') or 'unknown'} {shown}"
+        _set_state(item_id, "skipped", cause="operator_skip", evidence=evidence,
                    subject=source.name)
-        return {"item_id": item_id, "state": "skipped", "path": str(moved)}
+        out: dict[str, Any] = {"item_id": item_id, "state": "skipped", "path": str(moved),
+                               "name": row["orig_name"] or source.name,
+                               "previous_state": row["state"]}
+        if previous:
+            out["previous_cause"] = previous.get("cause_code")
+        if not backed_up:
+            out["warning"] = (f"no verified S3 backup for this item: {shown} is the only copy "
+                              "(it was moved, not deleted)")
+        return out
 
 
 def _is_junk_rejected(conn, item_id: str) -> bool:
@@ -805,24 +858,25 @@ def retry_item(item_id: str) -> dict[str, Any]:
             "SELECT path,state,orig_name FROM items WHERE item_id=?", (item_id,)
         ).fetchone()
         if not row:
-            raise RuntimeError(f"unknown queue item: {item_id}")
+            raise RuntimeError(f"no item with id {item_id} (see wax queue)")
         source = Path(row["path"])
         if row["state"] == "skipped" and _is_junk_rejected(conn, item_id):
             return _release_junk(conn, item_id, source, row["orig_name"])
         if row["state"] not in ("failed", "suspect"):
-            raise RuntimeError(f"item is not failed or suspect: {row['state']}")
+            hint = ("it is already waiting for the worker" if row["state"] in WORK_STATES
+                    else "only a failed or suspect inbox item can be retried (see wax queue)")
+            raise RuntimeError(f"item {item_id} is {row['state']}: {hint}")
         try:
             source.resolve().relative_to(paths.INBOX.resolve())
         except (OSError, ValueError) as exc:
-            raise RuntimeError("failed item is not in the inbox") from exc
+            raise RuntimeError(f"failed item {item_id} is not in the inbox; "
+                               "there is no file to retry") from exc
         if not source.is_file():
-            raise RuntimeError("failed audio is missing")
-        previous = conn.execute(
-            "SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
-            "ORDER BY seq DESC LIMIT 1",
-            (item_id,),
-        ).fetchone()
+            raise RuntimeError(f"failed item {item_id}: its audio is missing from the inbox "
+                               f"({source.name})")
+        previous = _last_cause(conn, item_id)
         previous_cause = previous["cause_code"] if previous else None
+        previous_evidence = ledger.first_line(previous.get("evidence")) if previous else ""
         _set_state(
             item_id,
             "pending",
@@ -834,7 +888,9 @@ def retry_item(item_id: str) -> dict[str, Any]:
             "item_id": item_id,
             "state": "pending",
             "path": str(source),
+            "name": row["orig_name"] or source.name,
             "previous_cause": previous_cause,
+            "previous_evidence": previous_evidence,
         }
 
 

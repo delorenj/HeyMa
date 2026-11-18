@@ -64,7 +64,7 @@ directory, the item becomes `suspect`, and the audio stays in the inbox.
 
 The gate is on container durations, deliberately not on words per minute or the
 last segment's end: with VAD on, a three-hour recording that goes quiet after 25
-minutes is legitimate. Retry a preserved item with `wax retry [<item>]`.
+minutes is legitimate. Retry a preserved item with `wax retry <item>` (or `wax retry --all`); park it with `wax skip <item>`.
 
 ## The junk gate
 

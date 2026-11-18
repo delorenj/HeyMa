@@ -51,7 +51,7 @@ refuses because of residue" is wrong (2026-11-05). So a leftover partial
 blocks recording until you clear it with `salvage` or `cancel`.
 
 The inbox machine is separate (`ready-and-waiting`, `ready-and-active` including
-queued work, `error` with `stranded_work`, `stopped`/`scheduler_disabled`). It is
+queued work, `error` with `stranded_work` (a dead worker) or `failed_items` (only failed items sit in the inbox; see the [glossary](cli.md#what-each-directory-and-each-word-means)), `stopped`/`scheduler_disabled`). It is
 about processing, not capture; see [intake](intake.md) and
 [system-map](system-map.md).
 

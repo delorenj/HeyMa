@@ -39,21 +39,33 @@ The hotkey must call `~/.local/bin/wax-toggle` (symlink to `components/wax/bin/w
 
 | Command | What it does |
 |---|---|
-| `wax state [stream\|inbox\|both] [--cold]` | Derive a machine's state from disk. `--cold` ignores the live mirror. Exit 2 on `error` or `error-partial` |
-| `wax status` | Both machines, queue, pass and diarization health. Exit 2 when unhealthy |
-| `wax history [-n 20] [--machine stream\|inbox\|item]` | Append-only transition log |
-| `wax items` | Ledger item states, all-time. Includes rows whose file is gone, so it can show hundreds of "pending" beside an empty queue (214 on 2026-11-05) |
-| `wax --json items --id <item_id>` | One item's enrichment status, read-only: `{item_id, state, enrichment_complete, completion: {plan_id, event_id, created_at}\|null, plan_id, exhausted: [ep_slug], passes: [{ep_slug, state, version, attempt, updated_at, reason_code}]}`. `enrichment_complete` is true when a `completions` row exists (finalize wrote it: every planned pass completed or skipped at the plan version) or `items.state` is `complete`. `exhausted` lists passes the retry sweep gave up on (`exhausted_at` set), which will not finish without a human. Unknown item: exit 1 with `{"error": "unknown_item"}`. Hosted read for the pilot harvest worker (`px harvest worker`), which polls it before running `px harvest` |
-| `wax queue [--clear-completed]` | The tray's queue rows; `--clear-completed` removes finished rows |
+| `wax state [stream\|inbox\|both] [--cold]` | Derive a machine's state from disk. `--cold` ignores the live mirror. Exit 2 on `error` or `error-partial`. It reads disk only, never the ledger, so an inbox holding only failed items reads `error (stranded_work)` here while `wax status` (which adds the ledger) says `failed_items`: trust `wax status` |
+| `wax status` | Both machines, queue, pass and diarization health. The queue line reads `N in inbox · N waiting for the worker · N FAILED (need you)`, and each failed or suspect item gets one line: id, name, cause, first line of evidence, `-> wax retry <id> \| wax skip <id>` (top 5, then `+N more`). Exit 2 when unhealthy, including whenever any failed item sits in the inbox. `--json` carries `queue {total, waiting, failed, parked}` (`actionable` is a deprecated alias of `waiting`), `failed` (top 5 rows) and `failed_more` |
+| `wax history [-n 20] [--machine stream\|inbox\|item]` | Append-only transition log. Rows that went to `failed`, `suspect` or `error` print the first line of their evidence beneath them |
+| `wax items [--all]` | Item states for audio still on disk, with `plus N historical rows whose file is gone`. `--all` counts every row ever minted, including audio that now lives only in S3 (so it can show hundreds of "pending" beside an empty queue) |
+| `wax --json items --id <item_id>` | One item's enrichment status, read-only: `{item_id, state, enrichment_complete, completion: {plan_id, event_id, created_at}\|null, plan_id, exhausted: [ep_slug], passes: [{ep_slug, state, version, attempt, updated_at, reason_code}]}`. `enrichment_complete` is true when a `completions` row exists (finalize wrote it: every planned pass completed or skipped at the plan version) or `items.state` is `complete`. `exhausted` lists passes the retry sweep gave up on (`exhausted_at` set), which will not finish without a human. For a `failed` or `suspect` item `error` is `{cause_code, evidence, at}` (its newest transition), else `null`. Without `--json` the command prints a human summary (state, why, `wax retry`/`wax skip`, passes). Unknown item: exit 1 with `{"error": "unknown_item"}`. Hosted read for the pilot harvest worker (`px harvest worker`), which polls it before running `px harvest` |
+| `wax queue [--all] [--clear-completed]` | Inbox work in three groups: NEEDS ATTENTION (failed or suspect: cause, evidence, next command), WAITING, ACTIVE. Finished rows are hidden (`N finished item(s) hidden`) unless `--all`. `--clear-completed` only dismisses finished rows from the tray list; nothing is deleted. `--json` is the raw array of rows the tray menu renders |
 | `wax doctor [--quiet]` | Resolved config plus a probe of every dependency. Exit 2 fail, 1 warn, 0 clean. Warnings are informational, not a gate. Includes `transcript notes intact`: a WARN naming published notes whose body or frontmatter was destroyed outside Wax, with the restore sources ([doctor](../subskills/doctor/SUBSKILL.md)) |
+
+## What each directory and each word means
+
+| Word | Means |
+|---|---|
+| `dropoff/` | Where Syncthing delivers recordings from other devices. It is receive-only and keeps every file it received, by design: the policy service mirrors accepted names into `.stignore` so a deleted file is never re-downloaded. A file still sitting in `dropoff/` after it was processed is expected, not stuck. waxd copies out of it and never writes to it |
+| `inbox/` | The one work queue. Everything here is an item waiting for the worker, or an item that failed and needs you. Any depth, any intake source |
+| queue | What `wax queue` and the tray menu list: the items in `inbox/` plus recently finished ones. A view, not a place |
+| waiting | In `inbox/` and the worker will pick it up (`pending`, `archived`, `transcribed`; also a file the ledger has not minted a row for yet). The old name was `actionable` |
+| failed | State `failed` or `suspect`, audio still in `inbox/`. The worker never retries it on its own and never skips past it silently: a human runs `wax retry <id>` or `wax skip <id>`. `wax status` exits 2 while any exist |
+| parked | In `inbox/` but already handled (a completed duplicate about to be moved out); in `queue.parked` |
+| `skipped/` | Audio moved out of the inbox by `wax skip` or the junk gate. Preserved, never deleted |
 
 ## Inbox control
 
 | Command | What it does |
 |---|---|
-| `wax skip <item_id>` | Preserve a queued item without processing it (`skipped/`, reason `operator_skip`) |
-| `wax retry [item_id] [--all]` | Requeue preserved failed or suspect inbox items; on a junk-gate reject (`skipped`, cause `junk_*`) `wax retry <item>` moves the audio back from `skipped/junk/` and exempts it from the gate (see [transcription](transcription.md)) |
-| `wax drain [-n 1]` | Process the inbox now, one-shot |
+| `wax skip <item_id>` | Park a waiting, failed or suspect inbox item without processing it: the audio is moved to `skipped/` (never deleted), reason `operator_skip`, and a failed item's `previous_cause=` is kept in the transition evidence. Warns on stderr when the ledger holds no verified S3 backup for it (the `skipped/` copy is then the only one). Refusals say what to do instead (`wax retry`, `wax queue`) |
+| `wax retry <item_id>` \| `wax retry --all` | Requeue a failed or suspect inbox item (`--all`: every one). A bare `wax retry` is an error that lists the failed items; it never retries everything by accident. It prints the previous cause and first evidence line, and that the item is re-archived and re-transcribed from scratch: the same audio fails the same way when the cause is the audio, so read `wax queue` first. On a junk-gate reject (`skipped`, cause `junk_*`) `wax retry <item>` moves the audio back from `skipped/junk/` and exempts it from the gate (see [transcription](transcription.md)) |
+| `wax drain [-n 1] [--dry-run]` | Process up to N (default 1) waiting inbox items now. It first pulls anything received in `dropoff/` into `inbox/`, so it is not read-only (`--dry-run` is: it pulls nothing and processes nothing). It never touches failed or suspect items; when idle it names them: `nothing to process` plus one line per failed item. Prints one line per processed item (id, name, outcome) |
 | `wax reconcile --rebuild` | Rebuild the ledger from durable sources. Without `--rebuild` it prints "pass --rebuild" and exits 2. Never run it before the cause is known |
 | `wax migrate --plan\|--dry-run\|--apply` | Fold legacy directories into the one inbox. Refuses with none of the three flags |
 | `wax archive <file> [--audit]` | Upload to S3 and verify. See [archive](archive.md) |
@@ -181,7 +193,7 @@ Run as `mise run <task>`, or in a headless session `mise exec -- ./bin/wax ...`.
 | `wax:doctor` | `wax doctor` |
 | `wax:status` | `wax status` |
 | `wax:sweep` | `wax ep sweep` |
-| `wax:retry` (alias `retry`) | `wax retry` |
+| `wax:retry` (alias `retry`) | `wax retry` (pass an item id or `--all`: `mise run retry -- --all`) |
 | `wax:dict` | `wax dict` |
 | `wax:failures` | `wax failures` |
 | `wax:test` | `python3 -m pytest tests` in `components/wax` |

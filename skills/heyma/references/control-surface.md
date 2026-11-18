@@ -39,7 +39,7 @@ The tray is a GTK 3 child process of waxd rendering `var/state.json`. Its menu: 
 | Page | Action | CLI |
 |---|---|---|
 | Settings | Clear finished rows | `wax queue --clear-completed` |
-| Settings | Retry failed items | `wax retry` |
+| Settings | Retry failed items | `wax retry --all` |
 | Settings | Pass switches | `wax ep enable\|disable <slug>` |
 | Settings | Background worker toggle | `wax pipeline enable\|disable` |
 | Logs | Tail | `journalctl --user -f -u waxd.service` (or every Wax unit) |

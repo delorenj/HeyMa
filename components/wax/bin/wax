@@ -1731,6 +1731,142 @@ def _reason_of(row: dict[str, Any], width: int = 74) -> str:
     return head[:width]
 
 
+def _fmt_dur(seconds: Any) -> str:
+    """79m 8s, 45s. Minutes never roll into hours: operators read memos as "79 min".
+    Empty when the ledger has no duration."""
+    try:
+        total = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return ""
+    if total <= 0:
+        return ""
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}m {secs}s" if minutes else f"{secs}s"
+
+
+def _failed_line(row: dict[str, Any], width: int = 110) -> str:
+    """One operator line for a failed/suspect inbox item: what, why, what to run."""
+    why = row.get("cause_code") or "unknown"
+    evidence = ledger.first_line(row.get("evidence"), width)
+    if evidence:
+        why += f": {evidence}"
+    return (f"{row['item_id']}  {row.get('orig_name') or '?'}  {why}  "
+            f"-> wax retry {row['item_id']} | wax skip {row['item_id']}")
+
+
+def render_items(live: dict[str, int], all_total: int, show_all: bool) -> None:
+    """`wax items`: item states, for audio still on disk unless --all."""
+    breakdown = " · ".join(f"{k} {v}" for k, v in sorted(live.items()) if k != "total")
+    scope = "every row ever minted, including audio that now lives only in S3" if show_all \
+        else "audio still on disk"
+    print(f"  {'items':<12} {live.get('total', 0)} ({scope})" + (f"   {breakdown}" if breakdown else ""))
+    gone = all_total - live.get("total", 0)
+    if not show_all and gone > 0:
+        print(f"  {'':<12} plus {gone} historical row(s) whose file is gone (wax items --all)")
+    if live.get("failed") or live.get("suspect"):
+        print(f"  {'':<12} failed/suspect items need you   -> wax queue")
+
+
+def render_item(status: dict[str, Any]) -> None:
+    """`wax items --id <id>`: the state, and for a failed item why and what to run."""
+    item_id = status["item_id"]
+    print(f"  {'item':<12} {item_id}")
+    print(f"  {'state':<12} {status['state']}")
+    err = status.get("error")
+    if err:
+        print(f"  {'why':<12} {err.get('cause_code') or 'unknown'} at {err.get('at') or '?'}")
+        if err.get("evidence"):
+            print(f"  {'':<12} {ledger.first_line(err['evidence'], 300)}")
+        print(f"  {'next':<12} wax retry {item_id} | wax skip {item_id}")
+    print(f"  {'enrichment':<12} {'complete' if status.get('enrichment_complete') else 'not complete'}"
+          + (f"   exhausted: {', '.join(status['exhausted'])}" if status.get("exhausted") else ""))
+    for row in status.get("passes") or []:
+        print(f"  {'':<12} {row['ep_slug']:<28} {row['state']}"
+              + (f" ({row['reason_code']})" if row.get("reason_code") else ""))
+
+
+def render_queue(rows: list[dict[str, Any]], show_done: bool = False) -> None:
+    """`wax queue`: what needs you, what is waiting, what is running. Finished
+    rows are history and hidden unless --all (they drowned the answer)."""
+    attention = [r for r in rows if r["state"] in ("failed", "suspect")]
+    active = [r for r in rows if r.get("active")]
+    waiting = [r for r in rows if r["state"] in ("pending", "archived", "transcribed") and not r.get("active")]
+    done = [r for r in rows if r["state"] in ("complete", "enrichment_pending")]
+
+    def label(r: dict[str, Any]) -> str:
+        dur = _fmt_dur(r.get("duration_s"))
+        return f"{r['item_id']}  {r.get('orig_name') or Path(r['path']).name}" + (f"  {dur}" if dur else "")
+
+    print(f"NEEDS ATTENTION ({len(attention)})" + ("" if attention else "  nothing failed"))
+    for r in attention:
+        err = r.get("error") or {}
+        why = err.get("cause_code") or "unknown"
+        if err.get("evidence"):
+            why += f": {ledger.first_line(err['evidence'], 110)}"
+        print(f"  {label(r)}\n      {r['state']}: {why}\n"
+              f"      -> wax retry {r['item_id']} | wax skip {r['item_id']}")
+    print(f"WAITING ({len(waiting)})" + ("" if waiting else "  nothing waiting for the worker"))
+    for r in waiting:
+        print(f"  {label(r)}  {r['state']}")
+    if active:
+        print(f"ACTIVE ({len(active)})")
+        for r in active:
+            stage = r.get("stage") or r.get("state")
+            print(f"  {label(r)}  {stage}")
+    if show_done:
+        print(f"DONE ({len(done)})")
+        for r in done:
+            print(f"  {label(r)}  {r['state']}")
+    elif done:
+        print(f"{len(done)} finished item(s) hidden (wax queue --all to list, --clear-completed to dismiss)")
+
+
+def render_drain(done: list[dict[str, Any]], failed: list[dict[str, Any]],
+                 dry: Optional[dict[str, Any]]) -> None:
+    """`wax drain`: one line per processed item; when idle, name the failed items it skips."""
+    for r in done:
+        name = Path(str(r.get("path") or r.get("parked") or "")).name or "?"
+        if r.get("error"):
+            outcome = f"FAILED: {ledger.first_line(r['error'], 140)}"
+        elif r.get("fenced"):
+            outcome = "halted by wax split"
+        elif r.get("skipped"):
+            sk = r["skipped"]
+            outcome = f"skipped ({sk.get('reason') if isinstance(sk, dict) else sk})"
+        elif r.get("parked_duplicate") or r.get("reason"):
+            outcome = f"parked ({r.get('reason') or 'duplicate'})"
+        else:
+            outcome = "done: " + str((r.get("transcribe") or {}).get("md_path") or r.get("parked") or "")
+        print(f"  {r.get('item_id', '?')}  {name}  {outcome}")
+    if done:
+        return
+    if dry is not None:
+        nxt = dry.get("next")
+        print(f"dry run (dropoff/ not pulled): next would be {nxt['item_id']} {Path(nxt['path']).name} ({nxt['action']})"
+              if nxt else "dry run (dropoff/ not pulled): nothing waiting for the worker")
+    else:
+        print("nothing to process (checked dropoff/ and inbox/: no waiting items)")
+    if failed:
+        print(f"{len(failed)} failed item(s) in the inbox are skipped by drain (a human decides):")
+        for row in failed[:10]:
+            print(f"  {_failed_line(row)}")
+        if len(failed) > 10:
+            print(f"  +{len(failed) - 10} more   -> wax queue")
+
+
+def _print_requeued(r: dict[str, Any]) -> None:
+    name = f" ({r['name']})" if r.get("name") else ""
+    cause = f" (was {r['previous_cause']})" if r.get("previous_cause") else ""
+    print(f"requeued {r['item_id']}{name}{cause}: {r['path']}")
+    if r.get("previous_evidence"):
+        print(f"  previously: {r['previous_evidence']}")
+    if r.get("junk_override"):
+        print("  released from the junk gate; it will be transcribed without the gate")
+    else:
+        print("  will re-archive and re-transcribe from scratch; same audio, so a source "
+              "problem (silence, corrupt file) will fail the same way")
+
+
 def status_unhealthy(snap: dict[str, Any]) -> bool:
     """Whether anything in the snapshot is non-nominal — INCLUDING sub-stages.
 
@@ -1740,6 +1876,10 @@ def status_unhealthy(snap: dict[str, Any]) -> bool:
     The contract-A blocks are therefore first-class terms here, not decoration.
     """
     if (snap.get("passes") or {}).get("failed"):
+        return True
+    # A failed item in the live inbox needs a human whatever the inbox label
+    # says (inside the 60 s arrival grace it still reads "queued").
+    if (snap.get("queue") or {}).get("failed"):
         return True
     if (snap.get("diarization") or {}).get("degraded"):
         return True
@@ -1767,8 +1907,18 @@ def render_status(snap: dict[str, Any]) -> None:
             print(f"  {'':<12}   {m['evidence']}")
 
     queue = snap.get("queue") or {}
-    print(f"  {'queue':<12} {queue.get('total', 0)} in inbox · "
-          f"{queue.get('actionable', 0)} actionable · {queue.get('failed', 0)} failed")
+    waiting = queue.get("waiting", queue.get("actionable", 0))
+    failed_n = queue.get("failed", 0)
+    parked = queue.get("parked", 0)
+    queue_line = (f"{queue.get('total', 0)} in inbox · {waiting} waiting for the worker · "
+                  + (f"{failed_n} FAILED (need you)" if failed_n else "0 failed"))
+    if parked:
+        queue_line += f" · {parked} already handled"
+    print(f"  {'queue':<12} {queue_line}")
+    for row in snap.get("failed") or []:
+        print(f"  {'failed':<12} {_failed_line(row)}")
+    if snap.get("failed_more"):
+        print(f"  {'':<12} +{snap['failed_more']} more   -> wax queue")
 
     # items_live is the only tally comparable to inbox/queue: `items` counts
     # every row ever minted, including audio that now lives only in S3.
@@ -2764,25 +2914,33 @@ def main() -> int:
 
     h = sub.add_parser("history", help="append-only transition log", parents=[common])
     h.add_argument("-n", type=int, default=20); h.add_argument("--machine", choices=["stream", "inbox", "item"])
-    its = sub.add_parser("items", help="ledger item states; --id: one item's enrichment status", parents=[common])
+    its = sub.add_parser("items", help="item states for audio still on disk (--all: every row ever minted); "
+                                       "--id: one item, with why it failed", parents=[common])
     its.add_argument("--id", dest="item_id", default=None,
-                     help="one item: state, enrichment_complete, completion, exhausted and pass rows")
-    sub.add_parser("queue", help="tray queue rows", parents=[common]).add_argument("--clear-completed", action="store_true")
-    sk = sub.add_parser("skip", help="preserve a queued item without processing it", parents=[common])
+                     help="one item: state, why it failed (error), enrichment_complete, completion, exhausted and pass rows")
+    its.add_argument("--all", action="store_true",
+                     help="count every row ever minted, including audio that now lives only in S3")
+    qu = sub.add_parser("queue", help="inbox work: needs attention (failed), waiting, active; finished rows "
+                                      "with --all (what the tray menu shows)", parents=[common])
+    qu.add_argument("--clear-completed", action="store_true",
+                    help="dismiss finished rows from the tray list (nothing is deleted)")
+    qu.add_argument("--all", action="store_true", help="also list finished rows")
+    sk = sub.add_parser("skip", help="park a waiting, failed or suspect inbox item in skipped/ "
+                                     "(audio is moved, never deleted)", parents=[common])
     sk.add_argument("item_id")
     rt = sub.add_parser(
-        "retry", help="requeue preserved failed or suspect inbox items", parents=[common]
+        "retry", help="requeue a failed or suspect inbox item (id), or all of them (--all)", parents=[common]
     )
     rt.add_argument(
         "item_id",
         nargs="?",
         default=None,
-        help="item to retry (default: all failed or suspect inbox items)",
+        help="the failed or suspect item to retry (see wax queue); without an id, --all is required",
     )
     rt.add_argument(
         "--all",
         action="store_true",
-        help="retry all failed or suspect items in inbox",
+        help="retry every failed or suspect item in the inbox",
     )
 
     ep = sub.add_parser("ep", help="enrichment passes", parents=[common]).add_subparsers(dest="sub", required=True)
@@ -2973,8 +3131,12 @@ def main() -> int:
     tr = sub.add_parser("transcribe", help="transcribe with the sanity gate", parents=[common])
     tr.add_argument("file")
 
-    dr = sub.add_parser("drain", help="process inbox items now (one-shot)", parents=[common])
-    dr.add_argument("-n", type=int, default=1, help="max items to process")
+    dr = sub.add_parser("drain", help="process waiting inbox items now (one-shot); first pulls anything "
+                                      "received in dropoff/ into inbox/; never touches failed items",
+                        parents=[common])
+    dr.add_argument("-n", type=int, default=1, help="max items to process (default 1)")
+    dr.add_argument("--dry-run", action="store_true",
+                    help="only report what is waiting and what is failed; does not pull dropoff/ or process")
 
     # --since/--grace on the group AND each verb, SUPPRESS'd so a value given at
     # either position survives (a subparser default would overwrite the parent's).
@@ -3234,18 +3396,27 @@ def main() -> int:
                 arrow = f"{r['from_state'] or '-'} -> {r['to_state']}"
                 print(f"  [{r['seq']:>4}] {r['at'][11:19]} {r['machine']:<7} {arrow:<34} "
                       f"{r['cause_code'] or ''} {(r['subject'] or '')[:18]}")
+                if r["to_state"] in ("failed", "suspect", "error") and r.get("evidence"):
+                    print(f"{'':>10}why: {ledger.first_line(r['evidence'], 120)}")
         return 0
 
     if args.cmd == "items":
         if args.item_id is None:
-            _emit(ledger.counts(), J)
+            live = ledger.counts(live_only=not args.all)
+            if J:
+                _emit(live, True)
+            else:
+                render_items(live, ledger.counts()["total"], args.all)
             return 0
         # Read-only status of one item; the pilot harvest worker polls it before `px harvest`.
         status = ledger.item_enrichment(args.item_id)
         if status is None:
             _emit({"error": "unknown_item", "item_id": args.item_id}, True)
             return 1
-        _emit(status, True)
+        if J:
+            _emit(status, True)
+        else:
+            render_item(status)
         return 0
 
     if args.cmd == "queue":
@@ -3256,21 +3427,43 @@ def main() -> int:
         active_row = next((row for row in rows if row.get("active")), None)
         if active_row:
             active_row.update(transcribe_adapter.progress_for(active_row["item_id"]))
-        _emit(rows, J)
+        if J:
+            _emit(rows, True)
+        else:
+            render_queue(rows, show_done=args.all)
         return 0
 
     if args.cmd == "skip":
-        _emit(worker.skip_item(args.item_id), J)
+        res = worker.skip_item(args.item_id)
+        if J:
+            _emit(res, True)
+        else:
+            shown = str(res["path"]).replace(str(paths.AUDIO), "~/HeyMa")
+            was = f" (was {res['previous_cause']})" if res.get("previous_cause") else ""
+            print(f"skipped {res['item_id']} ({res.get('name') or Path(res['path']).name}){was}: "
+                  f"audio preserved at {shown}")
+            if res.get("warning"):
+                print(f"WARNING: {res['warning']}", file=sys.stderr)
         return 0
 
     if args.cmd == "retry":
+        if not args.item_id and not args.all:
+            failed = ledger.failed_inbox_items()
+            print("wax retry needs an item id, or --all to retry every failed item.", file=sys.stderr)
+            if failed:
+                print(f"{len(failed)} failed item(s) in the inbox:", file=sys.stderr)
+                for row in failed:
+                    print(f"  {_failed_line(row)}", file=sys.stderr)
+                print("  retry them all: wax retry --all", file=sys.stderr)
+            else:
+                print("there are no failed items in the inbox (see wax queue).", file=sys.stderr)
+            return 2
         if args.item_id and not args.all:
             res = worker.retry_item(args.item_id)
             if J:
                 _emit(res, J)
             else:
-                cause = f" (was {res['previous_cause']})" if res.get("previous_cause") else ""
-                print(f"requeued {res['item_id']}{cause}: {res['path']}")
+                _print_requeued(res)
             return 0
         items = worker.retry_failed_items()
         if J:
@@ -3279,8 +3472,7 @@ def main() -> int:
             if not items:
                 print("no failed or suspect items in inbox")
             for r in items:
-                cause = f" (was {r['previous_cause']})" if r.get("previous_cause") else ""
-                print(f"requeued {r['item_id']}{cause}: {r['path']}")
+                _print_requeued(r)
         return 0
 
     if args.cmd == "archive":
@@ -3525,12 +3717,26 @@ def main() -> int:
 
     if args.cmd == "drain":
         done = []
-        for _ in range(args.n):
-            r = worker.run_once()
-            if r is None:
-                break
-            done.append(r)
-        _emit(done or {"drained": 0, "note": "nothing pending"}, J)
+        if args.dry_run:
+            nxt = worker.next_item()
+            report = {"dry_run": True, "next": (
+                {"item_id": nxt[0], "path": str(nxt[1]), "action": nxt[2]} if nxt else None)}
+        else:
+            for _ in range(args.n):
+                r = worker.run_once()
+                if r is None:
+                    break
+                done.append(r)
+            report = None
+        failed = ledger.failed_inbox_items()
+        if J:
+            if done:
+                _emit(done, True)
+            else:
+                _emit({"drained": 0, "note": "nothing pending",
+                       "failed_skipped": failed, **(report or {})}, True)
+        else:
+            render_drain(done, failed, report)
         return 0
 
     if args.cmd == "migrate":

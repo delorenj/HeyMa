@@ -292,9 +292,15 @@ class Daemon:
             # route — hotkey, Syncthing, a script, a hand-drop. INBOX IS INBOX.
             try:
                 ledger.reconcile_inbox(origin="inbox")
-                ledger.note_machine("stream", snap.get("stream", {}))
-                ledger.note_machine("inbox", snap.get("inbox", {}))
-                snap = ledger.enrich(snap)
+                # enrich() BEFORE note_machine: it is the authority on whether a
+                # file in the inbox is waiting work or a failed item, so the
+                # transition (history, Bloodbank event, `wax failures`) records
+                # `failed_items`, never a phantom `stranded_work` or `queued`.
+                try:
+                    snap = ledger.enrich(snap)
+                finally:
+                    ledger.note_machine("stream", snap.get("stream", {}))
+                    ledger.note_machine("inbox", snap.get("inbox", {}))
                 self._condition("ledger_error", None)
             except Exception as e:  # noqa: BLE001 - ledger trouble must not blind the tray
                 snap["ledger_error"] = str(e)

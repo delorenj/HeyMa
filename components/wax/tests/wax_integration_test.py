@@ -336,7 +336,7 @@ class WaxIntegrationTest(unittest.TestCase):
             missing.unlink()
 
             result = subprocess.run(
-                [str(REPO_ROOT / "bin" / "wax"), "retry", "--json"],
+                [str(REPO_ROOT / "bin" / "wax"), "retry", "--all", "--json"],
                 cwd=REPO_ROOT,
                 env=env,
                 capture_output=True,
@@ -368,7 +368,7 @@ class WaxIntegrationTest(unittest.TestCase):
             self.assertEqual(check_missing, "failed")
 
             empty_result = subprocess.run(
-                [str(REPO_ROOT / "bin" / "wax"), "retry"],
+                [str(REPO_ROOT / "bin" / "wax"), "retry", "--all"],
                 cwd=REPO_ROOT,
                 env=env,
                 capture_output=True,

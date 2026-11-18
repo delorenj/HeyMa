@@ -604,6 +604,8 @@ def item_enrichment(item_id: str) -> Optional[dict[str, Any]]:
         "enrichment_complete": done is not None or item["state"] == "complete",
         "completion": dict(done) if done else None,
         "plan_id": plan["plan_id"] if plan else None,
+        # Why a failed/suspect item is stuck: its newest transition. None otherwise.
+        "error": (describe_failure(item_id) or None) if item["state"] in ("failed", "suspect") else None,
         # a pass that later completed or was skipped keeps its old exhausted_at; it is not stuck
         "exhausted": [r["ep_slug"] for r in rows
                       if r["exhausted_at"] and r["state"] not in ("completed", "skipped")],
@@ -613,10 +615,19 @@ def item_enrichment(item_id: str) -> Optional[dict[str, Any]]:
 
 
 def inbox_counts() -> dict[str, int]:
-    """Ledger states for files physically present in the live inbox."""
+    """Ledger states for files physically present in the live inbox.
+
+    The buckets sum to ``total``: ``waiting`` (the worker will pick it up, which
+    includes a file the ledger has not minted a row for yet, because
+    worker.next_item() treats that as pending), ``failed`` (failed or suspect:
+    the worker will NOT touch it, a human must), and ``parked`` (everything
+    else, e.g. a completed duplicate about to be moved out). ``actionable`` is
+    the deprecated name for ``waiting``; the tray and failures.py still read it.
+    """
     from . import state as state_mod
     paths_now = [str(path) for path in state_mod.inbox_items()]
-    out = {"total": len(paths_now), "actionable": 0, "failed": 0}
+    out = {"total": len(paths_now), "waiting": 0, "failed": 0, "parked": 0,
+           "known": 0, "actionable": 0}
     if not paths_now:
         return out
     placeholders = ",".join("?" for _ in paths_now)
@@ -625,10 +636,80 @@ def inbox_counts() -> dict[str, int]:
         paths_now,
     ).fetchall()
     by_state = {row["state"]: row["n"] for row in rows}
-    out["actionable"] = sum(by_state.get(state, 0) for state in ("pending", "archived", "transcribed"))
-    out["failed"] = sum(by_state.get(state, 0) for state in ("failed", "suspect"))
-    out["known"] = sum(by_state.values())
+    known = sum(by_state.values())
+    failed = sum(by_state.get(state, 0) for state in ("failed", "suspect"))
+    waiting = (sum(by_state.get(state, 0) for state in ("pending", "archived", "transcribed"))
+               + (out["total"] - known))
+    out.update(waiting=waiting, actionable=waiting, failed=failed, known=known,
+               parked=max(0, out["total"] - waiting - failed))
     return out
+
+
+# -------------------------------------------------------- failed inbox items ----
+#
+# ONE definition of "an item that needs a human". `wax status`, the tray's
+# snapshot, `wax queue`, `wax drain` and the failure rows all read it, so no
+# surface can call a failed item "queued" or leave out why it failed.
+
+
+def describe_failure(item_id: str) -> dict[str, Any]:
+    """Why an item is failed or suspect: its newest item transition, as
+    {cause_code, evidence, at}. Empty dict when the ledger holds no transition."""
+    row = connect().execute(
+        "SELECT cause_code,evidence,at FROM transitions WHERE subject=? "
+        "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
+    return dict(row) if row else {}
+
+
+def first_line(text: Any, width: int = 160) -> str:
+    head = str(text or "").strip().split("\n", 1)[0].strip()
+    return head if len(head) <= width else head[:width - 1] + "\u2026"
+
+
+FAILED_SHOWN = 5  # rows attached to the status snapshot; the rest are counted
+
+
+def failed_inbox_items() -> list[dict[str, Any]]:
+    """Failed or suspect items whose audio is in the live inbox (any depth, the
+    same walk the worker uses), newest failure first.
+
+    Each row: item_id, orig_name, state, path, cause_code, evidence (first line
+    only), at. Rows for failed items whose audio is gone are history, not
+    something a human can act on, so they are not here.
+    """
+    from . import state as state_mod
+    paths_now = [str(path) for path in state_mod.inbox_items()]
+    if not paths_now:
+        return []
+    conn = connect()
+    placeholders = ",".join("?" for _ in paths_now)
+    rows = conn.execute(
+        "SELECT item_id,orig_name,path,state,updated_at FROM items "
+        f"WHERE state IN ('failed','suspect') AND path IN ({placeholders})",
+        paths_now).fetchall()
+    out = []
+    for row in rows:
+        why = describe_failure(row["item_id"])
+        out.append({
+            "item_id": row["item_id"],
+            "orig_name": row["orig_name"] or Path(row["path"]).name,
+            "state": row["state"],
+            "path": row["path"],
+            "cause_code": why.get("cause_code") or "unknown",
+            "evidence": first_line(why.get("evidence")),
+            "at": why.get("at") or row["updated_at"],
+        })
+    out.sort(key=lambda r: (str(r["at"] or ""), r["item_id"]), reverse=True)
+    return out
+
+
+def group_failures(failed: list[dict[str, Any]]) -> str:
+    """'3 failed: 3x transcribe_failed' (or '4 failed: 3x a, 1x b')."""
+    causes: dict[str, int] = {}
+    for row in failed:
+        causes[row["cause_code"]] = causes.get(row["cause_code"], 0) + 1
+    ordered = sorted(causes.items(), key=lambda kv: (-kv[1], kv[0]))
+    return f"{len(failed)} failed: " + ", ".join(f"{n}x {cause}" for cause, n in ordered)
 
 
 # ------------------------------------------------------------ stage health ----
@@ -836,8 +917,12 @@ def tray_items(active_item: Optional[str] = None,
     # ordering is the lexical Path order. Ledger first_seen order is not the
     # processing order and made the tray actively misleading.
     queued_by_path = {row["path"]: row for row in queued_rows}
-    queued = [queued_by_path[str(path)] for path in sorted(paths.INBOX.iterdir())
-              if str(path) in queued_by_path] if paths.INBOX.exists() else []
+    # state.inbox_items() is recursive, like the worker and inbox_counts(); a
+    # flat iterdir hid nested failed items from the tray while `wax status`
+    # counted them.
+    from . import state as state_mod
+    queued = [queued_by_path[str(path)] for path in state_mod.inbox_items()
+              if str(path) in queued_by_path]
     out = []
     for row in [*queued, *completed]:
         item = dict(row)
@@ -846,17 +931,13 @@ def tray_items(active_item: Optional[str] = None,
         item["passes_failed"] = int(item.get("passes_failed") or 0)
         item["passes_failed_slugs"] = sorted(
             slug for slug in (item.get("passes_failed_slugs") or "").split(",") if slug)
-        # Old ledgers can contain resumable states whose audio was parked in a
-        # previous runtime root. They are audit history, not actionable queue
-        # rows, and must not expose a Skip action that can never succeed.
-        if item["state"] not in ("complete", "enrichment_pending") and Path(item["path"]).parent != paths.INBOX:
-            continue
+        # (Old ledgers can contain resumable states whose audio was parked in a
+        # previous runtime root. Those never reach here: `queued` is built from
+        # files actually in the inbox, so no Skip action is offered that can
+        # never succeed.)
         if item["state"] in ("failed", "suspect"):
-            reason = conn.execute(
-                "SELECT cause_code,evidence FROM transitions WHERE subject=? "
-                "ORDER BY seq DESC LIMIT 1", (item["item_id"],)
-            ).fetchone()
-            item["error"] = dict(reason) if reason else {}
+            reason = describe_failure(item["item_id"])
+            item["error"] = {k: reason[k] for k in ("cause_code", "evidence") if k in reason}
         item["active"] = item["item_id"] == active_item
         item["stage"] = active_stage if item["active"] else None
         out.append(item)
@@ -903,11 +984,20 @@ def enrich(snap: dict[str, Any]) -> dict[str, Any]:
         inbox["reconciled"] = (queue.get("known", 0) == fs_entries)
         snap["queue"] = queue
         # A failed item intentionally remains visible, but it is not queued
-        # work and must never be diagnosed as a dead worker/stranded claim.
-        if (inbox.get("state") == "error" and inbox.get("cause_code") == "stranded_work"
-                and queue["failed"] and not queue["actionable"]):
+        # work and must never be diagnosed as a dead worker/stranded claim, nor
+        # (inside the 60 s arrival grace) as "queued": nothing will ever pick it
+        # up. This is the single authority on that; state.py stays a pure
+        # function of disk. waxd runs enrich() BEFORE note_machine so the
+        # recorded transition, the event and `wax history` say the same thing.
+        failed = failed_inbox_items() if queue["failed"] else []
+        snap["failed"] = failed[:FAILED_SHOWN]
+        snap["failed_more"] = max(0, len(failed) - FAILED_SHOWN)
+        if (failed and not queue["waiting"]
+                and inbox.get("cause_code") in ("queued", "stranded_work")):
+            inbox["state"] = "error"
             inbox["cause_code"] = "failed_items"
-            inbox["evidence"] = f"{queue['failed']} failed item(s) preserved in inbox"
+            inbox["evidence"] = group_failures(failed)
+            inbox["active_stage"] = None
         snap["generation"] = generation()
         # `items` stays the historical record (every row ever minted, including
         # items whose audio now lives only in S3); `items_live` is the same

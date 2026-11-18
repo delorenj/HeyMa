@@ -13,7 +13,7 @@ same `wax` CLI the tray and n8n use (`bin/wax` beside this component, never a
 PATH lookup), so Wax keeps owning every mutation:
 
     Clear finished      wax queue --clear-completed
-    Retry failed        wax retry
+    Retry failed        wax retry --all
     pass switches       wax ep enable|disable <slug>   (var/settings.json overlay)
     background worker   wax pipeline enable|disable
     Logs                journalctl --user -f -u waxd.service ...
@@ -396,7 +396,7 @@ class SettingsPage:
             n = len(data) if ok and isinstance(data, list) else 0
             self.toast(f"Requeued {n} item(s)" if ok else f"Retry failed: {err}")
             self.refresh()
-        _background(lambda: wax("retry"), done)
+        _background(lambda: wax("retry", "--all"), done)
 
     def _pass_toggled(self, row, _pspec, slug: str) -> None:
         enabled = row.get_active()

@@ -92,7 +92,11 @@ class ItemEnrichmentTest(unittest.TestCase):
         miss = run("--id", "ffffffffffffffff")
         self.assertNotEqual(miss.returncode, 0)
         self.assertEqual(json.loads(miss.stdout)["error"], "unknown_item")
-        counts = run()
+        # `wax items` counts audio still on disk; this item has no file, so only --all sees it.
+        live = run()
+        self.assertEqual(live.returncode, 0, live.stderr)
+        self.assertEqual(json.loads(live.stdout), {"total": 0})
+        counts = run("--all")
         self.assertEqual(counts.returncode, 0, counts.stderr)
         self.assertEqual(json.loads(counts.stdout), {"enrichment_pending": 1, "total": 1})
 

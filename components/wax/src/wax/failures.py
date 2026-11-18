@@ -422,9 +422,10 @@ def _collect_worker(conn, tables, *, cutoff, now, since_s, grace_s) -> list[dict
     so the queue reads "stranded" for the second it takes the worker to claim
     the next item (the live ledger: 30 of 31 episodes healed in 1-77 s). Only an
     episode that outlives the grace means the worker stopped taking work. An
-    ongoing episode with nothing actionable in the inbox is the failed-items-only
-    case (note_machine runs before enrich() relabels it), which item tickets
-    already cover."""
+    ongoing episode with nothing waiting in the inbox is the failed-items-only
+    case, which item tickets already cover. waxd now records that case as
+    `failed_items` (enrich() runs before note_machine), but ledgers written
+    before that still hold such `stranded_work` rows, so the check stays."""
     if "transitions" not in tables:
         return []
     out = []
@@ -444,7 +445,7 @@ def _collect_worker(conn, tables, *, cutoff, now, since_s, grace_s) -> list[dict
                 detail = f"{r['evidence'] or 'stranded'}; the worker resumed after {lasted:.0f}s"
             else:
                 if actionable is None:
-                    actionable = int(ledger.inbox_counts().get("actionable", 0))
+                    actionable = int(ledger.inbox_counts().get("waiting", 0))
                 if not actionable:
                     continue
                 final = False
