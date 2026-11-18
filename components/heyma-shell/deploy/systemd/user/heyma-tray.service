@@ -1,0 +1,19 @@
+[Unit]
+Description=HeyMa tray (one icon for Wax, Vinyl, Telephony and Phonograph)
+Documentation=@HEYMA_SHELL_DOC_URI@
+PartOf=graphical-session.target
+After=graphical-session.target
+# The display can arrive after the unit starts (autologin); keep retrying rather
+# than tripping the start limit and leaving the desktop with no icon.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Absolute path rendered from the checkout that installs it, like waxd: PATH never
+# decides which code runs. /usr/bin/python3 (system gi) is the script's shebang.
+ExecStart=@HEYMA_EXEC_START@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -181,6 +181,86 @@ class PortabilityTest(unittest.TestCase):
         self.assertIn(str(COMPONENT_ROOT / "docs/WAX-DESIGN.md"), result.stdout)
         self.assertNotIn("@WAX_", result.stdout)
 
+    def run_installer_dry(self, *flags):
+        return subprocess.run([str(COMPONENT_ROOT / "deploy/install-systemd-user"), "--dry-run", *flags],
+                              cwd="/tmp", capture_output=True, text=True, check=True).stdout
+
+    def test_installer_ships_the_heyma_tray_and_stands_waxd_tray_down(self):
+        out = self.run_installer_dry()
+        repo = COMPONENT_ROOT.parents[1]
+        self.assertIn("Description=HeyMa tray", out)
+        self.assertIn(f'ExecStart="{repo / "bin/heyma"}" tray', out)
+        self.assertIn("WantedBy=graphical-session.target", out)
+        self.assertIn("PartOf=graphical-session.target", out)
+        self.assertIn("Environment=WAX_TRAY=off", out)
+        self.assertNotIn("@HEYMA_", out)
+
+    def test_waxd_unit_itself_keeps_its_tray_by_default(self):
+        installer = load_systemd_installer()
+        self.assertNotIn("WAX_TRAY", installer.render(COMPONENT_ROOT, COMPONENT_ROOT.parents[1]))
+
+    def test_installer_opt_out_leaves_waxd_tray_alone(self):
+        out = self.run_installer_dry("--no-heyma-tray")
+        self.assertNotIn("HeyMa tray", out)
+        self.assertNotIn("WAX_TRAY", out)
+
+    def test_installer_only_ever_issues_non_restarting_systemctl_verbs(self):
+        import ast
+        tree = ast.parse((COMPONENT_ROOT / "deploy/install-systemd-user").read_text())
+        verbs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List) and len(node.elts) >= 3 \
+                    and [getattr(e, "value", None) for e in node.elts[:2]] == ["systemctl", "--user"]:
+                verbs.add(node.elts[2].value)
+        # enable and mask never start a unit that is not running, and daemon-reload
+        # touches nothing: running the installer mid-recording is safe. disable,
+        # unmask and start appear only on the opt-out paths, which undo an earlier
+        # install of the HeyMa tray; none of them restarts waxd.
+        self.assertEqual(verbs, {"daemon-reload", "reenable", "mask", "disable", "unmask", "start"})
+        self.assertFalse(any("restart" in verb or "kill" in verb for verb in verbs))
+
+    def opt_out_world(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        target = Path(directory.name)
+        (target / "waxd.service.d").mkdir()
+        (target / "waxd.service.d" / "10-heyma-tray.conf").write_text("[Service]\nEnvironment=WAX_TRAY=off\n")
+        (target / "heyma-tray.service").write_text("[Unit]\n")
+        (target / "vinyl-tray.service").symlink_to("/dev/null")
+        return target
+
+    def test_no_heyma_tray_undoes_an_earlier_default_install(self):
+        """--no-heyma-tray used to skip writing and leave WAX_TRAY=off in force,
+        so "keep waxd's tray" produced a host with no Wax tray (review 2026-11-18)."""
+        installer = load_systemd_installer()
+        target = self.opt_out_world()
+        steps = installer.opt_out_steps(target, heyma_tray=False, keep_vinyl_tray=False)
+        self.assertIn(("remove", target / "waxd.service.d" / "10-heyma-tray.conf"), steps)
+        self.assertIn(("run", ["systemctl", "--user", "disable", "--now", "heyma-tray.service"]), steps)
+        self.assertIn(("remove", target / "heyma-tray.service"), steps)
+        # disable needs the unit file, so it comes before the file is removed.
+        self.assertLess(steps.index(("run", ["systemctl", "--user", "disable", "--now", "heyma-tray.service"])),
+                        steps.index(("remove", target / "heyma-tray.service")))
+        self.assertIn(("run", ["systemctl", "--user", "unmask", "vinyl-tray.service"]), steps)
+
+    def test_keep_vinyl_tray_unmasks_only_a_mask(self):
+        installer = load_systemd_installer()
+        target = self.opt_out_world()
+        steps = installer.opt_out_steps(target, heyma_tray=True, keep_vinyl_tray=True)
+        self.assertEqual([s for s in steps if s[0] == "remove"], [])
+        self.assertIn(("run", ["systemctl", "--user", "unmask", "vinyl-tray.service"]), steps)
+        (target / "vinyl-tray.service").unlink()
+        (target / "vinyl-tray.service").write_text("[Unit]\n")  # an operator's own override, not a mask
+        self.assertEqual(installer.opt_out_steps(target, heyma_tray=True, keep_vinyl_tray=True), [])
+
+    def test_default_run_and_a_clean_host_undo_nothing(self):
+        installer = load_systemd_installer()
+        self.assertEqual(installer.opt_out_steps(self.opt_out_world(), heyma_tray=True,
+                                                 keep_vinyl_tray=False), [])
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertEqual(installer.opt_out_steps(Path(empty), heyma_tray=False,
+                                                     keep_vinyl_tray=False), [])
+
     def test_systemd_render_handles_spaces_and_special_characters(self):
         installer = load_systemd_installer()
         with tempfile.TemporaryDirectory(prefix="Hey Ma #100% $") as directory:

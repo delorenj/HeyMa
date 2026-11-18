@@ -34,7 +34,7 @@ If Holocene shows DOWN: run `wax --json catalog` yourself first. Failure there i
 
 ## Tray and HeyMa window
 
-The tray is a GTK 3 child process of waxd rendering `var/state.json`. Its menu: Start recording, status, Queue, Open inbox, Settings…, Quit waxd. The HeyMa window (`bin/heyma`, code `components/wax/src/wax/heyma_window.py`) is GTK 4 and libadwaita, single-instance, a collapsible drawer beside a full-width page. Pages and actions:
+On big-chungus the one tray is `heyma-tray.service` (GTK 3, id `heyma`), described in [shell](shell.md): Dictation and Recording toggles plus Wax, Vinyl, Telephony and Phonograph submenus. waxd's own tray, a GTK 3 child rendering `var/state.json` (menu: Start recording, status, Queue, Open inbox, Settings…, Quit waxd), runs when `WAX_TRAY` is not `off`, and also under `WAX_TRAY=off` whenever `heyma-tray.service` is not running (Quit HeyMa, a disabled unit), so a recorder never goes without an icon; it is the default on a host with no shell, and the Wax submenu reuses its code. The HeyMa window (`bin/heyma`, code `components/wax/src/wax/heyma_window.py`) is GTK 4 and libadwaita, single-instance, a collapsible drawer beside a full-width page. Pages and actions:
 
 | Page | Action | CLI |
 |---|---|---|

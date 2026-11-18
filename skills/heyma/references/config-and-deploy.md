@@ -45,9 +45,9 @@ Found a plaintext secret anywhere? Move it into the DeLoSecrets vault, replace i
 
 ## Units and install
 
-`components/wax/deploy/install-systemd-user` renders `waxd`, `wax-alert`, `wax-capture-guard` and `wax-calls-sync` from `deploy/systemd/user/` into `~/.config/systemd/user`, then runs `daemon-reload` and re-enable. It never restarts. `--dry-run` previews. Templates for `waxd.service`: `WAX_SEGMENT_SECONDS=60`, `WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`, the absolute `WAX_TRANSCRIBE` pin, `WAX_S3_ENDPOINT`, password-less transcript DSNs, and `OnFailure=wax-alert.service`. The installed `waxd.service` matched its rendered template on 2026-11-05; `waxd.service.d/` is empty.
+`components/wax/deploy/install-systemd-user` renders `waxd`, `wax-alert`, `wax-capture-guard`, `wax-calls-sync` and `heyma-tray` (template in `components/heyma-shell/deploy/`) into `~/.config/systemd/user`, writes the `waxd.service.d/10-heyma-tray.conf` drop-in (`WAX_TRAY=off`), runs `daemon-reload` and re-enable, and masks the deb-owned `vinyl-tray.service` (`mask --now`). It never restarts anything; waxd reads its drop-in at the next restart. `--no-heyma-tray` and `--keep-vinyl-tray` opt out, and on a host that already had the default install they undo it (remove the drop-in, `disable --now` and remove `heyma-tray`, `unmask` and `start` a `vinyl-tray` the installer masked); see [shell](shell.md). `--dry-run` previews, including a `# would …` line per undo step. Templates for `waxd.service`: `WAX_SEGMENT_SECONDS=60`, `WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`, the absolute `WAX_TRANSCRIBE` pin, `WAX_S3_ENDPOINT`, password-less transcript DSNs, and `OnFailure=wax-alert.service`. The installed `waxd.service` matched its rendered template on 2026-11-05. Since 2026-11-18 `waxd.service.d/` holds exactly one file, the installer's `10-heyma-tray.conf`; anything else there is a hand edit.
 
-| Unit | State 2026-11-05 |
+| Unit | State (2026-11-05 unless dated) |
 |---|---|
 | `waxd.service` | enabled, active |
 | `wax-capture-guard.service` | enabled, active (exited) |
@@ -55,6 +55,9 @@ Found a plaintext secret anywhere? Move it into the DeLoSecrets vault, replace i
 | `wax-alert`, `wax-calls-sync`, `telnyx-s3-intake`, `telnyx-s3-intake-alert` | static (started by something else) |
 | `telnyx-s3-intake.timer` | deleted 2026-11-10 (repo and `~/.config/systemd/user/`); Candybar is the clock |
 | `heyma-whisper.service` | not-found; a ghost in old docs |
+| `heyma-tray.service` | 2026-11-18: enabled, active (the one tray; `PartOf`/`WantedBy` `graphical-session.target`) |
+| `waxd.service.d/10-heyma-tray.conf` | 2026-11-18: present, `WAX_TRAY=off` |
+| `vinyl-tray.service` | 2026-11-18: masked (deb unit in `/usr/lib/systemd/user`; `vinyl doctor` FAILs its row, see [shell](shell.md)) |
 
 ## Candybar schedules
 

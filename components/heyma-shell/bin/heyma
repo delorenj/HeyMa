@@ -1,0 +1,18 @@
+#!/usr/bin/python3
+# NOTE: /usr/bin/python3 explicitly, never `env python3` — the tray needs the system gi
+# and mise's Python is first on PATH with none.
+"""heyma — the HeyMa client.
+
+    heyma                          open the window (Settings, Telephony, Logs)
+    heyma --page settings          open it on a page
+    heyma status [--json]          Wax, Vinyl, Telephony, Phonograph in one view
+    heyma tray                     the one tray (run by heyma-tray.service)
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from heyma_shell.cli import main  # noqa: E402
+
+raise SystemExit(main())
