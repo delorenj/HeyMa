@@ -66,6 +66,11 @@ description = "Run the HeyMa shell tests (registry adapters, tray model)"
 dir = "{{config_root}}/components/heyma-shell"
 run = "python3 -m pytest tests"
 
+[tasks."heyma-mac:test"]
+description = "Run the HeyMa.app source contract and release invariants (Swift compiles only on the Mac)"
+dir = "{{config_root}}/components/heyma-mac"
+run = "python3 -m pytest tests"
+
 [tasks."wax:test"]
 description = "Run the Wax test suite"
 dir = "{{config_root}}/components/wax"

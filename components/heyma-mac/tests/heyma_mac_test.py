@@ -50,6 +50,37 @@ class AppSourceTest(unittest.TestCase):
         self.assertIn('"/healthz"', SOURCE)
         self.assertIn("https://phonograph.intellifornia.com", SOURCE)
 
+    def test_server_down_needs_a_connect_error_not_just_the_prefix(self):
+        # The client prefixes busy, token and microphone failures with
+        # "client start HOST:PORT:" too; those are not a server outage.
+        down = SOURCE[SOURCE.index("private var serverDown: Bool"):]
+        down = down[:down.index("private var hotkeyRef")]
+        self.assertNotIn('hasPrefix("client start ")', down)
+        self.assertIn("isConnectFailure(lastError)", down)
+        markers = SOURCE[SOURCE.index("connectFailureMarkers = ["):]
+        markers = markers[:markers.index("]")]
+        for err in ("server busy — another client is dictating", "invalid token",
+                    "Error opening InputStream: Internal PortAudio error"):
+            self.assertFalse(any(m.strip(' "\n') in err.lower()
+                                 for m in markers.split("[", 1)[1].split(",") if m.strip(' "\n')), err)
+        self.assertIn('"connection refused"', markers)
+
+    def test_menus_do_not_autoenable(self):
+        # AppKit would otherwise re-enable every targeted item and ignore isEnabled.
+        menus = re.findall(r"let (\w+) = NSMenu\(", SOURCE)
+        self.assertGreaterEqual(len(menus), 4)
+        for name in menus:
+            self.assertIn(f"{name}.autoenablesItems = false", SOURCE, name)
+
+    def test_connected_row_never_contradicts_server_down(self):
+        self.assertIn('down ? "Server: \\(running)" : "Connected: \\(running)"', SOURCE)
+
+    def test_status_poll_does_not_refuse_presses(self):
+        refresh = SOURCE[SOURCE.index("private func refresh()"):]
+        refresh = refresh[:refresh.index("cli.submit")]
+        self.assertIn("polling = true", refresh)
+        self.assertNotIn("busy = true", refresh)
+
 
 class ReleaseContractTest(unittest.TestCase):
     def test_version_is_its_own_and_valid(self):

@@ -188,6 +188,22 @@ private func endpoint() -> String {
     return object["server"] as? String ?? ""
 }
 
+/// Socket-level errors from the client's `socket.create_connection` / handshake read,
+/// as Python's `str(OSError)` renders them on macOS and Linux.
+private let connectFailureMarkers = [
+    "connection refused", "timed out", "no route to host", "network is unreachable",
+    "host is down", "nodename nor servname", "name or service not known",
+    "temporary failure in name resolution", "connection reset", "connection closed",
+]
+
+/// True only for `client start HOST:PORT: <connect error>`, never for a server reply
+/// (busy, token, protocol) or a local capture failure that carries the same prefix.
+func isConnectFailure(_ lastError: String) -> Bool {
+    guard lastError.hasPrefix("client start ") else { return false }
+    let detail = lastError.lowercased()
+    return connectFailureMarkers.contains { detail.contains($0) }
+}
+
 private func pairedMarker() -> Bool {
     let path = home.appendingPathComponent(".config/vinyl/token").path
     guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
@@ -342,16 +358,22 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private var serverReachableFlag: Bool?
     private var endpointFromStatus = false
     private var timer: Timer?
+    /// A user command (start/stop/cancel, save, restart) is in flight. Only this gates presses.
     private var busy = false
+    /// The 3 s status poll is in flight. Separate from `busy` so a press during a poll
+    /// is queued behind it on the CLI queue instead of being refused as "busy".
+    private var polling = false
     private var listening = false
     private var reachable = false
     private var lastError = ""
     private var trace = ""
     /// Status says the server cannot be reached: an explicit `server_reachable: false`,
-    /// or the client's own connect failure (`client start HOST:PORT: …`).
+    /// or the client's own connect failure. The client prefixes EVERY start failure with
+    /// `client start HOST:PORT:` (server busy, bad token, microphone/PortAudio too), so the
+    /// prefix alone is not evidence; only socket-level connect errors count.
     private var serverDown: Bool {
         if let flag = serverReachableFlag { return !flag }
-        return lastError.hasPrefix("client start ")
+        return isConnectFailure(lastError)
     }
     private var hotkeyRef: EventHotKeyRef?
     private var hotkeyHandler: EventHandlerRef?
@@ -384,7 +406,10 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     private func installMenu() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "HeyMa idle")
+        // Every menu below sets autoenablesItems = false: otherwise AppKit re-enables any
+        // item with a target and the isEnabled gating in updateUI() is silently ignored.
         let menu = NSMenu()
+        menu.autoenablesItems = false
         menuState.isEnabled = false
         menu.addItem(menuState)
         menu.addItem(.separator())
@@ -399,6 +424,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         if !wax.isEmpty {
             let parent = NSMenuItem(title: "Wax", action: nil, keyEquivalent: "")
             let submenu = NSMenu(title: "Wax")
+            submenu.autoenablesItems = false
             wax.forEach { submenu.addItem($0) }
             parent.submenu = submenu
             menu.addItem(parent)
@@ -406,6 +432,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
 
         // Vinyl section.
         let vinyl = NSMenu(title: "Vinyl")
+        vinyl.autoenablesItems = false
         for row in [vinylConnectedItem, vinylServerDownItem, vinylRestartHintItem] { row.isEnabled = false; vinyl.addItem(row) }
         vinylRestartItem.target = self; vinylRestartItem.action = #selector(restartClient)
         vinyl.addItem(vinylRestartItem)
@@ -421,6 +448,7 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         // Phonograph section: nothing installs on a client; it is a hosted URL.
         if phonographEnabled {
             let phonograph = NSMenu(title: "Phonograph")
+            phonograph.autoenablesItems = false
             phonographStatusItem.isEnabled = false
             phonograph.addItem(phonographStatusItem)
             phonograph.addItem(withTitle: "Open Phonograph", action: #selector(openPhonograph), keyEquivalent: "").target = self
@@ -572,11 +600,11 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
     }
 
     private func refresh() {
-        guard !busy else { return }
-        busy = true
+        guard !polling, !busy else { return }
+        polling = true
         cli.submit(["status"], timeout: 5) { [weak self] result in
             guard let self = self else { return }
-            self.busy = false
+            self.polling = false
             switch result {
             case .failure(let error): self.reachable = false; self.listening = false; self.lastError = error.localizedDescription
             case .success(let response):
@@ -618,13 +646,15 @@ private final class AppController: NSObject, NSApplicationDelegate, NSWindowDele
         let configured = endpoint()
         let running = runningServer.isEmpty ? configured : runningServer
         let mismatch = reachable && !configured.isEmpty && !running.isEmpty && configured != running
+        let down = reachable && serverDown
+        // Never "Connected: X" directly above "Server unreachable: X".
         vinylConnectedItem.title = !reachable ? "Client not running"
-            : running.isEmpty ? "Connected: no server configured" : "Connected: \(running)"
+            : running.isEmpty ? "Connected: no server configured"
+            : down ? "Server: \(running)" : "Connected: \(running)"
         vinylRestartHintItem.title = "Restart the client to use \(configured)"
         vinylRestartHintItem.isHidden = !mismatch
         vinylRestartItem.isHidden = !mismatch
         vinylRestartItem.isEnabled = mismatch && !listening && !busy
-        let down = reachable && serverDown
         vinylServerDownItem.title = "Server unreachable\(running.isEmpty ? "" : ": \(running)")"
         vinylServerDownItem.isHidden = !down
         phonographStatusItem.title = "\(phonographURL.replacingOccurrences(of: "https://", with: "")): \(phonographHealth)"

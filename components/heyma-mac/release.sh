@@ -33,6 +33,8 @@ REMOTE="/tmp/heyma-mac-release-$VERSION"
 DIST="$HERE/dist"
 
 command -v op >/dev/null || { echo "op (1Password CLI) is required" >&2; exit 1; }
+echo "==> source contract (tests/)"
+python3 -m pytest -q "$HERE/tests" || { echo "heyma-mac tests failed; not releasing" >&2; exit 1; }
 ssh -o BatchMode=yes "$MAC" true || { echo "cannot ssh to $MAC" >&2; exit 1; }
 
 echo "==> ship source to $MAC:$REMOTE"
