@@ -15,5 +15,8 @@
       "role_dir": "agents/hermes/pm"
     }
   },
-  "project_id": "transcription-queue"
+  "project_id": "transcription-queue",
+  "crank": {
+    "enabled": true
+  }
 }
