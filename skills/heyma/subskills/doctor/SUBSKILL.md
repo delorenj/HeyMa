@@ -59,7 +59,9 @@ it did.
 quietly.** They did on 2026-11-18: three Voice Memos failed, `wax status` exited
 2 and `wax doctor` reported nothing, because no probe looked at item state. Now
 `wax doctor` has `failed items` (WARN on any, FAIL past an hour or on a lost
-backup; detail lines grouped by cause, each with its next command),
+backup; one detail line per cause, then every item under it by id and name with
+its next command, ten at most; an item with no verified backup, `archive_failed`
+or `s3_reverify_failed`, is offered only `wax retry`, which re-archives),
 `transcription.degraded (contract A)` (the newest three recordings all failed),
 `input audio silent` (recordings parked as silent, per source), `status snapshot`
 (re-evaluates `wax status`'s own exit predicate, so **doctor is never greener

@@ -720,12 +720,32 @@ def inbox_counts() -> dict[str, int]:
 
 
 def describe_failure(item_id: str) -> dict[str, Any]:
-    """Why an item is failed or suspect: its newest item transition, as
-    {cause_code, evidence, at}. Empty dict when the ledger holds no transition."""
+    """Why an item is failed or suspect: its newest ITEM transition, as
+    {cause_code, evidence, at}. Empty dict when the ledger holds no transition.
+
+    machine='item' matters: the `transcript` machine (prune/restore) also uses
+    the item id as its subject, and a newer `pruned` row must never be read as
+    the reason an item failed."""
     row = connect().execute(
-        "SELECT cause_code,evidence,at FROM transitions WHERE subject=? "
+        "SELECT cause_code,evidence,at FROM transitions WHERE machine='item' AND subject=? "
         "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
     return dict(row) if row else {}
+
+
+# A failed item with one of these causes has NO verified S3 backup: the worker
+# stopped before transcription. `wax retry` re-archives it; `wax skip` would
+# only move the one copy (it says so), so it is not offered as the next step.
+DURABILITY_CAUSES = ("archive_failed", "s3_reverify_failed")
+
+
+def next_step(item_id: Optional[str], cause: Optional[str] = None) -> str:
+    """The operator verbs for a failed/suspect item: one definition for status,
+    queue, drain, items --id, doctor, the notification and the ledger evidence."""
+    if not item_id:
+        return "wax queue"
+    if cause in DURABILITY_CAUSES:
+        return f"wax retry {item_id} (re-archives: no verified backup yet, so do not skip it)"
+    return f"wax retry {item_id} | wax skip {item_id}"
 
 
 def first_line(text: Any, width: int = 160) -> str:
@@ -808,7 +828,11 @@ def source_of(origin: Optional[str], name: Optional[str]) -> str:
 
 
 def silent_items(hours: float = SILENT_RECENT_H) -> list[dict[str, Any]]:
-    """Recordings parked as silent (`junk_silent`, still parked) in the last `hours`, newest first."""
+    """Recordings parked as silent (`junk_silent`, still parked) in the last `hours`, newest first.
+
+    "Still parked" is the item's NEWEST item transition being the silent park (or a re-dropped copy
+    of it), so an item released with `wax retry` and later skipped by hand is not reported as silent.
+    """
     from datetime import datetime, timedelta, timezone
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(
         timespec="milliseconds").replace("+00:00", "Z")
@@ -816,7 +840,10 @@ def silent_items(hours: float = SILENT_RECENT_H) -> list[dict[str, Any]]:
         "SELECT i.item_id,i.orig_name,i.origin,i.audio_mean_db,i.audio_max_db,i.duration_s,i.path,"
         "MAX(t.at) AS at FROM items i JOIN transitions t "
         "ON t.machine='item' AND t.subject=i.item_id AND t.cause_code='junk_silent' "
-        "WHERE i.state='skipped' AND t.at>=? GROUP BY i.item_id ORDER BY at DESC", (cutoff,)).fetchall()
+        "WHERE i.state='skipped' AND t.at>=? "
+        "AND (SELECT l.cause_code FROM transitions l WHERE l.machine='item' AND l.subject=i.item_id "
+        "     ORDER BY l.seq DESC LIMIT 1) IN ('junk_silent','junk_redropped') "
+        "GROUP BY i.item_id ORDER BY at DESC", (cutoff,)).fetchall()
     return [{
         "item_id": r["item_id"], "orig_name": r["orig_name"] or Path(r["path"]).name,
         "source": source_of(r["origin"], r["orig_name"]), "mean_db": r["audio_mean_db"],

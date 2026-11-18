@@ -82,13 +82,13 @@ def _first_line(text: str, limit: int = 200) -> str:
     return lines[0][:limit] if lines else ""
 
 
-def _next_step(item_id: Optional[str]) -> str:
+def _next_step(item_id: Optional[str], cause: Optional[str] = None) -> str:
     """The operator verbs for a failed item, for every notification and evidence line."""
-    return f"wax retry {item_id} | wax skip {item_id}" if item_id else "wax queue"
+    return ledger.next_step(item_id, cause)
 
 
 def _announce_item_failure(subject: str, headline: str, detail: str,
-                           item_id: Optional[str] = None) -> None:
+                           item_id: Optional[str] = None, cause: Optional[str] = None) -> None:
     """Make ONE item's failure audible at the desk, not just true in the database.
 
     Uses desktop.notify rather than desktop.notify_stage_failure on purpose: a
@@ -99,7 +99,7 @@ def _announce_item_failure(subject: str, headline: str, detail: str,
     """
     desktop.ding("failed")
     desktop.notify(f"Wax: {headline}",
-                   f"{subject}\n{_first_line(detail, 300)}\nnext: {_next_step(item_id)}")
+                   f"{subject}\n{_first_line(detail, 300)}\nnext: {_next_step(item_id, cause)}")
 
 
 def _announce_silent(item_id: str, name: str, source: str, rejection: "junk.Rejection",
@@ -127,10 +127,10 @@ def _set_state(item_id: str, to_state: str, *, cause: str, evidence: str,
     """
     if to_state in ("failed", "suspect"):
         log.error("item %s -> %s (%s): %s", item_id, to_state, cause, _first_line(evidence, 300))
-        _announce_item_failure(subject or item_id, f"item {to_state} ({cause})", evidence, item_id)
+        _announce_item_failure(subject or item_id, f"item {to_state} ({cause})", evidence, item_id, cause)
         if "\nnext:" not in evidence:
             # Second line, so every row that shows only the first line stays short.
-            evidence = f"{evidence}\nnext: {_next_step(item_id)}"
+            evidence = f"{evidence}\nnext: {_next_step(item_id, cause)}"
     else:
         log.info("item %s -> %s (%s): %s", item_id, to_state, cause, _first_line(evidence, 200))
     ledger.set_item_state(item_id, to_state, cause=cause, evidence=evidence)

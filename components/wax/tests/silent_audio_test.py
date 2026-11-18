@@ -330,6 +330,20 @@ class SilentSourceTest(jg.JunkGateHarness):
         snap = ledger.enrich({"inbox": {}, "stream": {}})
         self.assertEqual(snap["silent"]["count"], 1)
 
+    def test_an_item_no_longer_parked_as_silent_is_not_listed(self):
+        # Released by `wax retry` and later skipped by hand: its newest transition is the operator's,
+        # so `wax status` must not keep calling it a parked silent recording.
+        self.park("a.ogg")
+        self.assertEqual(ledger.silent_health()["count"], 1)
+        ledger.record_transition("item", self.item, "skipped", "pending", "junk_override", "released")
+        ledger.record_transition("item", self.item, "pending", "skipped", "operator_skip", "by hand")
+        self.assertEqual(ledger.silent_health()["count"], 0)
+
+    def test_a_redropped_copy_keeps_the_original_listed(self):
+        self.park("a.ogg")
+        ledger.record_transition("item", self.item, "skipped", "skipped", "junk_redropped", "duplicate=x")
+        self.assertEqual(ledger.silent_health()["count"], 1)
+
     def test_telnyx_calls_are_their_own_source(self):
         self.assertEqual(ledger.source_of("inbox", jg.CALL_NAME), "telnyx")
         self.assertEqual(ledger.source_of("dropoff", "20261118 092137.m4a"), "dropoff")

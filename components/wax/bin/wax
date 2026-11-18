@@ -1532,7 +1532,8 @@ def calls_snapshot() -> dict[str, Any]:
 
 
 FAILED_ITEM_FAIL_AGE_S = 3600.0          # a failed item nothing will ever retry: no grace needed past this
-DURABILITY_CAUSES = ("archive_failed", "s3_reverify_failed")   # no verified backup: the one true emergency
+DURABILITY_CAUSES = ledger.DURABILITY_CAUSES   # no verified backup: the one true emergency
+FAILED_ITEM_LINES = 10                    # item rows doctor names before "+N more -> wax queue"
 WAXD_FD_WARN = 2000                       # open descriptors on wax.db before the leak is worth a row
 
 
@@ -1566,13 +1567,19 @@ def probe_failed_items(add, now: Optional[float] = None) -> None:
     stale = [r for r in failed if (stamp := ledger._utc_epoch(r["at"])) is not None
              and clock - stamp >= FAILED_ITEM_FAIL_AGE_S]
     lines = []
+    shown = 0
+    # One header per cause (what and why), then every item under it by id, name and the
+    # next command, so doctor names the recordings themselves, not one sample of them.
     for cause, rows in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        sample = rows[0]
-        evidence = ledger.first_line(sample["evidence"], 100)
-        nxt = (f"wax archive {sample['path']}" if cause in DURABILITY_CAUSES
-               else f"wax retry {sample['item_id']} | wax skip {sample['item_id']}")
-        lines.append(f"{len(rows)}x {cause}: {evidence or '(no evidence recorded)'} "
-                     f"e.g. {sample['orig_name']} ({sample['item_id'][:12]})  -> {nxt}")
+        evidence = ledger.first_line(rows[0]["evidence"], 100)
+        lines.append(f"{len(rows)}x {cause}: {evidence or '(no evidence recorded)'}")
+        for row in rows:
+            if shown >= FAILED_ITEM_LINES:
+                break
+            shown += 1
+            lines.append(f"   {row['item_id']}  {row['orig_name']}  -> {ledger.next_step(row['item_id'], cause)}")
+    if len(failed) > shown:
+        lines.append(f"   +{len(failed) - shown} more   -> wax queue")
     status = FAIL if (durability or stale) else WARN
     why = []
     if durability:
@@ -1939,7 +1946,7 @@ def _failed_line(row: dict[str, Any], width: int = 110) -> str:
     if evidence:
         why += f": {evidence}"
     return (f"{row['item_id']}  {row.get('orig_name') or '?'}  {why}  "
-            f"-> wax retry {row['item_id']} | wax skip {row['item_id']}")
+            f"-> {ledger.next_step(row['item_id'], row.get('cause_code'))}")
 
 
 def render_items(live: dict[str, int], all_total: int, show_all: bool) -> None:
@@ -1965,7 +1972,7 @@ def render_item(status: dict[str, Any]) -> None:
         print(f"  {'why':<12} {err.get('cause_code') or 'unknown'} at {err.get('at') or '?'}")
         if err.get("evidence"):
             print(f"  {'':<12} {ledger.first_line(err['evidence'], 300)}")
-        print(f"  {'next':<12} wax retry {item_id} | wax skip {item_id}")
+        print(f"  {'next':<12} {ledger.next_step(item_id, err.get('cause_code'))}")
     print(f"  {'enrichment':<12} {'complete' if status.get('enrichment_complete') else 'not complete'}"
           + (f"   exhausted: {', '.join(status['exhausted'])}" if status.get("exhausted") else ""))
     for row in status.get("passes") or []:
@@ -1992,7 +1999,7 @@ def render_queue(rows: list[dict[str, Any]], show_done: bool = False) -> None:
         if err.get("evidence"):
             why += f": {ledger.first_line(err['evidence'], 110)}"
         print(f"  {label(r)}\n      {r['state']}: {why}\n"
-              f"      -> wax retry {r['item_id']} | wax skip {r['item_id']}")
+              f"      -> {ledger.next_step(r['item_id'], err.get('cause_code'))}")
     print(f"WAITING ({len(waiting)})" + ("" if waiting else "  nothing waiting for the worker"))
     for r in waiting:
         print(f"  {label(r)}  {r['state']}")
@@ -2051,8 +2058,9 @@ def _print_requeued(r: dict[str, Any]) -> None:
     if r.get("junk_override"):
         print("  released from the junk gate; it will be transcribed without the gate")
     else:
-        print("  will re-archive and re-transcribe from scratch; same audio, so a source "
-              "problem (silence, corrupt file) will fail the same way")
+        print("  will re-archive and re-transcribe from scratch. The level is measured first: "
+              "silent audio is parked in skipped/silent/ (junk_silent), and any other problem "
+              "with the audio itself (a corrupt file) fails the same way again")
 
 
 def status_unhealthy_terms(snap: dict[str, Any]) -> list[str]:
@@ -3135,23 +3143,29 @@ def main() -> int:
 
     h = sub.add_parser("history", help="append-only transition log", parents=[common])
     h.add_argument("-n", type=int, default=20); h.add_argument("--machine", choices=["stream", "inbox", "item"])
-    its = sub.add_parser("items", help="item states for audio still on disk (--all: every row ever minted); "
-                                       "--id: one item, with why it failed", parents=[common])
+    # help= is the one-line entry in `wax --help`; description= is what `wax <cmd> --help` prints,
+    # so each inbox-control verb explains itself where an operator actually asks.
+    text = ("item states for audio still on disk (--all: every row ever minted); "
+            "--id: one item, with why it failed")
+    its = sub.add_parser("items", help=text, description=text, parents=[common])
     its.add_argument("--id", dest="item_id", default=None,
                      help="one item: state, why it failed (error), enrichment_complete, completion, exhausted and pass rows")
     its.add_argument("--all", action="store_true",
                      help="count every row ever minted, including audio that now lives only in S3")
-    qu = sub.add_parser("queue", help="inbox work: needs attention (failed), waiting, active; finished rows "
-                                      "with --all (what the tray menu shows)", parents=[common])
+    text = ("inbox work: needs attention (failed or suspect, with the cause and the next command), "
+            "waiting, active; finished rows with --all (what the tray menu shows)")
+    qu = sub.add_parser("queue", help=text, description=text, parents=[common])
     qu.add_argument("--clear-completed", action="store_true",
                     help="dismiss finished rows from the tray list (nothing is deleted)")
     qu.add_argument("--all", action="store_true", help="also list finished rows")
-    sk = sub.add_parser("skip", help="park a waiting, failed or suspect inbox item in skipped/ "
-                                     "(audio is moved, never deleted)", parents=[common])
+    text = ("park a waiting, failed or suspect inbox item in skipped/ (audio is moved, never deleted); "
+            "warns when the item has no verified S3 backup")
+    sk = sub.add_parser("skip", help=text, description=text, parents=[common])
     sk.add_argument("item_id")
-    rt = sub.add_parser(
-        "retry", help="requeue a failed or suspect inbox item (id), or all of them (--all)", parents=[common]
-    )
+    text = ("requeue a failed or suspect inbox item (id), or all of them (--all); a bare `wax retry` "
+            "lists the failed items and exits 2. On a junk-gate reject (junk_*, including junk_silent) "
+            "it moves the audio back from skipped/ and exempts the item from the gate")
+    rt = sub.add_parser("retry", help=text, description=text, parents=[common])
     rt.add_argument(
         "item_id",
         nargs="?",
@@ -3352,9 +3366,10 @@ def main() -> int:
     tr = sub.add_parser("transcribe", help="transcribe with the sanity gate", parents=[common])
     tr.add_argument("file")
 
-    dr = sub.add_parser("drain", help="process waiting inbox items now (one-shot); first pulls anything "
-                                      "received in dropoff/ into inbox/; never touches failed items",
-                        parents=[common])
+    text = ("process waiting inbox items now (one-shot); first pulls anything received in dropoff/ "
+            "into inbox/, so it is not read-only (use --dry-run to look). It never touches failed or "
+            "suspect items; when idle it names them with the next command (wax retry / wax skip)")
+    dr = sub.add_parser("drain", help=text, description=text, parents=[common])
     dr.add_argument("-n", type=int, default=1, help="max items to process (default 1)")
     dr.add_argument("--dry-run", action="store_true",
                     help="only report what is waiting and what is failed; does not pull dropoff/ or process")
@@ -3954,7 +3969,8 @@ def main() -> int:
             if done:
                 _emit(done, True)
             else:
-                _emit({"drained": 0, "note": "nothing pending",
+                note = "dry run: nothing pulled or processed" if report else "nothing pending"
+                _emit({"drained": 0, "note": note,
                        "failed_skipped": failed, **(report or {})}, True)
         else:
             render_drain(done, failed, report)

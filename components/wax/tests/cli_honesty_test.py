@@ -354,6 +354,30 @@ class CliVerbsTest(unittest.TestCase):
         self.assertIn("dropoff/ not pulled", res.stdout)
         self.assertEqual([p.name for p in (self.r.root / "inbox").iterdir()], [])
         self.assertTrue((drop / "received.m4a").is_file())  # dropoff keeps what it received
+        payload = json.loads(self.r.wax("--json", "drain", "--dry-run").stdout)
+        self.assertTrue(payload["dry_run"])
+        self.assertNotEqual(payload["note"], "nothing pending")   # a dry run did not look for "pending"
+
+    def test_inbox_control_help_explains_itself(self):
+        # `wax <cmd> --help` prints the parser's description, not the one-line help= entry, so the
+        # operator who asks the command itself must get the behaviour, not just the flags.
+        def helptext(cmd: str) -> str:   # argparse wraps the description; compare words, not lines
+            return " ".join(self.r.wax(cmd, "--help").stdout.split())
+        drain = helptext("drain")
+        self.assertIn("dropoff/", drain)
+        self.assertIn("never touches failed", drain)
+        self.assertIn("lists the failed items", helptext("retry"))
+        self.assertIn("never deleted", helptext("skip"))
+        self.assertIn("needs attention", helptext("queue"))
+
+    def test_an_item_without_a_verified_backup_is_never_offered_skip_as_next_step(self):
+        # archive_failed / s3_reverify_failed: retry re-archives; skip would only move the one copy.
+        i = self.r.item("unbacked.m4a", "failed", "archive_failed", "mc cp: connection refused")
+        status = self.r.wax("status").stdout
+        queue = self.r.wax("queue").stdout
+        for out in (status, queue):
+            self.assertIn(f"wax retry {i} (re-archives", out)
+            self.assertNotIn(f"wax skip {i}", out)
 
 
 if __name__ == "__main__":

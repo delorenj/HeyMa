@@ -66,12 +66,26 @@ class FailedItemsProbeTest(unittest.TestCase):
         row = self.r.failed_items()
         self.assertEqual(row["status"], "warn")
         self.assertIn("3 failed: 2x transcribe_failed, 1x a_brand_new_cause", row["detail"])
-        self.assertEqual(len(row["lines"]), 2)          # grouped by cause, not one per item
-        self.assertTrue(row["lines"][0].startswith("2x transcribe_failed: EMPTY TRANSCRIPT"))
-        self.assertIn("wax retry", row["lines"][0])
-        self.assertIn("wax skip", row["lines"][0])
-        self.assertIn(f"{b[:12]}", row["lines"][1])      # any cause is covered, not just this one
+        # One header per cause, then every item by id with its own next command: doctor names the
+        # recordings, not one sample of them.
+        heads = [line for line in row["lines"] if not line.startswith(" ")]
+        self.assertEqual(len(heads), 2)
+        self.assertTrue(heads[0].startswith("2x transcribe_failed: EMPTY TRANSCRIPT"))
+        self.assertTrue(heads[1].startswith("1x a_brand_new_cause: whatever"))
+        text = "\n".join(row["lines"])
+        for item in (a, b):
+            self.assertIn(f"{item}  ", text)
+            self.assertIn(f"wax retry {item} | wax skip {item}", text)
+        self.assertEqual(sum(1 for line in row["lines"] if line.startswith("   ")), 3)
         self.assertIn("wax queue", row["fix"])
+
+    def test_item_lines_are_bounded(self):
+        for n in range(cli_limit := 12):
+            self.r.item(f"f{n:02d}.m4a", "failed", "transcribe_failed", "x")
+        row = self.r.failed_items()
+        items = [line for line in row["lines"] if line.startswith("   ") and "more" not in line]
+        self.assertEqual(len(items), 10)
+        self.assertIn(f"+{cli_limit - 10} more   -> wax queue", row["lines"][-1])
 
     def test_a_failed_item_older_than_an_hour_fails(self):
         a = self.r.item("old.m4a", "failed", "transcribe_failed", "x")
@@ -81,11 +95,23 @@ class FailedItemsProbeTest(unittest.TestCase):
         self.assertIn("with nothing to retry it", row["detail"])
 
     def test_lost_backup_causes_fail_immediately(self):
-        self.r.item("nobackup.m4a", "failed", "s3_reverify_failed", "etag mismatch")
+        lost = self.r.item("nobackup.m4a", "failed", "s3_reverify_failed", "etag mismatch")
         row = self.r.failed_items()
         self.assertEqual(row["status"], "fail")
         self.assertIn("no verified backup", row["detail"])
-        self.assertIn("wax archive", row["lines"][0])
+        # retry re-archives; skip would only move the one copy, so it is not the next step offered
+        self.assertIn(f"wax retry {lost} (re-archives", row["lines"][1])
+        self.assertNotIn("wax skip", row["lines"][1])
+
+    def test_failure_reason_is_the_newest_ITEM_transition_not_another_machine(self):
+        # The `transcript` machine (prune/restore) shares the item id as its subject; a newer row
+        # there must never be reported as why the item failed.
+        a = self.r.item("pruned.m4a", "failed", "transcribe_failed", "EMPTY TRANSCRIPT from 300s")
+        self.r.py(f"from wax import ledger; ledger.record_transition('transcript', {a!r}, "
+                  "'published', 'pruned', 'voicemail', 'pruned by the nightly sweep')")
+        row = self.r.failed_items()
+        self.assertIn("1x transcribe_failed: EMPTY TRANSCRIPT from 300s", row["lines"][0])
+        self.assertNotIn("voicemail", "\n".join(row["lines"]))
 
     def test_failed_row_whose_audio_is_gone_is_history_not_an_inbox_item(self):
         gone = self.r.item("gone.m4a", "failed", "transcribe_failed", "x")
