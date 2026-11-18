@@ -67,6 +67,7 @@ exactly one route.
 | `components/wax/` | the daemon, CLI, passes (`config/passes.d`), pipelines, docs, tests |
 | `components/n8n-nodes-heyma/`, `components/n8n-workflows/` | n8n adapter nodes and released workflows |
 | `components/telnyx-s3-intake/`, `components/syncthing-audio/` | intake services |
+| `components/heyma-mac/` | `HeyMa.app` for macOS: native Swift menu-bar shell, own `VERSION`, Developer ID signed and notarized by `release.sh` (route: `skills/heyma/references/shell.md`, "Mac app") |
 | `components/heyma-obsidian/`, `components/remote-audio/` | satellites |
 | `components/vinyl/` | Vinyl dictation, a submodule for co-location only (not Wax; own hub `components/vinyl/skills/vinyl/`); `~/code/vinyl` symlinks here |
 | `components/heyma-shell/` | The one client: `heyma status` registry (wax, vinyl, telephony, phonograph adapters) and the one Linux tray, `heyma-tray.service`. Calls each product's CLI, never imports Vinyl. Route: `skills/heyma/references/shell.md` |

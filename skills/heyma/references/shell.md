@@ -1,6 +1,6 @@
 # HeyMa shell: one tray, one status
 
-The shell is the client side of the HeyMa umbrella. It owns no capture, no worker and no state; it asks each product for its status through that product's own CLI or endpoint, and it draws one icon. Design of record: `docs/heyma-shell.md`. Code: `components/heyma-shell/` (package `heyma_shell`, stdlib only). Stories S1 (registry) and S2 (one Linux tray) are built; S3 onward are not.
+The shell is the client side of the HeyMa umbrella. It owns no capture, no worker and no state; it asks each product for its status through that product's own CLI or endpoint, and it draws one icon. Design of record: `docs/heyma-shell.md`. Code: `components/heyma-shell/` (package `heyma_shell`, stdlib only). Stories S1 (registry), S2 (one Linux tray) and S5 (the Mac app, below) are built; S3, S4, S6 onward are not.
 
 ## What runs
 
@@ -36,6 +36,34 @@ Dictation (runs `vinyl toggle`), Recording (runs `components/wax/bin/wax-toggle`
 - **Phonograph**: health line, Open Phonograph (`xdg-open`).
 
 Colour: red while dictating or recording (flashing yellow if the mic is silent), yellow if any installed section is degraded, green otherwise. Wax and Vinyl are judged from their state mirrors every second; Vinyl's daemon, Telephony and Phonograph from the registry every 30 s on a worker thread, and a section must read degraded twice in a row before the icon turns yellow (it clears at once). The GLib loop is UI redraw, not a Wax clock.
+
+## Mac app: `components/heyma-mac/`
+
+`HeyMa.app` (`sh.delo.heyma`) is the Mac end of the shell: native Swift, no Python, own `VERSION` (0.5.0), same section model as the Linux tray. It moved here from the Vinyl repo (`components/vinyl/packaging/macos/app`, pointer in `packaging/macos/HEYMA-APP.md`) because it is the HeyMa client, not a Vinyl artifact. It still owns no capture: Vinyl's client LaunchAgent `sh.delo.vinyl.client` owns the mic, RPC and injection.
+
+Menu: Dictation toggle, then Wax, Vinyl, Phonograph, then Settings… and Quit.
+
+- **Wax** is a named seam, `waxSectionItems()` in `main.swift`, empty until the Voice Memos bridge (S6, HEYMA-35) fills it; an empty list adds no item, so there is no dead entry.
+- **Vinyl**: `Connected: host:port` from the client's `status` field `server` (client 0.5.1+; on 0.5.0 the app falls back to `~/.config/vinyl/client.json`). If client.json differs from the running endpoint it shows `Restart the client to use X` and a **Restart client** item (`launchctl kickstart -k gui/$UID/sh.delo.vinyl.client`, disabled while dictating). `Server unreachable` shows when status carries `server_reachable: false` or the client's own `client start HOST:PORT: …` error. Cancel dictation, Copy trace reference, Open client log.
+- **Phonograph**: `GET /healthz` every 30 s and Open Phonograph (`HEYMA_PHONOGRAPH_URL`, `HEYMA_PHONOGRAPH=off`), the same contract as the Linux adapter.
+- A Ctrl-Opt-D press the app drops (client unreachable, or a command in flight) beeps and flashes `offline`/`busy` on the status item for 1.6 s (Vinyl story 2.7B).
+
+### Build, sign, notarize, release
+
+```sh
+components/heyma-mac/release.sh                  # from big-chungus: build + sign + notarize + staple
+components/heyma-mac/release.sh --no-notarize    # sign only
+```
+
+`release.sh` rsyncs the directory to a fresh `/tmp/heyma-mac-release-<ver>` on the Mac (`ssh mac`, mommymac) and runs `mac-sign-notarize.sh` there in **one ssh session**, because headless `codesign` only works when `security unlock-keychain` ran in the same session. Stdin carries the secrets, in order: login keychain password, API key id, issuer, the `.p8`; each is an `op read` of an `op://DeLoSecrets/…` reference on big-chungus (keychain `ghbrrlh7q3m2vdbltyxkbrd77y/password`, notary item `7edxjfddpg2e5vy5qjnjxuvoq4`). The key lands in a 0600 temp file that a trap removes; nothing secret is in a repo file, an argv on big-chungus or any output. Then: `build-app.sh` (universal, `--options runtime --timestamp`, identity `Developer ID Application: Jarad DeLorenzo (YJ7W7Z36FP)`, no entitlements file because the app captures no audio and loads no unsigned code), `xcrun notarytool submit --wait`, `stapler staple` and `validate`, `codesign --verify --deep --strict`, `spctl -a -vvv -t exec`, then a **second** `ditto` of the stapled bundle (the submitted zip held no ticket). Output: `dist/HeyMa-<ver>-macos-universal.zip` plus size and sha256. A rejected submission prints the notarytool log and stops; do not retry with another credential.
+
+Publish: `gh release create heyma-v<ver> -R delorenj/vinyl-client-releases --latest=true <zip>`. The tag is **`heyma-v<ver>`**, never `v<ver>` (that namespace is the Vinyl client). Read the asset back anonymously and compare sha256. Then in `~/code/homebrew-tap` bump `Casks/heyma.rb` `version` and `sha256` (the url derives from `version`); the cask has no quarantine workaround and its livecheck matches only `heyma-v<ver>` tags. Tap CI (`test-tap.yml`, `macos-15` and `macos-15-intel`) asserts the Developer ID authority, team `YJ7W7Z36FP`, hardened runtime, a stapled ticket and `spctl` acceptance with the quarantine left in place.
+
+Released: **0.5.0**, 2026-11-18, source `a450c05`, notarization submission `c6d21652-ff32-4c50-b281-5362027a7de1` (Accepted), 503,121 bytes, sha256 `5af898a6d4f06d551c58e1c255fc6d7839ac5ce78b231659844be68b77033efe`. The signing identity's certificate expires 2027-02-01; renew it before then or the next release fails at `find-identity`.
+
+### On mommymac
+
+`brew update && brew upgrade --cask delorenj/tap/heyma` upgrades the app. mommymac's Vinyl client is the **direct install** (`~/.local/share/vinyl`), not a Homebrew formula, so `brew upgrade vinyl-client` does not apply and a Brew client must not be added next to it: upgrade it with the client archive instead (`install.sh` with no flags keeps the interpreter, config and token), then `launchctl kickstart -k gui/$(id -u)/sh.delo.vinyl.client`. `ssh mac` has no Homebrew on PATH; use `/opt/homebrew/bin`. TCC grants (Microphone, Accessibility) follow the signing identity, so every release signed with this Developer ID keeps them; a switch from the earlier ad-hoc builds can ask once. Do not change them from a script.
 
 ## Gotchas
 

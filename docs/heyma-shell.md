@@ -107,7 +107,7 @@ never stops that product's service.
 
 ## Status
 
-S1 and S2 are built (2026-11-18): `components/heyma-shell/`, `heyma status [--json]`, `heyma tray`, `heyma-tray.service`, `WAX_TRAY=off`. Operator route: `skills/heyma/references/shell.md`.
+S1 and S2 are built (2026-11-18): `components/heyma-shell/`, `heyma status [--json]`, `heyma tray`, `heyma-tray.service`, `WAX_TRAY=off`. S5 is built (2026-11-18): `components/heyma-mac/` (HeyMa.app 0.5.0, section model, Vinyl 2.7B, Developer ID signed and notarized; the self-signed-certificate idea in item 5 above was superseded by Jarad's Developer ID). The Wax section of the Mac app is the seam S6 fills. Operator route: `skills/heyma/references/shell.md`.
 
 ## Stories (epic: HeyMa shell)
 
