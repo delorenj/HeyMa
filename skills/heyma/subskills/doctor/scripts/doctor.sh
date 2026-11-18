@@ -55,8 +55,9 @@ MC="$(command -v mc || echo /usr/local/bin/mc)"
 
 # If the daemon holds a ledger somewhere other than where we computed, believe it.
 if [ -n "$MAIN_PID" ]; then
-  held="$(ls -l "/proc/$MAIN_PID/fd" 2>/dev/null |
-          sed -n 's|.*-> \(/.*wax\.db\)$|\1|p' | head -1)"
+  # find -quit, not `ls -l | sed | head -1`: waxd once held 30k descriptors (a 2.7 MB listing) and
+  # a reader that quits early SIGPIPEs the writer, which pipefail turns into a failed pipeline.
+  held="$(find "/proc/$MAIN_PID/fd" -lname '*/wax.db' -printf '%l\n' -quit 2>/dev/null)"
   [ -n "${held:-}" ] && DB="$held"
 fi
 
@@ -263,10 +264,17 @@ chk_root_consistent() {
 chk_ledger_live() {
   [ -f "$DB" ] || { echo "no ledger at $DB"; return 1; }
   [ -n "$MAIN_PID" ] || return 3
-  ls -l "/proc/$MAIN_PID/fd" 2>/dev/null | grep -q "$DB\$" && return 0
+  # Capture first, then test: `ls -l fd | grep -q` makes grep exit on the first match while ls is
+  # still writing, ls dies of SIGPIPE, and pipefail reports the whole pipeline as failed. With
+  # waxd holding ~30k descriptors that false-FAILed this check while its own message below named
+  # the very file. `find -quit` has no pipe to break, and its output is captured before the test.
+  local hit has
+  hit="$(find "/proc/$MAIN_PID/fd" -lname "$DB" -print -quit 2>/dev/null)"
+  [ -n "$hit" ] && return 0
   # Never judge liveness by mtime: WAL mode leaves wax.db untouched for hours
   # while every write lands in wax.db-wal.
-  echo "daemon does not hold $DB open. It has: $(ls -l /proc/$MAIN_PID/fd 2>/dev/null | sed -n 's|.*-> \(/.*wax\.db\)$|\1|p' | head -1)"
+  has="$(find "/proc/$MAIN_PID/fd" -lname '*/wax.db' -printf '%l\n' -quit 2>/dev/null)"
+  echo "daemon does not hold $DB open. It has: ${has:-no wax.db at all}"
   return 1
 }
 chk_no_stale_mirror() {
@@ -310,6 +318,27 @@ chk_no_phantom_items() {
   return 2
 }
 
+# Items parked failed/suspect with the audio still in the inbox: nothing retries them (the worker
+# skips failed items by design), and no other check on this board looks at item state. WARN while
+# fresh, FAIL when one has sat for an hour or lost its backup. Same predicate as `wax doctor`'s
+# `failed items` probe and `wax status` (state failed|suspect, file present), any cause.
+chk_no_failed_items_in_inbox() {
+  local n=0 oldest=0 durability=0 id path cause age causes=""
+  while IFS='|' read -r id path cause age; do
+    [ -n "$id" ] && [ -e "$path" ] || continue
+    n=$((n+1)); [ "${age:-0}" -gt "$oldest" ] && oldest="${age:-0}"
+    case "$cause" in archive_failed|s3_reverify_failed) durability=1 ;; esac
+    causes="$causes $cause"
+  done < <(SQ "SELECT i.item_id, i.path,
+      COALESCE((SELECT cause_code FROM transitions t WHERE t.machine='item' AND t.subject=i.item_id ORDER BY t.seq DESC LIMIT 1),'unknown'),
+      CAST(strftime('%s','now') - strftime('%s', i.updated_at) AS INTEGER)
+    FROM items i WHERE i.state IN ('failed','suspect');")
+  [ "$n" -eq 0 ] && return 0
+  echo "$n failed/suspect item(s) in the inbox ($(printf '%s\n' $causes | sort | uniq -c | sed 's/^ *//; s/ /x /' | paste -sd, -)); oldest $((oldest/60)) min. Nothing retries a failed item. Run: wax queue, then wax retry <id> or wax skip <id>."
+  [ "$durability" = 1 ] || [ "$oldest" -ge 3600 ] && return 1
+  return 2
+}
+
 # ── stage outcomes (what the product itself will not tell you) ───────────────
 chk_no_recent_pass_failures() {
   local n
@@ -329,6 +358,31 @@ chk_recent_titles_slugged() {
            WHERE NOT EXISTS(SELECT 1 FROM passes p WHERE p.item_id=t.item_id AND p.ep_slug='title-slug' AND p.state='completed');")"
   [ "${n:-0}" -eq 0 ] && return 0
   echo "$n of the 10 newest transcripts have no completed title-slug — they keep bare timestamp filenames and have no title, summary, or vault taxonomy."
+  return 1
+}
+# The outcome check the transcripts-window checks below cannot make: they only ever look at items
+# that REACHED the transcripts table, so a recording that failed is invisible to them. Look at the
+# newest recordings themselves. FAIL when the newest three produced nothing in a row, or fewer than
+# half of the newest ten did. In-flight and skipped items (junk, silent, call policy) are not outcomes.
+chk_recent_recordings_transcribed() {
+  local total="" with="" id has i=0 none_in_a_row=0 streak=1
+  while IFS='|' read -r id has; do
+    [ -n "$id" ] || continue
+    i=$((i+1)); total=$i
+    if [ "$has" = 1 ]; then with=$(( ${with:-0} + 1 )); streak=0
+    elif [ "$streak" = 1 ] && [ "$i" -le 3 ]; then none_in_a_row=$i; fi
+  done < <(SQ "SELECT i.item_id, EXISTS(SELECT 1 FROM transcripts t WHERE t.item_id=i.item_id)
+    FROM items i WHERE i.state IN ('complete','failed','suspect')
+      AND i.duplicate_of_call_session_id IS NULL AND i.twin_of_recording_key IS NULL
+    ORDER BY i.first_seen DESC, i.rowid DESC LIMIT 10;")
+  [ "${total:-0}" -ge 3 ] || return 3
+  with="${with:-0}"
+  if [ "$none_in_a_row" -ge 3 ]; then
+    echo "the newest $none_in_a_row recordings have no transcript ($with of the newest $total do). The product has stopped producing output; run: wax queue, then wax doctor."
+    return 1
+  fi
+  [ $(( with * 2 )) -ge "$total" ] && return 0
+  echo "only $with of the newest $total recordings have a transcript. Run: wax queue (failed items say why)."
   return 1
 }
 chk_recent_diarized() {
@@ -412,8 +466,11 @@ chk_title_provider_reachable() {
   [ -n "$h" ] && auth=(-H "$h")
   curl -sf -m 8 "${auth[@]}" "$b/models" >/dev/null 2>&1 && return 0
   # A provider that does not expose /models is not necessarily broken.
-  curl -s -o /dev/null -m 8 "${auth[@]}" "$b/models" -w '%{http_code}' 2>/dev/null | grep -qE '^(401|403)$' && {
-    echo "$b/models answered but rejected the request — auth problem, not reachability"; return 1; }
+  local code
+  code="$(curl -s -o /dev/null -m 8 "${auth[@]}" "$b/models" -w '%{http_code}' 2>/dev/null)"
+  case "$code" in
+    401|403) echo "$b/models answered but rejected the request — auth problem, not reachability"; return 1 ;;
+  esac
   echo "cannot reach $b/models"
   return 1
 }
@@ -590,7 +647,9 @@ chk_s3_transcript_linked() {
   [ "$QUICK" = 1 ] && return 3
   local k; k="$(SQ "SELECT s3_key FROM backups ORDER BY verified_at DESC LIMIT 1")"
   [ -n "$k" ] || return 3
-  "$MC" cat "delo/recordings/$k.wax.json" 2>/dev/null | grep -q '"transcript"' && return 0
+  local sidecar
+  sidecar="$("$MC" cat "delo/recordings/$k.wax.json" 2>/dev/null)"   # capture first: no pipe to SIGPIPE
+  case "$sidecar" in *'"transcript"'*) return 0 ;; esac
   echo "newest object's sidecar has no transcript projection — archive.link_transcript is not running, so 'which audio has no transcript?' is unanswerable from S3 alone."
   return 2
 }
@@ -615,11 +674,12 @@ chk_outbox_draining() {
 
 # ── desktop ──────────────────────────────────────────────────────────────────
 chk_tray_registered() {
-  timeout 8 gdbus call --session --dest org.kde.StatusNotifierWatcher \
+  local items
+  items="$(timeout 8 gdbus call --session --dest org.kde.StatusNotifierWatcher \
     --object-path /StatusNotifierWatcher \
     --method org.freedesktop.DBus.Properties.Get \
-    org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null |
-    grep -q 'wax' && return 0
+    org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)"
+  case "$items" in *wax*) return 0 ;; esac
   echo "no wax item on the StatusNotifierWatcher bus — usually a locked screen (GNOME drops the watcher; tray.py rebuilds on return)."
   return 2
 }
@@ -792,9 +852,11 @@ check scheduler-enabled  "inbox scheduler enabled"              "operator-paused
 check inbox-not-stranded "inbox machine not error/stopped"      "stranded work"
 check inbox-no-subdir-blindspot "no audio hidden in subdirs"    "invisible backlog"
 check no-phantom-items   "every actionable item's audio exists" "phantom rows"
+check no-failed-items-in-inbox "no failed item waits in the inbox"    "failed items need you"
 
 banner "Stage outcomes — what the product itself will not tell you"
 layer stages
+check recent-recordings-transcribed "newest recordings produced transcripts" "no output"
 check no-recent-pass-failures   "no enrichment pass failed in 7d"      "passes burning"
 check recent-titles-slugged     "10 newest transcripts are titled"     "no titles"
 check recent-diarized           "5 newest transcripts are diarized"    "no speakers"

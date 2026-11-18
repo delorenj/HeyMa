@@ -11,6 +11,35 @@ the code still matches; where the code has since moved, the entry says so.
 
 ---
 
+## 2026-11-18 · three Voice Memos failed and the doctor said nothing · *shape 3: a sub-stage degraded to empty, and doctor had no item-state probe*
+
+**Signature.** `wax status` exits 2 with failed items; `wax doctor` reports 0
+failures. The memos' audio was silent (mean -77..-87 dB; healthy speech is -23..-35),
+so ASR returned nothing and the items parked `failed` with the audio intact. Nothing
+retries a failed item, and no probe, board check or `wax failures` schedule looked at
+item state. `doctor.sh` was blind too: its stage checks read only the `transcripts`
+table, which a failed item never reaches.
+
+**Fix.** One predicate (`ledger.failed_inbox_items()`) for status, tray, doctor and
+`wax failures`. `wax doctor` gained `failed items`, `transcription.degraded (contract A)`,
+`input audio silent` and `status snapshot` (doctor's exit is at least status's, by
+construction); the board gained `no-failed-items-in-inbox` and
+`recent-recordings-transcribed`. Silent audio itself is now measured before ASR and
+parked ([transcription](../../../references/transcription.md#the-junk-gate)).
+
+**Same night, same blindness: waxd leaked ~15k SQLite connections.** The board's
+`ledger-live` check false-FAILed (`ls -l /proc/<pid>/fd | grep -q` on a 2.7 MB listing,
+SIGPIPE under pipefail) while its own message named the file. Root cause: the
+telephony projection (`telephony.snapshot`, read every 5 s from a fresh thread) used
+`with sqlite3.connect(...)`, which commits but never closes, and `ledger.connect()`
+kept one connection per thread in `threading.local`, which a short-lived thread never
+released (a connection sits in a reference cycle, so only the cyclic GC ever closed
+it). Fixed by `contextlib.closing`, `ledger.close()` in one-shot threads' `finally`, and a
+thread guard in `ledger.connect()` that closes at thread exit; `wax doctor` now has
+`waxd open fds`. A restart of waxd reclaims the leaked descriptors.
+
+---
+
 ## 2026-11-11 · 29 notes "missing on disk", one of them a real conversation · *a note and its ASR both gone, audio only in S3*
 
 **Signature.** `transcript notes intact` passes but reports `(29 missing on

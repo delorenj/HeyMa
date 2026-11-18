@@ -55,6 +55,21 @@ What still collapses quietly: sub-stage values (`diarized: false`), and a
 `tray-colour-honest` in the board exists to catch the tray lying; on 2026-11-05
 it did.
 
+**Items parked `failed` or `suspect` with the audio intact no longer collapse
+quietly.** They did on 2026-11-18: three Voice Memos failed, `wax status` exited
+2 and `wax doctor` reported nothing, because no probe looked at item state. Now
+`wax doctor` has `failed items` (WARN on any, FAIL past an hour or on a lost
+backup; detail lines grouped by cause, each with its next command),
+`transcription.degraded (contract A)` (the newest three recordings all failed),
+`input audio silent` (recordings parked as silent, per source), `status snapshot`
+(re-evaluates `wax status`'s own exit predicate, so **doctor is never greener
+than status**: its exit is at least status's) and `waxd open fds`. The board has
+`no-failed-items-in-inbox` and `recent-recordings-transcribed`, which look at the
+newest *recordings* rather than at the `transcripts` table a failed item never
+reaches. Doctor, `wax status`, the tray and `wax failures` all read one
+predicate (`ledger.failed_inbox_items()`), so they cannot disagree about which
+items need you.
+
 ## The three shapes: name one before you debug
 
 Every verified defect in this pipeline's history is one of three shapes. Naming
@@ -87,6 +102,12 @@ outbox staleness, the call log, document hygiene, the transcriptions store and
 the published notes themselves ("transcript notes intact", below).
 Its rules are absolute: it may never report health it has not just verified,
 and it never prints a resolved secret. Treat it as informational, not a gate.
+
+The human output leads with a **verdict line** and every non-pass row, then the
+configuration and the full probe list. The title/ticket **inference chain is one
+row** (`inference chain`): a fallback member the gateway does not serve narrows
+the chain rather than failing it, so the unavailable members are listed once with
+the effective chain (a primary that is down is its own FAIL, `inference primary`).
 
 **`transcript notes intact`** (WARN, never FAIL; read-only) is the probe for a
 published note that something outside Wax destroyed. Two real transcripts lost
@@ -133,10 +154,10 @@ failing layer, then re-run.** Do not fix the bottom of the board.
 
 | Layer | Checks (examples) | Playbook |
 |---|---|---|
-| Daemon, Paths and ledger | `waxd` active, daemon holds the live ledger open, no retired `~/audio/var` mirror | [system-map](../../references/system-map.md), [config-and-deploy](../../references/config-and-deploy.md) |
+| Daemon, Paths and ledger | `waxd` active, daemon holds the live ledger open (`find -lname`, no pipe: see the `grep -q` trap below), no retired `~/audio/var` mirror. `wax doctor` adds `waxd open fds` (WARN above 2000 on `wax.db`: a thread is leaking SQLite connections) | [system-map](../../references/system-map.md), [config-and-deploy](../../references/config-and-deploy.md) |
 | Capture | stream recordable, capture guard, hotkey | [capture](../../references/capture.md) |
-| Queue and inbox | scheduler enabled, no audio hidden in subdirs, no phantom items | [capture](../../references/capture.md) and [intake](../../references/intake.md) |
-| Stage outcomes | no pass failed in 7 d, newest titled and diarized, tray colour honest | [passes/index](../../references/passes/index.md), [transcription](../../references/transcription.md) |
+| Queue and inbox | scheduler enabled, no audio hidden in subdirs, no phantom items, **no failed item waits in the inbox** (`no-failed-items-in-inbox`) | [capture](../../references/capture.md) and [intake](../../references/intake.md) |
+| Stage outcomes | **newest recordings produced transcripts** (`recent-recordings-transcribed`), no pass failed in 7 d, newest titled and diarized, tray colour honest | [passes/index](../../references/passes/index.md), [transcription](../../references/transcription.md) |
 | Enrichment dependencies | registry loads, scripts runnable, provider reachable, model and chain offered, key resolves, frontmatters editor | [passes/index](../../references/passes/index.md), [passes/model-chain](../../references/passes/model-chain.md) |
 | Transcription dependencies | same checkout, diarizer imports, CUDA policy and forward pass, checkpoint cached | [transcription](../../references/transcription.md) |
 | Archive | MinIO alias, no unbacked audio, free space, transcript linked | [archive](../../references/archive.md) |
@@ -160,6 +181,9 @@ environment, which the board can only approximate from `/proc`.
 
 `scripts/tests/test_transcriber_resolution.sh` pins the resolution order behind
 `same-checkout` (daemon pin, then repo shim, then PATH) with fixtures only.
+`scripts/tests/test_failed_items_and_ledger_live.sh` pins `ledger-live` against a
+1.3 MB `/proc/<pid>/fd` listing (the SIGPIPE trap) and the two item-state checks
+(three failed newest over ten older completes must FAIL the board).
 
 ## Step 2: read exactly one playbook
 
@@ -175,6 +199,8 @@ Load the reference for the **first** failing layer (table above), plus:
 | Symptom | Go to |
 |---|---|
 | A voicemail or "Hello?" call has no note and no title | Not a bug: the junk gate (`skipped`, cause `junk_*`, audio in `skipped/junk/`, text in `var/logs/<item>/rejected.md`; see [transcription](../../references/transcription.md#the-junk-gate)). A real recording wrongly rejected: read `rejected.md`, fix the rule in `prune.classify` (shared with the nightly prune). There is no re-run command; a re-dropped copy of the same bytes is parked, so transcribe it by hand with `bin/transcribe` |
+| `wax status` exits 2 with failed items and the doctor is quiet, or the reverse | They must agree: `wax doctor` has `failed items` and `status snapshot` (same predicate and same exit terms as `wax status`), the board has `no-failed-items-in-inbox`. If one is green while the other is red, that is a doctor bug: fix the probe, do not trust the green one |
+| `wax doctor` warns `waxd open fds`, or `doctor.sh` cannot read `/proc/<pid>/fd` | A thread opened `ledger.connect()` (one SQLite connection per thread) and exited without closing it, or a read-only connection used as `with sqlite3.connect()` (which commits, never closes). Each leak is two descriptors (`wax.db`, `wax.db-wal`). `ledger.close()` in the thread's `finally` (waxd's one-shot threads do this) and `contextlib.closing` for ad-hoc connections; the thread guard in `ledger.connect()` closes the rest at thread exit. waxd reached ~15k pairs on 2026-11-17/18 before a restart reclaimed them |
 | A recording has no transcript and `wax status` shows it `failed` (`asr_empty_output`, `EMPTY TRANSCRIPT`) or parked as `silent` (`junk_silent`, `skipped/silent/`) | Measure the file: `ffmpeg -hide_banner -i <file> -af volumedetect -vn -f null - 2>&1 \| grep -E 'mean_volume\|max_volume'`. **Mean below -55 dB (or max below -35 dB) is a silent source**: the mic or Voice Memos input captured nothing, so fix the input and re-record; `wax retry` re-runs the same bytes and gets the same nothing. Healthy speech is mean -23..-35 dB, max above -11 dB (the 2026-11-18 memos measured mean -77..-87). Louder than that and still empty is ASR (`asr_empty_output`): `wax doctor`, then `wax retry <id>`. Two silent recordings from one source in a row show as `SOURCE SILENT` in `wax status`. See [transcription](../../references/transcription.md#the-junk-gate) |
 | "I transcribed a lot and there are no transcripts" | Check intake before the pipeline: ledger `first_seen`, hotkey scopes, Syncthing. `Ctrl+BackSpace` is vinyl dictation, not Wax (the `vinyl` hub skill, `components/vinyl/skills/vinyl/SKILL.md`). See [intake](../../references/intake.md). |
 | Titles missing or odd, chain evidence shows `missing_model` | [passes/model-chain](../../references/passes/model-chain.md) |
@@ -242,4 +268,7 @@ The same rule applies to the board itself: **a check that resolves a path
 differently from the thing it checks reports fiction** (2026-10-17), and **a
 `grep -q` on the right of a pipe under `set -o pipefail` turns a healthy command
 into a false FAIL** (found 2026-11-05 in `ep-registry-correct`; capture output
-first).
+first). It came back on 2026-11-18 in `ledger-live` (`ls -l /proc/<pid>/fd | grep -q`
+against a daemon holding 30k leaked descriptors: `ls` died of SIGPIPE while the
+check's own message named the file). Every `| grep -q` in `doctor.sh` is now a
+capture-first or a `case` on the captured text; keep it that way.

@@ -21,6 +21,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -127,12 +128,73 @@ CREATE TABLE IF NOT EXISTS passes (
 _local = threading.local()
 
 
+class _ThreadGuard:
+    """Closes a thread's ledger connection when the thread's locals are torn down.
+
+    A sqlite3 connection sits in a reference cycle (its statement cache holds the
+    connection), so dropping the last reference does NOT close it: only the cyclic
+    GC ever does. A short-lived thread that touched the ledger therefore left two
+    descriptors behind (wax.db and wax.db-wal) until a GC pass got to it, and waxd
+    reached ~15k of each over a day. The guard is not part of any cycle: it dies
+    with the thread, and its finaliser closes the connection deterministically.
+    """
+
+    __slots__ = ("conn",)
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def __del__(self) -> None:
+        try:
+            self.conn.close()
+        except Exception:  # noqa: BLE001 - a finaliser must never raise
+            pass
+
+
+def close() -> None:
+    """Close this thread's ledger connection now (the next connect() reopens it).
+
+    Short-lived threads call this in a ``finally``; the guard covers the ones that forget.
+    """
+    conn = getattr(_local, "conn", None)
+    _local.__dict__.pop("conn", None)
+    _local.__dict__.pop("guard", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def open_fd_count(pid: Optional[int] = None) -> int:
+    """Descriptors on the ledger file (wax.db and its -wal/-shm) held by `pid` (default: this process).
+
+    -1 when /proc cannot be read. Used by `wax doctor` (waxd open fds) and the leak test.
+    """
+    root = f"/proc/{pid if pid is not None else 'self'}/fd"
+    base = str(paths.DB)
+    count = 0
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return -1
+    for name in names:
+        try:
+            target = os.readlink(os.path.join(root, name))
+        except OSError:
+            continue
+        if target == base or target.startswith(base + "-"):
+            count += 1
+    return count
+
+
 def connect() -> sqlite3.Connection:
     """One connection per thread; waxd polls on the main loop while the CLI reads."""
     conn = getattr(_local, "conn", None)
     if conn is None:
         paths.VAR.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(paths.DB, timeout=10.0, isolation_level=None)
+        # check_same_thread=False: the guard (or close()) may finalise it from another thread.
+        conn = sqlite3.connect(paths.DB, timeout=10.0, isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
         # CREATE TABLE IF NOT EXISTS does not evolve ledgers created by older
@@ -283,6 +345,7 @@ def connect() -> sqlite3.Connection:
                      "PRIMARY KEY (split_id, idx))")
         conn.execute("CREATE INDEX IF NOT EXISTS split_segments_item ON split_segments(item_id)")
         _local.conn = conn
+        _local.guard = _ThreadGuard(conn)
     return conn
 
 
@@ -914,6 +977,55 @@ def diarization_health() -> dict[str, Any]:
     }
 
 
+TRANSCRIPTION_SAMPLE = 5         # newest recordings judged (junk/skipped excluded)
+TRANSCRIPTION_RUN = 3            # this many newest in a row that failed = degraded
+TRANSCRIPTION_MIN_AGE_S = 300.0  # ...once the oldest of them has been failed this long
+
+
+def _utc_epoch(text: Any) -> Optional[float]:
+    from datetime import datetime, timezone
+    try:
+        when = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def transcription_health(now: Optional[float] = None) -> dict[str, Any]:
+    """Whether the newest recordings are coming out the other end as transcripts.
+
+    The outcome-rate twin of diarization_health(): item state alone says "this
+    one failed", never "everything lately is failing". Looks at the newest
+    TRANSCRIPTION_SAMPLE items by first_seen, leaving out `skipped` (junk, silent
+    audio, call policy and operator skips are decisions, not transcription
+    outcomes). Degraded when the newest TRANSCRIPTION_RUN of them are ALL
+    failed/suspect and the oldest of those has been failed for TRANSCRIPTION_MIN_AGE_S,
+    so three quick failures of one batch do not flash red before anyone can look.
+    Keyed on item state for every source and every cause, never on a name.
+    """
+    rows = connect().execute(
+        "SELECT item_id,orig_name,path,state,updated_at FROM items WHERE state!='skipped' "
+        "ORDER BY first_seen DESC, rowid DESC LIMIT ?", (TRANSCRIPTION_SAMPLE,)).fetchall()
+    failed_rows = [r for r in rows if r["state"] in ("failed", "suspect")]
+    newest = rows[:TRANSCRIPTION_RUN]
+    run_failed = len(newest) == TRANSCRIPTION_RUN and all(r["state"] in ("failed", "suspect") for r in newest)
+    oldest_age = None
+    if run_failed:
+        stamps = [t for t in (_utc_epoch(r["updated_at"]) for r in newest) if t is not None]
+        if stamps:
+            oldest_age = (time.time() if now is None else now) - min(stamps)
+    degraded = bool(run_failed and oldest_age is not None and oldest_age >= TRANSCRIPTION_MIN_AGE_S)
+    return {
+        "degraded": degraded,
+        "sample": len(rows),
+        "recent_failed": len(failed_rows),
+        "newest_failed": [
+            {"item_id": r["item_id"], "orig_name": r["orig_name"] or Path(r["path"]).name,
+             "cause_code": describe_failure(r["item_id"]).get("cause_code") or "unknown"}
+            for r in newest if r["state"] in ("failed", "suspect")],
+    }
+
+
 def _age_cutoff(min_age_s: float) -> str:
     """ISO-8601 'Z' timestamp (the format `passes.updated_at` is stored in) `min_age_s` ago."""
     from datetime import datetime, timedelta, timezone
@@ -1109,6 +1221,13 @@ def enrich(snap: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             log.warning("diarization health unavailable: %s: %s", type(e).__name__, e)
             snap["diarization"] = {"degraded": False, "recent_undiarized": 0}
+        try:
+            # Singular: the recordings-to-transcripts outcome rate. (`transcriptions`
+            # below is the versioned Postgres store's lag, a different fact.)
+            snap["transcription"] = transcription_health()
+        except Exception as e:  # noqa: BLE001
+            log.warning("transcription health unavailable: %s: %s", type(e).__name__, e)
+            snap["transcription"] = {"degraded": False, "sample": 0, "recent_failed": 0, "newest_failed": []}
         # Keep `wax status` and the state.json mirror reporting the SAME fields;
         # a key present in one and absent in the other reads as an error.
         try:

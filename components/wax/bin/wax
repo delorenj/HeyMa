@@ -1110,11 +1110,27 @@ def probe_all() -> list[dict[str, Any]]:
     tickets_chain = list(dict.fromkeys(m.strip() for m in [tickets_primary, *tickets_fallbacks.split(",")]
                                        if m.strip()))
     banned = [m for m in dict.fromkeys([*chain, *tickets_chain]) if ANTHROPIC_RE.search(m)]
-    add(_probe("inference chain", FAIL if banned else PASS,
-               ("Anthropic model(s) in the chain: " + ", ".join(banned)) if banned
-               else " -> ".join(chain),
-               "remove them from WAX_TITLE_MODEL / WAX_TITLE_MODEL_FALLBACKS in the pass yaml "
-               "(operator order 2026-10-22: no Anthropic models)" if banned else ""))
+    # ONE row for the whole chain. Four permanent per-member `inference fallback N` WARNs made
+    # exit 1 background noise, so a real warning could not be read; the members the gateway does
+    # not serve are now listed in this row, with the chain that actually answers.
+    unavailable: list[tuple[str, str]] = []   # (fallback member, why), filled by the visibility loop
+    chain_fix = ""
+
+    def chain_row() -> dict[str, Any]:
+        if banned:
+            return _probe("inference chain", FAIL, "Anthropic model(s) in the chain: " + ", ".join(banned),
+                          "remove them from WAX_TITLE_MODEL / WAX_TITLE_MODEL_FALLBACKS in the pass yaml "
+                          "(operator order 2026-10-22: no Anthropic models)")
+        if not unavailable:
+            return _probe("inference chain", PASS, " -> ".join(chain))
+        down = {m for m, _ in unavailable}
+        effective_chain = [m for m in chain if m not in down]
+        fallbacks = len(chain) - 1
+        return _probe("inference chain", WARN,
+                      f"{len(unavailable)} of {fallbacks} fallback(s) unavailable "
+                      f"({', '.join(m for m, _ in unavailable)}); effective chain = "
+                      + " -> ".join(effective_chain),
+                      chain_fix)
     add(_probe("ticketable chain", PASS if tickets_chain == chain else WARN,
                " -> ".join(tickets_chain) + ("" if tickets_chain == chain else "  (differs from the title chain)")))
     if key:
@@ -1127,38 +1143,50 @@ def probe_all() -> list[dict[str, Any]]:
         else:
             for index, member in enumerate(chain):
                 role = "primary" if index == 0 else f"fallback {index}"
+
+                def member_down(detail: str, fix: str) -> None:
+                    # The primary failing is a real outage with its own row; a fallback that is
+                    # down only narrows the chain, so it goes into the single `inference chain` row.
+                    nonlocal chain_fix
+                    if index == 0:
+                        add(_probe("inference primary", FAIL, detail, fix))
+                    else:
+                        unavailable.append((member, detail))
+                        chain_fix = chain_fix or fix
+
                 if member in provider.VIRTUAL_MODELS and member not in seen:
                     # A granted router family is not listed; only a request can
                     # tell "not granted" (403) from "granted but not serving".
                     _, _, probe_status = _chat_probe(api_base, key, member)
                     if probe_status == 200:
-                        add(_probe(f"inference {role}", PASS,
-                                   f"{member} answered a 1-token request (virtual family; /models never lists it)"))
+                        if index == 0:
+                            add(_probe("inference primary", PASS,
+                                       f"{member} answered a 1-token request (virtual family; /models never lists it)"))
                     elif probe_status == 403:
-                        add(_probe(f"inference {role}", FAIL if index == 0 else WARN,
-                                   f"{member} is NOT granted to this token (HTTP 403)",
-                                   "python3 deploy/provision-inference --apply"))
+                        member_down(f"{member} is NOT granted to this token (HTTP 403)",
+                                    "python3 deploy/provision-inference --apply")
                     else:
-                        add(_probe(f"inference {role}", FAIL if index == 0 else WARN,
-                                   f"{member} is granted but did not serve a 1-token request (HTTP {probe_status}); "
-                                   "gateway-side, and the chain falls through it",
-                                   "report to the gateway owner (token-ops); not a Wax fault"))
+                        member_down(f"{member} is granted but did not serve a 1-token request (HTTP {probe_status}); "
+                                    "gateway-side, and the chain falls through it",
+                                    "report to the gateway owner (token-ops); not a Wax fault")
                     continue
                 visible = member in seen or member.split(":", 1)[0] in seen
-                add(_probe(f"inference {role}", PASS if visible else (FAIL if index == 0 else WARN),
-                           f"{member} listed by {api_base}/models for this token (User-Agent {USER_AGENT})"
-                           if visible else
-                           f"{member} is NOT listed for this token; the chain skips it",
-                           "" if visible else
-                           "outside the token scope: python3 deploy/provision-inference --apply (the SSOT). "
-                           "In scope but unlisted: the gateway has no enabled channel for it (an unfunded or "
-                           "paused account, e.g. 2026-11-02 z.ai/DeepSeek), which is gateway-side"))
+                if visible:
+                    if index == 0:
+                        add(_probe("inference primary", PASS,
+                                   f"{member} listed by {api_base}/models for this token (User-Agent {USER_AGENT})"))
+                else:
+                    member_down(f"{member} is NOT listed for this token; the chain skips it",
+                                "outside the token scope: python3 deploy/provision-inference --apply (the SSOT). "
+                                "In scope but unlisted: the gateway has no enabled channel for it (an unfunded or "
+                                "paused account, e.g. 2026-11-02 z.ai/DeepSeek), which is gateway-side")
             leaked = sorted(m for m in seen if ANTHROPIC_RE.search(m))
             add(_probe("inference token scope", FAIL if leaked else PASS,
                        ("the token still grants Anthropic route(s): " + ", ".join(leaked)) if leaked
                        else f"no Anthropic route among the {len(seen)} listed for this token",
                        "python3 deploy/provision-inference --apply" if leaked else ""))
         add(_chain_serves(api_base, key, chain))
+    add(chain_row())
 
     # -- project-extraction dependencies ------------------------------------
     probe_project_extraction(add, repo=repo, effective=effective, yenv=yenv)
@@ -1230,6 +1258,8 @@ def probe_all() -> list[dict[str, Any]]:
     except Exception as e:  # noqa: BLE001 - a ledger fault must still be reported
         add(_probe("every live item has a verified S3 backup", FAIL,
                    f"ledger unreadable: {type(e).__name__}: {e}"))
+    probe_failed_items(add)
+    probe_waxd_fds(add, pid)
 
     # -- bus ---------------------------------------------------------------
     reachable = natsclient.reachable()
@@ -1277,6 +1307,10 @@ def probe_all() -> list[dict[str, Any]]:
                    "see the diarization probe above; then re-run `wax transcribe <audio>`"))
     except Exception as e:  # noqa: BLE001
         add(_probe("diarization.degraded (contract A)", FAIL, f"{type(e).__name__}: {e}"))
+    probe_transcription_health(add)
+    probe_silent_input(add)
+    # LAST: re-evaluates `wax status`'s own exit predicate, so doctor >= status by construction.
+    probe_status_snapshot(add)
 
     # -- registry quarantine --------------------------------------------------
     # A bad pass definition disables ITSELF, never the fleet — but a quarantine
@@ -1497,6 +1531,147 @@ def calls_snapshot() -> dict[str, Any]:
     return out | {"state": "ok", "detail": f"synced {int(age // 60)} min ago"}
 
 
+FAILED_ITEM_FAIL_AGE_S = 3600.0          # a failed item nothing will ever retry: no grace needed past this
+DURABILITY_CAUSES = ("archive_failed", "s3_reverify_failed")   # no verified backup: the one true emergency
+WAXD_FD_WARN = 2000                       # open descriptors on wax.db before the leak is worth a row
+
+
+def probe_failed_items(add, now: Optional[float] = None) -> None:
+    """Items parked failed/suspect with the audio still in the inbox.
+
+    Driven by ledger.failed_inbox_items(), the predicate `wax status`, the tray,
+    `wax queue` and `wax drain` read; `wax failures` lists the same rows (plus
+    history whose audio is gone), so no surface can disagree about them. WARN on
+    any; FAIL when the backup is missing (archive_failed/s3_reverify_failed) or
+    the item has sat failed for over an hour (nothing retries a failed item, so
+    waiting longer buys nothing). Every cause, every source: it keys on state.
+    """
+    name = "failed items"
+    try:
+        failed = ledger.failed_inbox_items()
+        gone = ledger.connect().execute(
+            "SELECT COUNT(*) AS n FROM items WHERE state IN ('failed','suspect')").fetchone()["n"] - len(failed)
+    except Exception as e:  # noqa: BLE001 - a ledger fault must still be reported
+        add(_probe(name, FAIL, f"ledger unreadable: {type(e).__name__}: {e}"))
+        return
+    history = f"; {gone} older failed row(s) have no audio in the inbox (history, `wax failures`)" if gone > 0 else ""
+    if not failed:
+        add(_probe(name, PASS, "no failed or suspect item sits in the inbox" + history))
+        return
+    clock = time.time() if now is None else now
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in failed:
+        groups.setdefault(row["cause_code"], []).append(row)
+    durability = [c for c in groups if c in DURABILITY_CAUSES]
+    stale = [r for r in failed if (stamp := ledger._utc_epoch(r["at"])) is not None
+             and clock - stamp >= FAILED_ITEM_FAIL_AGE_S]
+    lines = []
+    for cause, rows in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        sample = rows[0]
+        evidence = ledger.first_line(sample["evidence"], 100)
+        nxt = (f"wax archive {sample['path']}" if cause in DURABILITY_CAUSES
+               else f"wax retry {sample['item_id']} | wax skip {sample['item_id']}")
+        lines.append(f"{len(rows)}x {cause}: {evidence or '(no evidence recorded)'} "
+                     f"e.g. {sample['orig_name']} ({sample['item_id'][:12]})  -> {nxt}")
+    status = FAIL if (durability or stale) else WARN
+    why = []
+    if durability:
+        why.append("no verified backup: " + ", ".join(durability))
+    if stale:
+        why.append(f"{len(stale)} failed over {int(FAILED_ITEM_FAIL_AGE_S // 3600)} h with nothing to retry it")
+    probe = _probe(name, status,
+                   ledger.group_failures(failed) + (f" ({'; '.join(why)})" if why else "") + history,
+                   "wax queue   # what failed and why; then `wax retry <id>` or `wax skip <id>` per item")
+    probe["lines"] = lines
+    add(probe)
+
+
+def probe_transcription_health(add) -> None:
+    """Contract A for the outcome of transcription: the newest recordings produced transcripts."""
+    name = "transcription.degraded (contract A)"
+    try:
+        health = ledger.transcription_health()
+    except Exception as e:  # noqa: BLE001
+        add(_probe(name, FAIL, f"{type(e).__name__}: {e}"))
+        return
+    if health["degraded"]:
+        causes = ", ".join(sorted({r["cause_code"] for r in health["newest_failed"]}))
+        add(_probe(name, FAIL,
+                   f"the newest {len(health['newest_failed'])} recordings all failed ({causes}): "
+                   + ", ".join(r["orig_name"] for r in health["newest_failed"]),
+                   "wax queue   # why each failed; silent audio is a source problem, a dead ASR is `wax doctor`"))
+    else:
+        add(_probe(name, PASS, f"{health['recent_failed']} of the newest {health['sample']} recording(s) failed"))
+
+
+def probe_silent_input(add) -> None:
+    """Recordings parked as silent, per source: a dead mic or a muted input device.
+
+    WARN for any in the last 24 h; FAIL once a source's newest three measured
+    recordings were all silent (the input is broken, not one quiet memo).
+    """
+    name = "input audio silent"
+    try:
+        recent = ledger.silent_items()
+        sources = ledger.silent_sources(minimum=3)
+    except Exception as e:  # noqa: BLE001
+        add(_probe(name, WARN, f"{type(e).__name__}: {e}"))
+        return
+    if not recent:
+        add(_probe(name, PASS, f"no recording parked as silent in the last {ledger.SILENT_RECENT_H} h"))
+        return
+    by_source: dict[str, int] = {}
+    for row in recent:
+        by_source[row["source"]] = by_source.get(row["source"], 0) + 1
+    detail = f"{len(recent)} silent recording(s) in {ledger.SILENT_RECENT_H} h: " + ", ".join(
+        f"{n} from {src}" for src, n in sorted(by_source.items()))
+    probe = _probe(name, FAIL if sources else WARN,
+                   detail + ("; " + ", ".join(f"{x['source']} is {x['count']} in a row" for x in sources)
+                             if sources else ""),
+                   "check the mic or input device on that source (a muted Voice Memos input, a dead mic); "
+                   "`wax retry <id>` forces transcription of a misjudged quiet one")
+    probe["lines"] = [f"{r['orig_name']} ({r['source']}): mean {r['mean_db']} dB, max {r['max_db']} dB"
+                      for r in recent[:5]]
+    add(probe)
+
+
+def probe_status_snapshot(add) -> None:
+    """Doctor is never greener than `wax status`: re-evaluate status's own exit predicate."""
+    name = "status snapshot"
+    try:
+        snap = ledger.enrich(state.snapshot())
+        snap["calls"] = calls_snapshot()
+        terms = status_unhealthy_terms(snap)
+    except Exception as e:  # noqa: BLE001
+        add(_probe(name, FAIL, f"{type(e).__name__}: {e}"))
+        return
+    if terms:
+        add(_probe(name, FAIL, "`wax status` would exit 2: " + "; ".join(terms),
+                   "wax status   # the same terms; the probes above say what to do about each"))
+    else:
+        add(_probe(name, PASS, "`wax status` would exit 0"))
+
+
+def probe_waxd_fds(add, pid: Optional[int]) -> None:
+    """The daemon's open descriptors on the ledger. A one-connection-per-thread design leaks one
+    pair (wax.db + wax.db-wal) per short-lived thread that forgets to close; waxd reached ~15k pairs
+    before anything noticed, and the board could not even list /proc/<pid>/fd any more."""
+    name = "waxd open fds"
+    if pid is None:
+        add(_probe(name, PASS, "waxd is not running (see `waxd running`)"))
+        return
+    count = ledger.open_fd_count(pid)
+    if count < 0:
+        add(_probe(name, WARN, f"cannot read /proc/{pid}/fd"))
+    elif count > WAXD_FD_WARN:
+        add(_probe(name, WARN, f"waxd holds {count} descriptors on {paths.DB.name} (> {WAXD_FD_WARN}): "
+                               "a thread is leaking SQLite connections",
+                   "find the thread that opens ledger.connect() and never calls ledger.close(); "
+                   "restart waxd (hermes-gateway-style care: it is the single owner) to reclaim them"))
+    else:
+        add(_probe(name, PASS, f"{count} descriptor(s) on {paths.DB.name} (warn above {WAXD_FD_WARN})"))
+
+
 def probe_calls(add) -> None:
     """The call log (wax.calls): the Candybar reconcile is current, the Telnyx key still
     authenticates, and no voicemail sits only behind a link that expires in 7 days."""
@@ -1537,6 +1712,14 @@ def probe_calls(add) -> None:
                    "op item 74k7nz3xkryqns4lpf65a323ue must hold the full Telnyx v2 key"))
 
 
+def doctor_exit_code(probes: list[dict[str, Any]]) -> int:
+    """2 on any failure, 1 on warnings only, 0 clean — so both `if wax doctor` and
+    `wax doctor || alert` are usable without parsing anything. The `status snapshot`
+    probe makes this >= `wax status`'s exit (2 when unhealthy) by construction."""
+    statuses = {probe["status"] for probe in probes}
+    return 2 if FAIL in statuses else (1 if WARN in statuses else 0)
+
+
 def doctor(as_json: bool, quiet: bool) -> int:
     pid = waxd_pid()
     denv = proc_env(pid)
@@ -1545,9 +1728,7 @@ def doctor(as_json: bool, quiet: bool) -> int:
     counts = {PASS: 0, WARN: 0, FAIL: 0}
     for probe in probes:
         counts[probe["status"]] += 1
-    # 2 on any failure, 1 on warnings only, 0 clean — so both `if wax doctor` and
-    # `wax doctor || alert` are usable without parsing anything.
-    code = 2 if counts[FAIL] else (1 if counts[WARN] else 0)
+    code = doctor_exit_code(probes)
 
     # config.py reads os.environ at call time, so the two ceilings are resolved
     # under the daemon's environment — otherwise `wax doctor` reports the limits
@@ -1574,6 +1755,13 @@ def doctor(as_json: bool, quiet: bool) -> int:
         return code
 
     print(f"wax doctor  ·  {sentinel.utcnow()}")
+    # The verdict first, then everything that is not green, so a real warning is the first
+    # thing read and never buried under the pass list (or under a standing warning).
+    verdict = "FAIL" if counts[FAIL] else ("WARN" if counts[WARN] else "OK")
+    print(f"  verdict    {verdict}  ·  {counts[FAIL]} fail · {counts[WARN]} warn · {counts[PASS]} pass  (exit {code})")
+    for probe in sorted((p for p in probes if p["status"] != PASS), key=lambda p: p["status"] != FAIL):
+        print(f"  {probe['status'].upper():<4}  {probe['probe']}: {probe['detail'][:150]}")
+    print()
     print(f"  component  {component.ROOT}")
     print(f"  repo       {_repo_root()}")
     print(f"  root       {paths.AUDIO}")
@@ -1867,32 +2055,43 @@ def _print_requeued(r: dict[str, Any]) -> None:
               "problem (silence, corrupt file) will fail the same way")
 
 
-def status_unhealthy(snap: dict[str, Any]) -> bool:
-    """Whether anything in the snapshot is non-nominal — INCLUDING sub-stages.
+def status_unhealthy_terms(snap: dict[str, Any]) -> list[str]:
+    """Every reason the snapshot is non-nominal, INCLUDING sub-stages (empty = healthy).
 
     Item state alone was the entire health model, and both week-long outages
     lived below it: every value-producing sub-stage degrades by returning empty
     rather than failing, so an item marched to `complete` with nothing in it.
     The contract-A blocks are therefore first-class terms here, not decoration.
+    `wax status` exits on this list and `wax doctor` re-evaluates it (the
+    `status snapshot` probe), so doctor can never be greener than status.
     """
+    terms: list[str] = []
     if (snap.get("passes") or {}).get("failed"):
-        return True
+        terms.append("enrichment passes failing")
     # A failed item in the live inbox needs a human whatever the inbox label
     # says (inside the 60 s arrival grace it still reads "queued").
     if (snap.get("queue") or {}).get("failed"):
-        return True
+        terms.append(f"failed items in the inbox ({snap['queue']['failed']})")
+    if (snap.get("transcription") or {}).get("degraded"):
+        terms.append("transcription degraded")
     if (snap.get("diarization") or {}).get("degraded"):
-        return True
+        terms.append("diarization degraded")
     if snap.get("ledger_error") or snap.get("outbox_error") or snap.get("error"):
-        return True
+        terms.append("ledger/outbox/snapshot error")
     # The transcriptions store degrades by lagging, never by failing a pass, so `error` here is the
     # only place a long outage or a model digest mismatch becomes visible. Green is not evidence.
     if (snap.get("transcriptions") or {}).get("state") == "error":
-        return True
+        terms.append("transcripts store error")
     if (snap.get("calls") or {}).get("state") == "error":
-        return True
-    return any((snap.get(machine) or {}).get("state") in ("error", "error-partial")
-               for machine in ("stream", "inbox"))
+        terms.append("calls error")
+    terms.extend(f"{machine} {(snap.get(machine) or {}).get('state')}"
+                 for machine in ("stream", "inbox")
+                 if (snap.get(machine) or {}).get("state") in ("error", "error-partial"))
+    return terms
+
+
+def status_unhealthy(snap: dict[str, Any]) -> bool:
+    return bool(status_unhealthy_terms(snap))
 
 
 def render_status(snap: dict[str, Any]) -> None:
@@ -1952,6 +2151,16 @@ def render_status(snap: dict[str, Any]) -> None:
     if ps.get("operator_disabled"):
         print(f"  {'passes off':<12} {', '.join(ps['operator_disabled'])} (switched off by the operator)"
               "   -> HeyMa settings / wax ep enable <slug>")
+
+    tx_out = snap.get("transcription")
+    if tx_out is not None:
+        if tx_out.get("degraded"):
+            names = ", ".join(r["orig_name"] for r in tx_out.get("newest_failed") or [])
+            print(f"  {'transcription':<12} DEGRADED the newest {len(tx_out.get('newest_failed') or [])} "
+                  f"recordings produced no transcript ({names})   -> wax queue")
+        else:
+            print(f"  {'transcription':<12} ok       "
+                  f"{tx_out.get('recent_failed', 0)} of the newest {tx_out.get('sample', 0)} recordings failed")
 
     diar = snap.get("diarization") or {}
     if diar.get("degraded"):

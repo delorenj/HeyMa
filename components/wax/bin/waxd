@@ -271,6 +271,7 @@ class Daemon:
         with self._telephony_lock:
             self._telephony_snapshot = projection
             self._telephony_refreshing = False
+        ledger.close()  # this thread is spawned every ~5 s; never leave a connection behind
 
     def _schedule_telephony(self) -> dict:
         """Coalesce one asynchronous observer without blocking capture's tick."""
@@ -483,6 +484,8 @@ class Daemon:
                 tray_mod._notify("Wax: item skipped", Path(result["path"]).name)
             except Exception as e:  # noqa: BLE001 - operator feedback, daemon stays alive
                 tray_mod._notify("Wax: could not skip item", str(e))
+            finally:
+                ledger.close()  # one-shot thread: do not leave its connection to the GC
         threading.Thread(target=act, daemon=True).start()
 
     def retry_item(self, item_id: str) -> None:
@@ -491,6 +494,8 @@ class Daemon:
                 worker_mod.retry_item(item_id)
             except Exception as e:  # noqa: BLE001 - operator feedback, daemon stays alive
                 tray_mod._notify("Wax: could not retry item", str(e))
+            finally:
+                ledger.close()
         threading.Thread(target=act, daemon=True).start()
 
     def retry_passes(self, item_id: str, slugs: tuple[str, ...]) -> None:
@@ -499,6 +504,8 @@ class Daemon:
                 worker_mod.retry_failed_passes(item_id, slugs)
             except Exception as e:  # noqa: BLE001 - operator feedback, daemon stays alive
                 tray_mod._notify("Wax: could not retry pass", str(e))
+            finally:
+                ledger.close()
         threading.Thread(target=act, daemon=True).start()
 
     def clear_completed(self) -> None:

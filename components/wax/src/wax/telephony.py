@@ -6,6 +6,7 @@ shadow screening receipts; neither a snapshot nor this bridge calls a provider.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -288,7 +289,7 @@ def snapshot(limit: int = 30) -> dict[str, Any]:
               "health": "ok", "readiness": status.get("readiness") or "Live enforcement unavailable",
               "calls": []}
     try:
-        with _read_conn() as conn:
+        with contextlib.closing(_read_conn()) as conn:
             rows = conn.execute("SELECT * FROM calls ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
             for row in rows:
                 session = row["call_session_id"]

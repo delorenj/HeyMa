@@ -36,7 +36,7 @@ The collector reads through the definitions Wax already has, in eight kinds:
 |---|---|---|---|
 | `pass` | failed `passes` rows | the pass's `reason_code`, at the current version, exhausted or past the grace | audio: `wax ep run <slug> <item>`; document: `wax documents run <pipeline> <note>` |
 | `document` | failed `document_receipts` with a failed document and no failed pass row to blame | pipeline-level faults (a run crash, a halt) | `wax documents retry <pipeline> --doc <doc_id>` then `wax documents scan <pipeline>` |
-| `item` | items `failed` or `suspect` | the transition `cause_code` | `wax retry <item_id>` |
+| `item` | items `failed` or `suspect` | the transition `cause_code` | `wax retry <item_id>`; `wax skip <item_id>` parks it (audio kept in `skipped/`). Doctor's `failed items` probe lists the same rows that are still in the inbox (`hints.in_inbox`), so `wax doctor`, `wax status` and this list name the same items; this list also keeps history whose audio is gone |
 | `recording` | the call log | `fetch_error`, `voicemail_unfetched`, `recording_undelivered` (a trunk recording ≥ 3 s with no item; added 2026-11-09 after the paused-intake outage) | `wax calls sync --since 2d`; for `recording_undelivered`: `candybar resume telnyx-s3-intake` (object in S3) or `wax calls backfill` (no object) |
 | `outbox` | unpublished event rows | `outbox_stale` | `wax events drain` |
 | `snapshot` | transcriptions-store queue | `snapshot_rejected`, `projection_failed` | `wax transcripts sync` |
