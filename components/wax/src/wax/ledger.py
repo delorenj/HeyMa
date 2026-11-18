@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS items (
     bytes       INTEGER,
     duration_s  REAL,
     origin      TEXT,
+    audio_mean_db REAL,
+    audio_max_db  REAL,
     state       TEXT NOT NULL DEFAULT 'pending',
     first_seen  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
@@ -153,7 +155,9 @@ def connect() -> sqlite3.Connection:
             "transcripts": {"asr_path": "TEXT", "body_sha256": "TEXT", "processing_seconds": "REAL",
                             "pruned_at": "TEXT"},
             # A matched legless Telnyx recording is retained but never given a second note.
-            "items": {"duplicate_of_call_session_id": "TEXT", "twin_of_recording_key": "TEXT"},
+            # audio_*_db: sanity.audio_levels, measured once per item before ASR (any source).
+            "items": {"duplicate_of_call_session_id": "TEXT", "twin_of_recording_key": "TEXT",
+                      "audio_mean_db": "REAL", "audio_max_db": "REAL"},
             # Receipts surface through the catalog (Holocene/n8n): the raw
             # last_error stays operator-only, the machine cause travels in
             # reason_code. Additive for ledgers that predate the column.
@@ -712,6 +716,84 @@ def group_failures(failed: list[dict[str, Any]]) -> str:
     return f"{len(failed)} failed: " + ", ".join(f"{n}x {cause}" for cause, n in ordered)
 
 
+# ------------------------------------------------------------ silent audio ----
+#
+# A silent recording is a SOURCE problem (a muted Voice Memos input, a dead mic),
+# not an ASR problem and not an item failure: the worker measures the level before
+# ASR (sanity.audio_levels) and parks hard silence as `junk_silent`. These helpers
+# make that visible: `wax status`, the state.json mirror and waxd's `source_silent`
+# condition all read the same facts, keyed on the measured level, never on a name.
+
+SILENT_RECENT_H = 24      # how far back "recent" silent recordings look
+SILENT_SOURCE_MIN = 2     # silent recordings in a row from one source before it is a condition
+SILENT_SHOWN = 5
+
+
+def record_audio_levels(item_id: str, levels: Optional[dict[str, Any]]) -> None:
+    """Remember the measured level on the item. A None measurement (fail open) is not recorded."""
+    if not levels or levels.get("mean_db") is None:
+        return
+    connect().execute("UPDATE items SET audio_mean_db=?, audio_max_db=? WHERE item_id=?",
+                      (levels["mean_db"], levels.get("max_db"), item_id))
+
+
+def source_of(origin: Optional[str], name: Optional[str]) -> str:
+    """The intake source of an item: its origin, with Telnyx calls split out of the shared inbox."""
+    if str(name or "").lower().startswith("telnyx-"):
+        return "telnyx"
+    return str(origin or "unknown")
+
+
+def silent_items(hours: float = SILENT_RECENT_H) -> list[dict[str, Any]]:
+    """Recordings parked as silent (`junk_silent`, still parked) in the last `hours`, newest first."""
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+    rows = connect().execute(
+        "SELECT i.item_id,i.orig_name,i.origin,i.audio_mean_db,i.audio_max_db,i.duration_s,i.path,"
+        "MAX(t.at) AS at FROM items i JOIN transitions t "
+        "ON t.machine='item' AND t.subject=i.item_id AND t.cause_code='junk_silent' "
+        "WHERE i.state='skipped' AND t.at>=? GROUP BY i.item_id ORDER BY at DESC", (cutoff,)).fetchall()
+    return [{
+        "item_id": r["item_id"], "orig_name": r["orig_name"] or Path(r["path"]).name,
+        "source": source_of(r["origin"], r["orig_name"]), "mean_db": r["audio_mean_db"],
+        "max_db": r["audio_max_db"], "duration_s": r["duration_s"], "at": r["at"],
+    } for r in rows]
+
+
+def silent_sources(hours: float = SILENT_RECENT_H, minimum: int = SILENT_SOURCE_MIN) -> list[dict[str, Any]]:
+    """Sources whose newest measured recordings are silent: >= `minimum` silent in a row within
+    `hours`, ended by nothing audible. The next audible item from the source clears it."""
+    from datetime import datetime, timedelta, timezone
+    from . import sanity
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+    rows = connect().execute(
+        "SELECT item_id,orig_name,origin,audio_mean_db,audio_max_db,first_seen FROM items "
+        "WHERE audio_mean_db IS NOT NULL AND first_seen>=? ORDER BY first_seen ASC, rowid ASC",
+        (cutoff,)).fetchall()
+    streaks: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        silent = (r["audio_mean_db"] <= sanity.SILENT_MEAN_DB
+                  and (r["audio_max_db"] is None or r["audio_max_db"] <= sanity.SILENT_MAX_DB))
+        key = source_of(r["origin"], r["orig_name"])
+        streak = streaks.setdefault(key, [])
+        if silent:
+            streak.append({"item_id": r["item_id"], "orig_name": r["orig_name"], "at": r["first_seen"]})
+        else:
+            streak.clear()      # an audible item from this source ends the run
+    return [{"source": key, "count": len(rows_), "names": [x["orig_name"] for x in rows_][-3:],
+             "last_at": rows_[-1]["at"]}
+            for key, rows_ in sorted(streaks.items()) if len(rows_) >= minimum]
+
+
+def silent_health() -> dict[str, Any]:
+    """The snapshot block: {count, recent: [...], sources: [...]}; `recent` is bounded."""
+    recent = silent_items()
+    return {"count": len(recent), "recent": recent[:SILENT_SHOWN],
+            "more": max(0, len(recent) - SILENT_SHOWN), "sources": silent_sources()}
+
+
 # ------------------------------------------------------------ stage health ----
 #
 # Item state answers "did the file get through the pipeline"; it says nothing
@@ -998,6 +1080,11 @@ def enrich(snap: dict[str, Any]) -> dict[str, Any]:
             inbox["cause_code"] = "failed_items"
             inbox["evidence"] = group_failures(failed)
             inbox["active_stage"] = None
+        try:
+            snap["silent"] = silent_health()
+        except Exception as e:  # noqa: BLE001 - silence reporting must never take the tray down
+            log.warning("silent-audio health unavailable: %s: %s", type(e).__name__, e)
+            snap["silent"] = {"count": 0, "recent": [], "more": 0, "sources": []}
         snap["generation"] = generation()
         # `items` stays the historical record (every row ever minted, including
         # items whose audio now lives only in S3); `items_live` is the same

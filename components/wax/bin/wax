@@ -1920,6 +1920,18 @@ def render_status(snap: dict[str, Any]) -> None:
     if snap.get("failed_more"):
         print(f"  {'':<12} +{snap['failed_more']} more   -> wax queue")
 
+    # Silent recordings are parked, not failed: nothing for the worker to do, but the operator
+    # must hear that a mic or an input captured no sound. Newest 24 h, any source.
+    silent = snap.get("silent") or {}
+    if silent.get("count"):
+        names = ", ".join(f"{r['orig_name']} ({r['source']})" for r in silent.get("recent") or [])
+        more = f" +{silent['more']} more" if silent.get("more") else ""
+        print(f"  {'silent':<12} {silent['count']} silent recording(s) parked (not transcribed): "
+              f"{names}{more} -> check the mic/input")
+        for src in silent.get("sources") or []:
+            print(f"  {'':<12} SOURCE SILENT {src['source']}: {src['count']} in a row, none audible since"
+                  " -> fix the input on that device; wax retry <id> forces transcription")
+
     # items_live is the only tally comparable to inbox/queue: `items` counts
     # every row ever minted, including audio that now lives only in S3.
     live = snap.get("items_live") or {}

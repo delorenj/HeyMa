@@ -10,6 +10,7 @@ import logging
 import shutil
 import subprocess
 import threading
+import time
 
 log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
@@ -59,7 +60,40 @@ def notify(title: str, body: str, *, urgency: str = "critical") -> bool:
     except OSError as e:
         log.warning("notify-send failed: %s: %s", type(e).__name__, e)
         return False
+    log.info("notified (%s): %s", urgency, title)
     return True
+
+
+# A muted input makes EVERY recording from that source silent, so the interesting event is the
+# first silent one, not the third memo in a row. One notification per source until an audible
+# recording from it re-arms the alarm (clear_silent_source) or SILENT_NOTIFY_REPEAT_S passes.
+SILENT_NOTIFY_REPEAT_S = 6 * 3600
+_SILENT_NOTIFIED: dict[str, float] = {}
+
+
+def notify_silent_recording(source: str, body: str) -> bool:
+    """'Wax: recording is silent' (normal urgency: it is a mic to check, not a Wax fault).
+
+    Deduplicated per intake source. Returns True only when a notification was raised.
+    """
+    now = time.monotonic()
+    with _NOTIFY_LOCK:
+        last = _SILENT_NOTIFIED.get(source)
+        if last is not None and now - last < SILENT_NOTIFY_REPEAT_S:
+            log.info("silent recording from %s repeats, notification suppressed", source)
+            return False
+        _SILENT_NOTIFIED[source] = now
+    log.warning("silent recording from %s: %s", source, body.replace("\n", " · "))
+    return notify("Wax: recording is silent", body, urgency="normal")
+
+
+def clear_silent_source(source: str | None = None) -> None:
+    """Re-arm the silent-recording alarm for a source (all when None)."""
+    with _NOTIFY_LOCK:
+        if source is None:
+            _SILENT_NOTIFIED.clear()
+        else:
+            _SILENT_NOTIFIED.pop(source, None)
 
 
 def notify_stage_failure(slug: str, reason_code: str, *, item: str = "",

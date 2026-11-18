@@ -1,7 +1,7 @@
 """The junk gate: reject recordings that hold nothing before they cost anything.
 
 A voicemail, a call that is only "Hello? Hello?", a one-word dictation misfire,
-a silent clip: none of these is worth a vault note, a row in the transcripts
+a recording whose input was silent: none of these is worth a vault note, a row in the transcripts
 store, or a single enrichment-pass token. ``wax transcripts prune`` used to
 sweep them out nightly, but only after every pass (title-slug, classification,
 dictionary-correction, voice-id ...) had already run on them: in the 30 days to
@@ -14,6 +14,11 @@ stage       rule
 ==========  ==================================================================
 pre-ASR     a Telnyx voicemail (``telnyx-vm-*`` name), or audio whose call row
             already says ``outcome = voicemail``. Not even transcribed.
+pre-ASR     SILENT AUDIO, measured: ``sanity.audio_levels`` (ffmpeg volumedetect,
+            whole file, all channels as one mix) says mean <= -60 dB AND max
+            <= -35 dB (speech is about -25 dB mean). Cause ``junk_silent``,
+            parked in ``skipped/silent/``, no GPU run. Every source takes this
+            path (mic, dropoff, Voice Memos, remote-audio, Telnyx intake).
 post-ASR    ``prune.classify`` on the fresh transcript, which at this point has
             no title, summary or classification, so only its structural rules
             can fire: no spoken words (``empty``), a voicemail greeting opening
@@ -24,15 +29,22 @@ post-ASR    ``prune.classify`` on the fresh transcript, which at this point has
 
 A rejected item is ``skipped`` with cause ``junk_<reason>``. Backup-first
 holds: the audio was archived to S3 before either check, and it is moved (never
-deleted) to ``skipped/junk/``; the ASR text stays out of the vault at
+deleted) to ``skipped/junk/`` (``skipped/silent/`` for ``junk_silent``: silence
+is usually a mic to fix at the source, not worthless content); the ASR text stays out of the vault at
 ``var/logs/<item>/rejected.md``. Nothing is written to the vault, the
 ``transcripts`` table or the Postgres store, and no pass plan is minted, so no
 pass ever runs. The nightly prune stays as the backstop for what only an LLM
 title can reveal.
 
-Two guards keep the gate from costing real recordings. A transcript that is
-empty from a LONG recording (``EMPTY_LONG_AUDIO_S``) is not junk, it is an ASR
-outage, so the adapter fails the item visibly instead. And the test-utterance
+Two guards keep the gate from costing real recordings. An EMPTY transcript is
+decided by the measured level, never by length: silent audio is ``junk_silent``
+(normally caught before ASR; the adapter re-measures if it was not), while an
+empty transcript from AUDIBLE audio is an ASR problem, so the adapter fails the
+item visibly as ``asr_empty_output`` (``wax retry`` is the right verb there).
+Duration (``EMPTY_LONG_AUDIO_S``) only decides when the level cannot be measured
+(ffmpeg missing or failing: the measurement fails open), and for a short audible
+empty clip from a phone call (line noise, a hang-up), which stays ``junk_empty``.
+And the test-utterance
 rule is anchored: only a note that OPENS with "this is a test" / "let's see if
 it works" (``TEST_OPENER_RE``) and stays short is a test, so a real dictation
 that merely contains "if it works then ..." survives.
@@ -41,9 +53,9 @@ that merely contains "if it works then ..." survives.
 stages). A copy of an already-rejected recording that is dropped into the inbox
 again is still parked in ``skipped/junk/duplicates/``, because the ledger
 already holds the answer for those bytes. To recover a false positive use
-``wax retry <item>``: it moves the audio from ``skipped/junk/`` back to the
-inbox and records a ``junk_override`` transition, after which neither stage
-judges that item again.
+``wax retry <item>``: it moves the audio from ``skipped/junk/`` (or
+``skipped/silent/``) back to the inbox and records a ``junk_override``
+transition, after which neither stage judges that item again, silence included.
 """
 
 from __future__ import annotations
@@ -60,8 +72,13 @@ log = logging.getLogger("wax." + __name__.rsplit(".", 1)[-1])
 
 CAUSE_PREFIX = "junk_"
 OVERRIDE_CAUSE = "junk_override"     # the transition `wax retry` writes to release a rejected item
-# An empty transcript from audio longer than this is an ASR outage, not a silent clip.
+# FALLBACK only (levels unmeasurable): an empty transcript from audio longer than this is an
+# ASR outage, not a silent clip. When levels are measured the level decides, not the length.
 EMPTY_LONG_AUDIO_S = 120.0
+SILENT_REASON = "silent"          # Rejection.reason -> cause junk_silent, parked in skipped/silent/
+SILENT_CAUSE = CAUSE_PREFIX + SILENT_REASON
+# What an operator hears speech at, for the evidence line ("speech is about -25 dB").
+SPEECH_REFERENCE_DB = -25
 # A test utterance opens the note and is short; "if it works then we ship" is a dictation.
 TEST_OPENER_RE = re.compile(r"^\W*(?:this is a test|let'?s see if (?:it|this) works|testing[ ,]+(?:one|1|testing))\b",
                             re.IGNORECASE)
@@ -84,8 +101,14 @@ def enabled() -> bool:
     return os.environ.get("WAX_JUNK_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def reject_dir() -> Path:
-    return paths.SKIPPED / "junk"
+def reject_dir(reason: Optional[str] = None) -> Path:
+    """Where a rejection's audio is parked: skipped/silent/ for silence, skipped/junk/ otherwise."""
+    return paths.SKIPPED / ("silent" if reason == SILENT_REASON else "junk")
+
+
+def reject_dirs() -> tuple[Path, ...]:
+    """Every directory a rejected item can be parked in (``wax retry`` releases from any)."""
+    return (reject_dir(), reject_dir(SILENT_REASON))
 
 
 def overridden(item_id: Optional[str]) -> bool:
@@ -105,6 +128,37 @@ def overridden(item_id: Optional[str]) -> bool:
 def empty_is_an_outage(audio_duration_s: Any) -> bool:
     """An empty transcript from this much audio is not a silent clip: fail it loudly."""
     return isinstance(audio_duration_s, (int, float)) and audio_duration_s > EMPTY_LONG_AUDIO_S
+
+
+def silent_rejection(levels: Optional[dict[str, Any]], audio_duration_s: Any = None,
+                     item_id: Optional[str] = None) -> Optional[Rejection]:
+    """Hard silence by measurement, or None. None when unmeasured (fail open), gate off, or released.
+
+    ``levels`` is ``sanity.audio_levels``'s dict. The detail is the operator-facing sentence.
+    """
+    if not levels or not levels.get("silent") or not enabled() or overridden(item_id):
+        return None
+    from . import sanity
+    return Rejection(SILENT_REASON, (
+        f"silent audio: mean {levels['mean_db']:.1f} dB, max {levels['max_db']:.1f} dB over "
+        f"{sanity.format_duration(audio_duration_s)} (speech is about {SPEECH_REFERENCE_DB} dB); "
+        "check the mic/input on the recording device"))
+
+
+def empty_transcript_verdict(levels: Optional[dict[str, Any]], audio_duration_s: Any,
+                             *, call: bool = False) -> str:
+    """What an EMPTY transcript means: ``silent`` | ``audible`` (ASR output problem) | ``junk``.
+
+    Decided by the measured level. Duration is the fallback when the level could not be
+    measured, and the tie-break for a short audible clip from a phone call (``call``).
+    """
+    if levels:
+        if levels.get("silent"):
+            return "silent"
+        if call and not empty_is_an_outage(audio_duration_s):
+            return "junk"
+        return "audible"
+    return "audible" if empty_is_an_outage(audio_duration_s) else "junk"
 
 
 def is_junk_cause(cause: Optional[str]) -> bool:

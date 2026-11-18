@@ -31,7 +31,10 @@ try:  # the labels come from another module that may not exist yet
 except ImportError:  # pragma: no cover - exercised through the tests via patching
     channel_parties = None
 
-SILENT_DB = -60.0
+try:  # one definition of "silent" for the whole pipeline (sanity.audio_levels)
+    from wax.sanity import SILENT_MEAN_DB as SILENT_DB
+except ImportError:  # pragma: no cover - standalone use outside the wax package
+    SILENT_DB = -60.0
 DEFAULT_LABELS = ("Channel A", "Channel B")
 _PREFIX = "telnyx-"
 _VOICEMAIL_PREFIX = "telnyx-vm-"

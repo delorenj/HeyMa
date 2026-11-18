@@ -57,9 +57,9 @@ Item states in the ledger: `pending`, `archived`, `transcribed`, `enrichment_pen
 | To | Reason |
 |---|---|
 | `archived` | `s3_verified` |
-| `failed` | `archive_failed`, `transcribe_failed`, `s3_reverify_failed` |
+| `failed` | `archive_failed`, `transcribe_failed`, `asr_empty_output`, `s3_reverify_failed` |
 | `enrichment_pending` | `completion_withheld` |
-| `skipped` | `operator_skip`, `junk_voicemail`/`junk_empty`/`junk_too_short`/`junk_call_noise`/`junk_no_content` (the junk gate; `junk_redropped` journals a re-dropped copy), `split` (`wax split` halted the item; the ledger then refuses any later state change for it: table `item_fences`) |
+| `skipped` | `operator_skip`, `junk_voicemail`/`junk_empty`/`junk_too_short`/`junk_call_noise`/`junk_no_content`/`junk_silent` (the junk gate; `junk_silent` is measured silence, parked in `skipped/silent/`; `junk_redropped` journals a re-dropped copy), `split` (`wax split` halted the item; the ledger then refuses any later state change for it: table `item_fences`) |
 | `transcribed`, `suspect` | set by the transcribe adapter (a note the junk gate refuses gets neither: it is `skipped`) |
 | `complete` | set by finalize, once every planned pass is done |
 

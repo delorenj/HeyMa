@@ -335,6 +335,17 @@ class Daemon:
                  f"run `wax doctor` to see which dependency is missing")
                 if diar.get("degraded") else None,
                 recovered="cleared")
+        if snap.get("silent") is not None:
+            # A source whose newest recordings are all measured-silent (a muted Voice Memos input, a dead
+            # mic): >= 2 junk_silent in 24h with nothing audible after them. The next audible item from
+            # that source clears it (ledger.silent_sources); `wax status` prints the same facts.
+            sources = snap["silent"].get("sources") or []
+            self._condition(
+                "source_silent",
+                "; ".join(f"{src['source']}: {src['count']} silent recording(s) in a row "
+                          f"({', '.join(src.get('names') or [])})" for src in sources)
+                + " — check the mic/input on that device" if sources else None,
+                recovered="cleared")
         self._check_silence(snap)
         # One coalesced local observer, never a second audio worker. Optional
         # CLI/SQLite timeouts must not block the one-second capture/tray tick.

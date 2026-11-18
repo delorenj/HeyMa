@@ -82,16 +82,38 @@ def _first_line(text: str, limit: int = 200) -> str:
     return lines[0][:limit] if lines else ""
 
 
-def _announce_item_failure(subject: str, headline: str, detail: str) -> None:
+def _next_step(item_id: Optional[str]) -> str:
+    """The operator verbs for a failed item, for every notification and evidence line."""
+    return f"wax retry {item_id} | wax skip {item_id}" if item_id else "wax queue"
+
+
+def _announce_item_failure(subject: str, headline: str, detail: str,
+                           item_id: Optional[str] = None) -> None:
     """Make ONE item's failure audible at the desk, not just true in the database.
 
     Uses desktop.notify rather than desktop.notify_stage_failure on purpose: a
     stage failure is a dead provider repeating identically on every item and is
     worth exactly one notification, whereas an item that could not be archived
-    or transcribed is a specific recording at risk and each one is news.
+    or transcribed is a specific recording at risk and each one is news. The body
+    ends with the next step, so the notification is actionable on its own.
     """
     desktop.ding("failed")
-    desktop.notify(f"Wax: {headline}", f"{subject}\n{_first_line(detail, 300)}")
+    desktop.notify(f"Wax: {headline}",
+                   f"{subject}\n{_first_line(detail, 300)}\nnext: {_next_step(item_id)}")
+
+
+def _announce_silent(item_id: str, name: str, source: str, rejection: "junk.Rejection",
+                     levels: Optional[dict[str, Any]], duration_s: Optional[float]) -> None:
+    """Tell the operator once per source that a recording was silent: a mic problem, not a Wax fault."""
+    try:
+        body = (f"{name}, {sanity.format_duration(duration_s)}, "
+                + (f"mean {levels['mean_db']:.1f} dB / peak {levels['max_db']:.1f} dB "
+                   f"(speech is about {junk.SPEECH_REFERENCE_DB} dB). " if levels else "")
+                + "Check the input (mic or recording app). Parked in skipped/silent/; "
+                  f"wax retry {item_id} forces transcription.")
+        desktop.notify_silent_recording(source, body)
+    except Exception as exc:  # noqa: BLE001 - notification is best effort
+        log.warning("item %s: silent-recording notification failed: %s", item_id, exc)
 
 
 def _set_state(item_id: str, to_state: str, *, cause: str, evidence: str,
@@ -105,7 +127,10 @@ def _set_state(item_id: str, to_state: str, *, cause: str, evidence: str,
     """
     if to_state in ("failed", "suspect"):
         log.error("item %s -> %s (%s): %s", item_id, to_state, cause, _first_line(evidence, 300))
-        _announce_item_failure(subject or item_id, f"item {to_state} ({cause})", evidence)
+        _announce_item_failure(subject or item_id, f"item {to_state} ({cause})", evidence, item_id)
+        if "\nnext:" not in evidence:
+            # Second line, so every row that shows only the first line stays short.
+            evidence = f"{evidence}\nnext: {_next_step(item_id)}"
     else:
         log.info("item %s -> %s (%s): %s", item_id, to_state, cause, _first_line(evidence, 200))
     ledger.set_item_state(item_id, to_state, cause=cause, evidence=evidence)
@@ -302,20 +327,36 @@ def park_twin_redrop(item_id: str, path: Path) -> dict[str, Any]:
     return {"item_id": item_id, "parked": str(moved), "reason": "duplicate_call_redropped"}
 
 
+def _junk_cause(conn, item_id: str) -> Optional[str]:
+    """The item's newest transition cause if it is a junk-gate rejection (junk_*), else None."""
+    last = conn.execute(
+        "SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
+        "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
+    if not last or not junk.is_junk_cause(last["cause_code"]):
+        return None
+    if last["cause_code"] != "junk_redropped":
+        return last["cause_code"]
+    # A re-dropped copy was parked: the item is still what it was (junk_silent stays silent).
+    row = conn.execute(
+        "SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
+        "AND cause_code LIKE 'junk\\_%' ESCAPE '\\' AND cause_code NOT IN ('junk_redropped', ?) "
+        "ORDER BY seq DESC LIMIT 1", (item_id, junk.OVERRIDE_CAUSE)).fetchone()
+    return row["cause_code"] if row else last["cause_code"]
+
+
 def _junk_redrop(conn, item_id: str, path: Path) -> bool:
     """A copy of audio the junk gate already rejected has landed in the inbox again."""
     row = conn.execute("SELECT path FROM items WHERE item_id=?", (item_id,)).fetchone()
     if not row or Path(row["path"]) == path:
         return False
-    last = conn.execute(
-        "SELECT cause_code FROM transitions WHERE machine='item' AND subject=? "
-        "ORDER BY seq DESC LIMIT 1", (item_id,)).fetchone()
-    return bool(last) and junk.is_junk_cause(last["cause_code"])
+    return _junk_cause(conn, item_id) is not None
 
 
 def park_junk_redrop(item_id: str, path: Path) -> dict[str, Any]:
     """Move a re-dropped copy of rejected junk beside the original. Never deletes."""
-    dest_dir = junk.reject_dir() / "duplicates"
+    cause = _junk_cause(ledger.connect(), item_id)
+    reason = junk.SILENT_REASON if cause == junk.SILENT_CAUSE else None
+    dest_dir = junk.reject_dir(reason) / "duplicates"
     dest_dir.mkdir(parents=True, exist_ok=True)
     moved = rename.move_noclobber(path, dest_dir / path.name)
     evidence = "duplicate=" + str(moved).replace(str(paths.AUDIO), "~/HeyMa")
@@ -376,25 +417,50 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
 
 
 def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
-                 stage: str, kept: Optional[Path] = None) -> dict[str, Any]:
-    """Park junk audio in skipped/junk/ and mark the item skipped. Never deletes.
+                 stage: str, kept: Optional[Path] = None, *,
+                 levels: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Park rejected audio (skipped/junk/, or skipped/silent/ for silence) and mark the item skipped.
 
-    The audio is already archived to S3 (step 1). No vault note, transcripts
-    row, store version or pass plan exists for it, so nothing downstream runs.
+    Never deletes. The audio is already archived to S3 (step 1). No vault note,
+    transcripts row, store version or pass plan exists for it, so nothing
+    downstream runs. One body for every rejection: the cause and the destination
+    come from the Rejection, so `wax retry` (_release_junk) releases all of them.
     """
-    dest_dir = junk.reject_dir()
+    dest_dir = junk.reject_dir(rejection.reason)
     dest_dir.mkdir(parents=True, exist_ok=True)
     moved = rename.move_noclobber(path, dest_dir / path.name)
     ledger.connect().execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
                              (str(moved), sentinel.utcnow(), item_id))
-    words = "" if rejection.words is None else f" ({rejection.words} words)"
-    evidence = (f"{stage}: {rejection.detail}{words}; archived then moved to "
-                + str(moved).replace(str(paths.AUDIO), "~/HeyMa")
-                + (f"; text kept at {kept}" if kept else ""))
+    shown = str(moved).replace(str(paths.AUDIO), "~/HeyMa")
+    silent = rejection.reason == junk.SILENT_REASON
+    if silent:
+        evidence = (f"{rejection.detail}; parked at {shown}; "
+                    f"wax retry {item_id} forces transcription")
+    else:
+        words = "" if rejection.words is None else f" ({rejection.words} words)"
+        evidence = (f"{stage}: {rejection.detail}{words}; archived then moved to {shown}"
+                    + (f"; text kept at {kept}" if kept else ""))
     _set_state(item_id, "skipped", cause=rejection.cause, evidence=evidence, subject=path.name)
+    if silent:
+        row = ledger.connect().execute(
+            "SELECT origin,orig_name,duration_s FROM items WHERE item_id=?", (item_id,)).fetchone()
+        source = ledger.source_of(row["origin"], row["orig_name"]) if row else "unknown"
+        _announce_silent(item_id, path.name, source, rejection, levels, row["duration_s"] if row else None)
     return {"reason": rejection.cause, "stage": stage, "detail": rejection.detail,
             "words": rejection.words, "path": str(moved),
-            **({"text": str(kept)} if kept else {})}
+            **({"text": str(kept)} if kept else {}),
+            **({"levels": levels} if levels else {})}
+
+
+def _rearm_silent_alarm(item_id: str) -> None:
+    """An audible recording from a source ends its silent run: the next silent one is news again."""
+    try:
+        row = ledger.connect().execute(
+            "SELECT origin,orig_name FROM items WHERE item_id=?", (item_id,)).fetchone()
+        if row:
+            desktop.clear_silent_source(ledger.source_of(row["origin"], row["orig_name"]))
+    except Exception as exc:  # noqa: BLE001 - best effort
+        log.debug("could not re-arm silent alarm for %s: %s", item_id, exc)
 
 
 def _published_note(conn, *, twin: dict[str, Any], exclude: Optional[str] = None) -> bool:
@@ -617,6 +683,22 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
             result["skipped"] = _reject_junk(item_id, path, rejection, "before ASR")
             return result
 
+        # Silent audio, by MEASUREMENT, for every source: after archive + S3 verify (the audio
+        # is safe) and before any GPU time. Fails open (levels None) when ffmpeg cannot say.
+        levels = sanity.audio_levels(path)
+        try:
+            ledger.record_audio_levels(item_id, levels)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must not stop a recording
+            log.warning("item %s: could not record audio levels: %s", item_id, exc)
+        if levels is not None:
+            result["levels"] = levels
+        rejection = junk.silent_rejection(levels, duration_s, item_id)
+        if rejection is not None:
+            result["skipped"] = _reject_junk(item_id, path, rejection, "before ASR", levels=levels)
+            return result
+        if levels is not None and not levels["silent"]:
+            _rearm_silent_alarm(item_id)
+
     # ---- 2. transcription (skipped if this item already has one) -------
     if start_state == "transcribed":
         result["transcribe"] = {"skipped": "already transcribed"}
@@ -627,7 +709,7 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
         except transcribe_adapter.TranscriptRejected as e:
             # Junk by content ("Hello?", one word, a greeting): nothing was
             # published, so park the audio and stop before any pass is planned.
-            result["skipped"] = _reject_junk(item_id, path, e.rejection, "after ASR", e.kept)
+            result["skipped"] = _reject_junk(item_id, path, e.rejection, "after ASR", e.kept, levels=e.levels)
             return result
         except transcribe_adapter.TranscribeError as e:
             # The gate already moved a failed transcript aside and set the item
@@ -637,9 +719,9 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
                 # The `suspect` transition happened inside transcribe_adapter, so
                 # _set_state never sees it. Log and chime it here or it is silent.
                 log.error("item %s quarantined as suspect: %s", item_id, _first_line(str(e), 300))
-                _announce_item_failure(path.name, "transcript failed the sanity gate", str(e))
+                _announce_item_failure(path.name, "transcript failed the sanity gate", str(e), item_id)
             else:
-                _set_state(item_id, "failed", cause="transcribe_failed",
+                _set_state(item_id, "failed", cause=getattr(e, "cause_code", "transcribe_failed"),
                            evidence=str(e)[:400], subject=path.name)
             result["error"] = str(e)[:400]
             return result
@@ -822,21 +904,26 @@ def _release_junk(conn, item_id: str, source: Path, orig_name: Optional[str]) ->
     (junk.overridden), so the item is not rejected again and a re-drop of its
     bytes is not parked as a junk duplicate.
     """
+    resolved = None
     try:
-        source.resolve().relative_to(junk.reject_dir().resolve())
-    except (OSError, ValueError) as exc:
-        raise RuntimeError("junk-rejected audio is not in skipped/junk") from exc
+        resolved = source.resolve()
+    except OSError:
+        pass
+    if resolved is None or not any(resolved.is_relative_to(d.resolve()) for d in junk.reject_dirs()):
+        raise RuntimeError("junk-rejected audio is not in skipped/junk or skipped/silent")
     if not source.is_file():
         raise RuntimeError("junk-rejected audio is missing")
     paths.INBOX.mkdir(parents=True, exist_ok=True)
     moved = rename.move_noclobber(source, paths.INBOX / source.name)
     conn.execute("UPDATE items SET path=?,updated_at=? WHERE item_id=?",
                  (str(moved), sentinel.utcnow(), item_id))
+    was_silent = _junk_cause(conn, item_id) == junk.SILENT_CAUSE
     _set_state(item_id, "pending", cause=junk.OVERRIDE_CAUSE,
-               evidence=f"operator released a junk rejection; audio back at {moved}",
+               evidence=(f"operator released a {'silent-audio' if was_silent else 'junk'} rejection; "
+                         f"audio back at {moved}"),
                subject=orig_name or moved.name)
     return {"item_id": item_id, "state": "pending", "path": str(moved),
-            "previous_cause": "junk", "junk_override": True}
+            "previous_cause": "junk_silent" if was_silent else "junk", "junk_override": True}
 
 
 def retry_item(item_id: str) -> dict[str, Any]:

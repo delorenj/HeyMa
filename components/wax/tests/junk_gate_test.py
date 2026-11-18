@@ -589,7 +589,9 @@ class ReviewFixesTest(JunkGateHarness):
         result = self.run_once()
         self.assertNotIn("skipped", result)
         self.assertIn("EMPTY TRANSCRIPT", result["error"])
-        self.assertEqual(self.state_of(), ("failed", "transcribe_failed"))
+        # levels are unmeasurable for these fake bytes, so duration is the fallback; with a measured
+        # level the level decides (silent_audio_test.py)
+        self.assertEqual(self.state_of(), ("failed", "asr_empty_output"))
         self.assertTrue(audio.is_file())
         self.assertEqual(audio.read_bytes(), AUDIO_BYTES)
         self.assertFalse((self.root / "skipped" / "junk").exists())

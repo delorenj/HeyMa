@@ -62,6 +62,17 @@ class TranscriptionDurationError(TranscribeError):
     pass
 
 
+class EmptyOutput(TranscribeError):
+    """The transcriber returned no words for audio that is NOT silent: a visible failure.
+
+    Silent audio never lands here (it is parked as ``junk_silent``); audible-but-empty is
+    an ASR problem, and ``wax retry`` is a sensible next step. ``cause_code`` is what the
+    worker records as the item's failure cause.
+    """
+
+    cause_code = "asr_empty_output"
+
+
 class TranscriptRejected(TranscribeError):
     """The junk gate (wax/junk.py) refused a fresh transcript: nothing was published.
 
@@ -69,10 +80,19 @@ class TranscriptRejected(TranscribeError):
     aside (out of the vault). The caller owns the item state and the audio.
     """
 
-    def __init__(self, message: str, rejection: Any, kept: Optional[Path]):
+    def __init__(self, message: str, rejection: Any, kept: Optional[Path],
+                 levels: Optional[dict[str, Any]] = None):
         super().__init__(message)
         self.rejection = rejection
         self.kept = kept
+        self.levels = levels      # sanity.audio_levels, when the rejection was decided by level
+
+
+def _record_levels(item_id: str, levels: Optional[dict[str, Any]]) -> None:
+    try:
+        ledger.record_audio_levels(item_id, levels)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not change the verdict
+        log.debug("could not record audio levels for %s: %s", item_id, exc)
 
 
 def _has_output_arg(args: list[str]) -> bool:
@@ -406,6 +426,16 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
         # active transaction). Output is still private until the final fence gate.
         from . import junk
         rejection = junk.after_asr(md, audio, item_id)
+        # An EMPTY transcript is decided by MEASURED level, not by length (junk.empty_transcript_verdict).
+        # Measured here, outside the publication transaction: ffmpeg takes seconds and the call lookup
+        # touches the ledger.
+        empty_levels, empty_what, dur = None, None, verdict.get("audio_duration_s")
+        if rejection is not None and rejection.reason == "empty":
+            empty_levels = sanity.audio_levels(audio)
+            empty_what = junk.empty_transcript_verdict(
+                empty_levels, dur, call=bool(junk._call_facts(audio.name)))
+            if item_id:
+                _record_levels(item_id, empty_levels)
         with _publication(item_id):
             if rejection is not None:
                 kept: Optional[Path] = md
@@ -413,10 +443,19 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                     kept = _move_out(md, logdir / "rejected.md")
                 except OSError as exc:
                     log.warning("junk gate could not set %s aside: %s", md, exc)
-                if rejection.reason == "empty" and junk.empty_is_an_outage(verdict.get("audio_duration_s")):
-                    raise TranscribeError(
-                        f"EMPTY TRANSCRIPT from {verdict.get('audio_duration_s')}s of audio; not published, "
-                        f"empty note kept at {kept}; log: {logfile}")
+                if empty_what == "silent":
+                    silent = junk.silent_rejection(empty_levels, dur)
+                    if silent is not None:
+                        raise TranscriptRejected(
+                            f"JUNK GATE REJECTED (silent): {silent.detail}; "
+                            f"not published, text kept at {kept}", silent, kept, levels=empty_levels)
+                elif empty_what == "audible":
+                    heard = (f"mean {empty_levels['mean_db']:.1f} dB, max {empty_levels['max_db']:.1f} dB"
+                             if empty_levels else "level could not be measured")
+                    raise EmptyOutput(
+                        f"EMPTY TRANSCRIPT from {sanity.format_duration(dur)} of audible audio "
+                        f"({heard}): the transcriber returned no words, so suspect ASR, "
+                        f"not the microphone; not published, empty note kept at {kept}; log: {logfile}")
                 raise TranscriptRejected(
                     f"JUNK GATE REJECTED ({rejection.reason}): {rejection.detail}; "
                     f"not published, text kept at {kept}", rejection, kept)

@@ -68,8 +68,8 @@ minutes is legitimate. Retry a preserved item with `wax retry <item>` (or `wax r
 
 ## The junk gate
 
-A voicemail, a "Hello?" call, a one-word misfire or a silent clip is never worth
-a vault note, a `transcripts` row, a store version or an enrichment pass.
+A voicemail, a "Hello?" call, a one-word misfire or a recording whose input was
+silent is never worth a vault note, a `transcripts` row, a store version or an enrichment pass.
 `src/wax/junk.py` stops them with deterministic rules (no model, zero LLM
 tokens), for every intake source. The 30 days to 2026-11-17 spent about 117
 items and 840k input tokens enriching audio that `wax transcripts prune` then
@@ -78,23 +78,40 @@ trashed.
 | Stage | Rule | `reason` |
 |---|---|---|
 | Before ASR (audio archived to S3 first, never transcribed) | A `telnyx-vm-*` file name, or a local `calls` row (`call_for_audio`, no Telnyx GET) with `outcome = voicemail` | `voicemail` |
+| Before ASR, after the S3 backup is verified (no GPU run) | **Silent audio, by measurement.** `sanity.audio_levels` (ffmpeg `volumedetect` over the whole file, all channels as one mix, about 2 s for 79 minutes) says mean <= -60 dB **and** max <= -35 dB. Speech is about -25 dB mean with peaks above -11 dB; the 2026-11-18 broken input measured mean -77..-87, max -40..-53. A `telnyx-*` call is judged as one mix, so one dead channel is normal and not silent. The level check runs after the `before ASR` voicemail rule. It fails open: if ffmpeg cannot measure, nothing is parked | `silent` |
 | After ASR, after the sanity gate, before the note is published | `prune.classify` on the fresh note. It has no title or summary yet, so only the structural rules fire: no spoken words (`empty`), a voicemail greeting opening a call (`voicemail`), a test utterance that opens a short note (`no-content`), fewer than 4 words (`too-short`), a phone call of 20 words or fewer (`call-noise`) | as listed |
 
 A rejected item is `skipped` with cause `junk_<reason>` (`junk_voicemail`,
-`junk_empty`, `junk_too_short`, `junk_call_noise`, `junk_no_content`). The audio
-moves to `skipped/junk/` (never deleted; `items.path` follows it). The ASR text
+`junk_empty`, `junk_too_short`, `junk_call_noise`, `junk_no_content`,
+`junk_silent`). The audio moves to `skipped/junk/` (never deleted; `items.path`
+follows it); silent audio goes to `skipped/silent/` instead, because silence
+usually means a mic or input to fix at the source, not worthless content. The ASR text
 is kept out of the vault at `var/logs/<item>/rejected.md`. No `transcripts` row,
 store version or pass plan is written, so no pass ever runs, and the item is not
 a failure (no ticket, no tray alarm). A copy of the same bytes dropped into the
 inbox again is parked in `skipped/junk/duplicates/` (cause `junk_redropped`),
-never reprocessed.
+never reprocessed (`skipped/silent/duplicates/` for a silent one).
 
 - `wax retry <item>` releases a false positive: the audio moves from
-  `skipped/junk/` back to the inbox and a `junk_override` transition makes both
-  stages skip that item from then on.
-- Two cases are not junk: an empty transcript from audio over 120 s is a
-  Whisper/VAD outage and fails the item (`failed`, `wax retry` works), and CJK
-  text is counted per character, not per space.
+  `skipped/junk/` (or `skipped/silent/`) back to the inbox and a `junk_override`
+  transition makes every stage skip that item from then on, silence included. It
+  is the escape hatch for a real but very quiet recording; no `--force`.
+- **An empty transcript is decided by the measured level, not by length.**
+  Silent audio is `junk_silent` (normally caught before ASR; the adapter
+  re-measures if it was not). An empty transcript from audible audio is an ASR
+  problem: the item fails as `asr_empty_output` (`failed`, audio stays in the
+  inbox, `wax retry <item>` is the right verb) whatever its length. Duration (120 s)
+  only decides when the level cannot be measured, and a short audible empty phone
+  call (line noise, a hang-up) stays `junk_empty`. CJK text is counted per
+  character, not per space.
+- Silence is a source problem, so it is loud in the right places: `wax status`
+  prints `silent  N silent recording(s) parked (not transcribed): <names> -> check
+  the mic/input` for the last 24 h (and `--json` carries `silent {count, recent,
+  more, sources}`); one desktop notification, `Wax: recording is silent` (normal
+  urgency, once per intake source until an audible item from it re-arms it); and
+  waxd's `source_silent` condition when two silent recordings in a row came from
+  one source with nothing audible since (cleared by the next audible item). The
+  measured levels are stored on the item (`items.audio_mean_db`, `audio_max_db`).
 - A failed move into the vault fails the item (`transcribe_failed`, staged note
   kept in `var/logs/<item>/`); it never records a note outside the vault.
 - `WAX_JUNK_GATE=0` (also `false|no|off`) turns both stages off for new work in
@@ -173,7 +190,9 @@ in [intake](intake.md).
 |---|---|---|
 | Every transcript `diarized: false`, no error anywhere | Diarizer runtime broken or deleted (shape 3), or the transcriber is a second checkout (shape 2) | `doctor.sh --layer transcription`; [incident log](../subskills/doctor/references/incident-log.md) 2026-08-12 and 2026-08-21 |
 | Item `suspect`, `*.suspect.md` beside the note | Sanity gate | table above |
-| Item `failed` with `transcribe_failed` | The child exited non-zero or produced no path; read `logs/<item>/transcription.<n>.log` | `wax retry <item>` after the cause |
+| Item `failed` with `transcribe_failed` | The child exited non-zero, produced no path, or could not publish; read `logs/<item>/transcription.<n>.log` | `wax retry <item>` after the cause |
+| Item `failed` with `asr_empty_output` | The audio is audible but the transcriber returned no words (`EMPTY TRANSCRIPT ... audible audio`): suspect ASR, not the mic | `wax doctor`, then `wax retry <item>` |
+| Item `skipped` with `junk_silent`, audio in `skipped/silent/` | The recording's input was silent (mean below -60 dB): re-recording is the fix, `wax retry` only forces a transcription of silence | check the mic/input on the recording device; `wax retry <item>` only if the level is a measurement mistake |
 | ASR running on CPU | VRAM floor not met for 30 s (ComfyUI or vexa holding the GPU) | `nvidia-smi`; wait or free the GPU |
 | Diarization failed x3, exhausted | CUDA out of memory at Sortformer load | the HEYMA-10 recipe in the incident log: bounded retry only with at least 3000 MiB free |
 | Two checkouts reported | The check resolved PATH instead of the daemon's pin | [the doctor procedure](../subskills/doctor/SUBSKILL.md) |

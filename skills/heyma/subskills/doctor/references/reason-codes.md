@@ -101,7 +101,9 @@ by `wax state` and `wax items`. Details live in
 | `s3_reverify_failed` | item `failed` | The live re-verify before parking found a size mismatch; audio stays in the inbox. |
 | `file_too_large_for_transcription` | item `skipped` | At or over `MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` (300MB; the check is strict, so exactly 300MB is blocked); archived first, then moved to `skipped/oversize`. |
 | `audio_too_long_for_transcription` | item `skipped` | At or over `MAX_AUDIO_DURATION_FOR_TRANSCRIPTION` (3h); archived first, moved to `skipped/overduration`. |
-| `transcribe_failed` | item `failed` | The transcriber raised. Audio stays in the inbox. |
+| `transcribe_failed` | item `failed` | The transcriber exited non-zero, produced no path, or could not publish. Audio stays in the inbox; `wax retry <id>` after fixing the cause in `logs/<item>/transcription.<n>.log`. |
+| `asr_empty_output` | item `failed` | The audio measured audible (or its level could not be measured and it is over 120 s) but the transcriber returned no words. Suspect ASR, not the mic. Audio stays in the inbox; `wax doctor`, then `wax retry <id>`. |
+| `junk_silent` | item `skipped` | Measured silence before ASR: mean <= -60 dB and max <= -35 dB (`sanity.audio_levels`), any source, no GPU run. Audio archived first, then parked in `skipped/silent/`. A source problem: check the mic/input and re-record; `wax retry <id>` forces transcription of the same bytes (override). Two in a row from one source raise the waxd `source_silent` condition. |
 | `completion_withheld` | item `enrichment_pending` | A planned pass is not done, so `transcription.completed` waits. |
 | `stranded_work` | inbox `error` | Work claimed with no live owner. |
 | `finalizing` | stream `not-ready` (clause a) | A recording is being finalized (concatenated and moved to `inbox/`); wait, do not intervene. |

@@ -86,7 +86,7 @@ mc ls delo/recordings/        # what is actually in the bucket
 | You have | Look in |
 |---|---|
 | An upload that never verified | `recovered/unbacked/` (a second local copy) and the original, still in `inbox/` |
-| Audio that Wax moved aside | `skipped/oversize`, `skipped/overduration`, `skipped/junk` (the junk gate), `quarantine/`, `recovered/` |
+| Audio that Wax moved aside | `skipped/oversize`, `skipped/overduration`, `skipped/junk` (the junk gate), `skipped/silent` (measured silent audio), `quarantine/`, `recovered/` |
 | A capture that died | `recovered/orphans/<rid>`, `recovered/canceled/<rid>`; see [capture](capture.md) |
 | Syncthing deletions | `dropoff/.stversions/` (365-day staggered) |
 | Anything archived | `mc ls delo/recordings/` then `mc cp` it back |
