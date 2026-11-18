@@ -271,7 +271,8 @@ def main() -> int:
             view = model.verdict(inputs)
             indicator.apply(view, model.labels(inputs, view, vinyl_settings=settings_cmd is not None))
             if isinstance(inputs.wax_snap, dict):
-                indicator.set_queue(inputs.wax_snap.get("tray_items") or [])
+                indicator.set_queue(inputs.wax_snap.get("tray_items") or [],
+                                    inputs.wax_snap.get("silent"))
                 ringer.tick(inputs.wax_snap.get("telephony"), datetime.now(timezone.utc))
             else:
                 ringer.tick(None, datetime.now(timezone.utc))

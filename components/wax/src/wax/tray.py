@@ -128,6 +128,70 @@ def _slug_list(slugs: list[str], limit: int = 2) -> str:
     return ", ".join(slugs[:limit]) + f" +{len(slugs) - limit}"
 
 
+REASON_WIDTH = 48  # a menu row has no room for a full evidence line
+# Fallback when the ledger cannot be imported (the HeyMa tray runs under
+# /usr/bin/python3); the canonical tuple is ledger.DURABILITY_CAUSES.
+_DURABILITY_FALLBACK = ("archive_failed", "s3_reverify_failed")
+
+
+def durability_causes() -> tuple[str, ...]:
+    """Causes whose audio has no verified backup yet: never offer Skip for them."""
+    try:
+        from .ledger import DURABILITY_CAUSES
+        return tuple(DURABILITY_CAUSES)
+    except Exception:  # noqa: BLE001 - the tray must render without the ledger
+        return _DURABILITY_FALLBACK
+
+
+def _clip(text, width: int) -> str:
+    head = str(text or "").strip().split("\n", 1)[0].strip()
+    return head if len(head) <= width else head[:width - 1] + "…"
+
+
+def failure_causes(rows) -> str:
+    """'transcribe_failed x3, archive_failed x1' from failed rows; '' when none carry a cause."""
+    counts: dict[str, int] = {}
+    for row in rows or []:
+        if isinstance(row, dict):
+            cause = str(row.get("cause_code") or (row.get("error") or {}).get("cause_code") or "unknown")
+            counts[cause] = counts.get(cause, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return ", ".join(f"{cause} x{n}" for cause, n in ordered)
+
+
+def failure_reason(item: dict, width: int = REASON_WIDTH) -> str:
+    """'<cause>: <first evidence words>' for a failed/suspect row, '' when unknown."""
+    error = item.get("error") or {}
+    cause = error.get("cause_code") or item.get("cause_code")
+    evidence = error.get("evidence") or item.get("evidence")
+    if not cause and not evidence:
+        return ""
+    if cause and evidence:
+        return _clip(f"{cause}: {evidence}", width)
+    return _clip(cause or evidence, width)
+
+
+def failure_signature(item: dict) -> tuple:
+    """Everything the failed row and its Why submenu draw: a re-failure with a new
+    reason, or the same one, must rebuild the menu (and re-enable a greyed row)."""
+    error = item.get("error") or {}
+    return (error.get("cause_code") or item.get("cause_code"),
+            _clip(error.get("evidence") or item.get("evidence"), 160),
+            error.get("at") or item.get("updated_at"))
+
+
+def silent_label(row: dict) -> str:
+    """'🔇 memo.m4a  (79:08 · mean -80 dB)' for one parked silent recording."""
+    parts = []
+    if row.get("duration_s"):
+        seconds = int(row["duration_s"])
+        parts.append(f"{seconds // 60}:{seconds % 60:02d}")
+    if row.get("mean_db") is not None:
+        parts.append(f"mean {round(float(row['mean_db']))} dB")
+    detail = f"  ({' · '.join(parts)})" if parts else ""
+    return f"🔇 {row.get('orig_name') or row.get('item_id')}{detail}"
+
+
 def queue_label(item: dict, spinner_frame: int = 0) -> str:
     stage_failed = _has_stage_failure(item)
     if item.get("active"):
@@ -156,6 +220,14 @@ def queue_label(item: dict, spinner_frame: int = 0) -> str:
     display_name = item.get("orig_name") or item.get("item_id")
     if item.get("state") == "complete" and item.get("md_path"):
         display_name = Path(item["md_path"]).name
+    if item.get("state") in ("failed", "suspect"):
+        # Menus exported over dbusmenu drop tooltips, so the reason has to be
+        # in the label itself or nobody ever sees it.
+        reason = failure_reason(item)
+        if reason:
+            # Clip the name, not the reason: Telnyx names run ~170 characters
+            # and a width-limited menu would cut exactly the part that matters.
+            display_name = f"{_clip(display_name, 48)} — {reason}"
     return f"{icon} {prefix}{display_name}  ({detail})"
 
 
@@ -194,11 +266,34 @@ def colour_for(snap: dict) -> tuple[str, str]:
     undiarized = _as_int(diarization.get("recent_undiarized"))
     backlog = _as_int(snap.get("outbox_backlog"))
 
+    # Whether the newest recordings come out the other end as transcripts, and
+    # whether a source keeps sending silence: the two outcome terms that let five
+    # silent Voice Memos sit behind a green icon on 2026-11-18.
+    transcription = snap.get("transcription") or {}
+    tx_degraded = bool(transcription.get("degraded"))
+    silent = snap.get("silent") or {}
+    silent_sources = [src for src in (silent.get("sources") or []) if isinstance(src, dict)]
+
     cause = stream.get("cause_code") or inbox.get("cause_code")
     if cause:
         tip += f"\ncause: {cause}"
     if failed:
-        tip += f"\nfailed items: {failed}"
+        # The count alone sends you to the ledger; the cause sends you to the fix.
+        histogram = failure_causes(snap.get("failed") or [])
+        shown_more = _as_int(snap.get("failed_more"))
+        if histogram and shown_more:
+            # snap["failed"] carries the newest rows only; never let a sample read as the total.
+            histogram += f", +{shown_more} more"
+        tip += f"\nfailed items: {failed}" + (f" ({histogram})" if histogram else "")
+    if tx_degraded:
+        newest = [str(name) for name in (transcription.get("newest_failed") or []) if name]
+        tip += (f"\ntranscription degraded: newest {len(newest) or 'recent'} recording(s) "
+                "produced no transcript")
+    for src in silent_sources:
+        tip += (f"\nsource silent: {src.get('source') or 'unknown'} sent {_as_int(src.get('count'))} "
+                "silent recording(s) in a row — check the mic/input on that device")
+    if _as_int(silent.get("count")) and not silent_sources:
+        tip += f"\nsilent recordings parked: {_as_int(silent.get('count'))} (not transcribed)"
     if passes_failed:
         # A bare count sends you to the ledger; the slug sends you to the
         # provider that actually broke.
@@ -216,7 +311,8 @@ def colour_for(snap: dict) -> tuple[str, str]:
 
     if s == "recording":
         return "red", tip
-    if (failed or passes_failed or degraded or backlog > OUTBOX_BACKLOG_ALARM
+    if (failed or passes_failed or degraded or tx_degraded or silent_sources
+            or backlog > OUTBOX_BACKLOG_ALARM
             or s in ("not-ready", "error-partial", "error")
             or i in ("error",)
             or ((inbox.get("pending") or 0) and i != "ready-and-active")):
@@ -405,6 +501,7 @@ class QueueMenu:
         self.on_retry_item, self.on_retry_passes = on_retry_item, on_retry_passes
         self.queue_menu = self.item_queue = None
         self._queue_items = []
+        self._silent = {}
         self._queue_signature = None
         self._queue_rows = {}
         self._spinner_frame = 0
@@ -416,6 +513,12 @@ class QueueMenu:
             return
         for child in menu.get_children():
             menu.remove(child)
+            # Destroy, not just remove: submenu callbacks hold their parent row,
+            # and GTK keeps every Gtk.Menu alive in its own toplevel, so a removed
+            # row with a submenu is never collected (~20 KiB per row per rebuild).
+            destroy = getattr(child, "destroy", None)
+            if destroy is not None:
+                destroy()
         # A stage failure counts as an error even on a row whose ITEM state is
         # `complete`, which is the normal case: the audio parks successfully and
         # the note is written, minus the enrichment nobody was told was missing.
@@ -428,15 +531,19 @@ class QueueMenu:
                   if x.get("state") not in ("complete", "failed", "suspect")]
         completed = [x for x in self._queue_items if x.get("state") == "complete"]
         active = next((x for x in queued if x.get("active")), None)
+        silent = getattr(self, "_silent", None) or {}
+        silent_count = _as_int(silent.get("count"))
         if getattr(self, "item_queue", None) is not None:
             stage = STAGE_VERBS.get((active or {}).get("stage"), "Working") if active else "Idle"
             if active and active.get("progress_pct") is not None:
                 stage = f"{stage} {int(active['progress_pct'])}%"
             suffix = f" · {len(errors)} failed" if errors else ""
+            suffix += f" · {silent_count} silent" if silent_count else ""
             self.item_queue.set_label(f"Queue — {stage} · {len(queued)} remaining{suffix}")
-        summary = Gtk.MenuItem(
-            label=f"{len(queued)} queued · {len(completed)} done · {len(errors)} failed"
-        )
+        summary_text = f"{len(queued)} queued · {len(completed)} done · {len(errors)} failed"
+        if silent_count:
+            summary_text += f" · {silent_count} silent"
+        summary = Gtk.MenuItem(label=summary_text)
         summary.set_sensitive(False)
         menu.append(summary)
         if stage_failed:
@@ -463,13 +570,17 @@ class QueueMenu:
                 # first step of the diagnosis instead of a dead end.
                 tooltip = f"failed pass: {_slug_list(_failing_slugs(item), 4)}\n{tooltip}"
             if item.get("state") in ("failed", "suspect"):
-                tooltip = f"Click to retry this item.\n{tooltip}"
+                tooltip = f"Open for Retry / Skip.\n{tooltip}"
             elif _has_stage_failure(item):
                 tooltip = f"Click to retry the failed pass.\n{tooltip}"
             row.set_tooltip_text(tooltip)
             if (not item.get("active") and
-                    item.get("state") in ("failed", "suspect") and self.on_retry_item):
-                row.connect("activate", self._retry_item, item["item_id"])
+                    item.get("state") in ("failed", "suspect")):
+                # A submenu, not a click-to-retry: retry is not the only honest
+                # answer (a dead source needs Skip), and dbusmenu hosts never
+                # deliver right-clicks or tooltips, so the reason and both verbs
+                # have to be menu rows.
+                self._attach_failed_actions(row, item)
             elif not item.get("active") and _has_stage_failure(item) and self.on_retry_passes:
                 row.connect(
                     "activate", self._retry_passes, item["item_id"], tuple(_failing_slugs(item)),
@@ -482,10 +593,12 @@ class QueueMenu:
                 )
             elif (not item.get("active") and
                     item.get("state") not in ("complete", "failed", "suspect")):
-                row.connect("button-press-event", self._queue_right_click, item["item_id"])
+                self._attach_submenu(row, [("Skip (preserve audio)",
+                                            lambda r=row, i=item["item_id"]: self._skip_item(r, i))])
             else:
                 row.set_sensitive(False)
             menu.append(row)
+        self._render_silent(menu, silent)
         if completed:
             menu.append(Gtk.SeparatorMenuItem())
             clear = Gtk.MenuItem(label="Clear completed")
@@ -539,19 +652,83 @@ class QueueMenu:
         return True
 
 
-    def _queue_right_click(self, _widget, event, item_id: str):
-        if getattr(event, "button", 0) != 3:
-            return False
-        context = Gtk.Menu()
-        skip = Gtk.MenuItem(label="Skip (preserve audio)")
-        skip.connect("activate", lambda *_: self.on_skip and self.on_skip(item_id))
-        context.append(skip)
-        context.show_all()
-        context.popup_at_pointer(event)
-        return True
+    # -- per-row submenus (the only interaction dbusmenu reliably exports) -----
+    def _attach_submenu(self, row, entries) -> None:
+        """entries: (label, callback-or-None); None draws an insensitive info row."""
+        sub = Gtk.Menu()
+        for label, callback in entries:
+            child = Gtk.MenuItem(label=label)
+            if callback is None:
+                child.set_sensitive(False)
+            else:
+                child.connect("activate", lambda *_, cb=callback: cb())
+            sub.append(child)
+        sub.show_all()
+        row.set_submenu(sub)
 
-    def set_queue(self, items: list[dict]) -> None:
+    def _skip_item(self, row, item_id: str) -> None:
+        row.set_sensitive(False)
+        if self.on_skip:
+            self.on_skip(item_id)
+
+    def _attach_failed_actions(self, row, item: dict) -> None:
+        """Why, Retry, and Skip (unless the audio has no verified backup yet)."""
+        item_id = item["item_id"]
+        error = item.get("error") or {}
+        cause = error.get("cause_code") or item.get("cause_code") or ""
+        why = error.get("evidence") or cause or "no reason recorded (see `wax queue`)"
+        entries = [(f"Why: {_clip(why, 90)}", None)]
+        if self.on_retry_item:
+            entries.append(("Retry (re-archive and re-transcribe)",
+                            lambda: self._retry_item(row, item_id)))
+        if cause in durability_causes():
+            entries.append(("Skip unavailable: no verified backup yet (Retry re-archives)", None))
+        elif getattr(self, "on_skip", None):
+            entries.append(("Skip (preserve audio in skipped/)",
+                            lambda: self._skip_item(row, item_id)))
+        self._attach_submenu(row, entries)
+
+    def _render_silent(self, menu, silent: dict) -> None:
+        """Recordings parked as silent: not failures, but a source someone must fix."""
+        count = _as_int(silent.get("count"))
+        sources = [src for src in (silent.get("sources") or []) if isinstance(src, dict)]
+        if not count and not sources:
+            return
+        menu.append(Gtk.SeparatorMenuItem())
+        if count:
+            header = Gtk.MenuItem(label=f"🔇 {count} silent recording(s) parked, not transcribed "
+                                        "— check the mic/input")
+            header.set_sensitive(False)
+            menu.append(header)
+        # Drawn even with nothing parked: the source streak alone tints the icon
+        # yellow, so the menu must always say why.
+        for src in sources:
+            line = Gtk.MenuItem(label=f"⚠ source silent: {src.get('source') or 'unknown'} sent "
+                                      f"{_as_int(src.get('count'))} in a row, none audible since")
+            line.set_sensitive(False)
+            menu.append(line)
+        for rec in silent.get("recent") or []:
+            if not isinstance(rec, dict) or not rec.get("item_id"):
+                continue
+            row = Gtk.MenuItem(label=silent_label(rec))
+            levels = ""
+            if rec.get("mean_db") is not None:
+                levels = f"mean {rec['mean_db']} dB, peak {rec.get('max_db')} dB (speech is about -25 dB)"
+            entries = [(f"Silent: {levels or 'measured below the speech floor'}", None),
+                       (f"From: {rec.get('source') or 'unknown'} · parked in skipped/silent/, audio kept", None)]
+            if self.on_retry_item:
+                entries.append(("Transcribe anyway",
+                                lambda r=row, i=rec["item_id"]: self._retry_item(r, i)))
+            self._attach_submenu(row, entries)
+            menu.append(row)
+        if _as_int(silent.get("more")):
+            more = Gtk.MenuItem(label=f"+{_as_int(silent['more'])} more (wax status)")
+            more.set_sensitive(False)
+            menu.append(more)
+
+    def set_queue(self, items: list[dict], silent: dict | None = None) -> None:
         """Thread-safe queue-menu update; rebuild only when visible data changes."""
+        silent = silent if isinstance(silent, dict) else {}
         # The pass fields are part of the signature: a pass failing on an
         # otherwise unchanged row changes nothing else, so omitting them would
         # keep the stale "✓" rendered until some other field happened to move.
@@ -559,13 +736,21 @@ class QueueMenu:
             (x.get("item_id"), x.get("state"), x.get("active"), x.get("stage"),
              x.get("progress_pct"), x.get("progress_detail"), x.get("bytes"),
              x.get("duration_s"), x.get("md_path"),
-             _as_int(x.get("passes_failed")), tuple(_failing_slugs(x)))
+             _as_int(x.get("passes_failed")), tuple(_failing_slugs(x)),
+             failure_signature(x) if x.get("state") in ("failed", "suspect") else ())
             for x in items
+        ) + (
+            _as_int(silent.get("count")), _as_int(silent.get("more")),
+            tuple((r.get("item_id"), r.get("mean_db")) for r in (silent.get("recent") or [])
+                  if isinstance(r, dict)),
+            tuple((s.get("source"), s.get("count")) for s in (silent.get("sources") or [])
+                  if isinstance(s, dict)),
         )
         if signature == self._queue_signature:
             return
         self._queue_signature = signature
         self._queue_items = [dict(x) for x in items]
+        self._silent = dict(silent)
         GLib.idle_add(lambda: (self._render_queue(), False)[1])
 
 

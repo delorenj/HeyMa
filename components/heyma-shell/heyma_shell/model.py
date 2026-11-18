@@ -89,7 +89,9 @@ def verdict(inputs: Inputs) -> Verdict:
             degraded.append("wax")
         wax_lines = wax["tip"].splitlines()
         lines.append("Wax: " + wax_lines[0].replace("stream: ", ""))
-        lines.extend("  " + x for x in wax_lines[1:4])
+        # inbox, cause, then whatever is wrong (failed items with their causes,
+        # transcription degraded, a silent source): the terms worth a glance.
+        lines.extend("  " + x for x in wax_lines[1:7])
     if "vinyl" in shown and inputs.vinyl_snap is not None:
         vinyl = vinyl_verdict(inputs.vinyl_snap)
         dictating = vinyl["listening"]

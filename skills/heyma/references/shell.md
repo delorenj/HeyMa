@@ -30,7 +30,7 @@ GTK3 AppIndicator id `heyma`, title `HeyMa`, run by `/usr/bin/python3` (system g
 
 Dictation (runs `vinyl toggle`), Recording (runs `components/wax/bin/wax-toggle`, the hotkey's own entry point, so the notify-send feedback is identical), a separator, the submenus Wax, Vinyl, Telephony and Phonograph (each shown only when its adapter says installed), a separator, Settings… and Quit HeyMa.
 
-- **Wax**: status line, Queue (retry, skip, open transcript, clear completed), Open inbox, Settings…, Telephony….
+- **Wax**: status line, Queue, Open inbox, Settings…, Telephony…. The Queue lists failed and suspect rows as `⚠ Failed: <name> — <cause>: <reason>`. Each opens a submenu with `Why: <evidence>`, Retry, and Skip; Skip becomes an insensitive "no verified backup yet" row for `archive_failed`/`s3_reverify_failed`. Waiting rows get a Skip submenu, completed rows open the transcript, and Clear completed is at the bottom. Below the rows, recordings parked as silent (`snap["silent"]`) appear with their measured level, any `source silent` line, and **Transcribe anyway** (`wax retry <id>`). Every action is a menu row, because dbusmenu hosts (GNOME's AppIndicator) never show tooltips or deliver right-clicks.
 - **Vinyl**: status line with endpoint, Copy last trace reference, Vinyl settings… (`vinyl-settings`, found in `/usr/lib/vinyl/bin` or the checkout, for now).
 - **Telephony**: status, Silence local ringer, Open Telephony page. The ringer (`wax.telephony_presentation.Ringer`) lives in this process and reads `telephony` from `var/state.json`.
 - **Phonograph**: health line, Open Phonograph (`xdg-open`).

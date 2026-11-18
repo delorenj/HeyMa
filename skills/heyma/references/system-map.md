@@ -65,7 +65,7 @@ Item states in the ledger: `pending`, `archived`, `transcribed`, `enrichment_pen
 
 ## Tray colors
 
-Red while recording (flashing yellow if the input is silent). Yellow for failed queue items, failed passes, degraded diarization, an outbox backlog over 50, a not-ready or error stream, an inbox error, pending work while not active, or a stopped inbox. Otherwise green. Operator-disabled passes show in the tooltip only. A green tray still proves nothing.
+Red while recording (flashing yellow if the input is silent). Yellow for failed queue items (the tooltip names their causes), failed passes, degraded diarization, degraded transcription (the newest recordings produced no transcript), a source that keeps sending silent recordings, an outbox backlog over 50, a not-ready or error stream, an inbox error, pending work while not active, or a stopped inbox. Otherwise green. Operator-disabled passes and parked silent recordings from no persistently silent source show in the tooltip only. A green tray still proves nothing.
 
 ## Shims and pins
 

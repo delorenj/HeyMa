@@ -206,7 +206,7 @@ def main():
             colour, tip = tray.colour_for(snap)
             indicator.set(colour, tip, (snap.get("stream") or {}).get("state") == "recording",
                           flash=tray.flash_for(snap))
-            indicator.set_queue(snap.get("tray_items") or [])
+            indicator.set_queue(snap.get("tray_items") or [], snap.get("silent"))
             ringer.tick(snap.get("telephony"), datetime.now(timezone.utc))
         except (OSError, ValueError, TypeError):
             ringer.tick(None, datetime.now(timezone.utc))

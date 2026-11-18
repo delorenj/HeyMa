@@ -61,6 +61,12 @@ class FakeMenuItem:
     def set_tooltip_text(self, tooltip):
         self.tooltip = tooltip
 
+    def set_submenu(self, submenu):
+        self.submenu = submenu
+
+    def destroy(self):
+        self.destroyed = True
+
     def connect(self, signal, callback, *args):
         self.signals[signal] = (callback, args)
 
@@ -181,18 +187,21 @@ class TrayIconTest(unittest.TestCase):
         self.assertTrue(issubclass(self.tray.Tray, host) and issubclass(self.tray.Tray, queue))
         self.assertEqual((self.tray.Tray.INDICATOR_ID, self.tray.Tray.TITLE), ("wax", "Wax"))
 
-    def render_queue(self, items):
+    def render_queue(self, items, silent=None):
         subject = self.tray.Tray.__new__(self.tray.Tray)
         subject.queue_menu = FakeMenu()
         subject.item_queue = FakeMenuItem()
         subject._queue_items = items
+        subject._silent = silent or {}
         subject._queue_rows = {}
         subject._spinner_frame = 0
         subject.on_retry_item = MagicMock()
         subject.on_retry_passes = MagicMock()
         subject.on_open_transcript = MagicMock()
         subject.on_clear_completed = MagicMock()
+        subject.on_skip = MagicMock()
         fake_gtk = types.SimpleNamespace(
+            Menu=FakeMenu,
             MenuItem=FakeMenuItem,
             SeparatorMenuItem=FakeSeparatorMenuItem,
         )
@@ -200,22 +209,179 @@ class TrayIconTest(unittest.TestCase):
             subject._render_queue()
         return subject
 
-    def test_clicking_failed_item_invokes_item_retry_and_disables_row(self):
+    @staticmethod
+    def submenu_labels(row):
+        return [child.label for child in row.submenu.children]
+
+    @staticmethod
+    def submenu_row(row, prefix):
+        return next(child for child in row.submenu.children if child.label.startswith(prefix))
+
+    def test_failed_item_submenu_says_why_and_offers_retry_and_skip(self):
         subject = self.render_queue([{
             "item_id": "failed-item",
-            "orig_name": "failed.ogg",
+            "orig_name": "memo.m4a",
             "state": "failed",
             "active": False,
-            "error": {"cause_code": "archive_failed"},
+            "error": {"cause_code": "transcribe_failed",
+                      "evidence": "EMPTY TRANSCRIPT from 384.5s of audio; not published"},
         }])
 
         row = subject._queue_rows["failed-item"]
-        self.assertIn("Click to retry this item.", row.tooltip)
-        row.activate()
+        # The reason is in the LABEL: dbusmenu hosts drop tooltips.
+        self.assertIn("— transcribe_failed: EMPTY TRANSCRIPT", row.label)
+        labels = self.submenu_labels(row)
+        self.assertTrue(labels[0].startswith("Why: EMPTY TRANSCRIPT from 384.5s"))
+        self.assertFalse(row.submenu.children[0].sensitive)
 
+        self.submenu_row(row, "Retry").activate()
         self.assertFalse(row.sensitive)
         subject.on_retry_item.assert_called_once_with("failed-item")
+
+        self.submenu_row(row, "Skip").activate()
+        subject.on_skip.assert_called_once_with("failed-item")
         subject.on_retry_passes.assert_not_called()
+
+    def test_failed_item_without_a_verified_backup_is_never_offered_skip(self):
+        subject = self.render_queue([{
+            "item_id": "no-backup",
+            "orig_name": "memo.m4a",
+            "state": "failed",
+            "active": False,
+            "error": {"cause_code": "archive_failed", "evidence": "S3 upload failed"},
+        }])
+
+        row = subject._queue_rows["no-backup"]
+        skip = self.submenu_row(row, "Skip")
+        self.assertIn("no verified backup", skip.label)
+        self.assertFalse(skip.sensitive)
+        self.assertNotIn("activate", skip.signals)
+        self.submenu_row(row, "Retry").activate()
+        subject.on_retry_item.assert_called_once_with("no-backup")
+
+    def test_waiting_row_skip_is_a_submenu_not_a_right_click(self):
+        subject = self.render_queue([{
+            "item_id": "waiting", "orig_name": "w.m4a", "state": "pending", "active": False,
+        }])
+        row = subject._queue_rows["waiting"]
+        self.assertNotIn("button-press-event", row.signals)
+        self.submenu_row(row, "Skip").activate()
+        subject.on_skip.assert_called_once_with("waiting")
+
+    def test_silent_recordings_are_listed_with_levels_and_transcribe_anyway(self):
+        silent = {
+            "count": 2, "more": 0,
+            "sources": [{"source": "dropoff", "count": 2}],
+            "recent": [
+                {"item_id": "s1", "orig_name": "a.m4a", "duration_s": 4748.7,
+                 "mean_db": -79.5, "max_db": -40.1, "source": "dropoff"},
+                {"item_id": "s2", "orig_name": "b.m4a", "duration_s": 61,
+                 "mean_db": -81.9, "max_db": -53.5, "source": "dropoff"},
+            ],
+        }
+        subject = self.render_queue([], silent=silent)
+        labels = [child.label for child in subject.queue_menu.children]
+
+        self.assertIn("0 queued · 0 done · 0 failed · 2 silent", labels[0])
+        self.assertTrue(any("2 silent recording(s) parked" in x and "check the mic" in x
+                            for x in labels))
+        self.assertTrue(any("source silent: dropoff sent 2 in a row" in x for x in labels))
+        row = next(c for c in subject.queue_menu.children if c.label.startswith("🔇 a.m4a"))
+        self.assertEqual(row.label, "🔇 a.m4a  (79:08 · mean -80 dB)")
+        self.assertIn("mean -79.5 dB, peak -40.1 dB", self.submenu_labels(row)[0])
+        self.submenu_row(row, "Transcribe anyway").activate()
+        subject.on_retry_item.assert_called_once_with("s1")
+        self.assertIn("2 silent", subject.item_queue.label)
+
+    def test_no_silent_section_when_nothing_is_parked(self):
+        subject = self.render_queue([], silent={"count": 0})
+        self.assertEqual(len(subject.queue_menu.children), 1)
+        self.assertNotIn("silent", subject.queue_menu.children[0].label)
+
+    def test_failed_tooltip_names_causes_and_outcome_terms_tint_yellow(self):
+        colour, tip = self.tray.colour_for({
+            "stream": {"state": "ready"}, "inbox": {"state": "error"},
+            "queue": {"failed": 3},
+            "failed": [{"cause_code": "transcribe_failed"}] * 2 + [{"cause_code": "archive_failed"}],
+        })
+        self.assertEqual(colour, "yellow")
+        self.assertIn("failed items: 3 (transcribe_failed x2, archive_failed x1)", tip)
+
+        for extra, expected in (
+            ({"transcription": {"degraded": True, "newest_failed": ["a", "b", "c"]}},
+             "transcription degraded: newest 3 recording(s) produced no transcript"),
+            ({"silent": {"count": 5, "sources": [{"source": "dropoff", "count": 5}]}},
+             "source silent: dropoff sent 5 silent recording(s) in a row"),
+        ):
+            with self.subTest(extra=extra):
+                colour, tip = self.tray.colour_for({
+                    "stream": {"state": "ready"}, "inbox": {"state": "ready-and-waiting"}, **extra})
+                self.assertEqual(colour, "yellow")
+                self.assertIn(expected, tip)
+
+    def test_parked_silence_without_a_silent_source_is_named_but_stays_green(self):
+        colour, tip = self.tray.colour_for({
+            "stream": {"state": "ready"}, "inbox": {"state": "ready-and-waiting"},
+            "silent": {"count": 1, "sources": []},
+        })
+        self.assertEqual(colour, "green")
+        self.assertIn("silent recordings parked: 1 (not transcribed)", tip)
+
+    def test_rebuild_destroys_old_rows_so_submenus_cannot_leak(self):
+        items = [{"item_id": "f", "orig_name": "m.m4a", "state": "failed", "active": False,
+                  "error": {"cause_code": "transcribe_failed", "evidence": "x"}}]
+        subject = self.render_queue(items)
+        old = list(subject.queue_menu.children)
+        fake_gtk = types.SimpleNamespace(Menu=FakeMenu, MenuItem=FakeMenuItem,
+                                         SeparatorMenuItem=FakeSeparatorMenuItem)
+        with patch.object(self.tray, "Gtk", fake_gtk):
+            subject._render_queue()
+        self.assertTrue(all(getattr(child, "destroyed", False) for child in old))
+
+    def test_cause_histogram_never_reads_a_sample_as_the_total(self):
+        _, tip = self.tray.colour_for({
+            "stream": {"state": "ready"}, "inbox": {"state": "error"}, "queue": {"failed": 12},
+            "failed": [{"cause_code": "transcribe_failed"}] * 5, "failed_more": 7,
+        })
+        self.assertIn("failed items: 12 (transcribe_failed x5, +7 more)", tip)
+
+    def test_silent_source_is_explained_even_with_nothing_parked(self):
+        subject = self.render_queue([], silent={"count": 0,
+                                                "sources": [{"source": "dropoff", "count": 3}]})
+        labels = [child.label for child in subject.queue_menu.children]
+        self.assertTrue(any("source silent: dropoff sent 3 in a row" in x for x in labels))
+
+    def test_long_names_are_clipped_so_the_reason_survives(self):
+        label = self.tray.queue_label({
+            "item_id": "t", "orig_name": "telnyx-" + "a" * 160 + ".mp3", "state": "failed",
+            "active": False, "error": {"cause_code": "asr_empty_output", "evidence": "no words"},
+        })
+        self.assertIn("— asr_empty_output: no words", label)
+        self.assertLess(len(label), 140)
+
+    def test_same_cause_new_failure_still_rebuilds(self):
+        subject = self.tray.Tray.__new__(self.tray.Tray)
+        subject._queue_signature = None
+        subject._queue_items, subject._silent = [], {}
+        row = {"item_id": "f", "state": "failed", "error": {"cause_code": "c", "evidence": "e",
+                                                            "at": "t1"}}
+        glib = types.SimpleNamespace(idle_add=MagicMock())
+        with patch.object(self.tray, "GLib", glib):
+            subject.set_queue([row])
+            subject.set_queue([dict(row, error={**row["error"], "at": "t2"})])
+        self.assertEqual(glib.idle_add.call_count, 2)
+
+    def test_set_queue_rebuilds_when_only_the_silent_list_changes(self):
+        subject = self.tray.Tray.__new__(self.tray.Tray)
+        subject._queue_signature = None
+        subject._queue_items, subject._silent = [], {}
+        glib = types.SimpleNamespace(idle_add=MagicMock())
+        with patch.object(self.tray, "GLib", glib):
+            subject.set_queue([], {"count": 0})
+            subject.set_queue([], {"count": 0})
+            subject.set_queue([], {"count": 1, "recent": [{"item_id": "s1", "mean_db": -80}]})
+        self.assertEqual(glib.idle_add.call_count, 2)
+        self.assertEqual(subject._silent["count"], 1)
 
     def test_clicking_failed_pass_retries_only_that_rows_passes(self):
         subject = self.render_queue([{

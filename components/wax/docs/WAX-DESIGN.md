@@ -540,13 +540,17 @@ Consequences baked into the design:
 - Tray registration failure sets `tray.registered=false` and fires `notify-send` — it **never** blocks recording and **never** puts the stream machine in `error`. A daemon that refuses to record because its icon didn't load is worse than no icon. (The candidate design had exactly this bug: sticky `error` on tray failure, reported only via the tray that just failed.)
 - YELLOW alone is not the failure channel. `waxd.service` gets `OnFailure=wax-alert.service` (a `notify-send` + `ntfy` one-liner), so a crash-looping daemon is visible even with no icon.
 
-Icon mapping (precedence, evaluated on every generation bump): `stream==recording` → **RED** (you must always be able to see you are recording, even if the pipeline is on fire); elif `stream ∈ {not-ready, error-partial, error}` OR `inbox ∈ {error, stopped}` OR `failed>0` OR `passes.failed>0` OR `diarization.degraded` OR `outbox_backlog > OUTBOX_BACKLOG_ALARM` (=50) OR last S3 archive failed → **YELLOW**; else **GREEN**. The `passes`/`diarization` terms are load-bearing, not decoration: `failed` tallies ITEM states and the worker marks an item `complete` ~215 ms after recording a pass failure, so before they existed a sub-stage at 100% failure was *structurally unrepresentable* here and the icon stayed green for five days. Tooltip carries both state strings + `cause_code`. The exact PNG assets live in `components/wax/assets/tray/` and are resolved from the component root, never from a manually installed user icon theme. All GTK mutation from worker threads goes through `GLib.idle_add`.
+Icon mapping (precedence, evaluated on every generation bump): `stream==recording` → **RED** (you must always be able to see you are recording, even if the pipeline is on fire); elif `stream ∈ {not-ready, error-partial, error}` OR `inbox ∈ {error, stopped}` OR `failed>0` OR `passes.failed>0` OR `diarization.degraded` OR `transcription.degraded` OR `silent.sources` non-empty (a source sent silent recordings in a row) OR `outbox_backlog > OUTBOX_BACKLOG_ALARM` (=50) OR last S3 archive failed → **YELLOW**; else **GREEN**. The `passes`/`diarization` terms are load-bearing, not decoration: `failed` tallies ITEM states and the worker marks an item `complete` ~215 ms after recording a pass failure, so before they existed a sub-stage at 100% failure was *structurally unrepresentable* here and the icon stayed green for five days. Tooltip carries both state strings + `cause_code`. The exact PNG assets live in `components/wax/assets/tray/` and are resolved from the component root, never from a manually installed user icon theme. All GTK mutation from worker threads goes through `GLib.idle_add`.
 
-Failure rows are controls, not dead status text. Activating a failed or suspect
-inbox item records an explicit retry and requeues that preserved audio; activating
-a completed item with failed enrichment passes reruns only the failed passes shown
-on that row. The row disables immediately so a double click cannot mint duplicate
-attempts, and the daemon performs the retry off the GTK thread.
+Failure rows are controls, not dead status text. A failed or suspect inbox item's
+label carries its cause and reason, and its submenu offers `Why:` (the evidence),
+Retry (an explicit retry that requeues the preserved audio) and Skip (never offered
+when the audio has no verified backup). Activating a completed item with failed
+enrichment passes reruns only the failed passes shown on that row. Recordings
+parked as silent are listed with their level and a Transcribe anyway action. Every
+action is a menu row because dbusmenu hosts drop tooltips and right-clicks. The row
+disables immediately so a double click cannot mint duplicate attempts, and the
+daemon performs the retry off the GTK thread.
 
 Pattern (not package) copied from `/home/delorenj/.local/share/vocalinux-install/src/vocalinux/ui/tray_indicator.py`: the `AppIndicator3` → `AyatanaAppIndicator3` import fallback (:17-26), `Indicator.new_with_path()` + `set_icon_theme_path` + `set_status(ACTIVE)` (:194-201), the `StatusNotifierWatcher` preflight probe over `Gio.DBusProxy` (:245-270), `set_icon_full(name, tooltip)` (:408-435). (Its `keyboard_backends/evdev_backend.py` was to be the model for the hotkey loop — moot, since that loop was never built; see above.)
 
