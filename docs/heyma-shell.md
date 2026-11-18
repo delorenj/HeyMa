@@ -105,6 +105,10 @@ never stops that product's service.
    Mac cannot show the Wax queue on big-chungus. A token-authenticated, read-only
    tailnet endpoint would fix that. It is out of the first cut.
 
+## Status
+
+S1 and S2 are built (2026-11-18): `components/heyma-shell/`, `heyma status [--json]`, `heyma tray`, `heyma-tray.service`, `WAX_TRAY=off`. Operator route: `skills/heyma/references/shell.md`.
+
 ## Stories (epic: HeyMa shell)
 
 | # | Story | Host | Needs a Mac build |

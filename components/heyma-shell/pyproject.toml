@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "heyma-shell"
+version = "0.1.0"
+description = "HeyMa shell: the component registry and the one Linux tray for Wax, Vinyl, Telephony and Phonograph"
+requires-python = ">=3.11"
+# Stdlib only. The tray additionally needs the system gi (GTK3 + AyatanaAppIndicator3),
+# which is why it runs under /usr/bin/python3 and never a venv.
+dependencies = []
+
+[tool.setuptools]
+packages = ["heyma_shell"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "../wax/src"]
+testpaths = ["tests"]

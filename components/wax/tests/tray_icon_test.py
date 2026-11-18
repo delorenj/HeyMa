@@ -168,6 +168,19 @@ class TrayIconTest(unittest.TestCase):
         uri = self.tray.obsidian_uri("/home/me/My Vault/a note.md")
         self.assertEqual(uri, "obsidian://open?path=/home/me/My%20Vault/a%20note.md")
 
+    def test_registration_matches_the_exact_indicator_id(self):
+        registered = self.tray.registered_as
+        self.assertTrue(registered("heyma", ":1.9@/org/ayatana/NotificationItem/heyma"))
+        self.assertTrue(registered("wax", ":1.9@/org/ayatana/NotificationItem/wax"))
+        self.assertFalse(registered("wax", ":1.9@/org/ayatana/NotificationItem/heyma-wax"))
+        self.assertFalse(registered("vinyl", ":1.9@/org/ayatana/NotificationItem/heyma"))
+        self.assertFalse(registered("heyma", ":1.9@/StatusNotifierItem"))
+
+    def test_both_trays_share_one_indicator_lifecycle(self):
+        host, queue = self.tray.IndicatorHost, self.tray.QueueMenu
+        self.assertTrue(issubclass(self.tray.Tray, host) and issubclass(self.tray.Tray, queue))
+        self.assertEqual((self.tray.Tray.INDICATOR_ID, self.tray.Tray.TITLE), ("wax", "Wax"))
+
     def render_queue(self, items):
         subject = self.tray.Tray.__new__(self.tray.Tray)
         subject.queue_menu = FakeMenu()
@@ -296,7 +309,7 @@ class TrayProcessDisplayTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         import os
-        for key in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"):
+        for key in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "WAX_TRAY"):
             os.environ.pop(key, None)
 
     def test_late_display_spawns_tray_on_retry(self):
@@ -315,6 +328,46 @@ class TrayProcessDisplayTest(unittest.TestCase):
         self.assertEqual(subject.reason, "starting")
         self.assertEqual(popen.call_args.kwargs["env"]["WAYLAND_DISPLAY"], "wayland-0")
         self.assertEqual(os.environ["WAYLAND_DISPLAY"], "wayland-0")
+
+    def test_tray_is_on_unless_switched_off(self):
+        for value in ("", "on", "1", "anything"):
+            with self.subTest(value=value):
+                self.assertTrue(self.mod.tray_enabled({"WAX_TRAY": value}))
+        self.assertTrue(self.mod.tray_enabled({}))
+        for value in ("off", "OFF", "0", "false", "no", " heyma ", "external"):
+            with self.subTest(value=value):
+                self.assertFalse(self.mod.tray_enabled({"WAX_TRAY": value}))
+
+    def test_switched_off_spawns_nothing_and_reports_healthy(self):
+        import os
+        os.environ["WAX_TRAY"] = "off"
+        subject = self.mod.TrayProcess()
+        with patch.object(self.mod, "session_env", return_value={"WAYLAND_DISPLAY": "wayland-0"}), \
+                patch.object(self.mod.subprocess, "Popen") as popen:
+            subject.poll()
+        popen.assert_not_called()
+        # waxd's `tray_unavailable` condition keys on available/reason, and the
+        # icon is not missing: the HeyMa tray owns it.
+        self.assertTrue(subject.available)
+        self.assertEqual(subject.reason, self.mod.EXTERNAL_REASON)
+
+    def test_switching_off_stops_a_tray_child_already_running(self):
+        import os
+        subject = self.mod.TrayProcess()
+        child = MagicMock()
+        child.poll.return_value = None
+        subject.child = child
+        os.environ["WAX_TRAY"] = "off"
+        subject.poll()
+        child.terminate.assert_called_once()
+        self.assertIsNone(subject.child)
+
+    def test_default_without_the_switch_still_spawns_the_wax_tray(self):
+        subject = self.mod.TrayProcess()
+        with patch.object(self.mod, "session_env", return_value={"WAYLAND_DISPLAY": "wayland-0"}), \
+                patch.object(self.mod.subprocess, "Popen") as popen:
+            subject.poll()
+        popen.assert_called_once()
 
     def test_session_env_reads_the_user_manager(self):
         out = "PATH=/usr/bin\nDISPLAY=:0\nWAYLAND_DISPLAY=wayland-0\nXAUTHORITY=/run/user/1000/x\n"

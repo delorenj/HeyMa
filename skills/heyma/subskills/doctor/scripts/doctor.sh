@@ -619,8 +619,8 @@ chk_tray_registered() {
     --object-path /StatusNotifierWatcher \
     --method org.freedesktop.DBus.Properties.Get \
     org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null |
-    grep -q 'wax' && return 0
-  echo "no wax item on the StatusNotifierWatcher bus — usually a locked screen (GNOME drops the watcher; tray.py rebuilds on return)."
+    grep -qE 'NotificationItem/(wax|heyma)' && return 0
+  echo "no wax or heyma item on the StatusNotifierWatcher bus — usually a locked screen (GNOME drops the watcher; tray.py rebuilds on return)."
   return 2
 }
 chk_tray_icons_present() {

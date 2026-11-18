@@ -14,6 +14,15 @@ from pathlib import Path
 # removes its PipeWire source graph.
 UNITS = ("waxd.service", "wax-alert.service", "wax-capture-guard.service", "wax-calls-sync.service")
 
+# The HeyMa shell's tray replaces two icons (waxd's tray child and the deb-owned
+# vinyl-tray.service) with one. Its unit template lives with its code, and the
+# waxd drop-in is what tells waxd to stand its own tray down. All three of these
+# are skipped by --no-heyma-tray, for a host that should keep the Wax tray.
+HEYMA_TRAY_UNIT = "heyma-tray.service"
+WAXD_TRAY_DROPIN = "10-heyma-tray.conf"
+VINYL_TRAY_UNIT = "vinyl-tray.service"
+VINYL_TRAY_PACKAGED = Path("/usr/lib/systemd/user") / VINYL_TRAY_UNIT
+
 
 def locations():
     component = next(
@@ -34,7 +43,10 @@ def systemd_quote(value) -> str:
 def render_unit(name: str, component=None, repo=None) -> str:
     if component is None or repo is None:
         component, repo = locations()
-    template = component / "deploy" / "systemd" / "user" / name
+    if name == HEYMA_TRAY_UNIT:
+        template = repo / "components" / "heyma-shell" / "deploy" / "systemd" / "user" / name
+    else:
+        template = component / "deploy" / "systemd" / "user" / name
     documentation_uri = (component / "docs" / "WAX-DESIGN.md").as_uri()
     return (
         template.read_text()
@@ -42,6 +54,9 @@ def render_unit(name: str, component=None, repo=None) -> str:
         # percent escape after unit parsing (%% -> literal %).
         .replace("@WAX_DOCUMENTATION_URI@", documentation_uri.replace("%", "%%"))
         .replace("@WAX_EXEC_START@", systemd_quote(repo / "bin" / "waxd"))
+        .replace("@HEYMA_SHELL_DOC_URI@",
+                 (repo / "docs" / "heyma-shell.md").as_uri().replace("%", "%%"))
+        .replace("@HEYMA_EXEC_START@", f"{systemd_quote(repo / 'bin' / 'heyma')} tray")
         .replace("@WAX_EXEC_QUIESCE@",
                  f"{systemd_quote(repo / 'bin' / 'wax')} rec quiesce --json")
         .replace("@WAX_EXEC_CALLS_SYNC@",
@@ -56,17 +71,37 @@ def render_unit(name: str, component=None, repo=None) -> str:
     )
 
 
+def render_dropin(name: str = WAXD_TRAY_DROPIN, component=None) -> str:
+    """A waxd.service.d drop-in, verbatim (it holds no path to relocate)."""
+    if component is None:
+        component, _ = locations()
+    return (component / "deploy" / "systemd" / "user" / "waxd.service.d" / name).read_text()
+
+
+def units_for(heyma_tray: bool) -> tuple:
+    return UNITS + ((HEYMA_TRAY_UNIT,) if heyma_tray else ())
+
+
 def render(component=None, repo=None) -> str:
     """waxd.service alone — the original entry point, kept for existing callers."""
     return render_unit("waxd.service", component, repo)
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--no-heyma-tray", action="store_true",
+        help="keep waxd's own tray: install no heyma-tray.service, no waxd WAX_TRAY=off "
+             "drop-in, and leave vinyl-tray.service alone")
+    parser.add_argument(
+        "--keep-vinyl-tray", action="store_true",
+        help="install the HeyMa tray but do not mask the deb-owned vinyl-tray.service")
     args = parser.parse_args()
+    heyma_tray = not args.no_heyma_tray
+    names = units_for(heyma_tray)
     target_dir = Path.home() / ".config" / "systemd" / "user"
-    for name in UNITS:
+    for name in names:
         rendered = render_unit(name)
         if args.dry_run:
             print(rendered, end="")
@@ -75,15 +110,34 @@ def main():
         target = target_dir / name
         target.write_text(rendered)
         print(target)
+    if heyma_tray:
+        dropin = render_dropin()
+        if args.dry_run:
+            print(dropin, end="")
+        else:
+            dropin_dir = target_dir / "waxd.service.d"
+            dropin_dir.mkdir(parents=True, exist_ok=True)
+            (dropin_dir / WAXD_TRAY_DROPIN).write_text(dropin)
+            print(dropin_dir / WAXD_TRAY_DROPIN)
     if args.dry_run:
         return
     # Writing the file never moves its enablement: waxd's template switched to
     # WantedBy=default.target while the July symlink kept it in
     # graphical-session.target.wants, starting it in the same instant as the
     # compositor. reenable re-derives the links from the [Install] just written.
+    # `enable` and `reenable` start and restart nothing, so this stays safe to run
+    # while a recording is in flight; waxd picks up its drop-in at its next restart.
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
-    installable = [name for name in UNITS if "[Install]" in render_unit(name)]
+    installable = [name for name in names if "[Install]" in render_unit(name)]
     subprocess.run(["systemctl", "--user", "reenable", *installable], check=False)
+    if heyma_tray and not args.keep_vinyl_tray and VINYL_TRAY_PACKAGED.is_file():
+        # vinyl-tray.service is owned by the vinyl deb (/usr/lib/systemd/user), so
+        # it cannot be deleted or edited, and `disable` is undone by every package
+        # upgrade. A mask is a symlink to /dev/null in ~/.config: it survives
+        # upgrades, stops the running icon now, and is idempotent. Undo with
+        # `systemctl --user unmask vinyl-tray.service`.
+        subprocess.run(["systemctl", "--user", "mask", "--now", VINYL_TRAY_UNIT], check=False)
+        print(f"masked {VINYL_TRAY_UNIT} (the HeyMa tray replaces it)")
 
 
 if __name__ == "__main__":

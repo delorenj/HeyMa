@@ -181,6 +181,41 @@ class PortabilityTest(unittest.TestCase):
         self.assertIn(str(COMPONENT_ROOT / "docs/WAX-DESIGN.md"), result.stdout)
         self.assertNotIn("@WAX_", result.stdout)
 
+    def run_installer_dry(self, *flags):
+        return subprocess.run([str(COMPONENT_ROOT / "deploy/install-systemd-user"), "--dry-run", *flags],
+                              cwd="/tmp", capture_output=True, text=True, check=True).stdout
+
+    def test_installer_ships_the_heyma_tray_and_stands_waxd_tray_down(self):
+        out = self.run_installer_dry()
+        repo = COMPONENT_ROOT.parents[1]
+        self.assertIn("Description=HeyMa tray", out)
+        self.assertIn(f'ExecStart="{repo / "bin/heyma"}" tray', out)
+        self.assertIn("WantedBy=graphical-session.target", out)
+        self.assertIn("PartOf=graphical-session.target", out)
+        self.assertIn("Environment=WAX_TRAY=off", out)
+        self.assertNotIn("@HEYMA_", out)
+
+    def test_waxd_unit_itself_keeps_its_tray_by_default(self):
+        installer = load_systemd_installer()
+        self.assertNotIn("WAX_TRAY", installer.render(COMPONENT_ROOT, COMPONENT_ROOT.parents[1]))
+
+    def test_installer_opt_out_leaves_waxd_tray_alone(self):
+        out = self.run_installer_dry("--no-heyma-tray")
+        self.assertNotIn("HeyMa tray", out)
+        self.assertNotIn("WAX_TRAY", out)
+
+    def test_installer_only_ever_issues_non_restarting_systemctl_verbs(self):
+        import ast
+        tree = ast.parse((COMPONENT_ROOT / "deploy/install-systemd-user").read_text())
+        verbs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List) and len(node.elts) >= 3 \
+                    and [getattr(e, "value", None) for e in node.elts[:2]] == ["systemctl", "--user"]:
+                verbs.add(node.elts[2].value)
+        # enable and mask never start a unit that is not running, and daemon-reload
+        # touches nothing: running the installer mid-recording is safe.
+        self.assertEqual(verbs, {"daemon-reload", "reenable", "mask"})
+
     def test_systemd_render_handles_spaces_and_special_characters(self):
         installer = load_systemd_installer()
         with tempfile.TemporaryDirectory(prefix="Hey Ma #100% $") as directory:

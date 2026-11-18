@@ -73,6 +73,16 @@ STAGE_VERBS = {
 }
 
 
+def registered_as(indicator_id: str, item: str) -> bool:
+    """Is this StatusNotifier registration string the indicator `indicator_id`?
+
+    libappindicator exports `/org/ayatana/NotificationItem/<id>`, and the watcher
+    lists it as `<bus-name>@<path>`. Match the id as the final path segment: a
+    substring test would let "wax" claim "heyma-wax" (or a foreign item).
+    """
+    return item.rstrip("/").rsplit("/", 1)[-1] == indicator_id
+
+
 def format_bytes(value) -> str:
     """Compact binary size for queue rows."""
     try:
@@ -246,69 +256,33 @@ def clear_stage_failure(slug: str | None = None) -> None:
     """Re-arm the desktop alarm for `slug` after a recovery (all when None)."""
     desktop.clear_stage_failure(slug)
 
+class IndicatorHost:
+    """The StatusNotifier lifecycle every HeyMa tray shares.
 
-class Tray:
-    def __init__(self, on_toggle=None, on_quit=None, on_open=None,
-                 on_skip=None, on_clear_completed=None, on_open_transcript=None,
-                 on_retry_item=None, on_retry_passes=None, on_settings=None,
-                 on_telephony=None, on_silence=None):
-        _load_gtk()
-        self.on_settings = on_settings
-        self.on_telephony, self.on_silence = on_telephony, on_silence
-        self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
-        self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
-        self.on_open_transcript = on_open_transcript
-        self.on_retry_item, self.on_retry_passes = on_retry_item, on_retry_passes
-        self.indicator = None
-        self.registered = False
-        self._colour = None
-        self._tip = ""
-        self._flash = None
-        self._flash_on = False
-        self._queue_items = []
-        self._queue_signature = None
-        self._queue_rows = {}
-        self._spinner_frame = 0
-        self._build()
-        self._watch_bus()
-        GLib.timeout_add(250, self._animate_queue)
-        GLib.timeout_add(500, self._blink)
+    waxd's own tray (`Tray`) and the HeyMa shell's one tray (`heyma_shell`) both
+    ride this class, so the three lessons in the module docstring are learned
+    once. A subclass supplies INDICATOR_ID, TITLE, `_menu()`, `_drop_menu_refs()`
+    and `_reapply()`; it must set `self.indicator = None`, `self.registered =
+    False`, `self._colour`, `self._tip`, `self._flash` and `self._flash_on`
+    before calling `_build()`.
+    """
 
-    # -- construction ----------------------------------------------------
-    def _menu(self) -> Gtk.Menu:
-        m = Gtk.Menu()
-        self.item_toggle = Gtk.MenuItem(label="Start recording")
-        self.item_toggle.connect("activate", lambda *_: self.on_toggle and self.on_toggle())
-        m.append(self.item_toggle)
+    INDICATOR_ID = "wax"
+    TITLE = "Wax"
+    ICON_DIR = ICON_DIR
+    ICONS = ICONS
+    UNAVAILABLE_HINT = "Recording still works; use `wax status`."
 
-        self.item_status = Gtk.MenuItem(label="…")
-        self.item_status.set_sensitive(False)
-        m.append(self.item_status)
+    def _menu(self):
+        raise NotImplementedError
 
-        self.item_queue = Gtk.MenuItem(label="Queue")
-        self.queue_menu = Gtk.Menu()
-        self.item_queue.set_submenu(self.queue_menu)
-        m.append(self.item_queue)
-        self._render_queue()
+    def _drop_menu_refs(self) -> None:
+        """Forget every widget that lives in the old menu."""
 
-        m.append(Gtk.SeparatorMenuItem())
-        op = Gtk.MenuItem(label="Open inbox")
-        op.connect("activate", lambda *_: self.on_open and self.on_open())
-        m.append(op)
-        st = Gtk.MenuItem(label="Settings…")
-        st.connect("activate", lambda *_: self.on_settings and self.on_settings())
-        m.append(st)
-        phone = Gtk.MenuItem(label="Telephony…")
-        phone.connect("activate", lambda *_: self.on_telephony and self.on_telephony())
-        m.append(phone)
-        silence = Gtk.MenuItem(label="Silence local ringtone")
-        silence.connect("activate", lambda *_: self.on_silence and self.on_silence())
-        m.append(silence)
-        q = Gtk.MenuItem(label="Quit waxd")
-        q.connect("activate", lambda *_: self.on_quit and self.on_quit())
-        m.append(q)
-        m.show_all()
-        return m
+    def _reapply(self) -> None:
+        """Repaint the last known state onto a freshly built indicator."""
+        if self._colour:
+            self.set(self._colour, self._tip)
 
     def _teardown(self) -> None:
         """Release the old indicator so its D-Bus path is free for the rebuild.
@@ -319,7 +293,7 @@ class Tray:
         already tried (and failed) to claim the path.
         """
         ind, self.indicator = self.indicator, None
-        self.item_toggle = self.item_status = self.item_queue = self.queue_menu = None
+        self._drop_menu_refs()
         if ind is not None:
             try:
                 ind.set_status(AppIndicator.IndicatorStatus.PASSIVE)
@@ -332,15 +306,16 @@ class Tray:
         self._teardown()
         try:
             self.indicator = AppIndicator.Indicator.new_with_path(
-                "wax", ICONS["green"], AppIndicator.IndicatorCategory.APPLICATION_STATUS, str(ICON_DIR)
+                self.INDICATOR_ID, self.ICONS["green"],
+                AppIndicator.IndicatorCategory.APPLICATION_STATUS, str(self.ICON_DIR)
             )
             self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-            self.indicator.set_title("Wax")
+            self.indicator.set_title(self.TITLE)
             self.indicator.set_menu(self._menu())
         except Exception as e:  # noqa: BLE001 - never fatal
             self.indicator, self.registered = None, False
             log.error("indicator construction failed: %s: %s", type(e).__name__, e)
-            _notify("Wax: tray unavailable", f"{e}\nRecording still works; use `wax status`.")
+            _notify(f"{self.TITLE}: tray unavailable", f"{e}\n{self.UNAVAILABLE_HINT}")
             return
         # Registration is asynchronous and can fail without raising, so ask the
         # watcher rather than believing ourselves. Anything that reports a green
@@ -358,16 +333,15 @@ class Tray:
                 GLib.Variant("(ss)", (WATCHER, "RegisteredStatusNotifierItems")),
                 GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 2000, None,
             )[0]
-            listed = any("wax" in str(i) for i in items)
+            listed = any(registered_as(self.INDICATOR_ID, str(i)) for i in items)
         except Exception:  # noqa: BLE001 - no watcher is a vanish, handled elsewhere
             return False
         self.registered = listed
         if not listed and not getattr(self, "_rebuilt_once", False):
-            log.warning("SNI watcher does not list wax; rebuilding the indicator")
+            log.warning("SNI watcher does not list %s; rebuilding the indicator", self.INDICATOR_ID)
             self._rebuilt_once = True
             self._build()
-            if self._colour:
-                self.set(self._colour, self._tip)
+            self._reapply()
         elif listed:
             self._rebuilt_once = False
         return False
@@ -389,8 +363,7 @@ class Tray:
         if not self.registered or self.indicator is None:
             log.info("SNI watcher returned; rebuilding the indicator")
             self._build()
-            if self._colour:
-                self.set(self._colour, self._tip)
+            self._reapply()
         return False
 
     def _on_watcher_vanished(self, *_):
@@ -401,6 +374,40 @@ class Tray:
         self.registered = False
         self._teardown()
         return False
+
+    def _blink(self) -> bool:
+        """Swap a flashing icon between its colour and the flash colour."""
+        if not self._flash:
+            self._flash_on = False
+            return True
+        self._flash_on = not self._flash_on
+        if self.indicator is not None:
+            shown = self._flash if self._flash_on else self._colour
+            try:
+                self.indicator.set_icon_full(self.ICONS.get(shown, self.ICONS["green"]), self._tip)
+            except Exception:  # noqa: BLE001
+                self.registered = False
+        return True
+
+
+class QueueMenu:
+    """The Queue submenu: one row per tray item, with retry / skip / open actions.
+
+    Shared by waxd's own tray and the Wax section of the HeyMa tray. A host sets
+    `queue_menu` (the Gtk.Menu) and `item_queue` (the Gtk.MenuItem that owns it)
+    and calls `_init_queue(...)` once.
+    """
+
+    def _init_queue(self, on_skip=None, on_clear_completed=None, on_open_transcript=None,
+                    on_retry_item=None, on_retry_passes=None) -> None:
+        self.on_skip, self.on_clear_completed = on_skip, on_clear_completed
+        self.on_open_transcript = on_open_transcript
+        self.on_retry_item, self.on_retry_passes = on_retry_item, on_retry_passes
+        self.queue_menu = self.item_queue = None
+        self._queue_items = []
+        self._queue_signature = None
+        self._queue_rows = {}
+        self._spinner_frame = 0
 
     # -- updates ---------------------------------------------------------
     def _render_queue(self) -> None:
@@ -486,6 +493,30 @@ class Tray:
             menu.append(clear)
         menu.show_all()
 
+    def _append_wax_items(self, menu, on_open=None, on_settings=None, on_telephony=None) -> None:
+        """The Wax menu body: status line, Queue, then inbox / settings / telephony.
+
+        waxd's own tray appends this to its top-level menu; the HeyMa tray puts
+        it in the Wax submenu. One definition, so the section cannot drift from
+        what the Wax tray always showed.
+        """
+        self.item_status = Gtk.MenuItem(label="…")
+        self.item_status.set_sensitive(False)
+        menu.append(self.item_status)
+
+        self.item_queue = Gtk.MenuItem(label="Queue")
+        self.queue_menu = Gtk.Menu()
+        self.item_queue.set_submenu(self.queue_menu)
+        menu.append(self.item_queue)
+        self._render_queue()
+
+        menu.append(Gtk.SeparatorMenuItem())
+        for label, callback in (("Open inbox", on_open), ("Settings…", on_settings),
+                                ("Telephony…", on_telephony)):
+            row = Gtk.MenuItem(label=label)
+            row.connect("activate", lambda *_, cb=callback: cb and cb())
+            menu.append(row)
+
     def _retry_item(self, row, item_id: str) -> None:
         """Disable a clicked failure immediately, then hand it to the daemon."""
         row.set_sensitive(False)
@@ -507,19 +538,6 @@ class Tray:
             row.set_label(queue_label(active, self._spinner_frame))
         return True
 
-    def _blink(self) -> bool:
-        """Swap a flashing icon between its colour and the flash colour."""
-        if not self._flash:
-            self._flash_on = False
-            return True
-        self._flash_on = not self._flash_on
-        if self.indicator is not None:
-            shown = self._flash if self._flash_on else self._colour
-            try:
-                self.indicator.set_icon_full(ICONS.get(shown, ICONS["green"]), self._tip)
-            except Exception:  # noqa: BLE001
-                self.registered = False
-        return True
 
     def _queue_right_click(self, _widget, event, item_id: str):
         if getattr(event, "button", 0) != 3:
@@ -550,6 +568,52 @@ class Tray:
         self._queue_items = [dict(x) for x in items]
         GLib.idle_add(lambda: (self._render_queue(), False)[1])
 
+
+class Tray(IndicatorHost, QueueMenu):
+    """waxd's own tray: the default on hosts that run no HeyMa shell tray."""
+
+    def __init__(self, on_toggle=None, on_quit=None, on_open=None,
+                 on_skip=None, on_clear_completed=None, on_open_transcript=None,
+                 on_retry_item=None, on_retry_passes=None, on_settings=None,
+                 on_telephony=None, on_silence=None):
+        _load_gtk()
+        self.on_settings = on_settings
+        self.on_telephony, self.on_silence = on_telephony, on_silence
+        self.on_toggle, self.on_quit, self.on_open = on_toggle, on_quit, on_open
+        self._init_queue(on_skip, on_clear_completed, on_open_transcript,
+                         on_retry_item, on_retry_passes)
+        self.indicator = None
+        self.registered = False
+        self._colour = None
+        self._tip = ""
+        self._flash = None
+        self._flash_on = False
+        self._build()
+        self._watch_bus()
+        GLib.timeout_add(250, self._animate_queue)
+        GLib.timeout_add(500, self._blink)
+
+    # -- construction ----------------------------------------------------
+    def _menu(self) -> Gtk.Menu:
+        m = Gtk.Menu()
+        self.item_toggle = Gtk.MenuItem(label="Start recording")
+        self.item_toggle.connect("activate", lambda *_: self.on_toggle and self.on_toggle())
+        m.append(self.item_toggle)
+
+        self._append_wax_items(m, self.on_open, self.on_settings, self.on_telephony)
+        silence = Gtk.MenuItem(label="Silence local ringtone")
+        silence.connect("activate", lambda *_: self.on_silence and self.on_silence())
+        m.append(silence)
+        q = Gtk.MenuItem(label="Quit waxd")
+        q.connect("activate", lambda *_: self.on_quit and self.on_quit())
+        m.append(q)
+        m.show_all()
+        return m
+
+    def _drop_menu_refs(self) -> None:
+        self.item_toggle = self.item_status = self.item_queue = self.queue_menu = None
+
+    # -- updates ---------------------------------------------------------
     def set(self, colour: str, tooltip: str = "", recording: bool = False,
             flash: str | None = None) -> None:
         """Thread-safe icon update. `flash` alternates the icon toward that colour."""

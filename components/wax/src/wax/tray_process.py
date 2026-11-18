@@ -43,6 +43,22 @@ def session_env() -> dict:
     return env
 
 
+OFF_VALUES = ("off", "0", "false", "no", "external", "heyma")
+EXTERNAL_REASON = "external: the HeyMa tray owns the icon (WAX_TRAY=off)"
+
+
+def tray_enabled(environ=None) -> bool:
+    """Does waxd spawn its own tray child?
+
+    Default yes, so a host without the HeyMa shell keeps its Wax tray. A host
+    that runs `heyma-tray.service` sets WAX_TRAY=off in a waxd drop-in (written
+    by deploy/install-systemd-user), because two icons for one product family is
+    the thing the shell exists to remove.
+    """
+    value = (environ if environ is not None else os.environ).get("WAX_TRAY", "")
+    return value.strip().lower() not in OFF_VALUES
+
+
 def _has_display() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
@@ -55,6 +71,16 @@ class TrayProcess:
         self.reason = "not started"
 
     def poll(self):
+        if not tray_enabled():
+            # Someone else owns the icon. Report that as healthy: waxd's
+            # `tray_unavailable` condition means "the icon is missing", and it
+            # is not.
+            if self.child is not None:
+                self.stop()
+                self.child = None
+            self.available = True
+            self.reason = EXTERNAL_REASON
+            return
         if self.child is not None:
             if self.child.poll() is None:
                 self.available = True

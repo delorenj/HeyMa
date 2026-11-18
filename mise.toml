@@ -61,6 +61,11 @@ description = "Retry failed or suspect items in the inbox"
 alias = "retry"
 run = "'{{config_root}}/bin/wax' retry"
 
+[tasks."heyma-shell:test"]
+description = "Run the HeyMa shell tests (registry adapters, tray model)"
+dir = "{{config_root}}/components/heyma-shell"
+run = "python3 -m pytest tests"
+
 [tasks."wax:test"]
 description = "Run the Wax test suite"
 dir = "{{config_root}}/components/wax"

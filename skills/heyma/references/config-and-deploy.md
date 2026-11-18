@@ -45,7 +45,7 @@ Found a plaintext secret anywhere? Move it into the DeLoSecrets vault, replace i
 
 ## Units and install
 
-`components/wax/deploy/install-systemd-user` renders `waxd`, `wax-alert`, `wax-capture-guard` and `wax-calls-sync` from `deploy/systemd/user/` into `~/.config/systemd/user`, then runs `daemon-reload` and re-enable. It never restarts. `--dry-run` previews. Templates for `waxd.service`: `WAX_SEGMENT_SECONDS=60`, `WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`, the absolute `WAX_TRANSCRIBE` pin, `WAX_S3_ENDPOINT`, password-less transcript DSNs, and `OnFailure=wax-alert.service`. The installed `waxd.service` matched its rendered template on 2026-11-05; `waxd.service.d/` is empty.
+`components/wax/deploy/install-systemd-user` renders `waxd`, `wax-alert`, `wax-capture-guard`, `wax-calls-sync` and `heyma-tray` (template in `components/heyma-shell/deploy/`) into `~/.config/systemd/user`, writes the `waxd.service.d/10-heyma-tray.conf` drop-in (`WAX_TRAY=off`), runs `daemon-reload` and re-enable, and masks the deb-owned `vinyl-tray.service` (`mask --now`). It never restarts; waxd reads its drop-in at the next restart. `--no-heyma-tray` and `--keep-vinyl-tray` opt out ([shell](shell.md)). `--dry-run` previews. Templates for `waxd.service`: `WAX_SEGMENT_SECONDS=60`, `WAX_DIARIZATION=1`, `WAX_DIARIZATION_DEVICE=cuda`, the absolute `WAX_TRANSCRIBE` pin, `WAX_S3_ENDPOINT`, password-less transcript DSNs, and `OnFailure=wax-alert.service`. The installed `waxd.service` matched its rendered template on 2026-11-05; `waxd.service.d/` is empty.
 
 | Unit | State 2026-11-05 |
 |---|---|
