@@ -353,6 +353,22 @@ def offered(term: str, form: str, book: dictionary.Dictionary) -> Optional[str]:
     return None
 
 
+def unreachable(book: dictionary.Dictionary) -> list[tuple[str, str]]:
+    """(term, form) for every listed mis-hearing the scan can never offer as that term.
+
+    Such a form is dead: listing it changes nothing, silently. "my's" for mise
+    was one (the scan cut every trailing 's off before looking it up), so the
+    word kept coming out as "my's" with the fix sitting in the file."""
+    return [(t.term, form) for t in book.terms for form in t.heard
+            if offered(t.term, form, book) is None]
+
+
+def unreachable_reason(term: str, form: str) -> str:
+    return (f"{form!r} would never be corrected to {term}: the pass's own scan does not offer it "
+            f"in \"we said {form} there\", so listing it changes nothing "
+            f"(`vinyl dictionary test \"...\"` shows what the scan sees)")
+
+
 def about_missing(term: str) -> str:
     """Jev judges every correction in context, and `about` is the context it gets for the term.
 
@@ -425,12 +441,14 @@ def _locked(path: Path) -> Iterator[None]:
 _REMOVE = object()
 
 
-def _verify(old: str, new: str, expect: dict[str, Any], path: Path) -> None:
-    """The new text loads, and its terms are the old ones with exactly `expect` applied."""
+def _verify(old: str, new: str, expect: dict[str, Any], path: Path) -> dictionary.Dictionary:
+    """The new text loads, and its terms are the old ones with exactly `expect` applied.
+
+    Returns the book the new text loads as."""
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as tmp:
         tmp.write(new)
     try:
-        dictionary.load(Path(tmp.name))
+        book = dictionary.load(Path(tmp.name))
     except dictionary.DictionaryError as exc:
         raise DictEditError(f"the change would break the dictionary: {exc}") from None
     finally:
@@ -443,6 +461,7 @@ def _verify(old: str, new: str, expect: dict[str, Any], path: Path) -> None:
             want[k] = v
     if _terms(new) != want:
         raise DictEditError(f"refusing to write {path.name}: the edit changed more than {sorted(expect)}")
+    return book
 
 
 
@@ -541,7 +560,13 @@ def add(term: str, *, about: str = "", heard: tuple[str, ...] = (), section: Opt
             lint.warnings.append(about_missing(term))
         line = render(term, new_heard, new_about)
         new = _replace_line(old, term, line) if existing is not None else _insert(old, line, section)
-        _verify(old, new, {term: _entry_value(new_heard, new_about)}, target)
+        new_book = _verify(old, new, {term: _entry_value(new_heard, new_about)}, target)
+        dead = [form for form in new_heard if form not in cur_heard
+                and offered(term, form, new_book) is None]
+        if dead and not force:
+            raise DictEditError("; ".join(unreachable_reason(term, form) for form in dead),
+                                "add --force to list it anyway")
+        lint.warnings.extend(unreachable_reason(term, form) for form in dead)
         if not dry_run:
             _write(target, old, new)
         return Change("updated" if existing is not None else "added", term, line, new_heard,

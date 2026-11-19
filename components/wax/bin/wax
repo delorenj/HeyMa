@@ -829,6 +829,14 @@ def probe_dictionary(add) -> None:
     add(_probe("custom dictionary", PASS if book.terms else WARN,
                f"{path}: {len(book.terms)} term(s), {heard} listed mis-hearing(s), sha {book.sha256[:12]}",
                "" if book.terms else f"add the words speech recognition gets wrong to {path}"))
+    # A listed form the scan never offers looks like a fix and does nothing
+    # ("my's" for mise, before the scan stopped cutting a listed trailing 's).
+    from wax import dictedit
+    dead = dictedit.unreachable(book)
+    add(_probe("dictionary heard forms reachable", WARN if dead else PASS,
+               ("; ".join(f"{form!r} -> {term}" for term, form in dead) + " never offered by the scan")
+               if dead else f"all {heard} listed mis-hearing(s) are offered by the scan",
+               "reword or remove them: `wax dict remove TERM --heard FORM`" if dead else ""))
 
 
 def pending_pass_event_report() -> list[tuple[str, str, int]]:

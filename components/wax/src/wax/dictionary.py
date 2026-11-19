@@ -119,6 +119,9 @@ class Dictionary:
     buckets: dict[str, list[tuple[Term, tuple[str, ...]]]] = field(default_factory=dict)
     # every term and heard form, word-normalised ("automatic a i")
     spoken_forms: frozenset[str] = frozenset()
+    # listed heard forms that themselves end in 's ("my's"), word-normalised with
+    # a straight apostrophe: only these keep their 's through the possessive split
+    possessive_heard: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -246,6 +249,8 @@ def load(path: Optional[Path] = None) -> Dictionary:
             for first in {k[0] for k in keys if k}:
                 book.buckets.setdefault(first, []).append((t, keys))
     book.spoken_forms = frozenset(_norm(f) for t in terms for f in (t.term, *t.listed))
+    book.possessive_heard = frozenset(_apostrophe_norm(h) for t in terms for h in t.heard
+                                      if _POSSESSIVE.search(h.strip()))
     return book
 
 
@@ -328,10 +333,24 @@ def _tokens(body: str, mask: bytearray) -> list[tuple[int, int]]:
     return out
 
 
-def _possessive_split(body: str, start: int, end: int) -> int:
-    """End of the span minus a trailing 's, so "skill X's" corrects to "Skillex's"."""
+def _possessive_split(body: str, start: int, end: int, book: Optional["Dictionary"] = None) -> int:
+    """End of the span minus a trailing 's, so "skill X's" corrects to "Skillex's".
+
+    Not when the whole run, 's included, is a listed mis-hearing: the recognizer
+    writes mise as "my's", and splitting that to "my" left the listed form
+    unmatchable (a heard form ending in 's was dead on arrival)."""
     m = _POSSESSIVE.search(body[start:end])
-    return end - len(m.group(1)) if m and end - start > len(m.group(1)) + 1 else end
+    if not m or end - start <= len(m.group(1)) + 1:
+        return end
+    if book is not None and _apostrophe_norm(body[start:end]) in book.possessive_heard:
+        # Compared with the apostrophe kept: squashed, "Skycare's" is the listed
+        # plural "skycares" and "mini o's" is "mini os", real possessives both.
+        return end
+    return end - len(m.group(1))
+
+
+def _apostrophe_norm(text: str) -> str:
+    return _norm(text).replace("’", "'")
 
 
 def _spelled_out(said: str) -> bool:
@@ -411,7 +430,8 @@ def _could_fit(said: str, sq: str, term: Term) -> bool:
         and _shape_fits(said, term.term) and sq[0].isdigit() == tsq[0].isdigit()
 
 
-def _spans(body: str, tokens: list[tuple[int, int]]) -> Iterable[tuple[int, int, str]]:
+def _spans(body: str, tokens: list[tuple[int, int]],
+           book: Optional["Dictionary"] = None) -> Iterable[tuple[int, int, str]]:
     """Every run of one to MAX_NGRAM joinable words: (start, end, text)."""
     for i in range(len(tokens)):
         for n in range(1, MAX_NGRAM + 1):
@@ -422,7 +442,7 @@ def _spans(body: str, tokens: list[tuple[int, int]]) -> Iterable[tuple[int, int,
                 if not _JOINABLE.fullmatch(gap) or "\n" in gap:
                     break
             start = tokens[i][0]
-            end = _possessive_split(body, start, tokens[i + n - 1][1])
+            end = _possessive_split(body, start, tokens[i + n - 1][1], book)
             yield start, end, body[start:end]
 
 
@@ -456,7 +476,7 @@ def may_offer(body: str, book: Dictionary, term: Term, *, min_score: float = DEF
         memo = {}
     mask = protected_mask(body)
     words = english()
-    for _start, _end, said in _spans(body, _tokens(body, mask)):
+    for _start, _end, said in _spans(body, _tokens(body, mask), book):
         hit, _suffix = _hit(said, book, words, min_score, memo, term)
         if hit is not None and hit[0].term == term.term:
             return True
@@ -490,7 +510,7 @@ def candidates(body: str, book: Dictionary, *, min_score: float = DEFAULT_MIN_SC
         if key not in found or c.score > found[key].score:
             found[key] = c
 
-    for start, end, said in _spans(body, tokens):
+    for start, end, said in _spans(body, tokens, book):
         hit, suffix = _hit(said, book, words, min_score, memo)
         if hit is not None:
             term, source, score = hit

@@ -108,6 +108,25 @@ class EditTest(Base):
         self.assertEqual(change.action, "unchanged")
         self.assertEqual(len(change.lint.notes), 2)
 
+    def test_a_form_the_scan_can_never_offer_is_refused_unless_forced(self):
+        # A listed form that the scan cuts or skips is dead weight that looks
+        # like a fix: "my's" for mise sat in the file while every final still
+        # said "my's". Letters spelled out one by one are never offered.
+        before = self.book.read_text()
+        with self.assertRaises(dictedit.DictEditError) as caught:
+            dictedit.add("Skillex", heard=("s k l x",), update=True, path=self.book)
+        self.assertIn("would never be corrected", str(caught.exception))
+        self.assertEqual(self.book.read_text(), before)
+        change = dictedit.add("Skillex", heard=("s k l x",), update=True, force=True, path=self.book)
+        self.assertTrue(any("would never be corrected" in w for w in change.lint.warnings))
+        self.assertEqual(dictedit.unreachable(dictionary.load(self.book)), [("Skillex", "s k l x")])
+
+    def test_a_form_ending_in_apostrophe_s_is_live(self):
+        change = dictedit.add("mise", about="the task runner", heard=("my's",), path=self.book)
+        self.assertEqual(change.action, "added")
+        self.assertEqual(self.terms()["mise"], {"heard": ["my's"], "about": "the task runner"})
+        self.assertEqual(dictedit.unreachable(dictionary.load(self.book)), [])
+
     def test_an_entry_without_about_warns_and_one_with_about_does_not(self):
         # Pauly (a dog) was added with heard forms and no about; Jev rejected
         # every "Polly" blind. The warning names the command that fixes it.

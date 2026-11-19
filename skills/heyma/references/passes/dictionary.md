@@ -29,7 +29,11 @@ it can tell "Skillex" from "skill set". **Always give one**: without it Jev
 judges blind and rejects most corrections, listed `heard` forms included (Pauly,
 a dog, added with `heard: [polly]` and no `about`: "features Polly" scored 0.37,
 under the 0.4 bar; with an `about`, 0.82). `wax dict` warns when an entry it
-writes has none. A spoken "dot" in a domain or file name
+writes has none. For a short term that sounds like ordinary words, say in the
+`about` how it is pronounced and how speech recognition writes it: mise's
+`about` "my dev-tool and task manager" left "my's" at p 0.36 to 0.73; adding
+`(said "meez"; speech recognition writes "my's")` took the same finals to 0.88 to
+0.95 (2026-11-19). A spoken "dot" in a domain or file name
 is fixed without being listed. The `# -- Look-alikes` section holds real words
 that keep getting respelled into a term (see below).
 
@@ -46,7 +50,10 @@ that keep getting respelled into a term (see below).
    wiki links or URLs, and never matches letters spelled aloud, a correct
    sentence-case spelling, a run that begins or ends with a function word
    (unless that form is listed), a sound-alike ending in a number, or a domain
-   term whose suffix was not heard.
+   term whose suffix was not heard. A trailing `'s` is split off as a possessive
+   ("skill X's" becomes "Skillex's") unless the whole run, `'s` included, is a
+   listed `heard` form: whisper writes mise as "my's", and before 2026-11-19 that
+   listed form was cut to "my" and could never match.
 2. **Judge.** Jev answers every distinct (heard text, term) pair, batched 40 at a
    time, at most 160 pairs per document. The ingress is `jev-1.13.0` through
    HeyMa's own virtual key (alias `heyma-wax-dictionary`, $0.50 per day, 120 rpm,
@@ -148,8 +155,11 @@ is lost (exit 130 still). A `heard` form that is already listed, in any case, is
 The linter refuses without `--force` a single ordinary English word and a
 fragment of the term ("jangler" for pjangler). It warns on phrases of ordinary
 words ("candy bar" caught a snack) and on forms that begin or end with a function
-word, and errors on collisions with another term or its `heard:`. Code is
-`components/wax/src/wax/dictedit.py`.
+word, and errors on collisions with another term or its `heard:`. It also
+refuses without `--force` a form the scan would never offer at all (it runs the
+pass's own scan on "we said FORM there" against the new file), such as letters
+spelled out one at a time or a run longer than four words: listing one looks like
+a fix and changes nothing. Code is `components/wax/src/wax/dictedit.py`.
 
 `wax dict fix` runs the pass on each note the scan found: a Wax item through
 `passes.run`, any other note through the manual `dictionary-only` pipeline. To
@@ -159,8 +169,10 @@ directly.
 
 ## Doctor and failure modes
 
-`wax doctor` has two probes: `jev api key (dictionary-correction)` (a free key
-lookup, covering a block or a spent budget) and `custom dictionary` (the file
-parses, with its term and mis-hearing counts). A dictionary edit commits and
+`wax doctor` has three probes: `jev api key (dictionary-correction)` (a free key
+lookup, covering a block or a spent budget), `custom dictionary` (the file
+parses, with its term and mis-hearing counts) and `dictionary heard forms
+reachable` (warns on every listed form the scan never offers, which catches hand
+edits that `wax dict` would have refused). A dictionary edit commits and
 pushes on its own; if `git unpushed` lists `Dictionary.yaml`, land it. Per-request
 Jev spend is in the ingress's LiteLLM spend log, not the response.

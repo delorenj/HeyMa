@@ -169,6 +169,24 @@ class CandidateScanTest(unittest.TestCase):
         chosen = dictionary.resolve((c, 0.9) for c in scan(body))
         self.assertEqual(dictionary.apply(body, chosen), "Skillex's registry and two GorillaDesks")
 
+    def test_a_listed_form_ending_in_apostrophe_s_matches_whole(self):
+        # Whisper writes mise as "my's". The possessive split used to cut every
+        # trailing 's before the lookup, so the listed form could never match.
+        text = BOOK + '  mise: {heard: ["my\'s"], about: "the task runner"}\n'
+        body = "And my's tasks just don't cut it anymore."
+        self.assertEqual(pairs(scan(body, text)), [("my's", "mise", "heard")])
+        chosen = dictionary.resolve((c, 0.9) for c in scan(body, text))
+        self.assertEqual(dictionary.apply(body, chosen), "And mise tasks just don't cut it anymore.")
+        # An unlisted possessive still keeps its ending, and "my" alone is untouched.
+        self.assertEqual(pairs(scan("my dog and skill X's registry", text)), [("skill X", "Skillex", "heard")])
+        self.assertEqual(pairs(scan("And my’s tasks", text)), [("my’s", "mise", "heard")])
+        # Only a form listed WITH its 's keeps it: a listed plural ("skycares")
+        # squashes like the possessive "Skycare's", which must stay a possessive.
+        plural = BOOK + ('  Skycare: {heard: [skycares], about: "a client"}\n'
+                         '  MinIO: {heard: [mini os], about: "the object store"}\n')
+        self.assertEqual(pairs(scan("Skycare's plan and the Skycare’s team", plural)), [])
+        self.assertEqual(pairs(scan("on mini o's disk", plural)), [("mini o", "MinIO", "exact")])
+
     def test_spoken_dot_becomes_a_domain_or_file_name(self):
         body = "open delo dot sh, then drive dot dlo dot sh. Edit settings dot json and a dot env file."
         chosen = dictionary.resolve((c, 0.9) for c in scan(body))
