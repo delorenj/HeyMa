@@ -187,6 +187,17 @@ The cost of a false stop is bounded: the stopped audio is kept, the trailing hou
 anyway, and the notification says why. Caveat: a mic set so low that real speech sits below -50 dB reads as
 silence (the HEYMA-38 quiet-speech class); fix the input level, or raise the window.
 
+**Prove it live without touching the real recorder:** `components/wax/tools/capture-sandbox [WINDOW_S]`
+(default 120). It loads a null sink (a guaranteed-silent source) and runs a second waxd on a throwaway
+`WAX_ROOT` with that window. Only the sandbox processes see the null sink as their default source, through a
+private `pactl` shim. The sandbox has no tray, no transcripts store and NATS pointed nowhere. The script starts
+a capture and waits for the `abandoned_silent` stop, then prints the stream transitions and tears everything
+down. It exits 0 on PASS. The sandbox pipeline is paused, so nothing reaches S3, the vault or the live ledger.
+The real default source and any live capture are untouched. The silent-intake half (`junk_silent`) is verified
+on the live inbox instead, by dropping a synthetic silent file into `inbox/`. That parks it under
+`skipped/silent/` and shows `input audio silent` in `wax doctor` for 24 h, so name the file `*selftest*` to make
+the warning self-explanatory. Last run: 2026-11-19, PASS at 60 s and 120 s windows.
+
 ## The capture guard
 
 `wax-capture-guard.service` (user unit, enabled and active on 2026-11-05) is a

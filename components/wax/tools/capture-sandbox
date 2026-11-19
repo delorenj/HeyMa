@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# capture-sandbox: prove waxd's abandoned-capture auto-stop end to end, live, without
+# touching the real recorder, the real default mic, the real ledger or the transcripts store.
+#
+#   components/wax/tools/capture-sandbox [WINDOW_S]     (default 120)
+#
+# What it does, and undoes on exit (trap):
+#   1. loads a PulseAudio/PipeWire null sink; its monitor is a guaranteed-silent source
+#   2. a private `pactl` shim answers get-default-source with that monitor, for the
+#      sandbox processes only (your real default source is never changed)
+#   3. starts a second waxd on a throwaway WAX_ROOT with WAX_ABANDON_WINDOW_S=WINDOW_S,
+#      no tray, no transcripts store, NATS pointed nowhere
+#   4. starts a capture there, waits for waxd to stop it, prints the stream transitions
+#   5. stops the sandbox waxd and unloads the null sink
+#
+# The sandbox root starts with its pipeline paused, so the finalized file is NOT ingested:
+# nothing reaches S3, the vault or the live ledger. The silent-intake path (junk_silent) is
+# the live inbox's job; see skills/heyma/references/capture.md.
+#
+# PASS = exit 0 and a `recording -> not-ready  abandoned_silent` transition. The sandbox root is
+# kept for inspection and its path printed.
+set -euo pipefail
+
+WINDOW_S="${1:-120}"
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+COMPONENT="$(dirname "$HERE")"
+SB="$(mktemp -d /tmp/wax-capture-sandbox.XXXXXX)"
+SINK="waxsandbox$$"
+MOD=""
+WAXD_PID=""
+
+cleanup() {
+  [[ -n "$WAXD_PID" ]] && kill "$WAXD_PID" 2>/dev/null && wait "$WAXD_PID" 2>/dev/null || true
+  [[ -n "$MOD" ]] && /usr/bin/pactl unload-module "$MOD" 2>/dev/null || true
+  echo "sandbox kept at $SB (waxd.log, root/var/wax.db, root/inbox/)"
+}
+trap cleanup EXIT
+
+MOD="$(/usr/bin/pactl load-module module-null-sink "sink_name=$SINK" "sink_properties=device.description=WaxCaptureSandbox")"
+mkdir -p "$SB/shim" "$SB/root" "$SB/vault"
+cat > "$SB/shim/pactl" <<EOF
+#!/bin/sh
+if [ "\$1" = "get-default-source" ]; then echo $SINK.monitor; exit 0; fi
+exec /usr/bin/pactl "\$@"
+EOF
+chmod +x "$SB/shim/pactl"
+
+export WAX_ROOT="$SB/root" WAX_VAULT="$SB/vault" WAX_TRAY=off WAX_TRANSCRIPTS=0 \
+       WAX_TRANSCRIPTS_UNIT_FILE="$SB/none" WAX_NATS_PORT=1 WAX_SEGMENT_SECONDS=10 \
+       WAX_ABANDON_WINDOW_S="$WINDOW_S" PATH="$SB/shim:$PATH"
+
+/usr/bin/python3 "$COMPONENT/bin/waxd" > "$SB/waxd.log" 2>&1 &
+WAXD_PID=$!
+for _ in $(seq 1 30); do [[ -S "$SB/root/var/waxd.sock" ]] && break; sleep 0.5; done
+
+/usr/bin/python3 "$COMPONENT/bin/wax" rec start --label sandbox >/dev/null
+echo "capture started on $SINK.monitor; waiting up to $((WINDOW_S + 90)) s for the auto-stop"
+
+deadline=$((SECONDS + WINDOW_S + 90))
+until grep -q "abandoned capture .* stopped" "$SB/waxd.log"; do
+  if (( SECONDS > deadline )); then
+    echo "FAIL: no auto-stop within $((WINDOW_S + 90)) s"; tail -20 "$SB/waxd.log"; exit 1
+  fi
+  sleep 2
+done
+sleep 3
+
+grep -E "capture_|abandon|notified" "$SB/waxd.log"
+echo "--- stream transitions"
+sqlite3 "$SB/root/var/wax.db" \
+  "select at, from_state, '->', to_state, coalesce(cause_code,''), substr(evidence,1,100) from transitions where machine='stream' order by seq"
+if sqlite3 "$SB/root/var/wax.db" \
+     "select 1 from transitions where machine='stream' and from_state='recording' and cause_code='abandoned_silent'" | grep -q 1; then
+  echo "PASS: abandoned_silent stop recorded; finalized file: $(ls "$SB/root/inbox")"
+else
+  echo "FAIL: no abandoned_silent transition"; exit 1
+fi
