@@ -88,7 +88,11 @@ Memos of 2026-11-18 measured mean -70..-82 dB and parked as `junk_silent`, yet a
 `20261118 110240.m4a` (mean -79.5, max -47), had reached ASR and parked as
 `junk_empty` (0 words), so a sweep of `junk_silent` alone missed it until
 2026-11-19 (`wax retry` -> +50 dB, 163 words). **When a source turns out quiet,
-re-measure its `junk_empty` parks too, not only `junk_silent`.** So before a
+re-measure its `junk_empty` parks too, not only `junk_silent`.** The cause was the
+MacBook's lid, not its gain: a closed lid cuts the built-in mic, and a lid-open
+memo at the same 27/100 input measured mean -29 dB with no gain (2026-11-19). Check
+`ssh mac 'ioreg -r -k AppleClamshellState -d 4 | grep Clamshell'` before asking for a
+gain change. So before a
 level-silent **recording** is parked, `sanity.speech_profile` measures half-second
 RMS windows (ffmpeg `astats`, mono 16 kHz). If the p99 window clears the p10 floor
 by >= 10 dB and at least 3 s (and 2% of the file) sits >= 8 dB above the floor,
