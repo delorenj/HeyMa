@@ -38,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import component, frontmatter, ledger, provider, voice_context, voiceprint, voices
+from . import component, frontmatter, ledger, paths, provider, sanity, voice_context, voiceprint, voices
 
 WHOLE = "(whole recording)"
 
@@ -171,7 +171,12 @@ def main(md: Path, item_id: str) -> dict:
     missing = {label: regions[label] for label in regions if label not in prints}
     with tempfile.TemporaryDirectory(prefix="wax-voice-") as clip_dir:
         if missing:
-            for label, fp in fingerprint(row["path"], missing, clip_dir).items():
+            # Quiet speech (items.audio_gain_db) is fingerprinted, and its naming clips cut,
+            # from the same gained copy ASR heard, so a clip in ~/d/Voices is audible.
+            with sanity.gained_audio(Path(row["path"]), ledger.audio_gain(item_id),
+                                     paths.LOGS / item_id / "gain") as heard:
+                found_prints = fingerprint(str(heard or row["path"]), missing, clip_dir)
+            for label, fp in found_prints.items():
                 fp["vec"] = np.asarray(fp["vec"], dtype=np.float32) if fp.get("vec") is not None else None
                 prints[label] = fp
         evidence, found, renames, heard = {}, [], {}, []

@@ -416,6 +416,59 @@ def process(item_id: str, path: Path) -> dict[str, Any]:
         return {"item_id": item_id, "path": str(path), "fenced": str(exc)}
 
 
+def _quiet_speech(item_id: str, path: Path, levels: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Is this level-silent RECORDING quiet speech? {gain_db, floor_db, loud_db, active_s, source} or None.
+
+    None keeps today's verdict (true silence parks as junk_silent). Recordings only: a Telnyx
+    call or a Groundwire recording (calls.audio_identity) is never re-levelled; its channels are
+    judged by channels.py, and a dead leg is normal. Fails open to None on every error. Nothing
+    is written or announced here: the gained copy exists only around the ASR run; the gain is
+    recorded when that run starts and cleared if it fails or is rejected, and the operator is told
+    only once it published a transcript (_quiet_speech_heard).
+    sanity.speech_profile has the calibration story.
+    """
+    if not levels or not levels.get("silent") or not junk.enabled():
+        return None
+    try:
+        row = ledger.connect().execute(
+            "SELECT origin,orig_name FROM items WHERE item_id=?", (item_id,)).fetchone()
+        source = ledger.source_of(row["origin"], row["orig_name"]) if row else "unknown"
+        if source == "telnyx" or junk._call_facts(path.name):
+            return None
+        profile = sanity.speech_profile(path)
+    except Exception as exc:  # noqa: BLE001 - the probe fails open
+        log.warning("item %s: quiet-speech probe failed: %s: %s", item_id, type(exc).__name__, exc)
+        return None
+    if not profile or not profile["quiet_speech"]:
+        if profile:
+            log.info("item %s: silent and flat (floor %.1f dB, loud %.1f dB, %.1fs active): "
+                     "no speech to lift", item_id, profile["floor_db"], profile["loud_db"],
+                     profile["active_s"])
+        return None
+    log.warning("item %s: quiet input (mean %.1f dB, speech windows at %.1f dB over a %.1f dB floor, "
+                "%.0fs of them): transcribing a +%.1f dB copy", item_id, levels["mean_db"],
+                profile["loud_db"], profile["floor_db"], profile["active_s"], profile["gain_db"])
+    return {**{k: profile[k] for k in ("gain_db", "floor_db", "loud_db", "active_s")}, "source": source}
+
+
+def _record_gain(item_id: str, gain_db: Optional[float]) -> None:
+    try:
+        ledger.record_audio_gain(item_id, gain_db)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not stop a recording
+        log.warning("item %s: could not record the applied gain: %s", item_id, exc)
+
+
+def _quiet_speech_heard(item_id: str, name: str, quiet: dict[str, Any]) -> None:
+    """A gained copy produced a published transcript: tell the operator, once per source."""
+    try:
+        desktop.notify_quiet_recording(quiet["source"], (
+            f"{name}: the input was about {abs(round(quiet['loud_db'] - sanity.GAIN_TARGET_DB))} dB "
+            f"too quiet (speech at {quiet['loud_db']:.0f} dB; normal is about {junk.SPEECH_REFERENCE_DB} dB). "
+            f"Transcribed with +{quiet['gain_db']:.0f} dB of gain; raise the input level on that device."))
+    except Exception as exc:  # noqa: BLE001 - notification is best effort
+        log.warning("item %s: quiet-recording notification failed: %s", item_id, exc)
+
+
 def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
                  stage: str, kept: Optional[Path] = None, *,
                  levels: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -442,6 +495,11 @@ def _reject_junk(item_id: str, path: Path, rejection: "junk.Rejection",
                     + (f"; text kept at {kept}" if kept else ""))
     _set_state(item_id, "skipped", cause=rejection.cause, evidence=evidence, subject=path.name)
     if silent:
+        # A gained copy that still held no words was silence after all: count it as silent.
+        try:
+            ledger.record_audio_gain(item_id, None)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must not stop a recording
+            log.warning("item %s: could not clear the applied gain: %s", item_id, exc)
         row = ledger.connect().execute(
             "SELECT origin,orig_name,duration_s FROM items WHERE item_id=?", (item_id,)).fetchone()
         source = ledger.source_of(row["origin"], row["orig_name"]) if row else "unknown"
@@ -677,6 +735,7 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
         return result
 
     # Junk by structure (a Telnyx voicemail): archived, never transcribed (wax/junk.py).
+    quiet: Optional[dict[str, Any]] = None
     if start_state != "transcribed":
         rejection = junk.before_asr(path, item_id)
         if rejection is not None:
@@ -692,7 +751,8 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
             log.warning("item %s: could not record audio levels: %s", item_id, exc)
         if levels is not None:
             result["levels"] = levels
-        rejection = junk.silent_rejection(levels, duration_s, item_id)
+        quiet = _quiet_speech(item_id, path, levels)
+        rejection = None if quiet else junk.silent_rejection(levels, duration_s, item_id)
         if rejection is not None:
             result["skipped"] = _reject_junk(item_id, path, rejection, "before ASR", levels=levels)
             return result
@@ -703,28 +763,52 @@ def _process_item(item_id: str, path: Path) -> dict[str, Any]:
     if start_state == "transcribed":
         result["transcribe"] = {"skipped": "already transcribed"}
     else:
-        _write_claim(item_id, path, "transcribe")
-        try:
-            result["transcribe"] = transcribe_adapter.transcribe(path, item_id=item_id)
-        except transcribe_adapter.TranscriptRejected as e:
-            # Junk by content ("Hello?", one word, a greeting): nothing was
-            # published, so park the audio and stop before any pass is planned.
-            result["skipped"] = _reject_junk(item_id, path, e.rejection, "after ASR", e.kept, levels=e.levels)
-            return result
-        except transcribe_adapter.TranscribeError as e:
-            # The gate already moved a failed transcript aside and set the item
-            # to `suspect`. The audio stays in the inbox so the failure stays
-            # visible rather than being quietly filed away.
-            if str(e).startswith("SANITY GATE"):
-                # The `suspect` transition happened inside transcribe_adapter, so
-                # _set_state never sees it. Log and chime it here or it is silent.
-                log.error("item %s quarantined as suspect: %s", item_id, _first_line(str(e), 300))
-                _announce_item_failure(path.name, "transcript failed the sanity gate", str(e), item_id)
-            else:
-                _set_state(item_id, "failed", cause=getattr(e, "cause_code", "transcribe_failed"),
-                           evidence=str(e)[:400], subject=path.name)
-            result["error"] = str(e)[:400]
-            return result
+        # The gained copy (quiet speech) lives only around this run, whatever happens in it.
+        # A copy a killed waxd left behind is swept first: ASR is the first stage to use the dir.
+        for stale in (paths.LOGS / item_id / "gain").glob("*.flac"):
+            stale.unlink(missing_ok=True)
+        with sanity.gained_audio(path, quiet["gain_db"] if quiet else None,
+                                 paths.LOGS / item_id / "gain") as heard:
+            if quiet and heard is None:
+                log.warning("item %s: quiet speech found but the gained copy could not be written; "
+                            "transcribing the original", item_id)
+            _write_claim(item_id, path, "transcribe")
+            if heard is not None:
+                # Provisional, BEFORE the publish commit: a waxd killed between the publish and
+                # the bookkeeping must not leave a transcribed quiet item whose later passes
+                # (diarization, voice-id read items.audio_gain_db) hear the -75 dB original.
+                # Every failure below clears it again.
+                _record_gain(item_id, quiet["gain_db"])
+            try:
+                result["transcribe"] = transcribe_adapter.transcribe(
+                    path, item_id=item_id, asr_audio=heard,
+                    gain_db=quiet["gain_db"] if heard is not None else None)
+            except transcribe_adapter.TranscriptRejected as e:
+                # Junk by content ("Hello?", one word, a greeting): nothing was
+                # published, so park the audio and stop before any pass is planned.
+                if heard is not None:
+                    _record_gain(item_id, None)
+                result["skipped"] = _reject_junk(item_id, path, e.rejection, "after ASR", e.kept, levels=e.levels)
+                return result
+            except transcribe_adapter.TranscribeError as e:
+                # The gate already moved a failed transcript aside and set the item
+                # to `suspect`. The audio stays in the inbox so the failure stays
+                # visible rather than being quietly filed away.
+                if heard is not None:
+                    _record_gain(item_id, None)
+                if str(e).startswith("SANITY GATE"):
+                    # The `suspect` transition happened inside transcribe_adapter, so
+                    # _set_state never sees it. Log and chime it here or it is silent.
+                    log.error("item %s quarantined as suspect: %s", item_id, _first_line(str(e), 300))
+                    _announce_item_failure(path.name, "transcript failed the sanity gate", str(e), item_id)
+                else:
+                    _set_state(item_id, "failed", cause=getattr(e, "cause_code", "transcribe_failed"),
+                               evidence=str(e)[:400], subject=path.name)
+                result["error"] = str(e)[:400]
+                return result
+        if quiet and heard is not None:
+            result["quiet_speech"] = quiet
+            _quiet_speech_heard(item_id, path.name, quiet)
 
     _report_diarization(item_id, path.name, result["transcribe"] or {})
 

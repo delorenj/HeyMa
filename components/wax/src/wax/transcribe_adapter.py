@@ -313,9 +313,47 @@ def _publication(item_id: Optional[str]):
         conn.execute("COMMIT")
 
 
+def _rebind_asr_source(asr_path: Path, audio: Path, item_id: Optional[str],
+                       gain_db: Optional[float]) -> None:
+    """asr.json names the audio it was made from by sha256; make that the ITEM's audio.
+
+    transcribe.py hashed the gained copy it was handed, and the diarization pass refuses timed ASR
+    whose `source_sha256` is not `items.sha256` ("timed ASR source identity mismatch"), which would
+    hold every quiet recording in completion_withheld forever. Word timings are the same either
+    way (same duration, same timeline). Best effort: a missing asr.json stays missing.
+    """
+    import hashlib
+    import json
+    try:
+        asr = json.loads(asr_path.read_text())
+    except (OSError, ValueError):
+        return
+    sha = None
+    if item_id:
+        row = ledger.connect().execute("SELECT sha256 FROM items WHERE item_id=?", (item_id,)).fetchone()
+        sha = row["sha256"] if row else None
+    if not sha:
+        digest = hashlib.sha256()
+        with open(audio, "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        sha = digest.hexdigest()
+    asr["source_sha256"] = sha
+    asr["input_gain_db"] = gain_db
+    tmp = asr_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(asr, ensure_ascii=False))
+    os.replace(tmp, asr_path)
+
+
 def transcribe(audio: Path, *, item_id: Optional[str] = None,
-               attempt: int = 1, extra: Optional[list[str]] = None) -> dict[str, Any]:
-    """Transcribe one item. Publishes only if the sanity gate passes."""
+               attempt: int = 1, extra: Optional[list[str]] = None,
+               asr_audio: Optional[Path] = None, gain_db: Optional[float] = None) -> dict[str, Any]:
+    """Transcribe one item. Publishes only if the sanity gate passes.
+
+    ``asr_audio`` is what the transcriber hears when it is not ``audio`` itself: a gained private
+    copy of quiet speech (worker._quiet_speech, applied ``gain_db``). Every other judgement (size,
+    duration, the sanity gate, the junk gate, the note's name and provenance) is about ``audio``.
+    """
     if not audio.is_file():
         raise TranscribeError(f"not a file: {audio}")
     size = audio.stat().st_size
@@ -352,7 +390,7 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
         requested = [arg for arg in requested if arg not in ("--diarization", "--no-diarization")]
         requested.extend(["--no-diarization", "--asr-output", str(asr_path), "--output", str(output)])
         started = __import__("time").monotonic()
-        cmd = ["nice", "-n", "15", str(transcribe_command()), str(audio)] + requested
+        cmd = ["nice", "-n", "15", str(transcribe_command()), str(asr_audio or audio)] + requested
         desktop.ding("start")
         try:
             # Tracked so `wax split` can stop exactly this item's transcriber.
@@ -378,6 +416,16 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
             raise TranscribeError(f"no private 'Written:' path produced; log retained: {logfile}")
 
         meta = parse_metadata(r.stderr)
+        if asr_audio is not None:
+            _rebind_asr_source(asr_path, audio, item_id, gain_db)
+            # transcribe.py titled the body after the private copy; name the real recording.
+            try:
+                text = md.read_text()
+                fixed = text.replace(f"# Transcription: {asr_audio.name}", f"# Transcription: {audio.name}", 1)
+                if fixed != text:
+                    md.write_text(fixed)
+            except OSError:
+                pass
 
         # Diarization degrades by returning nothing instead of failing, so the item
         # state stays "transcribed" while the speaker track has in fact been empty
@@ -493,6 +541,8 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                             "audio_duration_s": verdict["audio_duration_s"],
                             "duration_ratio": verdict["duration_ratio"],
                             "source_audio": audio.name,
+                            # Quiet input: the transcriber heard a +gain_db copy of this audio.
+                            **({"input_gain_db": gain_db} if gain_db is not None else {}),
                             # The ledger's transcripts table can only say diarized 0/1.
                             # Until it grows a column, the note is the only durable
                             # record of the difference between "one speaker" and
@@ -508,6 +558,9 @@ def transcribe(audio: Path, *, item_id: Optional[str] = None,
                             "channel_attributed": bool(meta.get("channel_separated")),
                         },
                     }
+                    if asr_audio is not None:
+                        # transcribe.py stamped the private gained copy; name the real audio.
+                        provenance["source-audio"] = str(audio.resolve())
                     if refs:
                         provenance.update({
                             "source-sha256": refs[0]["sha256"],

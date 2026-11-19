@@ -19,6 +19,10 @@ pre-ASR     SILENT AUDIO, measured: ``sanity.audio_levels`` (ffmpeg volumedetect
             <= -35 dB (speech is about -25 dB mean). Cause ``junk_silent``,
             parked in ``skipped/silent/``, no GPU run. Every source takes this
             path (mic, dropoff, Voice Memos, remote-audio, Telnyx intake).
+            EXCEPT quiet speech in a recording (not a call): the worker
+            profiles it first (``sanity.speech_profile``) and transcribes a
+            gained copy (``worker._quiet_speech``, HEYMA-38); only an empty
+            result from that copy parks it here.
 post-ASR    ``prune.classify`` on the fresh transcript, which at this point has
             no title, summary or classification, so only its structural rules
             can fire: no spoken words (``empty``), a voicemail greeting opening

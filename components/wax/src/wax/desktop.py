@@ -206,6 +206,23 @@ def notify_silent_recording(source: str, body: str) -> bool:
     return notify("Wax: recording is silent", body, urgency="normal")
 
 
+def notify_quiet_recording(source: str, body: str) -> bool:
+    """'Wax: recording input is very quiet': transcribed with gain, but the device level is wrong.
+
+    Same per-source dedup as notify_silent_recording (its own key), normal urgency.
+    """
+    now = time.monotonic()
+    key = f"quiet:{source}"
+    with _NOTIFY_LOCK:
+        last = _SILENT_NOTIFIED.get(key)
+        if last is not None and now - last < SILENT_NOTIFY_REPEAT_S:
+            log.info("quiet recording from %s repeats, notification suppressed", source)
+            return False
+        _SILENT_NOTIFIED[key] = now
+    log.warning("quiet recording from %s: %s", source, body.replace("\n", " · "))
+    return notify("Wax: recording input is very quiet", body, urgency="normal")
+
+
 def clear_silent_source(source: str | None = None) -> None:
     """Re-arm the silent-recording alarm for a source (all when None)."""
     with _NOTIFY_LOCK:

@@ -78,8 +78,42 @@ trashed.
 | Stage | Rule | `reason` |
 |---|---|---|
 | Before ASR (audio archived to S3 first, never transcribed) | A `telnyx-vm-*` file name, or a local `calls` row (`call_for_audio`, no Telnyx GET) with `outcome = voicemail` | `voicemail` |
-| Before ASR, after the S3 backup is verified (no GPU run) | **Silent audio, by measurement.** `sanity.audio_levels` (ffmpeg `volumedetect` over the whole file, all channels as one mix, about 2 s for 79 minutes) says mean <= -60 dB **and** max <= -35 dB. Speech is about -25 dB mean with peaks above -11 dB; the 2026-11-18 broken input measured mean -77..-87, max -40..-53. A `telnyx-*` call is judged as one mix, so one dead channel is normal and not silent. The level check runs after the `before ASR` voicemail rule. It fails open: if ffmpeg cannot measure, nothing is parked | `silent` |
+| Before ASR, after the S3 backup is verified (no GPU run) | **Silent audio, by measurement.** `sanity.audio_levels` (ffmpeg `volumedetect` over the whole file, all channels as one mix, about 2 s for 79 minutes) says mean <= -60 dB **and** max <= -35 dB. Speech is about -25 dB mean with peaks above -11 dB; the 2026-11-18 broken input measured mean -77..-87, max -40..-53. A `telnyx-*` call is judged as one mix, so one dead channel is normal and not silent. The level check runs after the `before ASR` voicemail rule. It fails open: if ffmpeg cannot measure, nothing is parked. **Quiet speech is not silence** (next paragraph): a level-silent recording whose half-second windows move like speech is transcribed from a gained copy instead | `silent` |
 | After ASR, after the sanity gate, before the note is published | `prune.classify` on the fresh note. It has no title or summary yet, so only the structural rules fire: no spoken words (`empty`), a voicemail greeting opening a call (`voicemail`), a test utterance that opens a short note (`no-content`), fewer than 4 words (`too-short`), a phone call of 20 words or fewer (`call-noise`) | as listed |
+
+**Quiet speech under a silent level (HEYMA-38, 2026-11-19).** The ten Mac Voice
+Memos of 2026-11-18 measured mean -70..-82 dB and parked as `junk_silent`, yet a
++40 dB copy of each transcribed to 72..4830 coherent words: the input level was
+35-50 dB too low and faster-whisper's VAD threw the speech away. So before a
+level-silent **recording** is parked, `sanity.speech_profile` measures half-second
+RMS windows (ffmpeg `astats`, mono 16 kHz). If the p99 window clears the p10 floor
+by >= 10 dB and at least 3 s (and 2% of the file) sits >= 8 dB above the floor,
+the worker (`worker._quiet_speech`) transcribes a private gained copy instead
+(`sanity.gained_audio`: FLAC, mono, 16 kHz, s16, about 68 MB for 79 minutes, in
+`var/logs/<item>/gain/`, removed when the run ends whatever happens; a copy a
+killed waxd left behind is swept before the next ASR run). The gain
+lifts p99 to -24 dB, capped at +50 dB, peak-limited. The source audio is never
+touched: the note's `source-audio` and its `# Transcription:` heading name it, and
+`asr.json`'s `source_sha256` is rebound to `items.sha256` so the diarization pass
+accepts it. `items.audio_gain_db` is written provisionally when the gained ASR run
+starts (so a waxd killed right after publishing still leaves later passes the
+gain) and cleared again if that run fails or is rejected. A **published**
+transcript keeps it, carries `wax.input_gain_db` in the note and `input_gain_db`
+in `asr.json`, and raises one `Wax: recording input is very quiet` notification
+per source; a failed or rejected run leaves no gain and no notification. The
+diarization pass and voice-id hear the same gained copy (from
+`items.audio_gain_db`), so speaker turns and `~/d/Voices` clips are audible. Flat
+input (digital silence, hum, hiss, a muted mic's room tone) is still parked with no
+GPU run. The profile only nominates: a gained copy that transcribes to no words is
+parked as `junk_silent` (gained noise tested at 0 words), and 1-3 hallucinated
+words park as `junk_too_short`; neither publishes a note or records a gain.
+(After `wax retry`, the `junk_override` skips the post-ASR rules, as for any
+retried item.) **Calls are never re-levelled**: a `telnyx-*` item or any name
+`calls.audio_identity` recognises (Telnyx trunk, `telnyx-vm-*`, Groundwire
+`rec_*`); their channels are judged by `channels.py`. Quiet input is reported,
+not hidden: `--json` `silent.quiet {count, recent, sources}`, and a quiet item ends
+a `source_silent` run because it held speech. `wax retry <id>` on a memo parked
+before this probe goes through it.
 
 A rejected item is `skipped` with cause `junk_<reason>` (`junk_voicemail`,
 `junk_empty`, `junk_too_short`, `junk_call_noise`, `junk_no_content`,
@@ -94,8 +128,9 @@ never reprocessed (`skipped/silent/duplicates/` for a silent one).
 
 - `wax retry <item>` releases a false positive: the audio moves from
   `skipped/junk/` (or `skipped/silent/`) back to the inbox and a `junk_override`
-  transition makes every stage skip that item from then on, silence included. It
-  is the escape hatch for a real but very quiet recording; no `--force`.
+  transition makes every stage skip that item from then on, silence included. A
+  very quiet recording is normally lifted by the quiet-speech probe (above), and a
+  retry goes through that probe too; no `--force`.
 - **An empty transcript is decided by the measured level, not by length.**
   Silent audio is `junk_silent` (normally caught before ASR; the adapter
   re-measures if it was not). An empty transcript from audible audio is an ASR
@@ -192,7 +227,8 @@ in [intake](intake.md).
 | Item `suspect`, `*.suspect.md` beside the note | Sanity gate | table above |
 | Item `failed` with `transcribe_failed` | The child exited non-zero, produced no path, or could not publish; read `logs/<item>/transcription.<n>.log` | `wax retry <item>` after the cause |
 | Item `failed` with `asr_empty_output` | The audio is audible but the transcriber returned no words (`EMPTY TRANSCRIPT ... audible audio`): suspect ASR, not the mic | `wax doctor`, then `wax retry <item>` |
-| Item `skipped` with `junk_silent`, audio in `skipped/silent/` | The recording's input was silent (mean below -60 dB): re-recording is the fix, `wax retry` only forces a transcription of silence | check the mic/input on the recording device; `wax retry <item>` only if the level is a measurement mistake |
+| Item `skipped` with `junk_silent`, audio in `skipped/silent/` | The recording's input was silent (mean below -60 dB) and either flat (no speech to lift) or its gained copy transcribed to no words | check the mic/input on the recording device and re-record; for an item parked before 2026-11-19 (no quiet-speech probe yet), `wax retry <item>` runs it through the probe |
+| Note has `wax.input_gain_db`; `wax status --json` `silent.quiet.count` > 0 | Quiet input: speech arrived 35-50 dB too low and was transcribed from a gained copy | raise the input level on that device (System Settings → Sound → Input on a Mac); the transcript is fine |
 | ASR running on CPU | VRAM floor not met for 30 s (ComfyUI or vexa holding the GPU) | `nvidia-smi`; wait or free the GPU |
 | Diarization failed x3, exhausted | CUDA out of memory at Sortformer load | the HEYMA-10 recipe in the incident log: bounded retry only with at least 3000 MiB free |
 | Two checkouts reported | The check resolved PATH instead of the daemon's pin | [the doctor procedure](../subskills/doctor/SUBSKILL.md) |

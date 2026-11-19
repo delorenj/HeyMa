@@ -6,7 +6,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from . import component, frontmatter, ledger
+from . import component, frontmatter, ledger, paths, sanity
 
 
 SKIP_CHANNEL_SEPARATED = {"wax_ep_version": 1, "state": "skipped", "reason_code": "channel_separated"}
@@ -60,11 +60,15 @@ def build_result(md, item_id):
     spec = importlib.util.spec_from_file_location("wax_asr_renderer", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    turns, device = module.diarize_local(row["path"], "cuda")
-    if not turns or not device or not device.startswith("cuda"):
-        raise RuntimeError("Sortformer did not produce CUDA speaker turns")
-    # Word times (forced alignment) let a segment split where the speaker changes.
-    result = dict(asr["result"], segments=module.align_words(row["path"], asr["result"]["segments"], device))
+    # Quiet speech (items.audio_gain_db) is heard through the same gained copy ASR heard.
+    with sanity.gained_audio(Path(row["path"]), ledger.audio_gain(item_id),
+                             paths.LOGS / item_id / "gain") as heard:
+        audio = str(heard or row["path"])
+        turns, device = module.diarize_local(audio, "cuda")
+        if not turns or not device or not device.startswith("cuda"):
+            raise RuntimeError("Sortformer did not produce CUDA speaker turns")
+        # Word times (forced alignment) let a segment split where the speaker changes.
+        result = dict(asr["result"], segments=module.align_words(audio, asr["result"]["segments"], device))
     rendered = module.to_markdown(result, row["path"], asr.get("timestamps", False), turns, True, "cuda", device)
     _, replacement = frontmatter.split(rendered)
     segments = result["segments"]
