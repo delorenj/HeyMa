@@ -91,11 +91,38 @@ class TrayActionFeedbackTest(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 1, "", "boom")
 
         desktop.run_wax_action("/x/bin/wax", ("ep", "run-selected", "id9", "summarize"),
-                               app="HeyMa", runner=runner,
+                               app="HeyMa", runner=runner, scope=list,
                                notifier=lambda t, b, **k: notes.append((t, k.get("app"))), wait=True)
         self.assertEqual(seen, {"argv": ["/x/bin/wax", "ep", "run-selected", "id9", "summarize"],
                                 "timeout": None})
         self.assertEqual(notes, [("HeyMa: Rerun passes for id9 failed", "HeyMa")])
+
+    def test_tray_actions_run_in_their_own_scope_so_quitting_the_tray_cannot_kill_them(self):
+        # 2026-11-19: quitting the tray killed a Recording-toggle stop mid-finalize (finalizer_died).
+        seen, bodies = {}, []
+
+        def runner(argv, **kw):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 1, "", "refused")
+
+        desktop.run_wax_action("/x/bin/wax", ("rec", "toggle"), runner=runner,
+                               scope=lambda argv: ["systemd-run", "--user", "--scope", "--", *argv],
+                               notifier=lambda t, b, **k: bodies.append(b), wait=True)
+        self.assertEqual(seen["argv"], ["systemd-run", "--user", "--scope", "--", "/x/bin/wax", "rec", "toggle"])
+        self.assertEqual(bodies, ["refused\n(rec toggle)"], "the notice names the wax command, not the wrapper")
+
+    def test_own_scope_wraps_only_where_a_user_manager_answers(self):
+        with patch.dict("os.environ", {"XDG_RUNTIME_DIR": ""}):
+            self.assertEqual(desktop.own_scope(["wax", "rec", "toggle"]), ["wax", "rec", "toggle"])
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as rt:
+            os.makedirs(os.path.join(rt, "systemd"))
+            open(os.path.join(rt, "systemd", "private"), "w").close()
+            with patch.dict("os.environ", {"XDG_RUNTIME_DIR": rt}), \
+                    patch.object(desktop.shutil, "which", return_value="/usr/bin/systemd-run"):
+                self.assertEqual(desktop.own_scope(["wax", "rec", "toggle"]),
+                                 ["/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect",
+                                  "--", "wax", "rec", "toggle"])
 
     def test_describe_action_names_verb_and_item(self):
         cases = {("retry", "id1"): "Retry id1", ("skip", "id2"): "Skip id2",

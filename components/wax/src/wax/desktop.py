@@ -80,7 +80,7 @@ def _action_error(result) -> str:
 
 def run_reporting(argv: list[str], *, what: str, on_failure=None, app: str = "Wax",
                   timeout: float = ACTION_TIMEOUT_S, runner=None,
-                  notifier=None, wait: bool = False) -> threading.Thread:
+                  notifier=None, wait: bool = False, shown=None) -> threading.Thread:
     """Run a tray action's CLI off the UI thread and SAY when it fails.
 
     Every tray menu action (Retry, Skip, Transcribe anyway, rerun passes, Clear
@@ -106,7 +106,8 @@ def run_reporting(argv: list[str], *, what: str, on_failure=None, app: str = "Wa
         except OSError as e:
             message = f"{type(e).__name__}: {e}"
         log.warning("tray action failed: %s: %s", what, message)
-        notifier(f"{app}: {what} failed", f"{message}\n({' '.join(str(a) for a in argv[1:])})",
+        named = shown if shown is not None else argv
+        notifier(f"{app}: {what} failed", f"{message}\n({' '.join(str(a) for a in named[1:])})",
                  app=app)
         if on_failure is not None:
             try:
@@ -121,15 +122,37 @@ def run_reporting(argv: list[str], *, what: str, on_failure=None, app: str = "Wa
     return thread
 
 
-def run_wax_action(cli, args, *, on_failure=None, app: str = "Wax", **kwargs) -> threading.Thread:
+def own_scope(argv: list[str]) -> list[str]:
+    """`argv` in its own transient systemd user scope, so it outlives the tray that started it.
+
+    A tray action's child lives in the tray's cgroup (heyma-tray.service, or waxd.service for
+    waxd's own tray), and both units use KillMode=control-group. On 2026-11-19 a tray "Recording
+    toggle" stopped a 16-hour capture; finalizing 970 segments took a while, the tray was quit
+    meanwhile, and the stop's finalizer (the `wax` CLI child) died with it: `finalizer_died`,
+    recording blocked until a manual `wax rec salvage`. `systemd-run --scope` execs the command
+    in the foreground (same pid, same exit code, same pipes), so the caller still waits and reads
+    its output. Falls back to plain `argv` where there is no user manager to ask.
+    """
+    import os
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or ""
+    tool = shutil.which("systemd-run")
+    if not tool or not runtime or not os.path.exists(os.path.join(runtime, "systemd", "private")):
+        return list(argv)
+    return [tool, "--user", "--scope", "--quiet", "--collect", "--", *argv]
+
+
+def run_wax_action(cli, args, *, on_failure=None, app: str = "Wax", scope=own_scope,
+                   **kwargs) -> threading.Thread:
     """One tray menu action, `<cli> <args>`, with its label and timeout chosen here.
 
     Both trays (waxd's own and the HeyMa shell) call this, so a new action gets
-    the same feedback and the same "never kill a long rerun" rule in both.
+    the same feedback, the same "never kill a long rerun" rule, and its own scope
+    (quitting or restarting a tray never kills an action it started) in both.
     """
     args = [str(a) for a in args]
-    return run_reporting([str(cli), *args], what=describe_action(args), on_failure=on_failure,
-                         app=app, timeout=action_timeout(args), **kwargs)
+    argv = [str(cli), *args]
+    return run_reporting(scope(argv), what=describe_action(args), on_failure=on_failure,
+                         app=app, timeout=action_timeout(args), shown=argv, **kwargs)
 
 
 def describe_action(args) -> str:
