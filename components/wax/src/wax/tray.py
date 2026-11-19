@@ -741,7 +741,9 @@ class QueueMenu:
             for x in items
         ) + (
             _as_int(silent.get("count")), _as_int(silent.get("more")),
-            tuple((r.get("item_id"), r.get("mean_db")) for r in (silent.get("recent") or [])
+            # `at` too: a re-park within one tick must still re-enable a greyed row.
+            tuple((r.get("item_id"), r.get("mean_db"), r.get("at") or r.get("updated_at"))
+                  for r in (silent.get("recent") or [])
                   if isinstance(r, dict)),
             tuple((s.get("source"), s.get("count")) for s in (silent.get("sources") or [])
                   if isinstance(s, dict)),

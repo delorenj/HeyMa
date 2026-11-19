@@ -218,7 +218,7 @@ def main() -> int:
     if not Gtk.init_check()[0]:
         log.error("no display; the HeyMa tray needs a graphical session")
         return 1
-    from wax import telephony_presentation
+    from wax import desktop, telephony_presentation
 
     shell = Shell()
     ctx = shell.ctx
@@ -248,11 +248,22 @@ def main() -> int:
 
     ringer = telephony_presentation.Ringer(telephony_presentation.RingPlayer(),
                                            datetime.now(timezone.utc))
+    def wax_action(*args):
+        # Retry / Skip / Transcribe anyway / rerun passes / Clear completed: a
+        # refused or crashed CLI call raises a notification with its first error
+        # line and re-arms the queue so the greyed row comes back.
+        def rearm(_message):
+            def redraw():
+                indicator._queue_signature = None
+                return False
+            GLib.idle_add(redraw)
+        desktop.run_wax_action(wax_cli, args, on_failure=rearm, app="HeyMa")
+
     actions = {
         # One toggle implementation per product: the hotkey's own entry points.
         "dictation": lambda: vinyl_cmd and _popen(vinyl_cmd + ["toggle"]),
         "recording": lambda: _popen([toggle]),
-        "wax": lambda *args: _popen([wax_cli, *args]),
+        "wax": wax_action,
         "open_inbox": lambda: _popen(["xdg-open", str(paths.wax_root(ctx.environ) / "inbox")]),
         "page": lambda page: _popen([heyma, "--page", page]),
         "settings": lambda: _popen([heyma, "--page", "settings"]),

@@ -28,6 +28,125 @@ _NOTIFIED: set[tuple[str, str]] = set()
 _NOTIFY_LOCK = threading.Lock()
 
 
+ACTION_TIMEOUT_S = 120.0
+# Ledger-only actions answer in well under a second; 120 s means "hung". Rerun
+# passes runs the passes synchronously (ticketable allows 1800 s, wikification
+# 900 s), so it is never killed: the tray just waits for the verdict.
+LONG_ACTIONS = ("ep",)
+_JSON_REASON_KEYS = ("evidence", "error", "reason", "detail", "message", "cause_code", "action")
+
+
+def action_timeout(args) -> float | None:
+    """Seconds before a `wax <args>` tray action counts as hung; None = never kill it."""
+    return None if args and str(args[0]) in LONG_ACTIONS else ACTION_TIMEOUT_S
+
+
+def _json_reason(text: str) -> str:
+    import json
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    for key in _JSON_REASON_KEYS:
+        value = doc.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _action_error(result) -> str:
+    """The line worth reading: stderr before stdout (stdout may be a JSON body).
+
+    A traceback yields its LAST line (the exception), not its first `File …`
+    frame; a JSON body yields its evidence/error field, not a lone `{`.
+    """
+    for text in (getattr(result, "stderr", "") or "", getattr(result, "stdout", "") or ""):
+        text = text.strip()
+        if not text:
+            continue
+        reason = _json_reason(text)
+        if reason:
+            return reason.splitlines()[0][:200]
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if any(line.startswith("Traceback") for line in lines):
+            return lines[-1][:200]
+        for line in lines:
+            if line.strip("{}[](),") and not line.startswith("Traceback"):
+                return line[:200]
+    return f"exit {getattr(result, 'returncode', '?')}"
+
+
+def run_reporting(argv: list[str], *, what: str, on_failure=None, app: str = "Wax",
+                  timeout: float = ACTION_TIMEOUT_S, runner=None,
+                  notifier=None, wait: bool = False) -> threading.Thread:
+    """Run a tray action's CLI off the UI thread and SAY when it fails.
+
+    Every tray menu action (Retry, Skip, Transcribe anyway, rerun passes, Clear
+    completed) used to be a fire-and-forget Popen with its output discarded, so
+    a refused `wax skip` or a crashed `wax retry` left a greyed row and nothing
+    else. A non-zero exit, a timeout or a missing binary now raises a desktop
+    notification naming the action and the CLI's own first error line, logs it,
+    and calls `on_failure(message)` so the host can re-enable the row.
+    """
+    runner = runner or subprocess.run
+    notifier = notifier or notify
+
+    def work():
+        try:
+            result = runner(argv, capture_output=True, text=True, timeout=timeout,
+                            stdin=subprocess.DEVNULL)
+            if result.returncode == 0:
+                log.info("tray action ok: %s", what)
+                return
+            message = _action_error(result)
+        except subprocess.TimeoutExpired:
+            message = f"no answer after {timeout:g}s"
+        except OSError as e:
+            message = f"{type(e).__name__}: {e}"
+        log.warning("tray action failed: %s: %s", what, message)
+        notifier(f"{app}: {what} failed", f"{message}\n({' '.join(str(a) for a in argv[1:])})",
+                 app=app)
+        if on_failure is not None:
+            try:
+                on_failure(message)
+            except Exception:  # noqa: BLE001 - feedback must never take the tray down
+                log.exception("tray action on_failure callback raised")
+
+    thread = threading.Thread(target=work, daemon=True, name=f"tray-action-{what}")
+    thread.start()
+    if wait:
+        thread.join()
+    return thread
+
+
+def run_wax_action(cli, args, *, on_failure=None, app: str = "Wax", **kwargs) -> threading.Thread:
+    """One tray menu action, `<cli> <args>`, with its label and timeout chosen here.
+
+    Both trays (waxd's own and the HeyMa shell) call this, so a new action gets
+    the same feedback and the same "never kill a long rerun" rule in both.
+    """
+    args = [str(a) for a in args]
+    return run_reporting([str(cli), *args], what=describe_action(args), on_failure=on_failure,
+                         app=app, timeout=action_timeout(args), **kwargs)
+
+
+def describe_action(args) -> str:
+    """'Retry 89d99381a94d0eb5' style label for a `wax <args>` tray action."""
+    verbs = {"retry": "Retry", "skip": "Skip", "ep": "Rerun passes",
+             "queue": "Clear completed", "rec": "Recording toggle"}
+    args = [str(a) for a in args]
+    if not args:
+        return "wax"
+    verb = verbs.get(args[0], f"wax {args[0]}")
+    if args[0] in ("retry", "skip") and len(args) > 1:
+        return f"{verb} {args[1]}"
+    if args[0] == "ep" and len(args) > 2:
+        return f"{verb} for {args[2]}"
+    return verb
+
+
 def ding(event: str) -> bool:
     """Play a desktop event sound without ever blocking or failing the worker."""
     sound = SOUNDS.get(event, "message")
@@ -45,7 +164,7 @@ def ding(event: str) -> bool:
         return False
 
 
-def notify(title: str, body: str, *, urgency: str = "critical") -> bool:
+def notify(title: str, body: str, *, urgency: str = "critical", app: str = "Wax") -> bool:
     """Raise a desktop notification. Never raises: the caller is mid-failure.
 
     A swallowed notification is still logged, because a headless session is
@@ -56,7 +175,7 @@ def notify(title: str, body: str, *, urgency: str = "critical") -> bool:
         log.warning("notify-send absent, unreported: %s — %s", title, body.replace("\n", " · "))
         return False
     try:
-        subprocess.run(["notify-send", "-a", "Wax", "-u", urgency, title, body], check=False)
+        subprocess.run(["notify-send", "-a", app, "-u", urgency, title, body], check=False)
     except OSError as e:
         log.warning("notify-send failed: %s: %s", type(e).__name__, e)
         return False

@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import component, paths
+from . import component, desktop, paths
 
 SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_CURRENT_DESKTOP",
                 "XDG_SESSION_TYPE", "DBUS_SESSION_BUS_ADDRESS")
@@ -176,7 +176,15 @@ def main():
     cli = component.ROOT / "bin" / "wax"
 
     def call(*args):
-        subprocess.Popen([str(cli), *args])
+        # Never fire-and-forget: a refused or crashed action must reach the
+        # desktop, and the greyed row must come back so it can be tried again.
+        desktop.run_wax_action(cli, args, on_failure=lambda _msg: tray.GLib.idle_add(rearm))
+
+    def rearm():
+        # Forget the drawn signature so the next 1 s update redraws (re-enabling
+        # the row the click greyed out).
+        indicator._queue_signature = None
+        return False
 
     def open_page(page):
         # GTK4 window in a separate process from GTK3 libappindicator.
