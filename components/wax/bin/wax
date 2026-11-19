@@ -1706,21 +1706,29 @@ def probe_calls(add) -> None:
                    "" if status == PASS else
                    "systemctl --user start wax-calls-sync; candybar show wax-calls-sync -n 5"))
         n = len(h["voicemail_unfetched"])
-        add(_probe("voicemails fetched", PASS if not n else FAIL,
-                   f"{n} voicemail(s) from the last {h['days']}d not in the inbox" if n
-                   else f"every voicemail from the last {h['days']}d is in the inbox",
-                   "" if not n else "wax calls sync --since 7d  (the Telnyx link dies 7 days after the call)"))
+        row = _probe("voicemails fetched", PASS if not n else FAIL,
+                     f"{n} voicemail(s) from the last {h['days']}d not in the inbox" if n
+                     else f"every voicemail from the last {h['days']}d is in the inbox",
+                     "" if not n else "wax calls sync --since 7d  (the Telnyx link dies 7 days after the call)")
+        if n:
+            # Every member, not a count: a ticket filed from this snapshot must be able to name
+            # what it saw after the set has changed (HEYMA-15 kept only "6, oldest X").
+            row["lines"] = [f"vm:{e}" for e in h["voicemail_unfetched"]]
+        add(row)
     except Exception as e:  # noqa: BLE001 - one broken probe must not hide the rest of doctor
         add(_probe("call log synced", FAIL, f"{type(e).__name__}: {e}"))
         return
     try:
         lost, days = h["recordings_undelivered"], h["recordings_days"]
-        add(_probe("call recordings delivered", PASS if not lost else FAIL,
-                   f"{len(lost)} call recording(s) from the last {days}d have no Wax item (oldest {lost[0]})"
-                   if lost else f"every call recording from the last {days}d is a Wax item",
-                   "" if not lost else
-                   "object in S3: candybar show telnyx-s3-intake (paused?); candybar resume telnyx-s3-intake; "
-                   "bin/telnyx-s3-intake status.  no S3 object: wax calls backfill --dry-run, then without it"))
+        row = _probe("call recordings delivered", PASS if not lost else FAIL,
+                     f"{len(lost)} call recording(s) from the last {days}d have no Wax item (oldest {lost[0]})"
+                     if lost else f"every call recording from the last {days}d is a Wax item",
+                     "" if not lost else
+                     "object in S3: candybar show telnyx-s3-intake (paused?); candybar resume telnyx-s3-intake; "
+                     "bin/telnyx-s3-intake status.  no S3 object: wax calls backfill --dry-run, then without it")
+        if lost:
+            row["lines"] = list(lost)  # every member, so a ticket snapshot keeps the list (HEYMA-15)
+        add(row)
     except Exception as e:  # noqa: BLE001
         add(_probe("call recordings delivered", FAIL, f"{type(e).__name__}: {e}"))
     try:

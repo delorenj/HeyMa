@@ -475,6 +475,14 @@ class RecordingsProbeWiringTest(unittest.TestCase):
     def test_doctor_passes_when_every_recording_is_an_item(self):
         row = self._probes([])["call recordings delivered"]
         self.assertEqual(row["status"], self.wax.PASS)
+        self.assertNotIn("lines", row)
+
+    def test_doctor_row_names_every_stranded_recording_not_just_the_oldest(self):
+        """HEYMA-15 was filed from "6 ..., oldest X"; the other five had to be reconstructed."""
+        lost = [f"leg{i} (no S3 object)" for i in range(6)]
+        row = self._probes(lost)["call recordings delivered"]
+        self.assertEqual(row["lines"], lost)
+        self.assertIn("6 call recording(s)", row["detail"])
 
 
 class BackfillTest(_Ledger):

@@ -97,7 +97,7 @@ The `call-metadata` pass (see [passes/catalog](passes/catalog.md)) joins a `teln
 
 ## Runbook
 
-Start with `wax calls list` and `wax calls show <ref>`; `wax status` has a calls line (`ok synced N min ago`, or `error` when voicemails are unfetched, call recordings never reached the inbox, or the last sync is over 3 h old), and `wax doctor` probes "call log synced" (WARN > 30 min, FAIL > 3 h or never), "voicemails fetched", "call recordings delivered" (FAIL when a trunk recording ≥ 3 s that ended 15+ min ago in the last 30 d has no `telnyx-*` item and no backfill `file_name`; with no S3 object it is named `<leg> (no S3 object)` and the fix is `wax calls backfill`), and "telnyx api key" (`GET /v2/balance`).
+Start with `wax calls list` and `wax calls show <ref>`; `wax status` has a calls line (`ok synced N min ago`, or `error` when voicemails are unfetched, call recordings never reached the inbox, or the last sync is over 3 h old), and `wax doctor` probes "call log synced" (WARN > 30 min, FAIL > 3 h or never), "voicemails fetched", "call recordings delivered" (FAIL when a trunk recording ≥ 3 s that ended 15+ min ago in the last 30 d has no `telnyx-*` item and no backfill `file_name`; with no S3 object it is named `<leg> (no S3 object)` and the fix is `wax calls backfill`; the detail says "N ... (oldest X)" and every member is listed under it, and in `--json` as `lines`, so a ticket filed from the snapshot keeps the whole set: HEYMA-15 kept only "6, oldest X" and its other five had to be rebuilt from the ledger), and "telnyx api key" (`GET /v2/balance`).
 
 | Symptom | Likely cause | Do this |
 |---|---|---|
