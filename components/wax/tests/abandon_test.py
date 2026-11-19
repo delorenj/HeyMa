@@ -166,11 +166,14 @@ class StopTest(unittest.TestCase):
             out = abandon.stop_abandoned(rid, self.verdict, before_stop=lambda d: calls.append(("before", d)))
         self.assertEqual(out["action"], "stopped")
         self.assertEqual(out["reason"], "abandoned_silent")
-        self.assertEqual(calls[0][0], "before")
-        self.assertIn("abandoned_silent", calls[0][1])
-        self.assertEqual(calls[1][0], rid)
-        self.assertEqual(calls[1][1]["reason"], "abandoned_silent")
-        self.assertIn("silent 100.0% of the last 60 min", calls[1][1]["detail"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], rid)
+        self.assertEqual(calls[0][1]["reason"], "abandoned_silent")
+        self.assertIn("silent 100.0% of the last 60 min", calls[0][1]["detail"])
+        # the ledger note rides on_intent, which capture.stop calls once the sentinel exists
+        calls[0][1]["on_intent"]()
+        self.assertEqual(calls[1][0], "before")
+        self.assertIn("abandoned_silent", calls[1][1])
 
     def test_a_capture_already_stopped_or_replaced_is_left_alone(self):
         for cur in ({"state": "ready", "rid": None}, {"state": "recording", "rid": "20261119-093000-other0"},
@@ -180,6 +183,30 @@ class StopTest(unittest.TestCase):
                 out = abandon.stop_abandoned("20261118-171838-abcdef", self.verdict)
             self.assertEqual(out["action"], "skipped", cur)
             stop.assert_not_called()
+
+    def test_the_ledger_note_is_written_only_after_the_stop_sentinel_exists(self):
+        rid = "20261118-171838-abcdef"
+        order = []
+        with tempfile.TemporaryDirectory() as d:
+            stream = Path(d)
+            (stream / f"{rid}.rec.json").write_text(json.dumps({"rid": rid, "pid": 0, "starttime": 0,
+                                                                "boot_id": "b", "target_name": "t.ogg"}))
+            with patch.object(paths, "STREAM", stream), \
+                    patch.object(state, "stream_state", return_value={"state": "recording", "rid": rid}), \
+                    patch.object(capture.sentinel, "encoder_alive", return_value=False), \
+                    patch.object(capture, "finalize", return_value={"path": "/inbox/x.ogg"}):
+                abandon.stop_abandoned(rid, self.verdict,
+                                       before_stop=lambda _d: order.append(paths.stop_path(rid).exists()))
+        self.assertEqual(order, [True])
+
+    def test_a_stop_that_fails_before_the_sentinel_leaves_no_ledger_note(self):
+        rid = "20261118-171838-abcdef"
+        notes = []
+        with patch.object(state, "stream_state", return_value={"state": "recording", "rid": rid}), \
+                patch.object(capture.sentinel, "read_json", return_value=None):
+            with self.assertRaises(capture.CaptureError):
+                abandon.stop_abandoned(rid, self.verdict, before_stop=notes.append)
+        self.assertEqual(notes, [])
 
     def test_takes_the_capture_lifecycle_lock(self):
         import fcntl
@@ -228,6 +255,9 @@ class SentinelTest(unittest.TestCase):
                 sentinel.write_stop(rid)
                 self.assertNotIn("detail", json.loads(paths.stop_path(rid).read_text()))
                 self.assertIn("explicit stop requested", state.stream_state(run_preflight=False)["evidence"])
+                sentinel.write_stop(rid, reason="cancel")
+                evidence = state.stream_state(run_preflight=False)["evidence"]
+                self.assertNotIn("waxd", evidence, "a user's cancel is not waxd's doing")
 
 
 def load_waxd():
@@ -316,6 +346,28 @@ class DaemonWiringTest(unittest.TestCase):
         self.d._abandon_retry_at = 0.0
         self.tick()
         self.assertEqual(len(self.stopped), 2)
+
+    def test_an_encoder_log_that_appears_late_is_still_judged(self):
+        (self.logs / self.RID / "encoder.log").unlink(missing_ok=True)
+        self.tick()
+        self.assertEqual(self.stopped, [])
+        self.write_log(encoder_log(5000, [(0, None)]))
+        self.tick()
+        self.assertEqual(len(self.stopped), 1)
+
+    def test_quit_waits_for_an_in_flight_abandon_stop(self):
+        done = threading.Event()
+        t = threading.Thread(target=lambda: (time.sleep(0.3), done.set()))
+        t.start()
+        d = self.d
+        d._abandon_thread = t
+        d.worker = type("W", (), {"stop": lambda s: None})()
+        d.server = type("S", (), {"shutdown": lambda s: None})()
+        d.stopped = threading.Event()
+        d.tray = type("T", (), {"stop": lambda s: None})()
+        with patch.object(self.waxd.paths.SOCK.__class__, "unlink", lambda *a, **k: None):
+            d.quit()
+        self.assertTrue(done.is_set(), "quit must not return while the stop thread is still finalizing")
 
     def test_a_live_meeting_is_not_stopped(self):
         silences = [(t, t + 30) for t in range(600, 7200, 240)]

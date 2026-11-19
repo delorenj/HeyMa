@@ -246,6 +246,11 @@ class Daemon:
             self._abandon_retry_at = 0.0
             rec = sentinel.read_json(paths.rec_path(rid)) or {}
             self._timeline = abandon.Timeline(rec.get("segment_seconds") or paths.SEGMENT_SECONDS)
+            self._silence_monitor_file = None
+
+        if rid and self._silence_monitor_file is None:
+            # Retried every tick until it opens: an encoder.log that appears after the stream turns
+            # `recording` must still be judged, or the capture is never seen as silent or abandoned.
             log_path = paths.LOGS / rid / "encoder.log"
             if log_path.exists():
                 try:
@@ -255,8 +260,6 @@ class Daemon:
                     self._silence_monitor_file = open(log_path, "r", errors="replace")
                 except OSError:
                     self._silence_monitor_file = None
-            else:
-                self._silence_monitor_file = None
 
         if self._silence_monitor_file:
             try:
@@ -595,6 +598,11 @@ class Daemon:
         except Exception:  # noqa: BLE001
             pass
         paths.SOCK.unlink(missing_ok=True)
+        # An abandoned-capture stop finalizes on a daemon thread of THIS process; let it finish (bounded)
+        # so a restart or SIGTERM cannot kill the finalizer and leave the stream error-partial.
+        t = self._abandon_thread
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=60)
         self.stopped.set()
         self.tray.stop()
 

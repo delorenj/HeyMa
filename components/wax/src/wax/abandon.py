@@ -168,9 +168,8 @@ def stop_abandoned(rid: str, verdict: dict[str, Any], *,
         cur = state.stream_state(run_preflight=False)
         if cur.get("state") != "recording" or cur.get("rid") != rid:
             return {"action": "skipped", "rid": rid, "state": cur.get("state"), "current_rid": cur.get("rid")}
-        if before_stop is not None:
-            before_stop(detail)
-        out = capture.stop(rid, reason=REASON, detail=detail)
+        out = capture.stop(rid, reason=REASON, detail=detail,
+                           on_intent=(lambda: before_stop(detail)) if before_stop is not None else None)
     return {"action": "stopped", "reason": REASON, "detail": detail, **out}
 
 

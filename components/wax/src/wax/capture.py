@@ -34,7 +34,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from . import paths, procutil, rename, sentinel, state
 
@@ -271,7 +271,8 @@ def lifecycle_lock() -> Iterator[None]:
 
 
 def stop(rid: str, *, dest_dir: Optional[Path] = None, reason: str = "explicit",
-         detail: Optional[str] = None) -> dict[str, Any]:
+         detail: Optional[str] = None,
+         on_intent: Optional[Callable[[], None]] = None) -> dict[str, Any]:
     """Explicitly stop a capture and move the finished file into the inbox.
 
     `dest_dir` (used by `wax split`) publishes the finished file there instead, so
@@ -284,6 +285,8 @@ def stop(rid: str, *, dest_dir: Optional[Path] = None, reason: str = "explicit",
     # Intent BEFORE signal. If we die between these two lines the state is
     # `not-ready` then `error-partial` on deadline — never a silent truncation.
     sentinel.write_stop(rid, reason=reason, detail=detail)
+    if on_intent is not None:
+        on_intent()  # runs once the stop sentinel exists, so a 1 Hz tick can never see a half-made stop
 
     if sentinel.encoder_alive(rec):
         _shutdown(rid, rec)
