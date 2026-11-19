@@ -129,6 +129,36 @@ class FinalizationTest(unittest.TestCase):
         self.assertEqual(ledger.connect().execute("SELECT COUNT(*) FROM completions").fetchone()[0], 0)
         self.assertEqual(ledger.connect().execute("SELECT COUNT(*) FROM outbox").fetchone()[0], before)
 
+    def _stamp_during_apply(self, stamp: dict):
+        """Patch _apply_frontmatter so a foreign writer edits the note mid-apply (Obsidian's note-status)."""
+        real = passes._apply_frontmatter
+        fired = []
+
+        def racing(path, updates):
+            real(path, updates)
+            if not fired:
+                fired.append(1)
+                fm, body = frontmatter.read(self.md)
+                fm.update(stamp)
+                self.md.write_text(frontmatter.render(fm, body))
+        return patch.object(passes, "_apply_frontmatter", side_effect=racing)
+
+    def test_a_foreign_stamp_on_other_keys_is_rebased_not_failed(self):
+        # 2026-11-19: `pipeline-status: new` landed mid-apply and failed classification on 7 of 9 notes.
+        with self._stamp_during_apply({"pipeline-status": "new"}):
+            current, _ = passes._apply_result(self.item, self.md, {"slug": "classification"},
+                                              {"wax_ep_version": 1, "frontmatter": {"new-field": "added"}})
+        fm, body = frontmatter.read(current)
+        self.assertEqual(fm["pipeline-status"], "new", "the foreign stamp is kept")
+        self.assertEqual(fm["new-field"], "added", "and the pass still applied")
+        self.assertEqual(body, self.body)
+
+    def test_a_foreign_edit_to_a_key_the_pass_writes_still_fails(self):
+        with self._stamp_during_apply({"new-field": "human wrote this"}), self.assertRaises(passes.PassError):
+            passes._apply_result(self.item, self.md, {"slug": "classification"},
+                                 {"wax_ep_version": 1, "frontmatter": {"new-field": "added"}})
+        self.assertEqual(frontmatter.read(self.md)[0]["new-field"], "human wrote this")
+
     def test_invalid_body_intent_leaves_metadata_and_body_unchanged(self):
         original = self.md.read_bytes()
         result = {"wax_ep_version": 1, "frontmatter": {"new-field": "must not leak"},

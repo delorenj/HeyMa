@@ -688,6 +688,28 @@ def _apply_base_schema(ep: dict[str, Any], item_id: str, md: Path) -> None:
         log.warning("%s: base frontmatter stamp failed: %s", ep.get("slug"), exc)
 
 
+# An Obsidian plugin (note-status, `pipeline-status: new`) stamps every NEW note in place
+# within about a second of publish, which raced the first pass's apply: on 2026-11-19 seven
+# of nine fresh notes failed classification with "document changed during pass application"
+# though nobody had edited a key the pass owned. A change that leaves the body and every key
+# this pass writes untouched is re-applied on top of, not treated as a human edit.
+APPLY_REBASE_ATTEMPTS = 3
+
+
+def _disjoint_change(before: bytes, after: bytes, updates: dict[str, Any]) -> bool:
+    """True when `after` differs from `before` only in frontmatter keys this pass does not write."""
+    try:
+        old_fm, old_body = frontmatter.split(before.decode("utf-8"))
+        new_fm, new_body = frontmatter.split(after.decode("utf-8"))
+    except UnicodeDecodeError:
+        return False
+    if old_body != new_body:
+        return False
+    if not old_fm and before.startswith(b"---"):
+        return False  # unparseable frontmatter: never guess
+    return all(old_fm.get(key) == new_fm.get(key) for key in updates)
+
+
 def _apply_frontmatter(md: Path, updates: dict[str, Any]) -> None:
     """Batch every grounded value from one pass into a single frontmatters set."""
     if not updates:
@@ -923,37 +945,45 @@ def _apply_result(item_id: str, md: Path, ep: dict[str, Any], result: dict[str, 
         # The date-prefixed filename contract belongs to transcripts; an
         # ordinary document keeps the name its owner gave it.
         requested_slug = None
-    original = md.read_bytes()
-    _, body = frontmatter.split(original.decode("utf-8"))
     replacement = result.get("body_replace")
     if replacement is not None:
-        import hashlib
         if ep.get("body_mutation") != "compare-and-replace":
             raise PassError("pass is not authorized to replace the transcript body")
         if not isinstance(replacement, dict) or set(replacement) != {"sha256", "text"}:
             raise PassError("invalid body replacement intent")
         if not isinstance(replacement["text"], str) or len(replacement["text"].encode()) > 16 * 1024 * 1024:
             raise PassError("body replacement exceeds policy")
-        if hashlib.sha256(body.encode()).hexdigest() != replacement["sha256"]:
-            raise PassError("transcript body changed; preserving human edits")
-    fd, name = tempfile.mkstemp(prefix=".wax-ep-", suffix=".md", dir=md.parent)
-    staging = Path(name)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(original)
-        _apply_frontmatter(staging, updates)
+    for attempt in range(APPLY_REBASE_ATTEMPTS):
+        original = md.read_bytes()
+        _, body = frontmatter.split(original.decode("utf-8"))
         if replacement is not None:
-            staged_fm, _ = frontmatter.read(staging)
-            staging.write_text(frontmatter.render(staged_fm, replacement["text"]), encoding="utf-8")
-        if md.read_bytes() != original:
-            raise PassError("document changed during pass application; preserving human edits")
-        os.chmod(staging, md.stat().st_mode)
-        with staging.open("rb") as handle:
-            os.fsync(handle.fileno())
-        os.replace(staging, md)
-        current = _rename_transcript(md, item_id, requested_slug) if requested_slug else md
-    finally:
-        staging.unlink(missing_ok=True)
+            import hashlib
+            if hashlib.sha256(body.encode()).hexdigest() != replacement["sha256"]:
+                raise PassError("transcript body changed; preserving human edits")
+        fd, name = tempfile.mkstemp(prefix=".wax-ep-", suffix=".md", dir=md.parent)
+        staging = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(original)
+            _apply_frontmatter(staging, updates)
+            if replacement is not None:
+                staged_fm, _ = frontmatter.read(staging)
+                staging.write_text(frontmatter.render(staged_fm, replacement["text"]), encoding="utf-8")
+            now = md.read_bytes()
+            if now != original:
+                if attempt + 1 < APPLY_REBASE_ATTEMPTS and _disjoint_change(original, now, updates):
+                    log.info("%s: %s changed during apply without touching this pass's keys; "
+                             "re-applying on top of it", ep.get("slug"), md.name)
+                    continue
+                raise PassError("document changed during pass application; preserving human edits")
+            os.chmod(staging, md.stat().st_mode)
+            with staging.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(staging, md)
+            current = _rename_transcript(md, item_id, requested_slug) if requested_slug else md
+            break
+        finally:
+            staging.unlink(missing_ok=True)
     if replacement is not None and not document and ep.get("kind") == "diarization":
         # Only a diarization body carries speaker turns. Any other body edit
         # (summarize, dictionary-correction) must not mark a monolog diarized:
