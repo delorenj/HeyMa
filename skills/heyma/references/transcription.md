@@ -84,7 +84,11 @@ trashed.
 **Quiet speech under a silent level (HEYMA-38, 2026-11-19).** The ten Mac Voice
 Memos of 2026-11-18 measured mean -70..-82 dB and parked as `junk_silent`, yet a
 +40 dB copy of each transcribed to 72..4830 coherent words: the input level was
-35-50 dB too low and faster-whisper's VAD threw the speech away. So before a
+35-50 dB too low and faster-whisper's VAD threw the speech away. An eleventh,
+`20261118 110240.m4a` (mean -79.5, max -47), had reached ASR and parked as
+`junk_empty` (0 words), so a sweep of `junk_silent` alone missed it until
+2026-11-19 (`wax retry` -> +50 dB, 163 words). **When a source turns out quiet,
+re-measure its `junk_empty` parks too, not only `junk_silent`.** So before a
 level-silent **recording** is parked, `sanity.speech_profile` measures half-second
 RMS windows (ffmpeg `astats`, mono 16 kHz). If the p99 window clears the p10 floor
 by >= 10 dB and at least 3 s (and 2% of the file) sits >= 8 dB above the floor,
