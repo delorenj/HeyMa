@@ -130,7 +130,10 @@ def stream_state(*, run_preflight: bool = True) -> dict[str, Any]:
                   segments=len(sentinel.segments(rid)))
         return _s("not-ready", rid=rid, rec=rec, clause="a",
                   cause_code="finalizing",
-                  evidence="explicit stop requested, finalizer alive, within deadline",
+                  evidence=(f"explicit stop requested, finalizer alive, within deadline"
+                            if stop.get("reason") in (None, "explicit") else
+                            f"stop requested by waxd ({stop.get('detail') or stop.get('reason')}), "
+                            "finalizer alive, within deadline"),
                   partial_bytes=sentinel.segment_bytes(rid),
                   segments=len(sentinel.segments(rid)))
 

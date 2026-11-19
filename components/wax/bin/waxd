@@ -31,7 +31,7 @@ sys.path.insert(0, str(COMPONENT_ROOT / "src"))
 
 import signal
 
-from wax import capture, events as events_mod, fence, ledger, paths, state, telephony as telephony_shadow, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
+from wax import abandon, capture, desktop, events as events_mod, fence, ledger, paths, sentinel, state, telephony as telephony_shadow, tray as tray_mod, tray_process, transcribe_adapter, transcriptions, worker as worker_mod
 
 POLL_MS = 1000
 SINGLETON = paths.VAR / "waxd.singleton.lock"
@@ -57,6 +57,11 @@ LOG_REPEAT_S = 300.0
 # 5-30 s (68 of them in one 2.7 h capture), so only silence that outlasts any
 # pause is worth a journal line saying the mic may be muted.
 SILENCE_WARN_S = 60.0
+
+# A capture that has been silent for an hour is not a recording, it is a ghost the next record press would
+# silently stop (2026-11-18: 16 h on a muted Yeti). See wax/abandon.py for the evidence and the defaults.
+# A failed auto-stop is retried this often, never at 1 Hz.
+ABANDON_RETRY_S = 300.0
 
 
 def _configure_logging() -> None:
@@ -117,6 +122,11 @@ class Daemon:
         self._silence_monitor_file = None
         self._is_silent = False
         self._silent_since = 0.0
+        self._abandon_params = abandon.Params.from_env()
+        self._timeline: Optional[abandon.Timeline] = None
+        self._abandon_rid: Optional[str] = None
+        self._abandon_retry_at = 0.0
+        self._abandon_thread: Optional[threading.Thread] = None
         self.tray = tray_process.TrayProcess()
         self.stopped = threading.Event()
         self._serve_socket()
@@ -221,7 +231,9 @@ class Daemon:
                 self._silence_monitor_file = None
             self._silence_monitor_rid = None
             self._is_silent = False
+            self._timeline = None
             self._condition("capture_silent", None, recovered="cleared")
+            self._condition("capture_abandoned", None, recovered="cleared")
             return
 
         rid = stream.get("rid")
@@ -230,6 +242,10 @@ class Daemon:
                 self._silence_monitor_file.close()
             self._silence_monitor_rid = rid
             self._is_silent = False
+            self._abandon_rid = None
+            self._abandon_retry_at = 0.0
+            rec = sentinel.read_json(paths.rec_path(rid)) or {}
+            self._timeline = abandon.Timeline(rec.get("segment_seconds") or paths.SEGMENT_SECONDS)
             log_path = paths.LOGS / rid / "encoder.log"
             if log_path.exists():
                 try:
@@ -245,6 +261,8 @@ class Daemon:
         if self._silence_monitor_file:
             try:
                 for line in self._silence_monitor_file.readlines():
+                    if self._timeline is not None:
+                        self._timeline.feed(line)
                     if "silence_start" in line:
                         if not self._is_silent:
                             self._silent_since = time.monotonic()
@@ -260,6 +278,57 @@ class Daemon:
         self._condition("capture_silent",
                         f"encoder has heard silence for {SILENCE_WARN_S:.0f}s+ while recording "
                         "— is the mic muted?" if long_silence else None, recovered="cleared")
+        self._check_abandoned(stream, rid)
+
+    def _check_abandoned(self, stream: dict, rid: Optional[str]) -> None:
+        """Stop a capture that has been silent for the whole trailing window (wax/abandon.py).
+
+        The verdict is a fraction over the encoder's own timeline, replayed from the top of encoder.log, so a
+        waxd restarted mid-capture decides exactly as one that never died. The stop itself runs off the 1 Hz
+        loop (a long capture takes a while to finalize) and is attempted once per capture, then retried only
+        every ABANDON_RETRY_S if it did not take.
+        """
+        if self._timeline is None or not rid or not self._abandon_params.enabled:
+            return
+        verdict = self._timeline.verdict(self._abandon_params)
+        stream["silent_fraction"] = verdict["fraction"]
+        if not verdict["abandoned"]:
+            self._condition("capture_abandoned", None, recovered="cleared")
+            return
+        self._condition("capture_abandoned",
+                        f"silent >= {verdict['threshold'] * 100:.0f}% of the last {verdict['window_s']:.0f}s "
+                        "— stopping it", level=logging.WARNING)
+        now = time.monotonic()
+        busy = self._abandon_thread is not None and self._abandon_thread.is_alive()
+        if busy or now < self._abandon_retry_at:
+            return
+        self._abandon_rid = rid
+        self._abandon_retry_at = now + ABANDON_RETRY_S
+        self._abandon_thread = threading.Thread(
+            target=self._stop_abandoned, args=(rid, verdict), daemon=True, name="wax-abandon-stop")
+        self._abandon_thread.start()
+
+    def _stop_abandoned(self, rid: str, verdict: dict) -> None:
+        def record(detail: str) -> None:
+            # The transition ledger names the cause even when the finalize is too quick for a 1 Hz tick to see.
+            ledger.note_machine("stream", {"state": "not-ready", "cause_code": abandon.REASON, "evidence": detail})
+
+        try:
+            result = abandon.stop_abandoned(rid, verdict, before_stop=record)
+        except Exception as e:  # noqa: BLE001 - a failed auto-stop must be loud, never fatal
+            log.error("abandoned capture %s: stop failed: %s: %s", rid, type(e).__name__, e)
+            desktop.notify("Wax: could not stop an abandoned recording",
+                           f"{abandon.describe(verdict)}\nThe stop failed ({type(e).__name__}: {e}). "
+                           "Run `wax rec stop` yourself.", urgency="critical")
+            return
+        finally:
+            ledger.close()  # this runs on its own thread; never leave a connection behind
+        if result.get("action") != "stopped":
+            log.info("abandoned capture %s: not stopped (%s)", rid, result)
+            return
+        log.warning("abandoned capture %s stopped: %s -> %s", rid, result.get("detail"), result.get("path"))
+        title, body = abandon.notification(verdict, result)
+        desktop.notify(title, body, urgency="critical")
 
     def _refresh_telephony(self) -> None:
         """Read the optional projection off-loop; at most one read is in flight."""

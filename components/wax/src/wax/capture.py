@@ -24,7 +24,9 @@ last-resort escalation, and a SIGKILLed capture is treated as error-partial
 rather than published.
 """
 
+import contextlib
 import errno
+import fcntl
 import json
 import os
 import shutil
@@ -32,7 +34,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from . import paths, procutil, rename, sentinel, state
 
@@ -252,7 +254,24 @@ def _await_exit(rec: dict[str, Any], timeout: float) -> Optional[int]:
     raise TimeoutError("encoder did not exit within grace period")
 
 
-def stop(rid: str, *, dest_dir: Optional[Path] = None) -> dict[str, Any]:
+@contextlib.contextmanager
+def lifecycle_lock() -> Iterator[None]:
+    """The capture lifecycle lock (`var/waxd.lock`), the same flock `wax rec start|stop|toggle` take.
+
+    Serialises lifecycle ops so two of them cannot race the state check. waxd's own stop of an abandoned
+    capture (wax.abandon) takes it too, so a hotkey press can never interleave with it.
+    """
+    paths.ensure_dirs()
+    with open(paths.LOCK, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def stop(rid: str, *, dest_dir: Optional[Path] = None, reason: str = "explicit",
+         detail: Optional[str] = None) -> dict[str, Any]:
     """Explicitly stop a capture and move the finished file into the inbox.
 
     `dest_dir` (used by `wax split`) publishes the finished file there instead, so
@@ -264,7 +283,7 @@ def stop(rid: str, *, dest_dir: Optional[Path] = None) -> dict[str, Any]:
 
     # Intent BEFORE signal. If we die between these two lines the state is
     # `not-ready` then `error-partial` on deadline — never a silent truncation.
-    sentinel.write_stop(rid)
+    sentinel.write_stop(rid, reason=reason, detail=detail)
 
     if sentinel.encoder_alive(rec):
         _shutdown(rid, rec)

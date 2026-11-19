@@ -156,6 +156,36 @@ before stdout, that private output is still preserved under
 `recovered/split-late/output-*/`. No unrelated or preexisting vault note is
 searched for, moved or overwritten. See [transcription](transcription.md).
 
+## An abandoned capture is stopped by waxd
+
+The record hotkey is a **toggle**: while a capture is `recording`, the next press is a stop. A capture nobody
+is using therefore turns the press that was meant to start an interview into a stop of the ghost. This happened
+on 2026-11-18: a muted Yeti recorded 16 h (17:18 to 09:27, 98.4% silent) and the 09:27 press stopped it, so the
+interview was missed (the 58,147 s file then parked under `skipped/overduration/`). waxd already logged
+`capture_silent`, but that condition is a "silent right now" bit and flapped warn/cleared all night, because
+every noise blip prints a `silence_end`. Nothing acted on it.
+
+waxd now stops it (`components/wax/src/wax/abandon.py`, wired in `Daemon._check_silence`):
+
+| Piece | Behaviour |
+|---|---|
+| Evidence | The encoder's `silencedetect` lines (-50 dB, d=5 s) in `var/logs/<rid>/encoder.log`, replayed from the top every time the monitor starts, so a waxd restarted mid-capture decides exactly as one that never died. |
+| Clock | The encoder's own timeline, never waxd's wall clock: `silence_start`/`silence_end` pts, and `Opening '...seg-N.ogg'` lines (segment N opened means at least N x `segment_seconds`). An open silence extends to that "now". A suspended machine stops the clock with the audio. |
+| Verdict | The silent **fraction** of the trailing window, not a bit: abandoned when the capture is at least one window long and the fraction is at least the threshold. Blips of audible noise cannot make it flap. |
+| Knobs | `WAX_ABANDON_WINDOW_S` (default **3600**; `0` disables), `WAX_ABANDON_SILENT_FRACTION` (default **0.97**). Read at waxd start, so a change needs a waxd restart (not while a transcription runs). |
+| Action | The ordinary stop, the same path as `wax rec stop`: capture lock (`var/waxd.lock`), state re-read under it (a capture already stopped or replaced is left alone), then `capture.stop(rid, reason="abandoned_silent")`. Finalize runs, the file lands in `inbox/`, and the junk gate / `wax split` handle the content. Audio is never deleted. |
+| Evidence trail | The `stream` transition `recording -> not-ready` in the ledger has cause `abandoned_silent` and the numbers in `evidence`; the `<rid>.stop` sentinel carries `reason` and `detail`, and `wax state stream` shows "stop requested by waxd (...)" while finalizing. The journal has `capture_abandoned` and `abandoned capture <rid> stopped`. `state.json` stream carries `silent_fraction`. |
+| Notice | A critical desktop notification "Wax: stopped an abandoned recording" with the percentage, the window and the inbox file name. A failed stop notifies "could not stop" and is retried every 5 minutes, never at 1 Hz. |
+
+Why those defaults: of the 32 real captures at least 60 min long in `var/logs` (2026-11-19), the worst trailing
+hour of 28 stayed below 0.33 silent, and the other four (three forgotten-to-stop overruns and the 16 h
+incident) reached 0.978 to 1.000; nothing lies between, so the threshold is a margin, not a tuning. A meeting's 5 to
+30 s pauses, even a 20 minute break, stay far under it, and four minutes of talk inside a long quiet keeps the
+verdict off until it scrolls out of the window. The 16 h incident capture would have been stopped at about 74 min.
+The cost of a false stop is bounded: the stopped audio is kept, the trailing hour was at least 97% silent at -50 dB
+anyway, and the notification says why. Caveat: a mic set so low that real speech sits below -50 dB reads as
+silence (the HEYMA-38 quiet-speech class); fix the input level, or raise the window.
+
 ## The capture guard
 
 `wax-capture-guard.service` (user unit, enabled and active on 2026-11-05) is a

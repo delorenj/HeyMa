@@ -383,7 +383,7 @@ class ConnectionLeakTest(unittest.TestCase):
 
     def test_waxd_short_lived_threads_close_the_ledger(self):
         source = (COMPONENT_ROOT / "bin" / "waxd").read_text()
-        self.assertEqual(source.count("ledger.close()"), 4)       # telephony refresh + skip/retry/retry_passes
+        self.assertEqual(source.count("ledger.close()"), 5)       # telephony refresh + skip/retry/retry_passes + abandoned-capture stop
 
 
 if __name__ == "__main__":

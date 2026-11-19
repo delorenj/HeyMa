@@ -11,6 +11,26 @@ the code still matches; where the code has since moved, the entry says so.
 
 ---
 
+## 2026-11-19 · the interview was never recorded · *shape 1: a ghost capture the next toggle press stopped*
+
+**Signature.** The operator pressed record at 09:27 for an interview and Wax did not start. A Linux capture from
+2026-11-18 17:18 (Yeti mic, muted or too quiet) had been `recording` for 58,147 s; the toggle hotkey saw
+`recording` and STOPPED it. The finalize died (tray restart, fixed in `df7b26a`), the stream sat in `error-partial`
+until 09:33, and the salvaged ogg parked as `audio_too_long_for_transcription`. waxd's `capture_silent` had only
+logged, and flapped warn/cleared all night (630 `silence_start` lines in the encoder log).
+
+**Cause.** Nothing ever ended a capture nobody was using, and the one signal that knew (a "silent now" bit) was
+unusable because noise blips reset it.
+
+**Fix.** waxd stops a capture whose encoder was silent at least 97% of the trailing hour, by the ordinary
+`rec stop` path, with cause `abandoned_silent` and a desktop notification
+([capture](../../../references/capture.md#an-abandoned-capture-is-stopped-by-waxd)). `WAX_ABANDON_WINDOW_S=0` turns it off.
+
+**Lesson.** A toggle is only safe if "recording" means a human is recording. Judge liveness by a fraction over a
+window on the encoder's own clock, not by an edge.
+
+---
+
 ## 2026-11-18 · three Voice Memos failed and the doctor said nothing · *shape 3: a sub-stage degraded to empty, and doctor had no item-state probe*
 
 **Signature.** `wax status` exits 2 with failed items; `wax doctor` reports 0

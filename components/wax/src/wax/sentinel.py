@@ -92,13 +92,18 @@ def write_rec(rid: str, *, pid: int, starttime: int, device_source: str,
     return p
 
 
-def write_stop(rid: str, *, reason: str = "explicit") -> Path:
-    """Record intent to stop BEFORE signalling. Never skip this."""
+def write_stop(rid: str, *, reason: str = "explicit", detail: Optional[str] = None) -> Path:
+    """Record intent to stop BEFORE signalling. Never skip this.
+
+    `reason` is "explicit" for a person's stop; waxd's abandoned-capture stop writes its own
+    (wax.abandon.REASON) with the evidence in `detail`, so the stream machine and the ledger can say who stopped it.
+    """
     me = os.getpid()
     p = paths.stop_path(rid)
     _write_json_durable(p, {
         "rid": rid,
         "reason": reason,
+        **({"detail": detail} if detail else {}),
         "stop_requested_at": utcnow(),
         "owner_pid": me,
         "owner_boot_id": procutil.boot_id(),

@@ -10,6 +10,7 @@ Defaults are used when unset.
 |---|---|
 | Root and paths | `WAX_ROOT` (`~/HeyMa`; `WAX_AUDIO_ROOT` is a legacy alias), `WAX_VAULT` (`~/d/Transcripts`), `WAX_MIN_FREE_BYTES` (5 GiB), `WAX_SEGMENT_SECONDS` (60), `WAX_COMPONENT_ROOT`, `WAX_PASSES_DIR` (`<component>/config/passes.d`), `WAX_PIPELINES_DIR` |
 | Transcription | `WAX_TRANSCRIBE` (pinned absolute in the unit), `WAX_DIARIZATION` (1), `WAX_DIARIZATION_DEVICE` (`cuda`), `WAX_CHANNEL_SPLIT` (1), `MAX_AUDIO_FILE_SIZE_FOR_TRANSCRIPTION` (300MB), `MAX_AUDIO_DURATION_FOR_TRANSCRIPTION` (3h), `DIARIZATION_VENV` (`.venv-diarization`) |
+| Capture | `WAX_ABANDON_WINDOW_S` (3600; `0` turns off the abandoned-capture stop), `WAX_ABANDON_SILENT_FRACTION` (0.97). Read by waxd at start; see [capture](capture.md#an-abandoned-capture-is-stopped-by-waxd) |
 | Archive | `TRANSCRIBE_S3_ALIAS`, `TRANSCRIBE_S3_BUCKET`, `WAX_S3_ENDPOINT` (`https://s3.delo.sh` in the unit), `TRANSCRIBE_STASH_DIR` |
 | Bus and logs | `WAX_NATS_HOST` (127.0.0.1), `WAX_NATS_PORT` (4222), `WAX_LOG_LEVEL` (INFO), `WAX_BLOODBANK_SCHEMAS` |
 | Chat passes | `WAX_TITLE_*`, `WAX_SUMMARY_*`, `WAX_TICKETS_*`: `_API_BASE`, `_MODEL`, `_MODEL_FALLBACKS`, `_API_KEY_OP`, `_REQUEST_TIMEOUT_S`; `WAX_PASS_TIMEOUT_S` is set by the runner. See [passes/model-chain](passes/model-chain.md) |
