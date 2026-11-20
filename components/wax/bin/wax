@@ -3095,6 +3095,10 @@ def dict_command(args, J: bool) -> int:
 
 
 def main() -> int:
+    argv = sys.argv[1:]
+    if "--usage-spec" in argv and "--" not in argv[:argv.index("--usage-spec")]:
+        sys.stdout.write((COMPONENT_ROOT / "wax.usage.kdl").read_text())
+        return 0
     # Alert Mode is an offline facade. Dispatch before argparse and before any
     # call-ledger path; wax accepts --json at every position.
     args = [arg for arg in sys.argv[1:] if arg != "--json"]

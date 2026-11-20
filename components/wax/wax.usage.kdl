@@ -1,0 +1,107 @@
+name wax
+bin wax
+about "Control and inspect the Wax recorder"
+flag --json help="Machine-readable output"
+cmd rec help="Capture lifecycle" {
+    cmd start
+    cmd stop
+    cmd cancel
+    cmd salvage
+    cmd quiesce
+    cmd list
+    cmd toggle
+}
+cmd split help="Split a recording at a long quiet" {
+    cmd run
+    cmd submit
+    cmd list
+}
+cmd state help="Derive state from disk"
+cmd status help="Recorder and queue health"
+cmd history help="Append-only transition log"
+cmd items help="Inbox items"
+cmd queue help="Inbox work"
+cmd skip help="Park an item"
+cmd retry help="Requeue items"
+cmd ep help="Enrichment passes" {
+    cmd run-selected
+    cmd list
+    cmd run
+    cmd replan
+    cmd run-all
+    cmd status
+    cmd sweep
+}
+cmd catalog
+cmd pipeline {
+    cmd enable
+    cmd disable
+    cmd status
+    cmd list
+    cmd compile
+    cmd import
+    cmd show
+    cmd bindings
+}
+cmd documents {
+    cmd list
+    cmd scan
+    cmd backfill
+    cmd run
+    cmd retry
+    cmd sweep-empty
+    cmd sweep-untitled
+}
+cmd tx
+cmd transcripts {
+    cmd sync
+    cmd prune
+    cmd unprune
+    cmd search
+    cmd show
+    cmd history
+    cmd migrate
+    cmd embed
+    cmd link-harvest
+    cmd browse
+}
+cmd reconcile
+cmd events
+cmd migrate
+cmd archive
+cmd transcribe
+cmd drain
+cmd failures {
+    cmd list
+    cmd sweep
+}
+cmd calls {
+    cmd sync
+    cmd event
+    cmd backfill
+    cmd list
+}
+cmd contacts {
+    cmd sync
+    cmd list
+    cmd status
+    cmd add
+    cmd heard
+    cmd remove
+    cmd show
+    cmd fix
+}
+cmd dict
+cmd voices {
+    cmd list
+    cmd show
+    cmd name
+    cmd merge
+    cmd tui
+    cmd sync
+}
+cmd vault {
+    cmd sweep
+    cmd unsweep
+}
+cmd doctor
