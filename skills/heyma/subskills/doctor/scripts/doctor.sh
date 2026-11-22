@@ -656,9 +656,10 @@ chk_s3_transcript_linked() {
 
 # ── events ───────────────────────────────────────────────────────────────────
 chk_nats_reachable() {
-  timeout 6 python3 -c "import socket,sys
-s=socket.create_connection(('127.0.0.1',4222),timeout=4)
-sys.exit(0 if s.recv(4096).startswith(b'INFO') else 1)" 2>/dev/null && return 0
+  # NATS greets every client with an INFO line; read its first four bytes over bash's /dev/tcp.
+  local banner
+  banner="$(timeout 6 bash -c 'exec 3<>/dev/tcp/127.0.0.1/4222 && head -c 4 <&3' 2>/dev/null)"
+  [ "$banner" = "INFO" ] && return 0
   echo "NATS down. Publishing is fail-open so recording still works, but events queue in the outbox."
   return 2
 }
