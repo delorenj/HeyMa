@@ -39,7 +39,11 @@ HTTP_TIMEOUT_S = 4.0
 # waxd mirrors var/state.json every second; a mirror older than this is a dead daemon.
 WAX_STATE_STALE_S = 30.0
 
-PRODUCTS = ("wax", "vinyl", "telephony", "phonograph")
+# Voxxy is speech out (text to a speaker); the other four are speech in. Its section
+# follows the joining-HeyMa contract in docs/heyma-shell.md.
+PRODUCTS = ("wax", "vinyl", "telephony", "phonograph", "voxxy")
+DEFAULT_VOXXY_URL = "https://vox.delo.sh"
+VOXXY_TEST_LINE = "HeyMa voice check. Voxxy is speaking on this desk."
 
 
 @dataclass
@@ -371,11 +375,80 @@ def phonograph_adapter(ctx: Context) -> dict:
                    summary=f"{reason} · {base}", actions=actions, detail={"url": base})
 
 
+# -- voxxy -------------------------------------------------------------------
+
+def _voxxy_disabled(ctx: Context) -> bool:
+    return ctx.environ.get("HEYMA_VOXXY", "").strip().lower() in ("0", "off", "false", "no")
+
+
+def voxxy_command(ctx: Context) -> list[str] | None:
+    """The voxxy CLI: VOXXY_BIN, then /usr/bin/voxxy, then ~/.local/bin/voxxy (uv tool).
+
+    Never PATH, for the same reason as `vinyl_command`: a project venv first on
+    PATH can shadow the installed tool.
+    """
+    override = ctx.environ.get("VOXXY_BIN")
+    if override:
+        return shlex.split(override)
+    for candidate in (Path("/usr/bin/voxxy"), ctx.home / ".local" / "bin" / "voxxy"):
+        if ctx.exists(candidate):
+            return [str(candidate)]
+    return None
+
+
+def voxxy_base_url(ctx: Context) -> str:
+    return (ctx.environ.get("VOX_URL") or DEFAULT_VOXXY_URL).strip().rstrip("/")
+
+
+def _voxxy_engines(payload: dict) -> tuple[list[str], list[str]]:
+    ready, down = [], []
+    for engine in payload.get("engines") or []:
+        if isinstance(engine, dict) and engine.get("name"):
+            (ready if engine.get("ready") else down).append(str(engine["name"]))
+    return ready, down
+
+
+def voxxy_adapter(ctx: Context) -> dict:
+    """Speech out. `voxxy health --json` exits 0 ok, 2 degraded, 3 unreachable.
+
+    Health needs no API key (/healthz stays public), so the row reads the same
+    whether or not this host holds one. Read-only: it never turns the icon red.
+    """
+    if _voxxy_disabled(ctx):
+        return section("voxxy", installed=False, summary="disabled (HEYMA_VOXXY=off)")
+    command = voxxy_command(ctx)
+    if command is None:
+        return section("voxxy", installed=False, summary="not installed")
+    url = voxxy_base_url(ctx)
+    actions = [_action("voxxy.test", "Say a test line"),
+               _action("voxxy.open", "Open Voxxy")]
+    result = ctx.run(command + ["health", "--json"], CLI_TIMEOUT_S)
+    payload = _parse_json_object(result.stdout) or {}
+    ready, down = _voxxy_engines(payload)
+    detail = {"url": url, "ready": ready, "down": down, "rc": result.rc}
+    if result.rc == 0:
+        summary = f"up · {', '.join(ready) or 'no engines'} ready"
+        return section("voxxy", installed=True, running=True, health="ok",
+                       summary=summary, actions=actions, detail=detail)
+    if result.rc == 2:
+        parts = ["degraded"]
+        if down:
+            parts.append(f"{', '.join(down)} down")
+        if ready:
+            parts.append(f"{', '.join(ready)} ready")
+        return section("voxxy", installed=True, running=True, health="warn",
+                       summary=" · ".join(parts), actions=actions, detail=detail)
+    reason = "unreachable" if result.rc == 3 else f"health failed: {_first_error(result)}"
+    return section("voxxy", installed=True, running=False, health="fail",
+                   summary=f"{reason} · {url}", actions=actions, detail=detail)
+
+
 ADAPTERS: dict[str, Callable[[Context], dict]] = {
     "wax": wax_adapter,
     "vinyl": vinyl_adapter,
     "telephony": telephony_adapter,
     "phonograph": phonograph_adapter,
+    "voxxy": voxxy_adapter,
 }
 
 
@@ -390,4 +463,5 @@ def quick_installed(ctx: Context) -> dict[str, bool]:
         "telephony": ctx.exists(ctx.telephony_cli),
         "phonograph": ctx.environ.get("HEYMA_PHONOGRAPH", "").strip().lower()
         not in ("0", "off", "false", "no"),
+        "voxxy": not _voxxy_disabled(ctx) and voxxy_command(ctx) is not None,
     }

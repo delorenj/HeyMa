@@ -20,12 +20,12 @@ def world():
 
 
 class RegistryTest(unittest.TestCase):
-    def test_collect_returns_all_four_sections_in_order(self):
+    def test_collect_returns_every_section_in_order(self):
         doc = registry.collect(world().context())
         self.assertEqual(doc["schema"], "heyma.shell.status.v1")
         self.assertEqual([s["id"] for s in doc["sections"]],
-                         ["wax", "vinyl", "telephony", "phonograph"])
-        self.assertTrue(all(s["installed"] for s in doc["sections"]))
+                         ["wax", "vinyl", "telephony", "phonograph", "voxxy"])
+        self.assertTrue(all(s["installed"] for s in doc["sections"] if s["id"] != "voxxy"))
         json.dumps(doc)  # the whole document must be serialisable
 
     def test_one_raising_adapter_is_a_failed_section_not_a_failed_registry(self):
@@ -38,7 +38,7 @@ class RegistryTest(unittest.TestCase):
 
     def test_text_form_has_one_line_per_product(self):
         text = registry.render_text(registry.collect(world().context()))
-        self.assertEqual(len(text.splitlines()), 4)
+        self.assertEqual(len(text.splitlines()), len(adapters.PRODUCTS))
         self.assertTrue(text.startswith("wax"))
 
 

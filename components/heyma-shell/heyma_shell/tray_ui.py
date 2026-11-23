@@ -25,8 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import model, paths, registry
-from .adapters import (Context, phonograph_base_url, quick_installed, vinyl_command,
-                       vinyl_settings_command)
+from .adapters import (VOXXY_TEST_LINE, Context, phonograph_base_url, quick_installed,
+                       vinyl_command, vinyl_settings_command, voxxy_base_url, voxxy_command)
 
 log = logging.getLogger("heyma.tray")
 
@@ -223,6 +223,7 @@ def main() -> int:
     shell = Shell()
     ctx = shell.ctx
     vinyl_cmd = vinyl_command(ctx)
+    voxxy_cmd = voxxy_command(ctx)
     settings_cmd = vinyl_settings_command(ctx)
     wax_cli = str(ctx.wax_cli)
     heyma = str(ctx.root / "bin" / "heyma")
@@ -273,6 +274,9 @@ def main() -> int:
         "telephony.silence": ringer.silence,
         "telephony.page": lambda: _popen([heyma, "--page", "telephony"]),
         "phonograph.open": lambda: _popen(["xdg-open", phonograph_base_url(ctx)]),
+        "voxxy.test": lambda: voxxy_cmd and _popen(voxxy_cmd + ["speak", "--no-sink",
+                                                                VOXXY_TEST_LINE]),
+        "voxxy.open": lambda: _popen(["xdg-open", voxxy_base_url(ctx)]),
     }
     indicator = build_tray_class(wax_tray)(actions, vinyl_settings=settings_cmd is not None)
 

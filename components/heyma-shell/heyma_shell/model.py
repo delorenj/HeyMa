@@ -20,6 +20,10 @@ FAST_SECTIONS = ("wax",)
 # A section must read degraded this many collects in a row before the icon turns
 # yellow. A hosted Phonograph that drops one probe must not flash the desktop.
 DEBOUNCE_AFTER = 2
+# Sections whose status line is the registry summary (no state mirror of their own).
+REGISTRY_ROWS = ("telephony", "phonograph", "voxxy")
+SECTION_LABEL = {"wax": "Wax", "vinyl": "Vinyl", "telephony": "Telephony",
+                 "phonograph": "Phonograph", "voxxy": "Voxxy"}
 
 
 class Debounce:
@@ -106,8 +110,8 @@ def verdict(inputs: Inputs) -> Verdict:
             degraded.append(product)
     for product in shown:
         row = inputs.sections.get(product) or {}
-        if product in ("telephony", "phonograph") and row.get("summary"):
-            lines.append(f"{product.capitalize()}: {row['summary']}")
+        if product in REGISTRY_ROWS and row.get("summary"):
+            lines.append(f"{SECTION_LABEL[product]}: {row['summary']}")
     if recording or dictating:
         colour = "red"
         hot = [name for name, on in (("recording", recording), ("dictating", dictating)) if on]
@@ -160,6 +164,11 @@ MENU: list[dict] = [
         _status("phonograph.status"),
         _item("phonograph.open", "Open Phonograph"),
     ]),
+    _sub("voxxy", "Voxxy", [
+        _status("voxxy.status"),
+        _item("voxxy.test", "Say a test line"),
+        _item("voxxy.open", "Open Voxxy"),
+    ]),
     _sep(),
     _item("settings", "Settings…"),
     _item("quit", "Quit HeyMa"),
@@ -203,7 +212,7 @@ def labels(inputs: Inputs, view: Verdict, *, vinyl_settings: bool = False) -> di
         out["vinyl.status"] = {"label": line}
         out["vinyl.trace"] = {"sensitive": bool(snap.get("trace_ref")) and not vinyl["listening"]}
         out["vinyl.settings"] = {"sensitive": vinyl_settings}
-    for product in ("telephony", "phonograph"):
+    for product in REGISTRY_ROWS:
         if product in shown:
             row = inputs.sections.get(product) or {}
             out[f"{product}.status"] = {"label": row.get("summary") or "checking…"}

@@ -223,11 +223,65 @@ class PhonographAdapterTest(unittest.TestCase):
         self.assertFalse(row["installed"])
 
 
+VOXXY = "/home/u/.local/bin/voxxy"
+VOXXY_HEALTH = (VOXXY, "health", "--json")
+
+
+class VoxxyAdapterTest(unittest.TestCase):
+    def health(self, rc, payload=None, stderr=""):
+        world = FakeWorld(present=[VOXXY], cli={VOXXY_HEALTH: Run(rc, json.dumps(payload or {}), stderr)})
+        return world, adapters.voxxy_adapter(world.context())
+
+    def test_ok_names_the_ready_engines(self):
+        world, row = self.health(0, {"status": "ok", "engines": [
+            {"name": "voxcpm", "ready": True}, {"name": "elevenlabs", "ready": True}]})
+        self.assertEqual((row["installed"], row["running"], row["health"]), (True, True, "ok"))
+        self.assertEqual(row["summary"], "up · voxcpm, elevenlabs ready")
+        self.assertEqual(world.calls, [(VOXXY_HEALTH, adapters.CLI_TIMEOUT_S)])
+        self.assertEqual([a["id"] for a in row["actions"]], ["voxxy.test", "voxxy.open"])
+
+    def test_exit_2_is_warn_and_says_what_is_down(self):
+        _, row = self.health(2, {"status": "degraded", "engines": [
+            {"name": "voxcpm", "ready": False}, {"name": "elevenlabs", "ready": True}]})
+        self.assertEqual(row["health"], "warn")
+        self.assertEqual(row["summary"], "degraded · voxcpm down · elevenlabs ready")
+
+    def test_exit_3_is_fail_unreachable_with_the_url(self):
+        _, row = self.health(3)
+        self.assertEqual((row["running"], row["health"]), (False, "fail"))
+        self.assertEqual(row["summary"], "unreachable · https://vox.delo.sh")
+
+    def test_any_other_exit_is_fail_with_the_first_error_line(self):
+        _, row = self.health(1, stderr="Traceback\nboom")
+        self.assertEqual(row["health"], "fail")
+        self.assertIn("Traceback", row["summary"])
+
+    def test_resolution_order_never_uses_path(self):
+        self.assertIsNone(adapters.voxxy_command(FakeWorld().context()))
+        self.assertEqual(adapters.voxxy_command(FakeWorld(present=["/usr/bin/voxxy", VOXXY]).context()),
+                         ["/usr/bin/voxxy"])
+        self.assertEqual(adapters.voxxy_command(FakeWorld(environ={"VOXXY_BIN": "uvx voxxy"}).context()),
+                         ["uvx", "voxxy"])
+
+    def test_not_installed_and_switched_off(self):
+        self.assertFalse(adapters.voxxy_adapter(FakeWorld().context())["installed"])
+        world = FakeWorld(present=[VOXXY], environ={"HEYMA_VOXXY": "off"})
+        self.assertFalse(adapters.voxxy_adapter(world.context())["installed"])
+        self.assertFalse(adapters.quick_installed(world.context())["voxxy"])
+        self.assertEqual(world.calls, [])
+
+    def test_vox_url_names_the_server(self):
+        world = FakeWorld(present=[VOXXY], environ={"VOX_URL": "https://v.example/"},
+                          cli={VOXXY_HEALTH: Run(3)})
+        self.assertEqual(adapters.voxxy_adapter(world.context())["detail"]["url"], "https://v.example")
+
+
 class QuickProbeTest(unittest.TestCase):
     def test_no_subprocess_and_no_network(self):
         world = FakeWorld(present=[WAX, "/usr/bin/vinyl"])
         found = adapters.quick_installed(world.context())
-        self.assertEqual(found, {"wax": True, "vinyl": True, "telephony": False, "phonograph": True})
+        self.assertEqual(found, {"wax": True, "vinyl": True, "telephony": False, "phonograph": True,
+                                 "voxxy": False})
         self.assertEqual(world.calls, [])
 
 

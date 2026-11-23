@@ -8,8 +8,9 @@ the first users.
 
 ## What HeyMa is
 
-HeyMa is the umbrella. It ships four products, and the client is named for the
-umbrella, not for any one product:
+HeyMa is the umbrella. It ships five products, and the client is named for the
+umbrella, not for any one product. Four turn speech into text; Voxxy (joined
+2026-11-23) turns text back into speech:
 
 | Product | Job | Where it runs |
 |---|---|---|
@@ -17,6 +18,7 @@ umbrella, not for any one product:
 | **Vinyl** | live dictation | `vinyl serve` on a server (big-chungus, or a Mac's own Metal server); `vinyl client`/`daemon` on every desktop |
 | **Telephony** | Telnyx calls into Wax, ringer, call log (shadow mode, default off) | big-chungus (inside waxd plus `bin/telephony`) |
 | **Phonograph** | live meeting translation (formerly dubplate, repo `~/code/phonograph`) | hosted web app; nothing installs on a client |
+| **Voxxy** | text to speech: voice library, cloning, the speaker relay agents and memo replies talk through (repo `~/code/voxxy`) | server at `vox.delo.sh` (GPU engines on big-chungus); the `voxxy` CLI and a `voxxy listen` sink on any desk |
 
 ## Corrections to the dictated mental model (verified 2026-11-18)
 
@@ -109,6 +111,19 @@ never stops that product's service.
 
 S1 and S2 are built (2026-11-18): `components/heyma-shell/`, `heyma status [--json]`, `heyma tray`, `heyma-tray.service`, `WAX_TRAY=off`. S5 is built (2026-11-18): `components/heyma-mac/` (HeyMa.app 0.5.0, section model, Vinyl 2.7B, Developer ID signed and notarized; the self-signed-certificate idea in item 5 above was superseded by Jarad's Developer ID). The Wax section of the Mac app is the seam S6 fills. Operator route: `skills/heyma/references/shell.md`.
 
+## Joining HeyMa: the contract for a new product
+
+Recorded 2026-11-23 when Voxxy joined (scope:
+`~/code/voxxy/_bmad-output/planning-artifacts/voxxy-heyma-integration-scope.md`).
+A product gets a HeyMa section when it meets all six:
+
+1. A CLI or endpoint that reports status as JSON with a stable exit code (0 nominal, 2 degraded, 3 or more unreachable or failed). Reading health needs no credentials.
+2. One adapter in `heyma_shell/adapters.py` that calls only that CLI or endpoint and returns the shared row shape. An adapter that raises becomes a failed section, never a failed registry (`registry._safe`). Add it to `PRODUCTS`, `ADAPTERS` and `quick_installed`, with a `HEYMA_<PRODUCT>=off` switch.
+3. Tray actions call the product's own CLI; HeyMa never does the product's work. A read-only section never turns the icon red: red is a hot microphone only.
+4. A `heyma setup` step that calls the product's own installer and records the host's role in `host.toml`.
+5. A Mac story when the product has anything to do on a Mac (native, no Python).
+6. The product's repo owns its stories; HeyMa owns the adapter, tray row, settings page and setup step.
+
 ## Stories (epic: HeyMa shell)
 
 | # | Story | Host | Needs a Mac build |
@@ -121,6 +136,10 @@ S1 and S2 are built (2026-11-18): `components/heyma-shell/`, `heyma status [--js
 | S6 | Voice Memos bridge (Wax section and Recording toggle on Mac), Full Disk Access detection | Mac | yes |
 | S7 | `heyma setup` on Mac: first-run sheet driving brew, pairing and permissions in order | Mac | yes |
 | S8 | Read-only remote Wax status for non-server hosts | any | no |
+| S9 | Voxxy section: `voxxy` adapter (`voxxy health --json`), tray submenu with "Say a test line" and "Open Voxxy" (built 2026-11-23) | any | no |
+| S10 | "Speak on this desk" toggle: tray row that enables `voxxy-listen.service` (Voxxy owns the unit) and shows the sink state | Linux | no |
+| S11 | `heyma setup` Voxxy step: client by default (CLI, `vox_url`, sink key, `op://` API-key reference in `host.toml`), server role only on a GPU host. Rides S4 | Linux | no |
+| S12 | Native Mac sink listener (Swift SSE plus AVPlayer) and Voxxy section in HeyMa.app. After S9 to S11 work on Linux | Mac | yes |
 
 Order: S1 → S2 (the "one icon" Jarad sees on Linux) → S5 + S6 (the Mac
 consolidation and Voice Memos intake) → S3, S4, S7 → S8.

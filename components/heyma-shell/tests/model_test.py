@@ -114,7 +114,7 @@ class MenuTest(unittest.TestCase):
         self.assertEqual(top, [
             ("item", "dictation"), ("item", "recording"), ("separator", None),
             ("submenu", "wax"), ("submenu", "vinyl"), ("submenu", "telephony"),
-            ("submenu", "phonograph"), ("separator", None),
+            ("submenu", "phonograph"), ("submenu", "voxxy"), ("separator", None),
             ("item", "settings"), ("item", "quit")])
         labels = {e["id"]: e["label"] for e in model.MENU if "label" in e}
         self.assertEqual(labels["settings"], "Settings…")
@@ -127,6 +127,7 @@ class MenuTest(unittest.TestCase):
         self.assertEqual(sub["vinyl"], ["vinyl.status", "vinyl.trace", "vinyl.settings"])
         self.assertEqual(sub["telephony"], ["telephony.status", "telephony.silence", "telephony.page"])
         self.assertEqual(sub["phonograph"], ["phonograph.status", "phonograph.open"])
+        self.assertEqual(sub["voxxy"], ["voxxy.status", "voxxy.test", "voxxy.open"])
 
     def test_every_clickable_row_has_a_unique_id(self):
         ids = [e["id"] for e in model.walk() if e["kind"] == "item"]
@@ -143,10 +144,12 @@ class MenuTest(unittest.TestCase):
         self.assertEqual(out["recording"]["label"], "Stop recording")
 
     def test_sections_are_visible_only_when_installed(self):
-        case = inputs(installed={"wax": True, "vinyl": False, "telephony": False, "phonograph": True})
+        case = inputs(installed={"wax": True, "vinyl": False, "telephony": False, "phonograph": True,
+                                 "voxxy": True})
         out = model.labels(case, model.verdict(case))
         self.assertEqual({p: out[p]["visible"] for p in model.PRODUCTS},
-                         {"wax": True, "vinyl": False, "telephony": False, "phonograph": True})
+                         {"wax": True, "vinyl": False, "telephony": False, "phonograph": True,
+                          "voxxy": True})
         self.assertFalse(out["dictation"]["visible"])
 
     def test_recording_toggle_is_disabled_while_waxd_is_down(self):
@@ -176,6 +179,19 @@ class MenuTest(unittest.TestCase):
         out = model.labels(case, model.verdict(case))
         self.assertEqual(out["telephony.status"]["label"], "shadow · ring on")
         self.assertEqual(out["phonograph.status"]["label"], "up · v0.4.0")
+
+    def test_voxxy_row_and_tooltip_come_from_the_registry(self):
+        sections = {"voxxy": row("voxxy", summary="up · voxcpm ready"), "wax": row("wax")}
+        case = inputs(sections=sections)
+        view = model.verdict(case)
+        self.assertEqual(model.labels(case, view)["voxxy.status"]["label"], "up · voxcpm ready")
+        self.assertIn("Voxxy: up · voxcpm ready", view.tooltip)
+
+    def test_a_degraded_voxxy_turns_the_icon_yellow_never_red(self):
+        sections = {"voxxy": row("voxxy", "fail")}
+        view = model.verdict(inputs(sections=sections, slow=["voxxy"]))
+        self.assertEqual(view.colour, "yellow")
+        self.assertIn("voxxy", view.degraded)
 
 
 if __name__ == "__main__":
