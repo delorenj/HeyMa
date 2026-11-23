@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import re
 import signal
-import shutil
 import sqlite3
 import stat
 import subprocess
@@ -26,7 +25,9 @@ ROOT = Path(__file__).resolve().parents[2]
 ENDPOINT = "https://s3.delo.sh"
 BUCKET = "recordings"
 PREFIX = "5c224422-c4be-4c68-9b17-e3848499a198/"
-AWS = shutil.which("aws") or "/usr/local/bin/aws"
+# Deprecated: transport is in-process boto3 now. The field is still accepted so
+# existing configs load, but nothing executes it.
+AWS = "/usr/local/bin/aws"
 KEY_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})/([A-Za-z0-9][A-Za-z0-9_-]{0,150})\.mp3", re.ASCII)
 
 
@@ -178,7 +179,9 @@ def object_from_metadata(key, data):
     try:
         etag = data["ETag"].removeprefix('"').removesuffix('"')
         size = data["ContentLength"]
-        stamp = datetime.fromisoformat(data["LastModified"].replace("Z", "+00:00"))
+        stamp = data["LastModified"]
+        if not isinstance(stamp, datetime):
+            stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
         if stamp.tzinfo is None:
             raise ValueError()
         modified = stamp.astimezone(timezone.utc).isoformat()
@@ -194,38 +197,65 @@ def object_from_metadata(key, data):
         raise IntakeError("remote_metadata_invalid") from None
 
 
+SCRUBBED_ENV = ("AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
+                "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_CA_BUNDLE",
+                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                "http_proxy", "https_proxy", "all_proxy", "no_proxy")
+
+
+def make_client(source, access, secret):
+    """In-process S3 client: one process, pooled connections, no per-call fork.
+
+    Credentials are passed explicitly and never exported; ambient AWS/proxy
+    settings are scrubbed so only the pinned source scope is reachable.
+    """
+    import boto3
+    from botocore.config import Config as BotoConfig
+    for name in SCRUBBED_ENV:
+        os.environ.pop(name, None)
+    os.environ.update({"AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+                       "AWS_EC2_METADATA_DISABLED": "true"})
+    return boto3.session.Session().client(
+        "s3", endpoint_url=source.endpoint, region_name=source.region,
+        aws_access_key_id=access, aws_secret_access_key=secret,
+        config=BotoConfig(connect_timeout=10, read_timeout=30, retries={"total_max_attempts": 1},
+                          signature_version="s3v4", s3={"addressing_style": "path"},
+                          response_checksum_validation="when_required",
+                          request_checksum_calculation="when_required"))
+
+
+def boto_failure():
+    """Errors that map onto a fixed, non-sensitive code (never the message)."""
+    from botocore.exceptions import BotoCoreError, ClientError
+    return (BotoCoreError, ClientError, OSError, ValueError)
+
+
 class Remote:
-    def __init__(self, config, deadline):
+    def __init__(self, config, deadline, client=None):
         self.config, self.deadline = config, deadline
         access, secret = credentials(config, deadline)
-        self.env = child_env() | {
-            "AWS_ACCESS_KEY_ID": access, "AWS_SECRET_ACCESS_KEY": secret,
-            "AWS_DEFAULT_REGION": config.source.region, "AWS_EC2_METADATA_DISABLED": "true",
-            "AWS_PAGER": "", "AWS_MAX_ATTEMPTS": "1", "AWS_CLI_AUTO_PROMPT": "off",
-            "AWS_CONFIG_FILE": "/dev/null", "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
-        }
+        self.client = client if client is not None else make_client(config.source, access, secret)
 
-    def aws(self, args, code, cap=45):
-        flags = ["--endpoint-url", self.config.source.endpoint, "--cli-connect-timeout", "10",
-                 "--cli-read-timeout", "30", "--output", "json", "--no-cli-pager"]
-        raw = command([self.config.aws, *flags, "s3api", *args], self.env, self.deadline, cap, code)
+    def call(self, method, code, **kwargs):
+        self.deadline.remaining(1)
         try:
-            data = json.loads(raw)
-            if not isinstance(data, dict):
-                raise ValueError()
-            return data
-        except (ValueError, TypeError):
-            raise IntakeError(code + "_invalid") from None
+            data = getattr(self.client, method)(**kwargs)
+        except IntakeError:
+            raise
+        except boto_failure():
+            raise IntakeError(code + "_failed") from None
+        if not isinstance(data, dict):
+            raise IntakeError(code + "_invalid")
+        return data
 
     def listing(self):
         source = self.config.source
         rows, tokens, token = [], set(), None
         while True:
-            args = ["list-objects-v2", "--bucket", source.bucket, "--prefix", source.prefix,
-                    "--no-paginate", "--max-keys", "1000"]
+            args = dict(Bucket=source.bucket, Prefix=source.prefix, MaxKeys=1000)
             if token:
-                args.extend(["--continuation-token", token])
-            page = self.aws(args, "remote_list")
+                args["ContinuationToken"] = token
+            page = self.call("list_objects_v2", "remote_list", **args)
             contents = page.get("Contents", [])
             if not isinstance(contents, list) or any(not isinstance(row, dict) for row in contents):
                 raise IntakeError("remote_listing_invalid")
@@ -241,18 +271,38 @@ class Remote:
         source = self.config.source
         if not key.startswith(source.prefix) or not safe_relative(key[len(source.prefix):]):
             raise IntakeError("object_scope_invalid")
-        data = self.aws(["head-object", "--bucket", source.bucket, "--key", key], "remote_head")
+        data = self.call("head_object", "remote_head", Bucket=source.bucket, Key=key)
         return object_from_metadata(key, data)
 
     def download(self, obj, path):
         source = self.config.source
         if not obj.key.startswith(source.prefix) or not safe_relative(obj.key[len(source.prefix):]):
             raise IntakeError("object_scope_invalid")
-        args = ["get-object", "--bucket", source.bucket, "--key", obj.key,
-                "--if-match", '"' + obj.etag + '"']
+        args = dict(Bucket=source.bucket, Key=obj.key, IfMatch='"' + obj.etag + '"')
         if obj.version:
-            args.extend(["--version-id", obj.version])
-        data = self.aws([*args, str(path)], "remote_download", cap=180)
+            args["VersionId"] = obj.version
+        data = self.call("get_object", "remote_download", **args)
+        body = data.pop("Body", None)
+        try:
+            if body is None:
+                raise IntakeError("remote_download_invalid")
+            # Write through the pre-created, O_EXCL staging inode (no truncate,
+            # no replace) so the caller's identity check still holds.
+            fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+            try:
+                with os.fdopen(fd, "wb", closefd=False) as out:
+                    while chunk := body.read(1024 * 1024):
+                        self.deadline.remaining(1)
+                        out.write(chunk)
+            finally:
+                os.close(fd)
+        except IntakeError:
+            raise
+        except boto_failure():
+            raise IntakeError("remote_download_failed") from None
+        finally:
+            if body is not None:
+                body.close()
         if object_from_metadata(obj.key, data) != obj:
             raise IntakeError("remote_identity_changed")
 
@@ -284,7 +334,20 @@ def candidates(config, rows):
         if relative in seen:
             raise IntakeError("remote_listing_duplicate")
         seen.add(relative)
-        yield key, size
+        yield key, size, row
+
+
+def listing_identity(key, row):
+    """(key, etag, size, modified-to-the-second) from a list-objects-v2 row, or None.
+
+    HEAD reports Last-Modified at one-second precision while listings carry
+    milliseconds, so compare truncated. Rows without full metadata never match.
+    """
+    etag, size, stamp = row.get("ETag"), row.get("Size"), row.get("LastModified")
+    if not isinstance(etag, str) or not isinstance(stamp, datetime) or stamp.tzinfo is None:
+        return None
+    modified = stamp.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    return key, etag.removeprefix('"').removesuffix('"'), size, modified
 
 
 def sync_dir(path):
@@ -398,6 +461,12 @@ class Intake:
         db.executescript(SCHEMA)
         sync_dir(self.state_dir)
         return db
+
+    def delivered_index(self, db):
+        rows = db.execute("SELECT object_key,etag,size,modified FROM receipts WHERE source_id=? AND state='delivered'",
+                          (self.config.source.id,))
+        return {(r["object_key"], r["etag"], r["size"],
+                 datetime.fromisoformat(r["modified"]).replace(microsecond=0).isoformat()) for r in rows}
 
     def stage(self, receipt_id):
         if not re.fullmatch(r"[a-f0-9]{64}", receipt_id):
@@ -582,8 +651,13 @@ class Intake:
                             failures.append(code)
                             log("object_failed", receipt=row["receipt_id"], code=code)
                 remote = factory(self.config, deadline)
-                for key, size in list(candidates(self.config, remote.listing())):
+                known = self.delivered_index(db)
+                for key, size, row in list(candidates(self.config, remote.listing())):
                     deadline.remaining(1)
+                    # Already delivered and unchanged per the listing (key, ETag,
+                    # size, second-truncated LastModified): no HEAD, no receipt work.
+                    if listing_identity(key, row) in known:
+                        continue
                     try:
                         obj = remote.head(key)
                         if obj.size != size:
@@ -626,7 +700,7 @@ class Intake:
         deadline = Deadline(self.config.run_seconds)
         remote = factory(self.config, deadline)
         count = 0
-        for key, size in candidates(self.config, remote.listing()):
+        for key, size, _ in candidates(self.config, remote.listing()):
             obj = remote.head(key)
             if obj.size != size:
                 raise IntakeError("remote_listing_changed")

@@ -22,27 +22,28 @@ partial names, zero bytes, and objects over the configured limit are excluded.
 Objects must be at least `settle_seconds` old before delivery (default 120).
 Wax's own backup paths are outside the allowlist.
 
-Requires Python 3.9+, Linux, SQLite support, AWS CLI v2, ffprobe with MP3 support,
-and the installed unattended 1Password wrapper. No Python packages are required.
-The example pins AWS to `/home/delorenj/.local/bin/aws`, the executable found on
-this host; `/usr/local/bin/aws` was absent. The default when `aws` is omitted is
-an absolute path resolved by `shutil.which('aws')` at process startup, with
-`/usr/local/bin/aws` as a fallback. Prefer the pinned example for a user service.
+Requires Python 3.9+, Linux, SQLite support, `boto3` (in-process S3 client,
+installed for `/usr/bin/python3`), ffprobe with MP3 support, and the installed
+unattended 1Password wrapper. The `aws` config field is deprecated: it is still
+accepted so existing configs load, but no AWS CLI is executed.
 
-AWS CLI replaces rclone here because live rclone listings succeeded while GETs
-returned S3 403, and an apparent successful copy produced no file. The parent
-verified actual AWS GET/HEAD/list access with the dedicated read-only credential.
-There is no custom signing implementation or high-level sync operation.
+Each run lists the prefix once, then HEADs only objects whose listing identity
+(key, ETag, size, LastModified to the second) is not already a `delivered`
+receipt. Earlier versions forked the AWS CLI for a HEAD on every listed key on
+every run, which burned ~90 s of CPU per run for zero deliveries. The S3 client
+is created once per run and reused, with the same pinned endpoint, 10 s connect /
+30 s read timeouts, and a single attempt (no retries).
 
 The JSON configuration contains `op://` references only. Credentials are read
-into memory and passed to AWS only as `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`. Ambient AWS credentials, profiles, helpers, proxy,
-rclone, and 1Password variables are excluded from AWS and ffprobe environments.
-AWS uses empty credential/config files, region `us-east-1`, metadata lookup off,
-an empty pager, and one attempt. Each operation sets JSON output, no pager,
-10-second connect and 30-second read timeouts; subprocess and whole-run deadlines
-also apply. Logs contain fixed failure codes and opaque receipt IDs, never raw
-subprocess errors, object paths, environment values, or credentials.
+into memory and handed to the in-process client explicitly (never exported).
+Ambient AWS credentials, profiles, endpoint overrides and proxy variables are
+scrubbed from the process before the client is built; ffprobe's environment
+still excludes AWS, proxy, rclone, and 1Password variables.
+The client uses empty AWS credential/config files, region `us-east-1`, metadata
+lookup off, path-style addressing, and one attempt. Operations use 10-second
+connect and 30-second read timeouts; the whole-run deadline also applies. Logs
+contain fixed failure codes and opaque receipt IDs, never raw client errors,
+object paths, environment values, or credentials.
 
 The `op` process receives relevant inherited service-account and Connect
 authentication variables. The normal wrapper may also load its existing

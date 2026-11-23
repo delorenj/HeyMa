@@ -400,6 +400,61 @@ class TransportCase(TransportFixture, unittest.TestCase):
         self.assert_failed('remote_listing_duplicate')
         self.assertEqual(self.remote.downloads, [])
 
+    def full_rows(self, **changes):
+        # What list-objects-v2 really returns: quoted ETag, ms-precision LastModified.
+        return [dict(Key=o.key, Size=o.size, ETag='"' + o.etag + '"',
+                     LastModified=datetime.fromisoformat(o.modified).replace(microsecond=123000)) | changes
+                for o in self.remote.objects]
+
+    def test_known_unchanged_delivered_key_skips_head(self):
+        self.remote.rows = self.full_rows()
+        self.run_intake()
+        self.assertEqual(self.receipt()['state'], 'delivered')
+        self.assertTrue(self.remote.heads)
+        self.remote.heads.clear()
+        self.remote.downloads.clear()
+        self.run_intake()
+        self.assertEqual(self.remote.heads, [])
+        self.assertEqual(self.remote.downloads, [])
+        self.assertIn('"event": "run_complete"', self.logs.getvalue())
+        self.assertEqual(self.intake.status(), 0)
+
+    def test_changed_or_new_listing_identity_still_heads_and_delivers(self):
+        self.remote.rows = self.full_rows()
+        self.run_intake()
+        for change in (dict(ETag='"' + 'b' * 32 + '"'), dict(Size=len(DATA) + 1),
+                       dict(LastModified=datetime(2026, 1, 1, 0, 0, 5, tzinfo=timezone.utc))):
+            with self.subTest(change=list(change)):
+                self.remote.heads.clear()
+                self.remote.rows = self.full_rows(**change)
+                if 'Size' in change:
+                    self.assert_failed()  # fake HEAD reports the real size: listing-size guard fires
+                else:
+                    self.run_intake()
+                self.assertEqual(self.remote.heads, [object_for().key])
+
+    def test_undelivered_receipt_is_not_skipped(self):
+        self.remote.rows = self.full_rows()
+        self.remote.download_hook = lambda obj, path: path.write_bytes(b'short')
+        self.assert_failed()
+        self.assertEqual(self.receipt()['state'], 'failed')
+        self.remote.heads.clear()
+        self.remote.download_hook = None
+        self.run_intake()
+        self.assertTrue(self.remote.heads)
+        self.assertEqual(self.receipt()['state'], 'delivered')
+
+    def test_new_object_beside_known_one_is_delivered(self):
+        self.remote.rows = self.full_rows()
+        self.run_intake()
+        self.remote.heads.clear()
+        other = object_for('other')
+        self.remote.objects.append(other)
+        self.remote.rows = self.full_rows()
+        self.run_intake()
+        self.assertEqual(self.remote.heads, [other.key, other.key])
+        self.assertEqual(self.receipt(other)['state'], 'delivered')
+
     def test_unsettled_object_deferred(self):
         self.remote.objects = [object_for(modified=m.now_text())]
         self.run_intake()
@@ -447,117 +502,112 @@ class TransportCase(TransportFixture, unittest.TestCase):
         self.assert_empty_inbox()
 
 
-# Exercises actual Popen argv, JSON parsing, pagination and named-file behavior.
-FAKE_AWS = r'''#!/usr/bin/python3
-import hashlib, json, os, pathlib, sys
-base = pathlib.Path(__file__).parent
-fixture = json.loads((base / 'scenario.json').read_text())
-args = sys.argv[1:]
-operation = args[args.index('s3api') + 1]
-def flag(name): return args[args.index(name) + 1]
-assert os.environ['AWS_ACCESS_KEY_ID'] == 'fake-access'
-assert os.environ['AWS_SECRET_ACCESS_KEY'] == 'fake-secret'
-assert os.environ['AWS_DEFAULT_REGION'] == 'us-east-1'
-assert os.environ['AWS_MAX_ATTEMPTS'] == '1'
-assert os.environ['AWS_EC2_METADATA_DISABLED'] == 'true'
-assert os.environ['AWS_PAGER'] == ''
-assert os.environ['AWS_CONFIG_FILE'] == '/dev/null'
-assert os.environ['AWS_SHARED_CREDENTIALS_FILE'] == '/dev/null'
-assert not any(k.startswith(('OP_', 'RCLONE_', 'HTTP_', 'HTTPS_', 'ALL_PROXY', 'NO_PROXY')) for k in os.environ)
-assert 'AWS_PROFILE' not in os.environ and 'AWS_SESSION_TOKEN' not in os.environ
-with (base / 'audit.jsonl').open('a') as out:
-    out.write(json.dumps({'argv': args, 'env_names': sorted(os.environ)}) + '\n')
-if fixture.get('error') == operation:
-    sys.stderr.write('fake-secret https://secret.invalid/private raw error\n')
-    sys.exit(23)
-if fixture.get('invalid_json'):
-    print('not json')
-    sys.exit(0)
-key = fixture['key']
-data = fixture['data'].encode()
-meta = {'ETag': '"' + fixture.get('etag', hashlib.md5(data).hexdigest()) + '"',
-        'ContentLength': len(data), 'LastModified': fixture['modified']}
-if fixture.get('version'): meta['VersionId'] = fixture['version']
-if operation == 'list-objects-v2':
-    assert flag('--prefix') == fixture['prefix']
-    assert '--no-paginate' in args
-    if fixture.get('pages') and '--continuation-token' not in args:
-        print(json.dumps({'Contents': [], 'IsTruncated': True, 'NextContinuationToken': 'page-2'}))
-    else:
-        print(json.dumps({'Contents': [{'Key': key, 'Size': len(data)}], 'IsTruncated': False}))
-elif operation == 'head-object':
-    assert flag('--key') == key
-    print(json.dumps(meta))
-elif operation == 'get-object':
-    assert flag('--key') == key
-    assert flag('--if-match') == meta['ETag']
-    assert not fixture.get('version') or flag('--version-id') == fixture['version']
-    path = pathlib.Path(args[-1])
-    assert path.exists() and path.suffix == '.partial'
-    if not fixture.get('no_write'): path.write_bytes(data)
-    print(json.dumps(meta))
-else: sys.exit(24)
-'''
+SECRET_ERROR = 'fake-secret https://secret.invalid/private raw error'
 
 
-class AWSCase(TransportFixture, unittest.TestCase):
+class FakeBody:
+    def __init__(self, data):
+        self.data, self.closed = data, False
+
+    def read(self, size=-1):
+        data, self.data = self.data, b''
+        return data
+
+    def close(self):
+        self.closed = True
+
+
+class FakeS3Client:
+    """Stands in for the boto3 S3 client; records every call."""
+
+    def __init__(self, scenario):
+        self.scenario, self.calls = scenario, []
+
+    def meta(self):
+        data = self.scenario['data'].encode()
+        meta = {'ETag': '"' + self.scenario.get('etag', hashlib.md5(data).hexdigest()) + '"',
+                'ContentLength': len(data), 'LastModified': datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        if self.scenario.get('version'):
+            meta['VersionId'] = self.scenario['version']
+        return meta
+
+    def call(self, operation, kwargs):
+        self.calls.append((operation, kwargs))
+        if self.scenario.get('error') == operation:
+            from botocore.exceptions import ClientError
+            raise ClientError({'Error': {'Code': 'Boom', 'Message': SECRET_ERROR}}, operation)
+
+    def list_objects_v2(self, **kwargs):
+        self.call('list_objects_v2', kwargs)
+        if self.scenario.get('invalid'):
+            return ['not a dict']
+        row = {'Key': self.scenario['key'], 'Size': len(self.scenario['data'])}
+        if self.scenario.get('pages') and 'ContinuationToken' not in kwargs:
+            return {'Contents': [], 'IsTruncated': True, 'NextContinuationToken': 'page-2'}
+        return {'Contents': [row], 'IsTruncated': False}
+
+    def head_object(self, **kwargs):
+        self.call('head_object', kwargs)
+        return self.meta()
+
+    def get_object(self, **kwargs):
+        self.call('get_object', kwargs)
+        body = b'' if self.scenario.get('no_write') else self.scenario['data'].encode()
+        return self.meta() | {'Body': FakeBody(body)}
+
+
+class ClientCase(TransportFixture, unittest.TestCase):
+    """Real Remote and Intake.run against a fake in-process S3 client."""
+
     def setUp(self):
         super().setUp()
-        self.aws = self.root / 'aws'
-        self.aws.write_text(FAKE_AWS)
-        self.aws.chmod(0o700)
         self.op = self.root / 'op'
         self.op.write_text('#!/bin/sh\ncase "$3" in *accessKey) printf fake-access ;; *) printf fake-secret ;; esac\n')
         self.op.chmod(0o700)
-        self.config = replace(self.config, aws=str(self.aws), op=str(self.op))
+        self.config = replace(self.config, op=str(self.op))
         self.intake = m.Intake(self.config, self.root)
-        self.scenario = dict(key=object_for().key, prefix=SOURCE.prefix, data=DATA.decode(), modified=STAMP)
-        self.write_scenario()
-
-    def write_scenario(self):
-        (self.root / 'scenario.json').write_text(json.dumps(self.scenario))
+        self.scenario = dict(key=object_for().key, data=DATA.decode())
+        self.made = []
 
     def live_fake_run(self):
-        self.intake.run()
+        client = FakeS3Client(self.scenario)
 
-    def test_aws_cli_flags_credentials_and_pagination(self):
+        def factory(source, access, secret):
+            self.made.append((source, access, secret))
+            return client
+        self.client = client
+        with patch.object(m, 'make_client', factory):
+            self.intake.run()
+
+    def test_client_calls_credentials_and_pagination(self):
         self.scenario.update(pages=True, version='version-2')
-        self.write_scenario()
-        polluted = {'AWS_ACCESS_KEY_ID': 'wrong', 'AWS_SESSION_TOKEN': 'wrong', 'AWS_PROFILE': 'wrong',
-                    'AWS_ENDPOINT_URL': 'https://wrong.invalid', 'HTTPS_PROXY': 'https://wrong.invalid',
-                    'HTTP_PROXY': 'https://wrong.invalid', 'ALL_PROXY': 'https://wrong.invalid',
-                    'NO_PROXY': '*', 'RCLONE_CONFIG': '/wrong', 'OP_CONNECT_TOKEN': 'op-private'}
-        with patch.dict(os.environ, polluted):
-            self.live_fake_run()
-        audit = [json.loads(line) for line in (self.root / 'audit.jsonl').read_text().splitlines()]
-        self.assertEqual([a['argv'][a['argv'].index('s3api') + 1] for a in audit],
-                         ['list-objects-v2', 'list-objects-v2', 'head-object', 'get-object', 'head-object'])
-        for entry in audit:
-            args = entry['argv']
-            self.assertEqual(args[args.index('--endpoint-url') + 1], m.ENDPOINT)
-            self.assertEqual(args[args.index('--cli-connect-timeout') + 1], '10')
-            self.assertEqual(args[args.index('--cli-read-timeout') + 1], '30')
-            self.assertEqual(args[args.index('--output') + 1], 'json')
-            self.assertIn('--no-cli-pager', args)
-            self.assertNotIn('fake-access', json.dumps(args))
-            self.assertNotIn('fake-secret', json.dumps(args))
-            self.assertEqual(args[args.index('--bucket') + 1], m.BUCKET)
+        self.live_fake_run()
+        self.assertEqual([c[0] for c in self.client.calls],
+                         ['list_objects_v2', 'list_objects_v2', 'head_object', 'get_object', 'head_object'])
+        self.assertEqual(self.made, [(SOURCE, 'fake-access', 'fake-secret')])
+        for operation, kwargs in self.client.calls:
+            self.assertEqual(kwargs['Bucket'], m.BUCKET)
+            if operation == 'list_objects_v2':
+                self.assertEqual((kwargs['Prefix'], kwargs['MaxKeys']), (SOURCE.prefix, 1000))
+        get = self.client.calls[3][1]
+        self.assertEqual(get['IfMatch'], '"' + hashlib.md5(DATA).hexdigest() + '"')
+        self.assertEqual(get['VersionId'], 'version-2')
         self.assertEqual(next(self.intake.inbox.iterdir()).read_bytes(), DATA)
+        self.assertEqual(self.receipt(object_for(version='version-2'))['state'], 'delivered')
         self.assertNotIn('fake-secret', self.logs.getvalue())
+        self.assertIn('"event": "run_complete"', self.logs.getvalue())
 
-    def test_aws_success_no_file_does_not_publish(self):
+    def test_no_bytes_does_not_publish(self):
         self.scenario['no_write'] = True
-        self.write_scenario()
         with self.assertRaisesRegex(m.IntakeError, 'object_failures'):
             self.live_fake_run()
         self.assert_empty_inbox()
         self.assertEqual(self.receipt()['error_code'], 'download_size_mismatch')
 
-    def test_aws_nonzero_errors_suppressed(self):
-        for operation in ['list-objects-v2', 'head-object', 'get-object']:
+    def test_client_errors_suppressed(self):
+        for operation in ['list_objects_v2', 'head_object', 'get_object']:
             with self.subTest(operation=operation):
                 self.scenario['error'] = operation
-                self.write_scenario()
                 with self.assertRaises(m.IntakeError):
                     self.live_fake_run()
                 self.assert_empty_inbox()
@@ -565,12 +615,25 @@ class AWSCase(TransportFixture, unittest.TestCase):
                 self.assertNotIn('secret.invalid', self.logs.getvalue())
                 self.assertEqual(self.intake.status(), 1)
 
-    def test_aws_invalid_json_fails(self):
-        self.scenario['invalid_json'] = True
-        self.write_scenario()
+    def test_invalid_listing_fails(self):
+        self.scenario['invalid'] = True
         with self.assertRaisesRegex(m.IntakeError, 'remote_list_invalid'):
             self.live_fake_run()
         self.assert_empty_inbox()
+
+    def test_make_client_is_pinned_and_ignores_ambient_aws_and_proxy(self):
+        polluted = {'AWS_ACCESS_KEY_ID': 'wrong', 'AWS_SESSION_TOKEN': 'wrong', 'AWS_PROFILE': 'wrong',
+                    'AWS_ENDPOINT_URL': 'https://wrong.invalid', 'HTTPS_PROXY': 'https://wrong.invalid',
+                    'HTTP_PROXY': 'https://wrong.invalid', 'ALL_PROXY': 'https://wrong.invalid'}
+        with patch.dict(os.environ, polluted):
+            client = m.make_client(SOURCE, 'fake-access', 'fake-secret')
+            for name in polluted:
+                self.assertNotIn(name, os.environ)
+            self.assertEqual(os.environ['AWS_CONFIG_FILE'], '/dev/null')
+        self.assertEqual(client.meta.endpoint_url, m.ENDPOINT)
+        self.assertEqual(client.meta.region_name, 'us-east-1')
+        self.assertEqual(client.meta.config.retries['total_max_attempts'], 1)
+        self.assertEqual((client.meta.config.connect_timeout, client.meta.config.read_timeout), (10, 30))
 
     def test_op_auth_only_reaches_op_process(self):
         with patch.dict(os.environ, {'OP_SERVICE_ACCOUNT_TOKEN': 'sensitive-op', 'OP_CONNECT_TOKEN': 'connect',
@@ -596,17 +659,25 @@ spec = importlib.util.spec_from_file_location('child_intake', sys.argv[1])
 m = importlib.util.module_from_spec(spec); sys.modules[spec.name] = m; spec.loader.exec_module(m)
 os.umask(0o077)
 config = m.Config(m.Source(m.ENDPOINT, 'us-east-1', m.BUCKET, m.PREFIX),
-                  'op://test/item/accessKey', 'op://test/item/secretKey', sys.argv[3], sys.argv[4], aws=sys.argv[5])
+                  'op://test/item/accessKey', 'op://test/item/secretKey', sys.argv[3], sys.argv[4])
+data = b'hermetic mp3 stand-in: the fake decoder accepts this fixture'
+import hashlib
+obj = m.Object(m.PREFIX + '2026-01-01/call.mp3', hashlib.md5(data).hexdigest(), '', len(data), '2026-01-01T00:00:00+00:00')
+class R:
+    def __init__(self, *a): pass
+    def listing(self): return [dict(Key=obj.key, Size=obj.size)]
+    def head(self, key): return obj
+    def download(self, o, path): path.write_bytes(data)
 intake = m.Intake(config, pathlib.Path(sys.argv[2]))
-intake.checkpoint = lambda phase: os._exit(31) if phase == sys.argv[6] else None
-intake.run()
+intake.checkpoint = lambda phase: os._exit(31) if phase == sys.argv[5] else None
+intake.run(R)
 '''
                 process = subprocess.run([sys.executable, '-c', code, str(MODULE_PATH), str(root),
-                                          str(self.op), str(self.probe), str(self.aws), phase],
+                                          str(self.op), str(self.probe), phase],
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
                 self.assertEqual(process.returncode, 31, process.stderr.decode())
                 intake = m.Intake(self.config, root)
-                intake.run()
+                intake.run(lambda *_: FakeRemote())
                 self.assertEqual(next(intake.inbox.iterdir()).read_bytes(), DATA)
                 self.assertEqual(list(intake.stage_dir.iterdir()), [])
                 self.assertEqual(intake.status(), 0)
