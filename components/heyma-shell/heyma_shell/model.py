@@ -22,6 +22,9 @@ FAST_SECTIONS = ("wax",)
 DEBOUNCE_AFTER = 2
 # Sections whose status line is the registry summary (no state mirror of their own).
 REGISTRY_ROWS = ("telephony", "phonograph", "voxxy")
+# Agent and memo replies play on this machine while on (`voxxy sink toggle`).
+SPEAK_HERE_OFF = "Speak on this desk"
+SPEAK_HERE_ON = "✓ Speak on this desk"
 SECTION_LABEL = {"wax": "Wax", "vinyl": "Vinyl", "telephony": "Telephony",
                  "phonograph": "Phonograph", "voxxy": "Voxxy"}
 
@@ -166,6 +169,7 @@ MENU: list[dict] = [
     ]),
     _sub("voxxy", "Voxxy", [
         _status("voxxy.status"),
+        _item("voxxy.listen", "Speak on this desk"),
         _item("voxxy.test", "Say a test line"),
         _item("voxxy.open", "Open Voxxy"),
     ]),
@@ -216,4 +220,8 @@ def labels(inputs: Inputs, view: Verdict, *, vinyl_settings: bool = False) -> di
         if product in shown:
             row = inputs.sections.get(product) or {}
             out[f"{product}.status"] = {"label": row.get("summary") or "checking…"}
+    if "voxxy" in shown:
+        speaker = ((inputs.sections.get("voxxy") or {}).get("detail") or {}).get("speaker") or {}
+        out["voxxy.listen"] = {"label": SPEAK_HERE_ON if speaker.get("active") else SPEAK_HERE_OFF,
+                               "sensitive": bool(inputs.sections.get("voxxy"))}
     return out

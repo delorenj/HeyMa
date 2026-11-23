@@ -127,7 +127,7 @@ class MenuTest(unittest.TestCase):
         self.assertEqual(sub["vinyl"], ["vinyl.status", "vinyl.trace", "vinyl.settings"])
         self.assertEqual(sub["telephony"], ["telephony.status", "telephony.silence", "telephony.page"])
         self.assertEqual(sub["phonograph"], ["phonograph.status", "phonograph.open"])
-        self.assertEqual(sub["voxxy"], ["voxxy.status", "voxxy.test", "voxxy.open"])
+        self.assertEqual(sub["voxxy"], ["voxxy.status", "voxxy.listen", "voxxy.test", "voxxy.open"])
 
     def test_every_clickable_row_has_a_unique_id(self):
         ids = [e["id"] for e in model.walk() if e["kind"] == "item"]
@@ -186,6 +186,15 @@ class MenuTest(unittest.TestCase):
         view = model.verdict(case)
         self.assertEqual(model.labels(case, view)["voxxy.status"]["label"], "up · voxcpm ready")
         self.assertIn("Voxxy: up · voxcpm ready", view.tooltip)
+
+    def test_speak_on_this_desk_label_follows_the_unit(self):
+        for active, label in ((False, model.SPEAK_HERE_OFF), (True, model.SPEAK_HERE_ON)):
+            voxxy = {**row("voxxy"), "detail": {"speaker": {"active": active}}}
+            case = inputs(sections={"voxxy": voxxy})
+            with self.subTest(active=active):
+                out = model.labels(case, model.verdict(case))
+                self.assertEqual(out["voxxy.listen"]["label"], label)
+                self.assertTrue(out["voxxy.listen"]["sensitive"])
 
     def test_a_degraded_voxxy_turns_the_icon_yellow_never_red(self):
         sections = {"voxxy": row("voxxy", "fail")}

@@ -225,6 +225,7 @@ class PhonographAdapterTest(unittest.TestCase):
 
 VOXXY = "/home/u/.local/bin/voxxy"
 VOXXY_HEALTH = (VOXXY, "health", "--json")
+VOXXY_SINK = (VOXXY, "sink", "status", "--json")
 
 
 class VoxxyAdapterTest(unittest.TestCase):
@@ -237,8 +238,27 @@ class VoxxyAdapterTest(unittest.TestCase):
             {"name": "voxcpm", "ready": True}, {"name": "elevenlabs", "ready": True}]})
         self.assertEqual((row["installed"], row["running"], row["health"]), (True, True, "ok"))
         self.assertEqual(row["summary"], "up · voxcpm, elevenlabs ready")
-        self.assertEqual(world.calls, [(VOXXY_HEALTH, adapters.CLI_TIMEOUT_S)])
-        self.assertEqual([a["id"] for a in row["actions"]], ["voxxy.test", "voxxy.open"])
+        self.assertEqual([c[0] for c in world.calls], [VOXXY_HEALTH, VOXXY_SINK])
+        self.assertEqual([a["id"] for a in row["actions"]], ["voxxy.listen", "voxxy.test", "voxxy.open"])
+        self.assertEqual(row["detail"]["speaker"],
+                         {"installed": False, "active": False, "key": None, "listeners": None})
+
+    def test_speaking_here_reads_the_local_unit_even_when_the_server_is_down(self):
+        local = {"unit": "voxxy-listen.service", "installed": True, "enabled": True,
+                 "active": True, "key": "big-chungus"}
+        for rc, listeners in ((0, 1), (3, None)):
+            body = {"key": "big-chungus", "local": local}
+            if rc == 0:
+                body["listeners"] = 1
+            world = FakeWorld(present=[VOXXY], cli={
+                VOXXY_HEALTH: Run(0, json.dumps({"engines": [{"name": "voxcpm", "ready": True}]})),
+                VOXXY_SINK: Run(rc, json.dumps(body))})
+            with self.subTest(rc=rc):
+                row = adapters.voxxy_adapter(world.context())
+                self.assertEqual(row["detail"]["speaker"],
+                                 {"installed": True, "active": True, "key": "big-chungus",
+                                  "listeners": listeners})
+                self.assertTrue(row["summary"].endswith("· speaking here"))
 
     def test_exit_2_is_warn_and_says_what_is_down(self):
         _, row = self.health(2, {"status": "degraded", "engines": [

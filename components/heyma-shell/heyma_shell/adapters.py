@@ -408,6 +408,20 @@ def _voxxy_engines(payload: dict) -> tuple[list[str], list[str]]:
     return ready, down
 
 
+def voxxy_speaker(ctx: Context, command: list[str]) -> dict:
+    """"Speak on this desk": `voxxy sink status --json`'s local unit, plus the server's count.
+
+    {installed, active, key, listeners}. The local half is read even when the
+    server is down (exit 3 still prints it), so the toggle never lies.
+    """
+    result = ctx.run(command + ["sink", "status", "--json"], CLI_TIMEOUT_S)
+    payload = _parse_json_object(result.stdout) or {}
+    local = payload.get("local") if isinstance(payload.get("local"), dict) else {}
+    return {"installed": bool(local.get("installed")), "active": bool(local.get("active")),
+            "key": local.get("key"),
+            "listeners": payload.get("listeners") if result.rc == 0 else None}
+
+
 def voxxy_adapter(ctx: Context) -> dict:
     """Speech out. `voxxy health --json` exits 0 ok, 2 degraded, 3 unreachable.
 
@@ -420,14 +434,17 @@ def voxxy_adapter(ctx: Context) -> dict:
     if command is None:
         return section("voxxy", installed=False, summary="not installed")
     url = voxxy_base_url(ctx)
-    actions = [_action("voxxy.test", "Say a test line"),
+    actions = [_action("voxxy.listen", "Speak on this desk"),
+               _action("voxxy.test", "Say a test line"),
                _action("voxxy.open", "Open Voxxy")]
     result = ctx.run(command + ["health", "--json"], CLI_TIMEOUT_S)
     payload = _parse_json_object(result.stdout) or {}
     ready, down = _voxxy_engines(payload)
-    detail = {"url": url, "ready": ready, "down": down, "rc": result.rc}
+    speaker = voxxy_speaker(ctx, command)
+    detail = {"url": url, "ready": ready, "down": down, "rc": result.rc, "speaker": speaker}
+    here = " · speaking here" if speaker.get("active") else ""
     if result.rc == 0:
-        summary = f"up · {', '.join(ready) or 'no engines'} ready"
+        summary = f"up · {', '.join(ready) or 'no engines'} ready{here}"
         return section("voxxy", installed=True, running=True, health="ok",
                        summary=summary, actions=actions, detail=detail)
     if result.rc == 2:

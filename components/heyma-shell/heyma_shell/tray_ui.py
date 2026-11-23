@@ -247,6 +247,23 @@ def main() -> int:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def speak_here():
+        """Flip 'Speak on this desk' through Voxxy's own CLI, then re-read the registry."""
+        if not voxxy_cmd:
+            return
+
+        def work():
+            try:
+                result = subprocess.run(voxxy_cmd + ["sink", "toggle", "--json"],
+                                        capture_output=True, text=True, timeout=30)
+                if result.returncode:
+                    raise RuntimeError((result.stdout or result.stderr).strip()[:200])
+            except Exception as error:  # noqa: BLE001
+                _notify("Voxxy: speak on this desk failed", str(error))
+            GLib.idle_add(lambda: (refresh(), False)[1])
+
+        threading.Thread(target=work, daemon=True).start()
+
     ringer = telephony_presentation.Ringer(telephony_presentation.RingPlayer(),
                                            datetime.now(timezone.utc))
     def wax_action(*args):
@@ -274,6 +291,7 @@ def main() -> int:
         "telephony.silence": ringer.silence,
         "telephony.page": lambda: _popen([heyma, "--page", "telephony"]),
         "phonograph.open": lambda: _popen(["xdg-open", phonograph_base_url(ctx)]),
+        "voxxy.listen": speak_here,
         "voxxy.test": lambda: voxxy_cmd and _popen(voxxy_cmd + ["speak", "--no-sink",
                                                                 VOXXY_TEST_LINE]),
         "voxxy.open": lambda: _popen(["xdg-open", voxxy_base_url(ctx)]),
