@@ -138,7 +138,7 @@ A product gets a HeyMa section when it meets all six:
 | S8 | Read-only remote Wax status for non-server hosts | any | no |
 | S9 | Voxxy section: `voxxy` adapter (`voxxy health --json`), tray submenu with "Say a test line" and "Open Voxxy" (built 2026-11-23) | any | no |
 | S10 | "Speak on this desk" toggle: tray row calling `voxxy sink toggle` (Voxxy owns the `voxxy-listen.service` unit) and showing the local unit state (built 2026-11-23) | Linux | no |
-| S11 | `heyma setup` Voxxy step: client by default (CLI, `vox_url`, sink key, `op://` API-key reference in `host.toml`), server role only on a GPU host. Rides S4 | Linux | no |
+| S11 | `heyma setup voxxy`: calls `voxxy setup --json` (server URL, `op://` key reference in Voxxy's own config, optional `--speak-here`) and records the role in `host.toml`. First step of the S4 step registry (`heyma_shell/setup.py`); server role (`voxxy daemon install`) stays manual on a GPU host (built 2026-11-23) | Linux | no |
 | S12 | Native Mac sink listener (Swift SSE plus AVPlayer) and Voxxy section in HeyMa.app. After S9 to S11 work on Linux | Mac | yes |
 
 Order: S1 → S2 (the "one icon" Jarad sees on Linux) → S5 + S6 (the Mac
