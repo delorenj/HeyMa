@@ -55,7 +55,7 @@ Then your final answer. Nothing else: no scripts, heredocs or extra reads.
 
 ## What to act on, in order (stop at 6 writes)
 
-1. **Verdicts.** HeyMa has no Launch Director, so you give the verdict. A ticket handed back
+1. **Verdicts.** You give the verdict (the PM judges, in launch mode and steady alike). A ticket handed back
    for review is In Progress with `lifecycle:review` (`review` in the snapshot): check its
    evidence comment against its acceptance criteria. Met: `close` it with the evidence in the
    text (a doctor-failure ticket is met only when the snapshot shows its probe passing). Not
